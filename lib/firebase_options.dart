@@ -2,11 +2,12 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 
-/// Firebase (FCM). Web — --dart-define при сборке; Android — google-services.json.
+/// Firebase (FCM). Web — --dart-define при сборке; Android — google-services.json
+/// или встроенные значения из android/app/google-services.json.
 class DefaultFirebaseOptions {
   static FirebaseOptions? get currentPlatform {
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-      return _androidOrNull;
+      return android;
     }
 
     const apiKey = String.fromEnvironment('FIREBASE_WEB_API_KEY');
@@ -36,27 +37,33 @@ class DefaultFirebaseOptions {
     );
   }
 
-  static FirebaseOptions? get _androidOrNull {
+  /// Android: dart-define при CI или значения из android/app/google-services.json.
+  static FirebaseOptions get android {
     const apiKey = String.fromEnvironment('FIREBASE_ANDROID_API_KEY');
     const appId = String.fromEnvironment('FIREBASE_ANDROID_APP_ID');
     const senderId = String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID');
     const projectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
 
-    if (apiKey.isEmpty ||
-        appId.isEmpty ||
-        senderId.isEmpty ||
-        projectId.isEmpty) {
-      return null;
+    if (apiKey.isNotEmpty &&
+        appId.isNotEmpty &&
+        senderId.isNotEmpty &&
+        projectId.isNotEmpty) {
+      const storageBucket = String.fromEnvironment('FIREBASE_STORAGE_BUCKET');
+      return FirebaseOptions(
+        apiKey: apiKey,
+        appId: appId,
+        messagingSenderId: senderId,
+        projectId: projectId,
+        storageBucket: storageBucket.isEmpty ? null : storageBucket,
+      );
     }
 
-    const storageBucket = String.fromEnvironment('FIREBASE_STORAGE_BUCKET');
-
-    return FirebaseOptions(
-      apiKey: apiKey,
-      appId: appId,
-      messagingSenderId: senderId,
-      projectId: projectId,
-      storageBucket: storageBucket.isEmpty ? null : storageBucket,
+    return const FirebaseOptions(
+      apiKey: 'AIzaSyA0-_aY8ZiCTRYTfD0SblLuWu4LusDAOuo',
+      appId: '1:156229477633:android:baede981ed6d8023b46700',
+      messagingSenderId: '156229477633',
+      projectId: 'familychat-53a64',
+      storageBucket: 'familychat-53a64.firebasestorage.app',
     );
   }
 }
