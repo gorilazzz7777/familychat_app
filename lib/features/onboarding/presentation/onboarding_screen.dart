@@ -5,6 +5,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../../core/config/env.dart';
 import '../../../core/constants/api_error_messages.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../profile/presentation/birthday_format.dart';
 
 enum _OnboardingStep { choose, profile, createFamily, inviteKinship, questions }
 
@@ -29,6 +30,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   final _firstName = TextEditingController();
   final _lastName = TextEditingController();
   String _gender = 'male';
+  DateTime? _birthDate;
+  bool _birthdayShowYear = true;
+  bool _prefillLoaded = false;
   String? _error;
   bool _loading = false;
 
@@ -45,6 +49,41 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _step = _OnboardingStep.profile;
     }
     _loadKinship();
+    _loadPrefill();
+  }
+
+  Future<void> _loadPrefill() async {
+    if (_prefillLoaded) return;
+    try {
+      final hints = await ref.read(familychatRepositoryProvider).onboardingPrefill();
+      if (!mounted) return;
+      setState(() {
+        _prefillLoaded = true;
+        if (_firstName.text.trim().isEmpty) {
+          _firstName.text = hints['first_name']?.toString() ?? '';
+        }
+        if (_lastName.text.trim().isEmpty) {
+          _lastName.text = hints['last_name']?.toString() ?? '';
+        }
+        final g = hints['gender']?.toString() ?? '';
+        if (g == 'male' || g == 'female') _gender = g;
+        _birthDate ??= parseBirthDate(hints['birth_date']?.toString());
+      });
+    } catch (_) {
+      if (mounted) setState(() => _prefillLoaded = true);
+    }
+  }
+
+  Future<void> _pickBirthDate() async {
+    final now = DateTime.now();
+    final initial = _birthDate ?? DateTime(now.year - 25, now.month, now.day);
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(1900),
+      lastDate: now,
+    );
+    if (picked != null) setState(() => _birthDate = picked);
   }
 
   @override
@@ -63,6 +102,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   Future<void> _saveProfile() async {
+    if (_birthDate == null) {
+      setState(() => _error = 'Укажите день рождения');
+      return;
+    }
     setState(() {
       _error = null;
       _loading = true;
@@ -72,6 +115,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             firstName: _firstName.text.trim(),
             lastName: _lastName.text.trim(),
             gender: _gender,
+            birthDate: formatBirthDateForApi(_birthDate!),
+            birthdayShowYear: _birthdayShowYear,
           );
       if (!mounted) return;
       if (widget.pendingInviteToken != null) {
@@ -196,12 +241,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Добро пожаловать'),
-        actions: [
-          TextButton(onPressed: widget.onLogout, child: const Text('Выйти')),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Добро пожаловать')),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
@@ -213,7 +253,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             const Text('У вас есть ссылка-приглашение в семью?'),
             const SizedBox(height: 16),
             FilledButton(
-              onPressed: () => setState(() => _step = _OnboardingStep.profile),
+              onPressed: () {
+                setState(() => _step = _OnboardingStep.profile);
+                _loadPrefill();
+              },
               child: Text(widget.pendingInviteToken != null
                   ? 'Да, перейти к регистрации'
                   : 'Нет, создать свою семью'),
@@ -221,7 +264,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             if (widget.pendingInviteToken == null) ...[
               const SizedBox(height: 8),
               OutlinedButton(
-                onPressed: () => setState(() => _step = _OnboardingStep.profile),
+                onPressed: () {
+                  setState(() => _step = _OnboardingStep.profile);
+                  _loadPrefill();
+                },
                 child: const Text('Да, у меня есть приглашение'),
               ),
             ],
@@ -238,13 +284,34 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: _gender,
+              initialValue: _gender,
               decoration: const InputDecoration(labelText: 'Пол'),
               items: const [
                 DropdownMenuItem(value: 'male', child: Text('Мужской')),
                 DropdownMenuItem(value: 'female', child: Text('Женский')),
               ],
               onChanged: (v) => setState(() => _gender = v ?? 'male'),
+            ),
+            const SizedBox(height: 12),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.cake_outlined),
+              title: const Text('День рождения'),
+              subtitle: Text(
+                _birthDate == null
+                    ? 'Не указан'
+                    : formatBirthDateDisplay(_birthDate!, showYear: true),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _pickBirthDate,
+            ),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _birthdayShowYear,
+              onChanged: (v) => setState(() => _birthdayShowYear = v ?? true),
+              title: const Text('Показывать год'),
+              subtitle: const Text('Другим участникам будет виден полный год рождения'),
+              controlAffinity: ListTileControlAffinity.leading,
             ),
             const SizedBox(height: 24),
             FilledButton(

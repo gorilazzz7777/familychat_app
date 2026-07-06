@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 
 import '../../../core/network/api_client.dart';
@@ -13,6 +15,60 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> uploadProfileAvatarBytes(Uint8List bytes) async {
+    final form = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        bytes,
+        filename: 'avatar.png',
+        contentType: DioMediaType.parse('image/png'),
+      ),
+    });
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/me/avatar/',
+      data: form,
+      options: Options(
+        sendTimeout: const Duration(minutes: 2),
+        receiveTimeout: const Duration(minutes: 2),
+      ),
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> deleteProfileAvatar() async {
+    final res = await _dio.delete<Map<String, dynamic>>('familychat/me/avatar/');
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> onboardingPrefill() async {
+    final res = await _dio.get<Map<String, dynamic>>('familychat/onboarding/prefill/');
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> updateProfile({
+    String? firstName,
+    String? lastName,
+    String? gender,
+    String? birthDate,
+    bool? birthdayShowYear,
+  }) async {
+    final data = <String, dynamic>{};
+    if (firstName != null) data['first_name'] = firstName;
+    if (lastName != null) data['last_name'] = lastName;
+    if (gender != null) data['gender'] = gender;
+    if (birthDate != null) data['birth_date'] = birthDate;
+    if (birthdayShowYear != null) data['birthday_show_year'] = birthdayShowYear;
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/me/profile/',
+      data: data,
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> memberProfile(int userId) async {
+    final res = await _dio.get<Map<String, dynamic>>('familychat/members/$userId/');
+    return res.data!;
+  }
+
   Future<List<Map<String, dynamic>>> kinshipOptions() async {
     final res = await _dio.get<List<dynamic>>('familychat/kinship-options/');
     return (res.data ?? []).cast<Map<String, dynamic>>();
@@ -22,6 +78,8 @@ class FamilyChatRepository {
     required String firstName,
     required String lastName,
     required String gender,
+    required String birthDate,
+    required bool birthdayShowYear,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/onboarding/profile/',
@@ -29,6 +87,8 @@ class FamilyChatRepository {
         'first_name': firstName,
         'last_name': lastName,
         'gender': gender,
+        'birth_date': birthDate,
+        'birthday_show_year': birthdayShowYear,
       },
     );
     return res.data!;
@@ -82,6 +142,17 @@ class FamilyChatRepository {
   Future<List<Map<String, dynamic>>> members() async {
     final res = await _dio.get<List<dynamic>>('familychat/members/');
     return (res.data ?? []).cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> calendar({
+    required int year,
+    required int month,
+  }) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/calendar/',
+      queryParameters: {'year': year, 'month': month},
+    );
+    return res.data!;
   }
 
   Future<List<Map<String, dynamic>>> familyChatMessages() async {

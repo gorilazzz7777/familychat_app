@@ -2,9 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../profile/presentation/widgets/chat_avatar.dart';
+import 'member_profile_screen.dart';
 
 class MembersScreen extends ConsumerStatefulWidget {
-  const MembersScreen({super.key});
+  const MembersScreen({
+    super.key,
+    required this.currentUserId,
+    this.onOpenOwnProfile,
+  });
+
+  final int? currentUserId;
+  final VoidCallback? onOpenOwnProfile;
 
   @override
   ConsumerState<MembersScreen> createState() => _MembersScreenState();
@@ -34,6 +43,23 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
     }
   }
 
+  void _openMember(Map<String, dynamic> member) {
+    final userId = member['user_id'] as int?;
+    if (userId == null) return;
+    if (userId == widget.currentUserId) {
+      widget.onOpenOwnProfile?.call();
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => MemberProfileScreen(
+          userId: userId,
+          onOpenOwnProfile: widget.onOpenOwnProfile,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -45,11 +71,23 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
         itemCount: _members.length,
         itemBuilder: (context, i) {
           final m = _members[i];
+          final name = m['display_name']?.toString() ?? '';
+          final avatarUrl = m['avatar_url']?.toString();
+          final birthday = m['birthday_display']?.toString();
+          final subtitleParts = <String>[
+            if (m['kinship_label'] != null) m['kinship_label']!.toString(),
+            if (birthday != null && birthday.isNotEmpty) birthday,
+          ];
           return ListTile(
-            leading: CircleAvatar(child: Text((m['display_name'] as String? ?? '?').characters.first)),
-            title: Text(m['display_name']?.toString() ?? ''),
-            subtitle: Text(m['kinship_label']?.toString() ?? ''),
-            trailing: Text('Ур. ${m['kinship_level']}'),
+            leading: ChatAvatar(
+              name: name,
+              avatarUrl: avatarUrl?.isNotEmpty == true ? avatarUrl : null,
+              radius: 22,
+            ),
+            title: Text(name),
+            subtitle: Text(subtitleParts.join(' · ')),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _openMember(m),
           );
         },
       ),

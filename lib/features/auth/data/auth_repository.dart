@@ -1,3 +1,5 @@
+import 'package:dio/dio.dart';
+
 import '../../../core/config/env.dart';
 import '../../../core/network/api_client.dart';
 
@@ -33,5 +35,29 @@ class AuthRepository {
     return Env.oauthStartUri(provider, Env.authNextForProvider(provider));
   }
 
-  Future<void> logout() => _client.tokenStorage.clear();
+  Future<void> logout() async {
+    try {
+      await _client.dio.post<void>(
+        'auth/logout/',
+        options: Options(
+          validateStatus: (status) =>
+              status != null && status >= 200 && status < 300,
+        ),
+      );
+    } catch (_) {
+      // Сеть или просроченный токен — всё равно очищаем сессию локально.
+    }
+    await _client.tokenStorage.clear();
+  }
+
+  Future<void> deleteAccount({required bool confirmDeletion}) async {
+    await _client.dio.delete<void>(
+      'auth/me/',
+      data: {'confirm_deletion': confirmDeletion},
+      options: Options(
+        validateStatus: (status) =>
+            status != null && status >= 200 && status < 300,
+      ),
+    );
+  }
 }

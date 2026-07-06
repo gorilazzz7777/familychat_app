@@ -29,6 +29,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   bool _checking = true;
   bool _loggedIn = false;
   bool _ready = false;
+  Map<String, dynamic>? _status;
   String? _bootError;
   String? _pendingInvite;
 
@@ -141,6 +142,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       setState(() {
         _checking = false;
         _loggedIn = true;
+        _status = st;
         _ready = st['onboarding_complete'] == true && st['has_family'] == true;
       });
     } catch (e) {
@@ -156,6 +158,14 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
   }
 
+  Future<void> _refreshStatus() async {
+    try {
+      final st = await ref.read(familychatRepositoryProvider).status();
+      if (!mounted) return;
+      setState(() => _status = st);
+    } catch (_) {}
+  }
+
   Future<void> _logout() async {
     await FamilyChatRealtime.instance.disconnect();
     await ref.read(authRepositoryProvider).logout();
@@ -163,6 +173,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     setState(() {
       _loggedIn = false;
       _ready = false;
+      _status = null;
       _checking = false;
     });
   }
@@ -196,6 +207,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
         pendingInviteToken: _pendingInvite,
       );
     }
-    return ShellScreen(onLogout: _logout);
+    return ShellScreen(
+      status: _status!,
+      onLogout: _logout,
+      onStatusChanged: _refreshStatus,
+    );
   }
 }
