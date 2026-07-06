@@ -7,7 +7,7 @@ import 'package:share_plus/share_plus.dart';
 import '../core/config/env.dart';
 import '../core/providers/app_providers.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
-import '../features/chat/presentation/family_chat_screen.dart';
+import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/members/presentation/invite_kinship_dialog.dart';
 import '../features/members/presentation/members_screen.dart';
 import '../features/profile/presentation/profile_screen.dart';
@@ -98,7 +98,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
       body: IndexedStack(
         index: _index,
         children: [
-          const FamilyChatScreen(),
+          const ChatHubScreen(),
           MembersScreen(
             currentUserId: _status['user_id'] as int?,
             onOpenOwnProfile: () => setState(() => _index = 3),

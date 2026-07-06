@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../core/providers/app_providers.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
+import 'birthday_picker.dart';
 import 'widgets/chat_avatar.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
@@ -72,14 +73,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   }
 
   Future<void> _pickBirthDate() async {
-    final now = DateTime.now();
-    final initial = _birthDate ?? DateTime(now.year - 25, now.month, now.day);
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      firstDate: DateTime(1900),
-      lastDate: now,
-      locale: const Locale('ru'),
+    final picked = await showBirthDatePicker(
+      context,
+      initial: _birthDate,
     );
     if (picked != null) setState(() => _birthDate = picked);
   }

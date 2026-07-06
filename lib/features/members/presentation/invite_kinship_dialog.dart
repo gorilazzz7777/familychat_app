@@ -19,6 +19,7 @@ Future<String?> showInviteKinshipDialog(
             const Text('Кого вы приглашаете? Укажите степень родства.'),
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
+              isExpanded: true,
               value: selected,
               decoration: const InputDecoration(
                 labelText: 'Родство',
@@ -28,7 +29,10 @@ Future<String?> showInviteKinshipDialog(
                   .map(
                     (o) => DropdownMenuItem(
                       value: o['code'] as String,
-                      child: Text(o['label'] as String? ?? o['code'] as String),
+                      child: Text(
+                        o['label'] as String? ?? o['code'] as String,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   )
                   .toList(),

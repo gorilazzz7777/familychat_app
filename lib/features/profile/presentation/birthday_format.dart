@@ -5,9 +5,34 @@ String formatBirthDateForApi(DateTime date) {
   return '$y-$m-$d';
 }
 
+/// Парсит дату в формате ДД.ММ.ГГГГ (или только цифры).
+DateTime? parseDdMmYyyy(String text) {
+  final digits = text.replaceAll(RegExp(r'\D'), '');
+  if (digits.length != 8) return null;
+
+  final day = int.tryParse(digits.substring(0, 2));
+  final month = int.tryParse(digits.substring(2, 4));
+  final year = int.tryParse(digits.substring(4, 8));
+  if (day == null || month == null || year == null) return null;
+  if (month < 1 || month > 12 || day < 1 || year < 1900 || year > 2100) {
+    return null;
+  }
+
+  try {
+    final d = DateTime(year, month, day);
+    if (d.year != year || d.month != month || d.day != day) return null;
+    return d;
+  } catch (_) {
+    return null;
+  }
+}
+
 DateTime? parseBirthDate(String? raw) {
   if (raw == null || raw.trim().isEmpty) return null;
   final text = raw.trim();
+  if (text.contains('.')) {
+    return parseDdMmYyyy(text);
+  }
   final datePart = text.contains('T') ? text.split('T').first : text;
   final parts = datePart.split('-');
   if (parts.length != 3) return DateTime.tryParse(text);

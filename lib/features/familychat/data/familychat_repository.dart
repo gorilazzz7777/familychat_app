@@ -155,6 +155,97 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<List<Map<String, dynamic>>> chatThreads() async {
+    final res = await _dio.get<Map<String, dynamic>>('familychat/chat/threads/');
+    return (res.data?['threads'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+  }
+
+  Future<Map<String, dynamic>> createGroupChat({
+    required String title,
+    required List<int> memberUserIds,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/groups/',
+      data: {'title': title, 'member_user_ids': memberUserIds},
+    );
+    return res.data!;
+  }
+
+  Future<List<Map<String, dynamic>>> threadMessages(int threadId) async {
+    final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/messages/');
+    return (res.data ?? []).cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> sendThreadMessage(
+    int threadId, {
+    String? body,
+    List<int>? attachmentIds,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/messages/',
+      data: {
+        if (body != null && body.isNotEmpty) 'body': body,
+        if (attachmentIds != null && attachmentIds.isNotEmpty)
+          'attachment_ids': attachmentIds,
+      },
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> uploadChatAttachmentBytes(
+    int threadId, {
+    required Uint8List bytes,
+    required String filename,
+    String? contentType,
+  }) async {
+    final form = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        bytes,
+        filename: filename,
+        contentType: contentType != null ? DioMediaType.parse(contentType) : null,
+      ),
+    });
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/attachments/',
+      data: form,
+      options: Options(
+        sendTimeout: const Duration(minutes: 3),
+        receiveTimeout: const Duration(minutes: 3),
+      ),
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> threadNotifications(int threadId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/notifications/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> setThreadMute(int threadId, String mute) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/notifications/',
+      data: {'mute': mute},
+    );
+    return res.data!;
+  }
+
+  Future<List<Map<String, dynamic>>> threadMedia(int threadId) async {
+    final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/media/');
+    return (res.data ?? []).cast<Map<String, dynamic>>();
+  }
+
+  Future<List<Map<String, dynamic>>> threadFiles(int threadId) async {
+    final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/files/');
+    return (res.data ?? []).cast<Map<String, dynamic>>();
+  }
+
+  Future<List<Map<String, dynamic>>> threadLinks(int threadId) async {
+    final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/links/');
+    return (res.data ?? []).cast<Map<String, dynamic>>();
+  }
+
   Future<List<Map<String, dynamic>>> familyChatMessages() async {
     final res = await _dio.get<List<dynamic>>('familychat/chat/family/messages/');
     return (res.data ?? []).cast<Map<String, dynamic>>();

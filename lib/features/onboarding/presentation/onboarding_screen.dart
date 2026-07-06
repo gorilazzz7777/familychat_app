@@ -6,6 +6,7 @@ import '../../../core/config/env.dart';
 import '../../../core/constants/api_error_messages.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../profile/presentation/birthday_format.dart';
+import '../../profile/presentation/birthday_picker.dart';
 
 enum _OnboardingStep { choose, profile, createFamily, inviteKinship, questions }
 
@@ -75,13 +76,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   Future<void> _pickBirthDate() async {
-    final now = DateTime.now();
-    final initial = _birthDate ?? DateTime(now.year - 25, now.month, now.day);
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      firstDate: DateTime(1900),
-      lastDate: now,
+    final picked = await showBirthDatePicker(
+      context,
+      initial: _birthDate,
     );
     if (picked != null) setState(() => _birthDate = picked);
   }
