@@ -53,7 +53,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
 
   void _onRealtime(Map<String, dynamic> event) {
     final ev = event['event']?.toString();
-    if (ev == 'chat_message' || ev == 'chat_messages_read' || ev == 'chat_refresh' || ev == 'chat_messages_deleted') {
+    if (ev == 'chat_message' ||
+        ev == 'chat_messages_read' ||
+        ev == 'chat_refresh' ||
+        ev == 'chat_messages_deleted' ||
+        ev == 'chat_message_reactions') {
       unawaited(_load(silent: true));
     }
   }

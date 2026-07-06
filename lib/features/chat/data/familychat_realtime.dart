@@ -22,6 +22,9 @@ class FamilyChatRealtime {
   Timer? _reconnectTimer;
   int _reconnectAttempt = 0;
   bool _connecting = false;
+  bool _connected = false;
+
+  bool get isConnected => _connected && _channel != null;
 
   void addListener(FamilyChatRealtimeHandler handler) => _listeners.add(handler);
 
@@ -42,6 +45,7 @@ class FamilyChatRealtime {
       await _closeChannel();
       final uri = Env.familychatWsUri(accessToken);
       _channel = WebSocketChannel.connect(uri);
+      _connected = true;
       _sub = _channel!.stream.listen(
         (data) {
           _reconnectAttempt = 0;
@@ -55,15 +59,18 @@ class FamilyChatRealtime {
         },
         onError: (Object error) {
           debugPrint('familychat ws error: $error');
+          _connected = false;
           _scheduleReconnect();
         },
         onDone: () {
           debugPrint('familychat ws closed');
+          _connected = false;
           _scheduleReconnect();
         },
       );
     } catch (e) {
       debugPrint('familychat ws connect error: $e');
+      _connected = false;
       _scheduleReconnect();
     } finally {
       _connecting = false;
@@ -90,6 +97,7 @@ class FamilyChatRealtime {
   Future<void> disconnect() async {
     _accessToken = null;
     _reconnectAttempt = 0;
+    _connected = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     await _closeChannel();
@@ -102,5 +110,15 @@ class FamilyChatRealtime {
       await _channel?.sink.close();
     } catch (_) {}
     _channel = null;
+    _connected = false;
+  }
+
+  /// Переподключение и синхронизация (Safari / web после возврата на вкладку).
+  Future<void> reconnectAndRefresh() async {
+    final token = _accessToken;
+    if (token != null && token.isNotEmpty) {
+      await connect(token);
+    }
+    emitSyntheticEvent({'event': 'chat_refresh'});
   }
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
@@ -10,6 +11,7 @@ import '../core/push/push_navigation.dart';
 import '../core/providers/app_providers.dart';
 import '../core/share/incoming_share_bus.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
+import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../features/members/presentation/invite_kinship_dialog.dart';
@@ -32,16 +34,23 @@ class ShellScreen extends ConsumerStatefulWidget {
   ConsumerState<ShellScreen> createState() => _ShellScreenState();
 }
 
-class _ShellScreenState extends ConsumerState<ShellScreen> {
+class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingObserver {
   int _index = 0;
   late Map<String, dynamic> _status;
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
+  Timer? _webPollTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _status = widget.status;
     IncomingShareBus.instance.addListener(_onIncomingShare);
+    if (kIsWeb) {
+      _webPollTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+        FamilyChatRealtime.instance.emitSyntheticEvent({'event': 'chat_refresh'});
+      });
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       flushPendingChatPush();
       _openPendingShareIfAny();
@@ -50,8 +59,17 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _webPollTimer?.cancel();
     IncomingShareBus.instance.removeListener(_onIncomingShare);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
+    }
   }
 
   void _onIncomingShare() {

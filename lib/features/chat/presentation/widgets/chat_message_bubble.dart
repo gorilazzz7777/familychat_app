@@ -69,6 +69,8 @@ class ChatMessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final timeFmt = DateFormat.Hm();
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final maxBubbleWidth = screenWidth * 0.78;
     final bubbleColor = isMine
         ? theme.colorScheme.primary
         : theme.colorScheme.surfaceContainerHighest;
@@ -121,7 +123,7 @@ class ChatMessageBubble extends StatelessWidget {
                         : null,
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: _attachmentImage(a),
+                      child: _attachmentImage(a, maxBubbleWidth - 24),
                     ),
                   )
                 else
@@ -174,16 +176,17 @@ class ChatMessageBubble extends StatelessWidget {
 
     return Padding(
       padding: EdgeInsets.only(
-        left: isMine ? 56 : 8,
-        right: isMine ? 8 : 8,
+        left: 8,
+        right: 8,
         bottom: compactWithNext ? 1 : 6,
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
+        mainAxisAlignment: isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
         children: [
           if (selectionMode)
             Padding(
-              padding: const EdgeInsets.only(right: 6, bottom: 4),
+              padding: EdgeInsets.only(right: isMine ? 6 : 6),
               child: Icon(
                 selected ? Icons.check_circle : Icons.circle_outlined,
                 color: selected ? theme.colorScheme.primary : theme.colorScheme.outline,
@@ -207,18 +210,25 @@ class ChatMessageBubble extends StatelessWidget {
             const SizedBox(width: 6),
           ],
           Flexible(
-            child: Column(
-              crossAxisAlignment:
-                  isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-              children: [
-                bubble,
-                if (reactions.isNotEmpty)
-                  ChatMessageReactionsRow(
-                    reactions: reactions,
-                    alignEnd: isMine,
-                    onReactionTap: onReactionTap,
-                  ),
-              ],
+            child: Align(
+              alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+                child: Column(
+                  crossAxisAlignment:
+                      isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    bubble,
+                    if (reactions.isNotEmpty)
+                      ChatMessageReactionsRow(
+                        reactions: reactions,
+                        alignEnd: isMine,
+                        onReactionTap: onReactionTap,
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
         ],
@@ -278,13 +288,13 @@ class ChatMessageBubble extends StatelessWidget {
     );
   }
 
-  Widget _attachmentImage(Map<String, dynamic> attachment) {
+  Widget _attachmentImage(Map<String, dynamic> attachment, double width) {
     final local = attachment['local_bytes'];
     if (local is Uint8List) {
       return Image.memory(
         local,
         height: 180,
-        width: double.infinity,
+        width: width,
         fit: BoxFit.cover,
         gaplessPlayback: true,
       );
@@ -293,7 +303,7 @@ class ChatMessageBubble extends StatelessWidget {
       threadId: threadId,
       attachment: attachment,
       height: 180,
-      width: double.infinity,
+      width: width,
       fit: BoxFit.cover,
     );
   }
