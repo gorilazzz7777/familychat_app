@@ -1,0 +1,36 @@
+name: familychat_app
+description: Family Chat — семейный мессенджер с родством.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_riverpod: ^2.5.1
+  dio: ^5.4.3+1
+  flutter_secure_storage: ^9.2.4
+  shared_preferences: ^2.5.5
+  app_links: ^6.4.0
+  url_launcher: ^6.3.1
+  firebase_core: ^3.8.0
+  firebase_messaging: ^15.1.3
+  permission_handler: ^11.4.0
+  intl: ^0.20.2
+  share_plus: ^12.0.2
+  web_socket_channel: ^3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
