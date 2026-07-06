@@ -11,18 +11,25 @@ typedef ChatOpenImage = void Function({
   String? filename,
   int? messageId,
 });
+typedef ChatTitleChanged = void Function(String title, String customTitle);
 
 class ChatInfoSheet extends ConsumerStatefulWidget {
   const ChatInfoSheet({
     super.key,
     required this.threadId,
     required this.title,
+    required this.defaultTitle,
+    this.customTitle = '',
+    this.onTitleChanged,
     this.onGoToMessage,
     this.onOpenImage,
   });
 
   final int threadId;
   final String title;
+  final String defaultTitle;
+  final String customTitle;
+  final ChatTitleChanged? onTitleChanged;
   final ChatGoToMessage? onGoToMessage;
   final ChatOpenImage? onOpenImage;
 
@@ -33,6 +40,8 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
 class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
+  late String _title;
+  late String _customTitle;
   List<Map<String, dynamic>> _media = [];
   List<Map<String, dynamic>> _files = [];
   List<Map<String, dynamic>> _links = [];
@@ -41,6 +50,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   @override
   void initState() {
     super.initState();
+    _title = widget.title;
+    _customTitle = widget.customTitle;
     _tabs = TabController(length: 3, vsync: this);
     _load();
   }
@@ -77,6 +88,69 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(key == 'off' ? 'Уведомления включены' : 'Уведомления отключены')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка: $e')),
+      );
+    }
+  }
+
+  Future<void> _renameChat() async {
+    final controller = TextEditingController(text: _customTitle);
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Название чата'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 300,
+          decoration: InputDecoration(
+            hintText: widget.defaultTitle,
+            helperText: 'Видно только вам',
+          ),
+        ),
+        actions: [
+          if (_customTitle.isNotEmpty)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, ''),
+              child: const Text('Сбросить'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || result == null) return;
+
+    try {
+      final data = await ref.read(familychatRepositoryProvider).setThreadCustomTitle(
+            widget.threadId,
+            result,
+          );
+      if (!mounted) return;
+      final title = data['title']?.toString() ?? widget.defaultTitle;
+      final customTitle = data['custom_title']?.toString() ?? '';
+      setState(() {
+        _title = title;
+        _customTitle = customTitle;
+      });
+      widget.onTitleChanged?.call(title, customTitle);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            customTitle.isEmpty ? 'Название сброшено' : 'Название сохранено',
+          ),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -190,8 +264,24 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: [
-                  Text(widget.title, style: Theme.of(context).textTheme.titleLarge),
+                  Text(_title, style: Theme.of(context).textTheme.titleLarge),
+                  if (_customTitle.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        widget.defaultTitle,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ),
                   const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _renameChat,
+                    icon: const Icon(Icons.drive_file_rename_outline),
+                    label: const Text('Переименовать'),
+                  ),
+                  const SizedBox(height: 8),
                   OutlinedButton.icon(
                     onPressed: _showMuteOptions,
                     icon: const Icon(Icons.notifications_off_outlined),

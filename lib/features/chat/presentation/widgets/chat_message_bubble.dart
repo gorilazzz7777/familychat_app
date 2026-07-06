@@ -5,6 +5,8 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../profile/presentation/widgets/chat_avatar.dart';
+import 'chat_message_quote.dart';
+import 'chat_message_reactions.dart';
 import 'chat_network_image.dart';
 
 class ChatMessageBubble extends StatelessWidget {
@@ -16,6 +18,9 @@ class ChatMessageBubble extends StatelessWidget {
     required this.attachments,
     required this.createdAt,
     this.readStatus,
+    this.replyTo,
+    this.forward,
+    this.reactions = const [],
     this.showGroupAvatarColumn = false,
     this.showSenderAvatar = false,
     this.senderName,
@@ -23,7 +28,14 @@ class ChatMessageBubble extends StatelessWidget {
     this.onSenderAvatarTap,
     this.compactWithNext = false,
     this.highlighted = false,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onTap,
+    this.onLongPress,
     this.onImageTap,
+    this.onReplyTap,
+    this.onReactionTap,
+    this.isGroupLike = false,
   });
 
   final int threadId;
@@ -32,6 +44,9 @@ class ChatMessageBubble extends StatelessWidget {
   final List<Map<String, dynamic>> attachments;
   final DateTime? createdAt;
   final String? readStatus;
+  final Map<String, dynamic>? replyTo;
+  final Map<String, dynamic>? forward;
+  final List<Map<String, dynamic>> reactions;
   final bool showGroupAvatarColumn;
   final bool showSenderAvatar;
   final String? senderName;
@@ -39,7 +54,14 @@ class ChatMessageBubble extends StatelessWidget {
   final VoidCallback? onSenderAvatarTap;
   final bool compactWithNext;
   final bool highlighted;
+  final bool selectionMode;
+  final bool selected;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
   final void Function(Map<String, dynamic> attachment)? onImageTap;
+  final VoidCallback? onReplyTap;
+  final void Function(String emoji)? onReactionTap;
+  final bool isGroupLike;
 
   static const double _avatarSize = 32;
 
@@ -54,89 +76,100 @@ class ChatMessageBubble extends StatelessWidget {
     final metaColor = isMine
         ? theme.colorScheme.onPrimary.withValues(alpha: 0.75)
         : theme.colorScheme.onSurfaceVariant;
+    final quoteAccent = isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary;
 
-    final bubble = AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      decoration: highlighted
-          ? BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: theme.colorScheme.tertiary,
-                width: 2,
-              ),
-            )
-          : null,
-      child: Material(
-      color: bubbleColor,
-      elevation: 0,
-      borderRadius: BorderRadius.only(
-        topLeft: const Radius.circular(16),
-        topRight: const Radius.circular(16),
-        bottomLeft: Radius.circular(isMine ? 16 : 4),
-        bottomRight: Radius.circular(isMine ? 4 : 16),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (body.isNotEmpty)
-              Text(
-                body,
-                style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
-              ),
-            for (final a in attachments) ...[
-              if (body.isNotEmpty) const SizedBox(height: 8),
-              if (a['kind'] == 'image')
-                GestureDetector(
-                  onTap: onImageTap != null && a['local_bytes'] == null
-                      ? () => onImageTap!(a)
-                      : null,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: _attachmentImage(a),
-                  ),
-                )
-              else
-                InkWell(
-                  onTap: () {
-                    final url = a['file_url']?.toString();
-                    if (url != null) launchUrl(Uri.parse(url));
-                  },
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.insert_drive_file_outlined, color: textColor),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text(
-                          a['filename']?.toString() ?? 'Файл',
-                          style: TextStyle(color: textColor),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-            const SizedBox(height: 4),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (createdAt != null)
-                  Text(
-                    timeFmt.format(createdAt!.toLocal()),
-                    style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
-                  ),
-                if (isMine && readStatus != null) ...[
-                  const SizedBox(width: 4),
-                  _ReadStatusIcon(status: readStatus!, color: metaColor),
-                ],
-              ],
-            ),
-          ],
+    Widget bubble = AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: highlighted
+              ? theme.colorScheme.tertiary
+              : selected
+                  ? theme.colorScheme.tertiary
+                  : Colors.transparent,
+          width: highlighted || selected ? 2 : 0,
         ),
       ),
-    ),
+      child: Material(
+        color: bubbleColor,
+        elevation: 0,
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(16),
+          topRight: const Radius.circular(16),
+          bottomLeft: Radius.circular(isMine ? 16 : 4),
+          bottomRight: Radius.circular(isMine ? 4 : 16),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (forward != null) _buildForwardQuote(forward!, quoteAccent, textColor),
+              if (replyTo != null) _buildReplyQuote(replyTo!, quoteAccent, textColor),
+              if (_showBody(body, forward))
+                Text(
+                  body,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                ),
+              for (final a in attachments) ...[
+                if (body.isNotEmpty) const SizedBox(height: 8),
+                if (a['kind'] == 'image')
+                  GestureDetector(
+                    onTap: onImageTap != null && a['local_bytes'] == null
+                        ? () => onImageTap!(a)
+                        : null,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: _attachmentImage(a),
+                    ),
+                  )
+                else
+                  InkWell(
+                    onTap: () {
+                      final url = a['file_url']?.toString();
+                      if (url != null) launchUrl(Uri.parse(url));
+                    },
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.insert_drive_file_outlined, color: textColor),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            a['filename']?.toString() ?? 'Файл',
+                            style: TextStyle(color: textColor),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (createdAt != null)
+                    Text(
+                      timeFmt.format(createdAt!.toLocal()),
+                      style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
+                    ),
+                  if (isMine && readStatus != null) ...[
+                    const SizedBox(width: 4),
+                    _ReadStatusIcon(status: readStatus!, color: metaColor),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    bubble = GestureDetector(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: bubble,
     );
 
     return Padding(
@@ -146,9 +179,16 @@ class ChatMessageBubble extends StatelessWidget {
         bottom: compactWithNext ? 1 : 6,
       ),
       child: Row(
-        mainAxisAlignment: isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          if (selectionMode)
+            Padding(
+              padding: const EdgeInsets.only(right: 6, bottom: 4),
+              child: Icon(
+                selected ? Icons.check_circle : Icons.circle_outlined,
+                color: selected ? theme.colorScheme.primary : theme.colorScheme.outline,
+              ),
+            ),
           if (showGroupAvatarColumn) ...[
             SizedBox(
               width: _avatarSize,
@@ -166,9 +206,75 @@ class ChatMessageBubble extends StatelessWidget {
             ),
             const SizedBox(width: 6),
           ],
-          Flexible(child: bubble),
+          Flexible(
+            child: Column(
+              crossAxisAlignment:
+                  isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+              children: [
+                bubble,
+                if (reactions.isNotEmpty)
+                  ChatMessageReactionsRow(
+                    reactions: reactions,
+                    alignEnd: isMine,
+                    onReactionTap: onReactionTap,
+                  ),
+              ],
+            ),
+          ),
         ],
       ),
+    );
+  }
+
+  bool _showBody(String body, Map<String, dynamic>? forward) {
+    if (body.isEmpty) return false;
+    if (forward == null) return true;
+    final original = forward['original_body']?.toString() ?? '';
+    return body.trim() != original.trim();
+  }
+
+  Widget _buildReplyQuote(
+    Map<String, dynamic> reply,
+    Color accent,
+    Color textColor,
+  ) {
+    return ChatMessageQuote(
+      title: reply['sender_name']?.toString() ?? 'Сообщение',
+      body: reply['body']?.toString() ?? '',
+      accentColor: accent,
+      textColor: textColor,
+      onTap: onReplyTap,
+    );
+  }
+
+  Widget _buildForwardQuote(
+    Map<String, dynamic> fwd,
+    Color accent,
+    Color textColor,
+  ) {
+    final originalSender = fwd['original_sender_name']?.toString() ?? '';
+    final forwardedBy = fwd['forwarded_by_name']?.toString() ?? '';
+    final threadTitle = fwd['original_thread_title']?.toString() ?? '';
+    final originalBody = fwd['original_body']?.toString() ?? '';
+
+    String title;
+    String? subtitle;
+    if (isGroupLike && forwardedBy.isNotEmpty) {
+      title = 'Переслано $forwardedBy';
+      subtitle = originalSender.isNotEmpty ? 'от $originalSender' : null;
+    } else if (originalSender.isNotEmpty) {
+      title = 'Переслано от $originalSender';
+      if (threadTitle.isNotEmpty) subtitle = threadTitle;
+    } else {
+      title = 'Переслано';
+    }
+
+    return ChatMessageQuote(
+      title: title,
+      subtitle: subtitle,
+      body: originalBody,
+      accentColor: accent,
+      textColor: textColor,
     );
   }
 

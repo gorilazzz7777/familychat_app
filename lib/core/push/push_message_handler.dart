@@ -1,6 +1,7 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 
+import '../../features/chat/data/active_chat_context.dart';
 import '../../features/chat/data/familychat_realtime.dart';
 import 'push_navigation.dart';
 
@@ -15,10 +16,18 @@ void handleFamilyChatRemoteMessage(
   final type = data['type']?.toString() ?? '';
 
   if (type == 'familychat_chat') {
+    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+    final messageId = int.tryParse(data['message_id']?.toString() ?? '');
+
     FamilyChatRealtime.instance.emitSyntheticEvent({
-      'event': 'chat_message',
-      'thread_id': int.tryParse(data['thread_id']?.toString() ?? ''),
+      'event': 'chat_refresh',
+      'thread_id': threadId,
+      'message_id': messageId,
     });
+
+    if (threadId != null && ActiveChatContext.instance.isViewingThread(threadId)) {
+      return;
+    }
 
     if (openedFromTap) {
       openChatFromPushData(data);

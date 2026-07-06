@@ -53,7 +53,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
 
   void _onRealtime(Map<String, dynamic> event) {
     final ev = event['event']?.toString();
-    if (ev == 'chat_message' || ev == 'chat_messages_read') {
+    if (ev == 'chat_message' || ev == 'chat_messages_read' || ev == 'chat_refresh' || ev == 'chat_messages_deleted') {
       unawaited(_load(silent: true));
     }
   }
@@ -97,7 +97,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
       if (!kindOk) return false;
       if (q.isEmpty) return true;
       final title = t['title']?.toString().toLowerCase() ?? '';
-      return title.contains(q);
+      final defaultTitle = t['default_title']?.toString().toLowerCase() ?? '';
+      return title.contains(q) || defaultTitle.contains(q);
     }).toList();
   }
 
@@ -117,6 +118,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
         builder: (_) => ChatConversationScreen(
           threadId: thread['id'] as int,
           title: thread['title']?.toString() ?? 'Чат',
+          defaultTitle: thread['default_title']?.toString() ?? thread['title']?.toString() ?? 'Чат',
+          customTitle: thread['custom_title']?.toString() ?? '',
           kind: thread['kind']?.toString() ?? 'family',
           peerUserId: thread['peer_user_id'] as int?,
         ),
@@ -125,7 +128,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
     await _load();
   }
 
-  Future<void> _createGroup() async {
+  Future<void> createGroup() async {
     final created = await Navigator.of(context).push<Map<String, dynamic>>(
       MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
     );
@@ -264,16 +267,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
                           },
                         ),
                 ),
-        ),
-        SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: FilledButton.icon(
-              onPressed: _createGroup,
-              icon: const Icon(Icons.group_add_outlined),
-              label: const Text('Создать группу'),
-            ),
-          ),
         ),
       ],
     );

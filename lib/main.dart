@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +12,7 @@ import 'app/bootstrap_screen.dart';
 import 'core/push/push_message_handler.dart';
 import 'core/push/push_navigation.dart';
 import 'core/push/push_registration_service.dart';
+import 'core/share/incoming_share_bus.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,6 +26,7 @@ Future<void> main() async {
       debugPrint('[FCM] init failed: $e');
     }
     FirebaseMessaging.onBackgroundMessage(familychatFirebaseBackgroundHandler);
+    unawaited(IncomingShareBus.instance.init());
   }
   runApp(const ProviderScope(child: FamilyChatApp()));
 }

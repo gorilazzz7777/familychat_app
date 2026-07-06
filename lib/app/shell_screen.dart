@@ -2,13 +2,16 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:share_handler/share_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/config/env.dart';
 import '../core/push/push_navigation.dart';
 import '../core/providers/app_providers.dart';
+import '../core/share/incoming_share_bus.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
+import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../features/members/presentation/invite_kinship_dialog.dart';
 import '../features/members/presentation/members_screen.dart';
 import '../features/profile/presentation/profile_screen.dart';
@@ -38,9 +41,38 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
   void initState() {
     super.initState();
     _status = widget.status;
+    IncomingShareBus.instance.addListener(_onIncomingShare);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       flushPendingChatPush();
+      _openPendingShareIfAny();
     });
+  }
+
+  @override
+  void dispose() {
+    IncomingShareBus.instance.removeListener(_onIncomingShare);
+    super.dispose();
+  }
+
+  void _onIncomingShare() {
+    _openPendingShareIfAny();
+  }
+
+  void _openPendingShareIfAny() {
+    if (!IncomingShareBus.instance.hasPending) return;
+    final nav = familyChatNavigatorKey.currentState;
+    if (nav == null) return;
+    final media = IncomingShareBus.instance.takePending();
+    if (media == null) return;
+    _openShareScreen(media);
+  }
+
+  void _openShareScreen(SharedMedia media) {
+    familyChatNavigatorKey.currentState?.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatShareTargetScreen(media: media),
+      ),
+    );
   }
 
   @override
@@ -92,12 +124,18 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
       appBar: AppBar(
         title: Text(_title),
         actions: [
-          if (_index == 0)
+          if (_index == 0) ...[
             IconButton(
               icon: const Icon(Icons.search),
               tooltip: 'Поиск',
               onPressed: () => _chatHubKey.currentState?.toggleSearch(),
             ),
+            IconButton(
+              icon: const Icon(Icons.add),
+              tooltip: 'Создать группу',
+              onPressed: () => _chatHubKey.currentState?.createGroup(),
+            ),
+          ],
           if (_index == 1)
             IconButton(
               icon: const Icon(Icons.add),

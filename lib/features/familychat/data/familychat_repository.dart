@@ -193,6 +193,7 @@ class FamilyChatRepository {
     int threadId, {
     String? body,
     List<int>? attachmentIds,
+    int? replyToMessageId,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/',
@@ -200,9 +201,52 @@ class FamilyChatRepository {
         if (body != null && body.isNotEmpty) 'body': body,
         if (attachmentIds != null && attachmentIds.isNotEmpty)
           'attachment_ids': attachmentIds,
+        if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
       },
     );
     return res.data!;
+  }
+
+  Future<void> forwardMessages({
+    required int sourceThreadId,
+    required List<int> messageIds,
+    required List<int> threadIds,
+  }) async {
+    await _dio.post(
+      'familychat/chat/forward/',
+      data: {
+        'source_thread_id': sourceThreadId,
+        'message_ids': messageIds,
+        'thread_ids': threadIds,
+      },
+    );
+  }
+
+  Future<List<int>> deleteMessages(int threadId, List<int> messageIds) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/messages/delete/',
+      data: {'message_ids': messageIds},
+    );
+    final ids = res.data?['deleted_ids'];
+    if (ids is! List) return messageIds;
+    return ids
+        .map((e) => e is int ? e : int.tryParse('$e'))
+        .whereType<int>()
+        .toList();
+  }
+
+  Future<List<dynamic>> toggleMessageReaction(
+    int threadId,
+    int messageId,
+    String emoji,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/messages/$messageId/reactions/',
+      data: {'emoji': emoji},
+    );
+    final reactions = res.data?['reactions'];
+    if (reactions is List) return reactions;
+    return const [];
   }
 
   Future<Map<String, dynamic>> uploadChatAttachmentBytes(
@@ -240,6 +284,17 @@ class FamilyChatRepository {
     final res = await _dio.patch<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/notifications/',
       data: {'mute': mute},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> setThreadCustomTitle(
+    int threadId,
+    String customTitle,
+  ) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/title/',
+      data: {'custom_title': customTitle},
     );
     return res.data!;
   }
