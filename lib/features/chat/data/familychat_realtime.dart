@@ -21,6 +21,12 @@ class FamilyChatRealtime {
   void removeListener(FamilyChatRealtimeHandler handler) =>
       _listeners.remove(handler);
 
+  void emitSyntheticEvent(Map<String, dynamic> event) {
+    for (final h in _listeners) {
+      h(event);
+    }
+  }
+
   Future<void> connect(String accessToken) async {
     if (accessToken.isEmpty) return;
     await disconnect();

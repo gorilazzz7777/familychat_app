@@ -13,6 +13,7 @@ import '../../features/familychat/data/familychat_repository.dart';
 import '../../firebase_options.dart';
 import 'web_fcm_service_worker.dart';
 import 'web_fcm_token.dart';
+import 'push_message_handler.dart';
 
 @pragma('vm:entry-point')
 Future<void> familychatFirebaseBackgroundHandler(RemoteMessage message) async {
@@ -311,6 +312,11 @@ class PushRegistrationService {
     if (_wired) return;
     _wired = true;
 
+    FirebaseMessaging.onMessage.listen(handleFamilyChatRemoteMessage);
+    FirebaseMessaging.onMessageOpenedApp.listen(handleFamilyChatRemoteMessage);
+    messaging.getInitialMessage().then((message) {
+      if (message != null) handleFamilyChatRemoteMessage(message);
+    });
     messaging.onTokenRefresh.listen((t) async {
       if (t.isNotEmpty) {
         await repository.registerFcm(token: t, platform: platform);
