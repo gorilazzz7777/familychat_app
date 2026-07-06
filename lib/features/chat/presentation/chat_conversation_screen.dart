@@ -801,11 +801,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     required String imageUrl,
     String? filename,
     int? messageId,
+    Map<String, dynamic>? attachment,
   }) {
     unawaited(_openImageAsync(
       imageUrl: imageUrl,
       filename: filename,
       messageId: messageId,
+      attachment: attachment,
     ));
   }
 
@@ -813,12 +815,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     required String imageUrl,
     String? filename,
     int? messageId,
+    Map<String, dynamic>? attachment,
   }) async {
     final headers = await chatImageAuthHeaders(ref);
     if (!mounted) return;
     await ChatImageViewer.open(
       context,
       imageUrl: imageUrl,
+      threadId: widget.threadId,
+      attachmentId: chatAsInt(attachment?['id']),
       filename: filename,
       messageId: messageId,
       onGoToMessage: messageId != null ? () => _scrollToMessage(messageId) : null,
@@ -836,6 +841,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ),
       filename: attachment['filename']?.toString(),
       messageId: messageId ?? chatAsInt(attachment['message_id']),
+      attachment: attachment,
     );
   }
 

@@ -189,6 +189,18 @@ class FamilyChatRepository {
     return '${base}familychat/chat/threads/$threadId/attachments/$attachmentId/content/';
   }
 
+  Future<Uint8List> fetchChatAttachmentBytes(int threadId, int attachmentId) async {
+    final res = await _dio.get<List<int>>(
+      'familychat/chat/threads/$threadId/attachments/$attachmentId/content/',
+      options: Options(responseType: ResponseType.bytes),
+    );
+    final data = res.data;
+    if (data == null || data.isEmpty) {
+      throw StateError('Пустой файл');
+    }
+    return data is Uint8List ? data : Uint8List.fromList(data);
+  }
+
   Future<Map<String, dynamic>> sendThreadMessage(
     int threadId, {
     String? body,

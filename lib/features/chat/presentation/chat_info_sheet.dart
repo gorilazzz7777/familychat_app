@@ -10,6 +10,7 @@ typedef ChatOpenImage = void Function({
   required String imageUrl,
   String? filename,
   int? messageId,
+  Map<String, dynamic>? attachment,
 });
 typedef ChatTitleChanged = void Function(String title, String customTitle);
 
@@ -240,6 +241,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       imageUrl: url,
       filename: item['filename']?.toString(),
       messageId: messageId,
+      attachment: item,
     );
   }
 

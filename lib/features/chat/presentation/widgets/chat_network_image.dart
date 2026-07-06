@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -7,7 +9,12 @@ import '../../../../core/providers/app_providers.dart';
 import '../../../familychat/data/familychat_repository.dart';
 import '../../data/chat_realtime_utils.dart';
 
-/// Изображение вложения чата. На web — через API-прокси с JWT (обход CORS).
+final _webAttachmentBytesCache = <String, Uint8List>{};
+
+String _webAttachmentCacheKey(int threadId, int attachmentId) =>
+    '$threadId:$attachmentId';
+
+/// Изображение вложения чата. На web — через API с JWT и Image.memory (браузер не шлёт Authorization в &lt;img&gt;).
 class ChatNetworkImage extends ConsumerStatefulWidget {
   const ChatNetworkImage({
     super.key,
@@ -30,12 +37,33 @@ class ChatNetworkImage extends ConsumerStatefulWidget {
 
 class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   Map<String, String>? _headers;
+  Uint8List? _webBytes;
+  bool _webLoading = false;
+  bool _webFailed = false;
 
   @override
   void initState() {
     super.initState();
     if (kIsWeb) {
+      _loadWebBytes();
+    } else {
       _loadHeaders();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatNetworkImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (kIsWeb) {
+      final oldId = chatAsInt(oldWidget.attachment['id']);
+      final newId = chatAsInt(widget.attachment['id']);
+      if (oldId != newId || oldWidget.threadId != widget.threadId) {
+        _loadWebBytes();
+      }
+      return;
+    }
+    if (oldWidget.attachment['file_url'] != widget.attachment['file_url']) {
+      setState(() {});
     }
   }
 
@@ -45,41 +73,96 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     setState(() => _headers = {'Authorization': 'Bearer $token'});
   }
 
-  String _imageUrl(FamilyChatRepository repo) {
+  Future<void> _loadWebBytes() async {
     final attachmentId = chatAsInt(widget.attachment['id']);
-    if (kIsWeb && attachmentId != null) {
-      return repo.chatAttachmentContentUrl(widget.threadId, attachmentId);
+    if (attachmentId == null) {
+      setState(() => _webFailed = true);
+      return;
     }
+
+    final cacheKey = _webAttachmentCacheKey(widget.threadId, attachmentId);
+    final cached = _webAttachmentBytesCache[cacheKey];
+    if (cached != null) {
+      setState(() {
+        _webBytes = cached;
+        _webFailed = false;
+        _webLoading = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _webLoading = true;
+      _webFailed = false;
+      _webBytes = null;
+    });
+
+    try {
+      final bytes = await ref.read(familychatRepositoryProvider).fetchChatAttachmentBytes(
+            widget.threadId,
+            attachmentId,
+          );
+      _webAttachmentBytesCache[cacheKey] = bytes;
+      if (!mounted) return;
+      setState(() {
+        _webBytes = bytes;
+        _webLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _webFailed = true;
+        _webLoading = false;
+      });
+    }
+  }
+
+  String _imageUrl(FamilyChatRepository repo) {
     return widget.attachment['file_url']?.toString() ?? '';
+  }
+
+  Widget _errorBox() {
+    return SizedBox(
+      height: widget.height,
+      width: widget.width,
+      child: const ColoredBox(
+        color: Color(0x22000000),
+        child: Icon(Icons.broken_image_outlined),
+      ),
+    );
+  }
+
+  Widget _loadingBox() {
+    return SizedBox(
+      height: widget.height,
+      width: widget.width,
+      child: const Center(
+        child: SizedBox(
+          width: 24,
+          height: 24,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final url = _imageUrl(ref.read(familychatRepositoryProvider));
-    if (url.isEmpty) {
-      return SizedBox(
+    if (kIsWeb) {
+      if (_webLoading) return _loadingBox();
+      if (_webFailed || _webBytes == null) return _errorBox();
+      return Image.memory(
+        _webBytes!,
         height: widget.height,
         width: widget.width,
-        child: const ColoredBox(
-          color: Color(0x22000000),
-          child: Icon(Icons.broken_image_outlined),
-        ),
+        fit: widget.fit,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => _errorBox(),
       );
     }
 
-    if (kIsWeb && _headers == null) {
-      return SizedBox(
-        height: widget.height,
-        width: widget.width,
-        child: const Center(
-          child: SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-        ),
-      );
-    }
+    final url = _imageUrl(ref.read(familychatRepositoryProvider));
+    if (url.isEmpty) return _errorBox();
 
     return CachedNetworkImage(
       imageUrl: url,
@@ -87,25 +170,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       height: widget.height,
       width: widget.width,
       fit: widget.fit,
-      placeholder: (_, __) => SizedBox(
-        height: widget.height,
-        width: widget.width,
-        child: const Center(
-          child: SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-        ),
-      ),
-      errorWidget: (_, __, ___) => SizedBox(
-        height: widget.height,
-        width: widget.width,
-        child: const ColoredBox(
-          color: Color(0x22000000),
-          child: Icon(Icons.broken_image_outlined),
-        ),
-      ),
+      placeholder: (_, __) => _loadingBox(),
+      errorWidget: (_, __, ___) => _errorBox(),
     );
   }
 }
@@ -127,4 +193,25 @@ Future<Map<String, String>?> chatImageAuthHeaders(WidgetRef ref) async {
   final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
   if (token == null || token.isEmpty) return null;
   return {'Authorization': 'Bearer $token'};
+}
+
+Future<Uint8List?> chatAttachmentBytesForViewer({
+  required WidgetRef ref,
+  required int? threadId,
+  required int? attachmentId,
+}) async {
+  if (!kIsWeb || threadId == null || attachmentId == null) return null;
+  final cacheKey = _webAttachmentCacheKey(threadId, attachmentId);
+  final cached = _webAttachmentBytesCache[cacheKey];
+  if (cached != null) return cached;
+  try {
+    final bytes = await ref.read(familychatRepositoryProvider).fetchChatAttachmentBytes(
+          threadId,
+          attachmentId,
+        );
+    _webAttachmentBytesCache[cacheKey] = bytes;
+    return bytes;
+  } catch (_) {
+    return null;
+  }
 }
