@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "156229477633",
+    "project_id": "familychat-53a64",
+    "storage_bucket": "familychat-53a64.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:156229477633:android:baede981ed6d8023b46700",
+        "android_client_info": {
+          "package_name": "com.familychat.familychat_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA0-_aY8ZiCTRYTfD0SblLuWu4LusDAOuo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

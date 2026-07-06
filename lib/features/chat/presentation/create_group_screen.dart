@@ -31,10 +31,13 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
 
   Future<void> _load() async {
     try {
-      final list = await ref.read(familychatRepositoryProvider).members();
+      final repo = ref.read(familychatRepositoryProvider);
+      final status = await repo.status();
+      final myId = status['user_id'] as int?;
+      final list = await repo.members();
       if (!mounted) return;
       setState(() {
-        _members = list.where((m) => (m['kinship_level'] as int? ?? 99) != 0).toList();
+        _members = list.where((m) => m['user_id'] != myId).toList();
         _loading = false;
       });
     } catch (_) {

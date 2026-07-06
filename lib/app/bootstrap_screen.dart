@@ -15,6 +15,7 @@ import '../features/chat/data/familychat_realtime.dart';
 import '../core/push/push_registration_service.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import 'shell_screen.dart';
+import 'web_push_prompt.dart';
 
 class BootstrapScreen extends ConsumerStatefulWidget {
   const BootstrapScreen({super.key});
@@ -207,10 +208,12 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
         pendingInviteToken: _pendingInvite,
       );
     }
-    return ShellScreen(
-      status: _status!,
-      onLogout: _logout,
-      onStatusChanged: _refreshStatus,
+    return WebPushPrompt(
+      child: ShellScreen(
+        status: _status!,
+        onLogout: _logout,
+        onStatusChanged: _refreshStatus,
+      ),
     );
   }
 }

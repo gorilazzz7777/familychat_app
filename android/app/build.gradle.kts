@@ -42,3 +42,11 @@ android {
 flutter {
     source = "../.."
 }
+
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+} else {
+    logger.warn(
+        "google-services.json не найден в android/app/ — Firebase/FCM не работают.",
+    )
+}

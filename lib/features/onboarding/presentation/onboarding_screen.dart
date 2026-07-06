@@ -7,6 +7,7 @@ import '../../../core/constants/api_error_messages.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../profile/presentation/birthday_format.dart';
 import '../../profile/presentation/birthday_picker.dart';
+import 'ios_safari_install_hint.dart';
 
 enum _OnboardingStep { choose, profile, createFamily, inviteKinship, questions }
 
@@ -242,6 +243,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
+          const IosSafariInstallHint(),
           if (_error != null) ...[
             Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
             const SizedBox(height: 16),

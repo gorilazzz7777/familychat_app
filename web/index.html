@@ -11,6 +11,16 @@
   <meta name="apple-mobile-web-app-title" content="Family Chat">
   <link rel="manifest" href="manifest.json">
   <title>Family Chat</title>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
+  <script src="familychat-fcm.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/familychat/app/firebase-messaging-sw.js').catch(function (err) {
+        console.warn('[FCM] service worker register failed:', err);
+      });
+    }
+  </script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>

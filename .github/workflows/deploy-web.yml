@@ -23,6 +23,13 @@ jobs:
           FAMILYCHAT_API_BASE_URL: https://remont-tracker.ru/api/v1/
           FAMILYCHAT_WEB_APP_URL: https://remont-tracker.ru/familychat/app
           FAMILYCHAT_INVITE_BASE_URL: https://remont-tracker.ru
+          FIREBASE_WEB_API_KEY: ${{ secrets.FAMILYCHAT_FIREBASE_WEB_API_KEY }}
+          FIREBASE_WEB_APP_ID: ${{ secrets.FAMILYCHAT_FIREBASE_WEB_APP_ID }}
+          FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.FAMILYCHAT_FIREBASE_MESSAGING_SENDER_ID }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FAMILYCHAT_FIREBASE_PROJECT_ID }}
+          FIREBASE_AUTH_DOMAIN: ${{ secrets.FAMILYCHAT_FIREBASE_AUTH_DOMAIN }}
+          FIREBASE_STORAGE_BUCKET: ${{ secrets.FAMILYCHAT_FIREBASE_STORAGE_BUCKET }}
+          FIREBASE_VAPID_KEY: ${{ secrets.FAMILYCHAT_FIREBASE_VAPID_KEY }}
         run: |
           chmod +x scripts/build-web.sh
           scripts/build-web.sh
