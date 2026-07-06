@@ -72,6 +72,13 @@ class ChatMessageQuote extends StatelessWidget {
     );
 
     if (onTap == null) return content;
-    return GestureDetector(onTap: onTap, child: content);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: content,
+      ),
+    );
   }
 }

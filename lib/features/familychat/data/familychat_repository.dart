@@ -316,6 +316,27 @@ class FamilyChatRepository {
     return (res.data ?? []).cast<Map<String, dynamic>>();
   }
 
+  Future<Map<String, dynamic>> memberGalleryAlbums(int userId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/albums/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> memberGalleryPhotos(
+    int userId,
+    String albumId, {
+    int offset = 0,
+    int limit = 60,
+  }) async {
+    final encodedAlbum = Uri.encodeComponent(albumId);
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/albums/$encodedAlbum/photos/',
+      queryParameters: {'offset': offset, 'limit': limit},
+    );
+    return res.data!;
+  }
+
   Future<List<Map<String, dynamic>>> threadFiles(int threadId) async {
     final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/files/');
     return (res.data ?? []).cast<Map<String, dynamic>>();

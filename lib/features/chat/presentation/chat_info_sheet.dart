@@ -99,38 +99,14 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   }
 
   Future<void> _renameChat() async {
-    final controller = TextEditingController(text: _customTitle);
     final result = await showDialog<String?>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Название чата'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLength: 300,
-          decoration: InputDecoration(
-            hintText: widget.defaultTitle,
-            helperText: 'Видно только вам',
-          ),
-        ),
-        actions: [
-          if (_customTitle.isNotEmpty)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, ''),
-              child: const Text('Сбросить'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Отмена'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Сохранить'),
-          ),
-        ],
+      builder: (ctx) => _RenameChatDialog(
+        initialTitle: _customTitle,
+        defaultTitle: widget.defaultTitle,
+        canReset: _customTitle.isNotEmpty,
       ),
     );
-    controller.dispose();
     if (!mounted || result == null) return;
 
     try {
@@ -394,6 +370,68 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           ],
         ),
       ),
+    );
+  }
+}
+
+class _RenameChatDialog extends StatefulWidget {
+  const _RenameChatDialog({
+    required this.initialTitle,
+    required this.defaultTitle,
+    required this.canReset,
+  });
+
+  final String initialTitle;
+  final String defaultTitle;
+  final bool canReset;
+
+  @override
+  State<_RenameChatDialog> createState() => _RenameChatDialogState();
+}
+
+class _RenameChatDialogState extends State<_RenameChatDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialTitle);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Название чата'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLength: 300,
+        decoration: InputDecoration(
+          hintText: widget.defaultTitle,
+          helperText: 'Видно только вам',
+        ),
+      ),
+      actions: [
+        if (widget.canReset)
+          TextButton(
+            onPressed: () => Navigator.pop(context, ''),
+            child: const Text('Сбросить'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, _controller.text.trim()),
+          child: const Text('Сохранить'),
+        ),
+      ],
     );
   }
 }

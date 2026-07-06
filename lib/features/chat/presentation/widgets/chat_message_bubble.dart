@@ -102,76 +102,88 @@ class ChatMessageBubble extends StatelessWidget {
           bottomLeft: Radius.circular(isMine ? 16 : 4),
           bottomRight: Radius.circular(isMine ? 4 : 16),
         ),
-        child: Padding(
+        child: GestureDetector(
+          onLongPress: onLongPress,
+          behavior: HitTestBehavior.translucent,
+          child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (forward != null) _buildForwardQuote(forward!, quoteAccent, textColor),
-              if (replyTo != null) _buildReplyQuote(replyTo!, quoteAccent, textColor),
-              if (_showBody(body, forward))
-                Text(
-                  body,
-                  style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+              if (replyTo != null)
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: onReplyTap,
+                  child: _buildReplyQuote(replyTo!, quoteAccent, textColor),
                 ),
-              for (final a in attachments) ...[
-                if (body.isNotEmpty) const SizedBox(height: 8),
-                if (a['kind'] == 'image')
-                  GestureDetector(
-                    onTap: onImageTap != null && a['local_bytes'] == null
-                        ? () => onImageTap!(a)
-                        : null,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: _attachmentImage(a, maxBubbleWidth - 24),
-                    ),
-                  )
-                else
-                  InkWell(
-                    onTap: () {
-                      final url = a['file_url']?.toString();
-                      if (url != null) launchUrl(Uri.parse(url));
-                    },
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.insert_drive_file_outlined, color: textColor),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            a['filename']?.toString() ?? 'Файл',
-                            style: TextStyle(color: textColor),
+              GestureDetector(
+                onTap: onTap,
+                behavior: HitTestBehavior.deferToChild,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_showBody(body, forward))
+                      Text(
+                        body,
+                        style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                      ),
+                    for (final a in attachments) ...[
+                      if (body.isNotEmpty) const SizedBox(height: 8),
+                      if (a['kind'] == 'image')
+                        GestureDetector(
+                          onTap: onImageTap != null && a['local_bytes'] == null
+                              ? () => onImageTap!(a)
+                              : null,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: _attachmentImage(a, maxBubbleWidth - 24),
+                          ),
+                        )
+                      else
+                        InkWell(
+                          onTap: () {
+                            final url = a['file_url']?.toString();
+                            if (url != null) launchUrl(Uri.parse(url));
+                          },
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.insert_drive_file_outlined, color: textColor),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  a['filename']?.toString() ?? 'Файл',
+                                  style: TextStyle(color: textColor),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
+                    ],
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (createdAt != null)
+                          Text(
+                            timeFmt.format(createdAt!.toLocal()),
+                            style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
+                          ),
+                        if (isMine && readStatus != null) ...[
+                          const SizedBox(width: 4),
+                          _ReadStatusIcon(status: readStatus!, color: metaColor),
+                        ],
                       ],
                     ),
-                  ),
-              ],
-              const SizedBox(height: 4),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (createdAt != null)
-                    Text(
-                      timeFmt.format(createdAt!.toLocal()),
-                      style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
-                    ),
-                  if (isMine && readStatus != null) ...[
-                    const SizedBox(width: 4),
-                    _ReadStatusIcon(status: readStatus!, color: metaColor),
                   ],
-                ],
+                ),
               ),
             ],
           ),
         ),
+        ),
       ),
-    );
-
-    bubble = GestureDetector(
-      onTap: onTap,
-      onLongPress: onLongPress,
-      child: bubble,
     );
 
     return Padding(
@@ -253,7 +265,6 @@ class ChatMessageBubble extends StatelessWidget {
       body: reply['body']?.toString() ?? '',
       accentColor: accent,
       textColor: textColor,
-      onTap: onReplyTap,
     );
   }
 

@@ -6,6 +6,7 @@ import '../../../core/providers/app_providers.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
+import 'profile_gallery_tab.dart';
 import 'widgets/chat_avatar.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
@@ -24,7 +25,9 @@ class ProfileScreen extends ConsumerStatefulWidget {
   ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+class _ProfileScreenState extends ConsumerState<ProfileScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabs;
   final _firstName = TextEditingController();
   final _lastName = TextEditingController();
   String _gender = 'male';
@@ -37,6 +40,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   @override
   void initState() {
     super.initState();
+    _tabs = TabController(length: 2, vsync: this);
     _applyStatus(widget.status);
   }
 
@@ -50,6 +54,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   @override
   void dispose() {
+    _tabs.dispose();
     _firstName.dispose();
     _lastName.dispose();
     super.dispose();
@@ -275,6 +280,33 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final userId = widget.status['user_id'];
+    return Column(
+      children: [
+        TabBar(
+          controller: _tabs,
+          tabs: const [
+            Tab(text: 'Основное'),
+            Tab(text: 'Галерея'),
+          ],
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _tabs,
+            children: [
+              _buildMainTab(context),
+              if (userId is int)
+                ProfileGalleryTab(userId: userId)
+              else
+                const Center(child: Text('Галерея недоступна')),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMainTab(BuildContext context) {
     final theme = Theme.of(context);
     final birthLabel = _birthDate == null
         ? 'Не указан'
@@ -335,6 +367,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         const SizedBox(height: 8),
         Text(
           'Нажмите на фото, чтобы изменить',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Для альбомов по лицу используйте чёткое фото, где хорошо видно лицо.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),

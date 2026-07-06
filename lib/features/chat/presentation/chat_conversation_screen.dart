@@ -177,7 +177,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _scrollToMessage(int messageId) async {
-    final exists = _messages.any((m) => m['id'] == messageId);
+    final exists = _messages.any((m) => chatAsInt(m['id']) == messageId);
     if (!exists) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -787,10 +787,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         title: _title,
         defaultTitle: widget.defaultTitle ?? widget.title,
         customTitle: _customTitle,
-        onTitleChanged: (title, customTitle) => setState(() {
-          _title = title;
-          _customTitle = customTitle;
-        }),
+        onTitleChanged: (title, customTitle) {
+          if (!mounted) return;
+          setState(() {
+            _title = title;
+            _customTitle = customTitle;
+          });
+        },
         onGoToMessage: _scrollToMessage,
         onOpenImage: _openImage,
       ),

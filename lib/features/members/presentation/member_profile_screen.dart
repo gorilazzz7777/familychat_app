@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../profile/presentation/profile_gallery_tab.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 
 String _genderLabel(String gender) {
@@ -26,7 +27,9 @@ class MemberProfileScreen extends ConsumerStatefulWidget {
   ConsumerState<MemberProfileScreen> createState() => _MemberProfileScreenState();
 }
 
-class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen> {
+class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabs;
   Map<String, dynamic>? _profile;
   bool _loading = true;
   String? _error;
@@ -34,7 +37,14 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen> {
   @override
   void initState() {
     super.initState();
+    _tabs = TabController(length: 2, vsync: this);
     _load();
+  }
+
+  @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -60,19 +70,34 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Scaffold(
-      appBar: AppBar(title: const Text('Профиль участника')),
+      appBar: AppBar(
+        title: const Text('Профиль участника'),
+        bottom: _loading || _error != null
+            ? null
+            : TabBar(
+                controller: _tabs,
+                tabs: const [
+                  Tab(text: 'Основное'),
+                  Tab(text: 'Галерея'),
+                ],
+              ),
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? Center(child: Text(_error!))
-              : _buildBody(theme),
+              : TabBarView(
+                  controller: _tabs,
+                  children: [
+                    _buildMainTab(Theme.of(context)),
+                    ProfileGalleryTab(userId: widget.userId),
+                  ],
+                ),
     );
   }
 
-  Widget _buildBody(ThemeData theme) {
+  Widget _buildMainTab(ThemeData theme) {
     final p = _profile!;
     final isSelf = p['is_self'] == true;
     final name = p['display_name']?.toString() ?? '';
