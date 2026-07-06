@@ -5,6 +5,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../network/api_client.dart';
 import '../platform/browser_info.dart';
@@ -26,6 +27,13 @@ enum WebPushRegistrationResult {
   tokenFailed,
   serverFailed,
   failed,
+}
+
+enum PushPermissionStatus {
+  granted,
+  denied,
+  notDetermined,
+  unsupported,
 }
 
 class PushRegistrationService {
@@ -54,7 +62,8 @@ class PushRegistrationService {
     _firebaseInitFuture = _initDefaultFirebaseOnce();
     try {
       await _firebaseInitFuture;
-    } catch (_) {
+    } catch (e, st) {
+      _failStep('firebaseInit', e, st);
       _firebaseInitFuture = null;
     }
   }
@@ -80,16 +89,96 @@ class PushRegistrationService {
     }
   }
 
-  static Future<void> registerIfPossible({
+  static Future<bool> registerIfPossible({
     required ApiClient client,
     required FamilyChatRepository repository,
   }) async {
+    final status = await getPushPermissionStatus();
+    if (status != PushPermissionStatus.granted) return false;
+    return _registerGranted(repository);
+  }
+
+  /// Сброс состояния при выходе (повторная регистрация после нового входа).
+  static void resetSession() {
+    _wired = false;
+    lastWebPushError = null;
+  }
+
+  static Future<bool> isPushSupported() async {
     if (kIsWeb) {
-      if (isIosBrowser && !isStandalonePwa) return;
-      return;
+      if (!webNotificationsSupported) return false;
+      if (isIosBrowser && !isStandalonePwa) return false;
+      return true;
     }
-    if (defaultTargetPlatform != TargetPlatform.android) return;
-    await _registerAndroid(repository);
+    return defaultTargetPlatform == TargetPlatform.android;
+  }
+
+  static Future<PushPermissionStatus> getPushPermissionStatus() async {
+    if (!await isPushSupported()) return PushPermissionStatus.unsupported;
+
+    if (kIsWeb) {
+      return switch (webNotificationPermission) {
+        'granted' => PushPermissionStatus.granted,
+        'denied' => PushPermissionStatus.denied,
+        _ => PushPermissionStatus.notDetermined,
+      };
+    }
+
+    final permission = await Permission.notification.status;
+    if (permission.isGranted) return PushPermissionStatus.granted;
+    if (permission.isPermanentlyDenied) return PushPermissionStatus.denied;
+    return PushPermissionStatus.notDetermined;
+  }
+
+  static Future<bool> isAndroidPermissionPermanentlyDenied() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return false;
+    return Permission.notification.isPermanentlyDenied;
+  }
+
+  static Future<void> openNotificationSettings() async {
+    await openAppSettings();
+  }
+
+  static Future<WebPushRegistrationResult> requestPushAfterLogin(
+    FamilyChatRepository repository,
+  ) async {
+    if (!await isPushSupported()) {
+      return WebPushRegistrationResult.failed;
+    }
+
+    if (kIsWeb) {
+      return registerWebPush(repository);
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final permission = await Permission.notification.status;
+      if (!permission.isGranted && !permission.isPermanentlyDenied) {
+        await Permission.notification.request();
+      }
+      if (!await Permission.notification.isGranted) {
+        return WebPushRegistrationResult.permissionDenied;
+      }
+      final ok = await _registerAndroid(repository, requestPermission: false);
+      return ok ? WebPushRegistrationResult.success : WebPushRegistrationResult.serverFailed;
+    }
+
+    return WebPushRegistrationResult.failed;
+  }
+
+  static Future<bool> _registerGranted(FamilyChatRepository repository) async {
+    if (kIsWeb) {
+      final result = await registerWebPush(repository);
+      if (result == WebPushRegistrationResult.success) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('familychat_web_push_registered', true);
+        return true;
+      }
+      return false;
+    }
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return _registerAndroid(repository, requestPermission: false);
+    }
+    return false;
   }
 
   static Future<WebPushRegistrationResult> registerWebPush(
@@ -121,23 +210,33 @@ class PushRegistrationService {
     }
   }
 
-  static Future<void> _registerAndroid(FamilyChatRepository repository) async {
-    final permission = await Permission.notification.status;
-    if (!permission.isGranted && !permission.isPermanentlyDenied) {
-      await Permission.notification.request();
+  static Future<bool> _registerAndroid(
+    FamilyChatRepository repository, {
+    bool requestPermission = true,
+  }) async {
+    if (requestPermission) {
+      final permission = await Permission.notification.status;
+      if (!permission.isGranted && !permission.isPermanentlyDenied) {
+        await Permission.notification.request();
+      }
     }
 
     await ensureFirebaseInitialized();
-    if (Firebase.apps.isEmpty) return;
+    if (Firebase.apps.isEmpty) return false;
 
-    if (!await Permission.notification.isGranted) return;
+    if (!await Permission.notification.isGranted) return false;
 
     final messaging = FirebaseMessaging.instance;
-    final token = await messaging.getToken();
-    if (token != null && token.isNotEmpty) {
+    try {
+      final token = await messaging.getToken();
+      if (token == null || token.isEmpty) return false;
       await repository.registerFcm(token: token, platform: 'android');
+      _wireHandlers(messaging, repository, platform: 'android');
+      return true;
+    } catch (e, st) {
+      _failStep('registerFcm', e, st);
+      return false;
     }
-    _wireHandlers(messaging, repository, platform: 'android');
   }
 
   static Future<WebPushRegistrationResult> _registerWeb(

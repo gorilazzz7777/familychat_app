@@ -15,7 +15,7 @@ import '../features/chat/data/familychat_realtime.dart';
 import '../core/push/push_registration_service.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import 'shell_screen.dart';
-import 'web_push_prompt.dart';
+import 'push_permission_prompt.dart';
 
 class BootstrapScreen extends ConsumerStatefulWidget {
   const BootstrapScreen({super.key});
@@ -169,7 +169,11 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
   Future<void> _logout() async {
     await FamilyChatRealtime.instance.disconnect();
+    PushRegistrationService.resetSession();
     await ref.read(authRepositoryProvider).logout();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('familychat_push_prompt_dismissed');
+    await prefs.remove('familychat_web_push_registered');
     if (!mounted) return;
     setState(() {
       _loggedIn = false;
@@ -201,19 +205,18 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     if (!_loggedIn) {
       return LoginScreen(onLoggedIn: _boot);
     }
-    if (!_ready) {
-      return OnboardingScreen(
-        onComplete: _boot,
-        onLogout: _logout,
-        pendingInviteToken: _pendingInvite,
-      );
-    }
-    return WebPushPrompt(
-      child: ShellScreen(
-        status: _status!,
-        onLogout: _logout,
-        onStatusChanged: _refreshStatus,
-      ),
+    return PushPermissionPrompt(
+      child: !_ready
+          ? OnboardingScreen(
+              onComplete: _boot,
+              onLogout: _logout,
+              pendingInviteToken: _pendingInvite,
+            )
+          : ShellScreen(
+              status: _status!,
+              onLogout: _logout,
+              onStatusChanged: _refreshStatus,
+            ),
     );
   }
 }

@@ -266,7 +266,7 @@ class FamilyChatRepository {
     await _dio.post(
       'familychat/fcm-registration/',
       data: {
-        'registration_token': token,
+        'token': token,
         'platform': platform,
       },
     );
