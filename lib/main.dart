@@ -7,8 +7,9 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'app/bootstrap_screen.dart';
-import 'push_message_handler.dart';
-import 'push_registration_service.dart';
+import 'core/push/push_message_handler.dart';
+import 'core/push/push_navigation.dart';
+import 'core/push/push_registration_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -33,6 +34,7 @@ class FamilyChatApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Family Chat',
+      navigatorKey: familyChatNavigatorKey,
       scaffoldMessengerKey: familyChatScaffoldMessengerKey,
       debugShowCheckedModeBanner: false,
       locale: const Locale('ru'),

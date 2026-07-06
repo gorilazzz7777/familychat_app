@@ -1,13 +1,16 @@
-import 'package:cached_network_image/cached_network_image.dart';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../profile/presentation/widgets/chat_avatar.dart';
+import 'chat_network_image.dart';
 
 class ChatMessageBubble extends StatelessWidget {
   const ChatMessageBubble({
     super.key,
+    required this.threadId,
     required this.isMine,
     required this.body,
     required this.attachments,
@@ -19,8 +22,11 @@ class ChatMessageBubble extends StatelessWidget {
     this.senderAvatarUrl,
     this.onSenderAvatarTap,
     this.compactWithNext = false,
+    this.highlighted = false,
+    this.onImageTap,
   });
 
+  final int threadId;
   final bool isMine;
   final String body;
   final List<Map<String, dynamic>> attachments;
@@ -32,6 +38,8 @@ class ChatMessageBubble extends StatelessWidget {
   final String? senderAvatarUrl;
   final VoidCallback? onSenderAvatarTap;
   final bool compactWithNext;
+  final bool highlighted;
+  final void Function(Map<String, dynamic> attachment)? onImageTap;
 
   static const double _avatarSize = 32;
 
@@ -47,7 +55,18 @@ class ChatMessageBubble extends StatelessWidget {
         ? theme.colorScheme.onPrimary.withValues(alpha: 0.75)
         : theme.colorScheme.onSurfaceVariant;
 
-    final bubble = Material(
+    final bubble = AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      decoration: highlighted
+          ? BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: theme.colorScheme.tertiary,
+                width: 2,
+              ),
+            )
+          : null,
+      child: Material(
       color: bubbleColor,
       elevation: 0,
       borderRadius: BorderRadius.only(
@@ -69,13 +88,13 @@ class ChatMessageBubble extends StatelessWidget {
             for (final a in attachments) ...[
               if (body.isNotEmpty) const SizedBox(height: 8),
               if (a['kind'] == 'image')
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: CachedNetworkImage(
-                    imageUrl: a['file_url']?.toString() ?? '',
-                    height: 180,
-                    width: double.infinity,
-                    fit: BoxFit.cover,
+                GestureDetector(
+                  onTap: onImageTap != null && a['local_bytes'] == null
+                      ? () => onImageTap!(a)
+                      : null,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: _attachmentImage(a),
                   ),
                 )
               else
@@ -117,6 +136,7 @@ class ChatMessageBubble extends StatelessWidget {
           ],
         ),
       ),
+    ),
     );
 
     return Padding(
@@ -151,6 +171,26 @@ class ChatMessageBubble extends StatelessWidget {
       ),
     );
   }
+
+  Widget _attachmentImage(Map<String, dynamic> attachment) {
+    final local = attachment['local_bytes'];
+    if (local is Uint8List) {
+      return Image.memory(
+        local,
+        height: 180,
+        width: double.infinity,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+      );
+    }
+    return ChatNetworkImage(
+      threadId: threadId,
+      attachment: attachment,
+      height: 180,
+      width: double.infinity,
+      fit: BoxFit.cover,
+    );
+  }
 }
 
 class _ReadStatusIcon extends StatelessWidget {
@@ -161,6 +201,33 @@ class _ReadStatusIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (status == 'sending') {
+      return Semantics(
+        label: 'Отправляется',
+        child: Tooltip(
+          message: 'Отправляется',
+          child: SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.8,
+              color: color,
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (status == 'failed') {
+      return Semantics(
+        label: 'Не отправлено',
+        child: Tooltip(
+          message: 'Не отправлено',
+          child: Icon(Icons.error_outline, size: 16, color: color.withValues(alpha: 0.95)),
+        ),
+      );
+    }
+
     final isRead = status == 'read';
     final label = isRead ? 'Прочитано' : 'Отправлено';
     return Semantics(

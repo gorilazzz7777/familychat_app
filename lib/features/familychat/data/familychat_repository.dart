@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
+import '../../../core/config/env.dart';
 import '../../../core/network/api_client.dart';
 
 class FamilyChatRepository {
@@ -174,6 +175,18 @@ class FamilyChatRepository {
   Future<List<Map<String, dynamic>>> threadMessages(int threadId) async {
     final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/messages/');
     return (res.data ?? []).cast<Map<String, dynamic>>();
+  }
+
+  Future<void> markThreadRead(int threadId, {required int lastMessageId}) async {
+    await _dio.post(
+      'familychat/chat/threads/$threadId/read/',
+      data: {'last_message_id': lastMessageId},
+    );
+  }
+
+  String chatAttachmentContentUrl(int threadId, int attachmentId) {
+    final base = Env.apiBaseUrl.endsWith('/') ? Env.apiBaseUrl : '${Env.apiBaseUrl}/';
+    return '${base}familychat/chat/threads/$threadId/attachments/$attachmentId/content/';
   }
 
   Future<Map<String, dynamic>> sendThreadMessage(

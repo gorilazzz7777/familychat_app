@@ -1,19 +1,30 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/providers/app_providers.dart';
+import 'widgets/chat_network_image.dart';
+
+typedef ChatGoToMessage = Future<void> Function(int messageId);
+typedef ChatOpenImage = void Function({
+  required String imageUrl,
+  String? filename,
+  int? messageId,
+});
 
 class ChatInfoSheet extends ConsumerStatefulWidget {
   const ChatInfoSheet({
     super.key,
     required this.threadId,
     required this.title,
+    this.onGoToMessage,
+    this.onOpenImage,
   });
 
   final int threadId;
   final String title;
+  final ChatGoToMessage? onGoToMessage;
+  final ChatOpenImage? onOpenImage;
 
   @override
   ConsumerState<ChatInfoSheet> createState() => _ChatInfoSheetState();
@@ -94,6 +105,70 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     );
   }
 
+  int? _messageIdOf(Map<String, dynamic> item) {
+    final id = item['message_id'];
+    if (id is int) return id;
+    return int.tryParse(id?.toString() ?? '');
+  }
+
+  Future<void> _goToMessage(int messageId) async {
+    Navigator.of(context).pop();
+    await widget.onGoToMessage?.call(messageId);
+  }
+
+  Future<void> _showItemActions({
+    required String title,
+    required VoidCallback? onOpen,
+    int? messageId,
+  }) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (onOpen != null)
+              ListTile(
+                leading: const Icon(Icons.open_in_new),
+                title: Text(title),
+                onTap: () => Navigator.pop(ctx, 'open'),
+              ),
+            if (messageId != null && widget.onGoToMessage != null)
+              ListTile(
+                leading: const Icon(Icons.reply_outlined),
+                title: const Text('Перейти к сообщению'),
+                onTap: () => Navigator.pop(ctx, 'goto'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'open') onOpen?.call();
+    if (action == 'goto' && messageId != null) {
+      await _goToMessage(messageId);
+    }
+  }
+
+  void _openGalleryItem(Map<String, dynamic> item) {
+    final repo = ref.read(familychatRepositoryProvider);
+    final url = chatAttachmentImageUrl(
+      repo: repo,
+      threadId: widget.threadId,
+      attachment: item,
+    );
+    final messageId = _messageIdOf(item);
+    final openImage = widget.onOpenImage;
+    if (openImage == null) return;
+
+    Navigator.of(context).pop();
+    openImage(
+      imageUrl: url,
+      filename: item['filename']?.toString(),
+      messageId: messageId,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -151,10 +226,24 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                                 ),
                                 itemCount: _media.length,
                                 itemBuilder: (_, i) {
-                                  final url = _media[i]['file_url']?.toString() ?? '';
-                                  return CachedNetworkImage(
-                                    imageUrl: url,
-                                    fit: BoxFit.cover,
+                                  final item = _media[i];
+                                  return GestureDetector(
+                                    onTap: () => _openGalleryItem(item),
+                                    onLongPress: () {
+                                      final messageId = _messageIdOf(item);
+                                      if (messageId != null) {
+                                        _showItemActions(
+                                          title: 'Открыть фото',
+                                          onOpen: () => _openGalleryItem(item),
+                                          messageId: messageId,
+                                        );
+                                      }
+                                    },
+                                    child: ChatNetworkImage(
+                                      threadId: widget.threadId,
+                                      attachment: item,
+                                      fit: BoxFit.cover,
+                                    ),
                                   );
                                 },
                               ),
@@ -163,14 +252,23 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                             : ListView.builder(
                                 itemCount: _links.length,
                                 itemBuilder: (_, i) {
-                                  final url = _links[i]['url']?.toString() ?? '';
+                                  final item = _links[i];
+                                  final url = item['url']?.toString() ?? '';
+                                  final messageId = _messageIdOf(item);
                                   return ListTile(
                                     title: Text(
                                       url,
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
-                                    onTap: () => launchUrl(Uri.parse(url)),
+                                    onTap: () => _showItemActions(
+                                      title: 'Открыть ссылку',
+                                      onOpen: () => launchUrl(
+                                        Uri.parse(url),
+                                        mode: LaunchMode.externalApplication,
+                                      ),
+                                      messageId: messageId,
+                                    ),
                                   );
                                 },
                               ),
@@ -180,13 +278,21 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                                 itemCount: _files.length,
                                 itemBuilder: (_, i) {
                                   final f = _files[i];
+                                  final url = f['file_url']?.toString();
+                                  final messageId = _messageIdOf(f);
                                   return ListTile(
                                     leading: const Icon(Icons.insert_drive_file_outlined),
                                     title: Text(f['filename']?.toString() ?? 'Файл'),
-                                    onTap: () {
-                                      final url = f['file_url']?.toString();
-                                      if (url != null) launchUrl(Uri.parse(url));
-                                    },
+                                    onTap: () => _showItemActions(
+                                      title: 'Открыть файл',
+                                      onOpen: url != null
+                                          ? () => launchUrl(
+                                                Uri.parse(url),
+                                                mode: LaunchMode.externalApplication,
+                                              )
+                                          : null,
+                                      messageId: messageId,
+                                    ),
                                   );
                                 },
                               ),

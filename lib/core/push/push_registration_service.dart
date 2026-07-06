@@ -312,10 +312,16 @@ class PushRegistrationService {
     if (_wired) return;
     _wired = true;
 
-    FirebaseMessaging.onMessage.listen(handleFamilyChatRemoteMessage);
-    FirebaseMessaging.onMessageOpenedApp.listen(handleFamilyChatRemoteMessage);
+    FirebaseMessaging.onMessage.listen(
+      (message) => handleFamilyChatRemoteMessage(message),
+    );
+    FirebaseMessaging.onMessageOpenedApp.listen(
+      (message) => handleFamilyChatRemoteMessage(message, openedFromTap: true),
+    );
     messaging.getInitialMessage().then((message) {
-      if (message != null) handleFamilyChatRemoteMessage(message);
+      if (message != null) {
+        handleFamilyChatRemoteMessage(message, openedFromTap: true);
+      }
     });
     messaging.onTokenRefresh.listen((t) async {
       if (t.isNotEmpty) {

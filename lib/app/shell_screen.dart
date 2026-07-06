@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/config/env.dart';
+import '../core/push/push_navigation.dart';
 import '../core/providers/app_providers.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
@@ -31,11 +32,15 @@ class ShellScreen extends ConsumerStatefulWidget {
 class _ShellScreenState extends ConsumerState<ShellScreen> {
   int _index = 0;
   late Map<String, dynamic> _status;
+  final _chatHubKey = GlobalKey<ChatHubScreenState>();
 
   @override
   void initState() {
     super.initState();
     _status = widget.status;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      flushPendingChatPush();
+    });
   }
 
   @override
@@ -87,6 +92,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
       appBar: AppBar(
         title: Text(_title),
         actions: [
+          if (_index == 0)
+            IconButton(
+              icon: const Icon(Icons.search),
+              tooltip: 'Поиск',
+              onPressed: () => _chatHubKey.currentState?.toggleSearch(),
+            ),
           if (_index == 1)
             IconButton(
               icon: const Icon(Icons.add),
@@ -98,7 +109,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> {
       body: IndexedStack(
         index: _index,
         children: [
-          const ChatHubScreen(),
+          ChatHubScreen(key: _chatHubKey),
           MembersScreen(
             currentUserId: _status['user_id'] as int?,
             onOpenOwnProfile: () => setState(() => _index = 3),
