@@ -5,8 +5,10 @@ import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
+import '../../profile/presentation/profile_gallery_album_screen.dart';
 import '../../calendar/presentation/calendar_screen.dart';
 import 'widgets/feed_event_card.dart';
+import 'widgets/feed_people_filter.dart';
 
 class FeedScreen extends ConsumerStatefulWidget {
   const FeedScreen({super.key});
@@ -18,9 +20,12 @@ class FeedScreen extends ConsumerStatefulWidget {
 class _FeedScreenState extends ConsumerState<FeedScreen> {
   final List<Map<String, dynamic>> _events = [];
   final ScrollController _scrollController = ScrollController();
+  List<Map<String, dynamic>> _filterPeople = [];
   bool _loading = true;
   bool _loadingMore = false;
   String? _error;
+  int? _personUserId;
+  String? _lastReadAt;
   int _offset = 0;
   int _total = 0;
   static const _pageSize = 30;
@@ -46,6 +51,41 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     }
   }
 
+  DateTime? get _lastReadDateTime {
+    final raw = _lastReadAt;
+    if (raw == null || raw.isEmpty) return null;
+    return DateTime.tryParse(raw);
+  }
+
+  int? get _firstSeenIndex {
+    final lastRead = _lastReadDateTime;
+    if (lastRead == null) return null;
+    for (var i = 0; i < _events.length; i++) {
+      final created = DateTime.tryParse(_events[i]['created_at']?.toString() ?? '');
+      if (created != null && !created.isAfter(lastRead)) return i;
+    }
+    return null;
+  }
+
+  bool get _hasNewEvents {
+    if (_events.isEmpty) return false;
+    if (_lastReadDateTime == null) return true;
+    return _events.any((e) => e['is_new'] == true);
+  }
+
+  Future<void> _markFeedRead() async {
+    try {
+      final data = await ref.read(familychatRepositoryProvider).markFeedRead();
+      if (!mounted) return;
+      setState(() {
+        _lastReadAt = data['last_read_at']?.toString();
+        for (final event in _events) {
+          event['is_new'] = false;
+        }
+      });
+    } catch (_) {}
+  }
+
   Future<void> _load({bool reset = false}) async {
     if (reset) {
       setState(() {
@@ -58,6 +98,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
       final data = await ref.read(familychatRepositoryProvider).familyFeed(
             offset: 0,
             limit: _pageSize,
+            personUserId: _personUserId,
           );
       if (!mounted) return;
       setState(() {
@@ -66,8 +107,15 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
           ..addAll((data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>());
         _total = data['total'] is int ? data['total'] as int : int.tryParse('${data['total']}') ?? 0;
         _offset = _events.length;
+        _lastReadAt = data['last_read_at']?.toString();
+        _filterPeople =
+            (data['filter_people'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
         _loading = false;
       });
+      if (_hasNewEvents) {
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        if (mounted) await _markFeedRead();
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -84,6 +132,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
       final data = await ref.read(familychatRepositoryProvider).familyFeed(
             offset: _offset,
             limit: _pageSize,
+            personUserId: _personUserId,
           );
       if (!mounted) return;
       setState(() {
@@ -100,6 +149,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
   Future<void> _openSource(Map<String, dynamic> event) async {
     final kind = event['kind']?.toString() ?? '';
     final payload = (event['payload'] as Map<String, dynamic>?) ?? {};
+    final actor = (event['actor'] as Map<String, dynamic>?) ?? {};
     final status = await ref.read(familychatRepositoryProvider).status();
     final currentUserId = status['user_id'] is int ? status['user_id'] as int : null;
     if (currentUserId == null) return;
@@ -119,8 +169,33 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
             ),
           ),
         );
-      case 'photo_uploaded':
       case 'photo_added_to_album':
+        final albumId = payload['album_id']?.toString();
+        final ownerId = actor['user_id'];
+        if (albumId == null || ownerId is! int) return;
+        if (!mounted) return;
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute<void>(
+            builder: (_) => ProfileGalleryAlbumScreen(
+              userId: ownerId,
+              albumId: albumId,
+              title: payload['album_title']?.toString() ?? 'Альбом',
+              canManage: ownerId == currentUserId,
+            ),
+          ),
+        );
+      case 'photo_uploaded':
+        if (!mounted) return;
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute<void>(
+            builder: (_) => ProfileGalleryAlbumScreen(
+              userId: currentUserId,
+              albumId: 'all',
+              title: 'Галерея',
+              isFamilyGallery: true,
+            ),
+          ),
+        );
       case 'media_liked':
       case 'media_commented':
         final attachmentId = payload['attachment_id'];
@@ -141,7 +216,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
         );
       case 'member_joined':
       case 'profile_updated':
-        final userId = payload['user_id'];
+        final userId = payload['user_id'] ?? actor['user_id'];
         if (userId is! int) return;
         if (!mounted) return;
         await Navigator.of(context).push<void>(
@@ -157,6 +232,55 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
       default:
         break;
     }
+  }
+
+  List<Widget> _buildFeedItems() {
+    final items = <Widget>[];
+    final firstSeen = _firstSeenIndex;
+
+    if (_hasNewEvents) {
+      items.add(const FeedSectionDivider(label: 'Новые'));
+    } else if (_events.isNotEmpty) {
+      items.add(const FeedSectionDivider(label: 'Просмотрено'));
+    }
+
+    for (var i = 0; i < _events.length; i++) {
+      if (firstSeen != null && firstSeen > 0 && i == firstSeen) {
+        items.add(const FeedSectionDivider(label: 'Просмотрено'));
+      }
+      final event = _events[i];
+      items.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: FeedEventCard(
+            event: event,
+            onOpenSource: () => _openSource(event),
+            onOpenMedia: (photo) async {
+              final status = await ref.read(familychatRepositoryProvider).status();
+              final currentUserId = status['user_id'] is int ? status['user_id'] as int : null;
+              if (currentUserId == null || !mounted) return;
+              await GalleryPhotoViewerScreen.open(
+                context,
+                profileUserId: currentUserId,
+                photo: photo,
+                currentUserId: currentUserId,
+              );
+            },
+          ),
+        ),
+      );
+    }
+
+    if (_loadingMore) {
+      items.add(
+        const Padding(
+          padding: EdgeInsets.all(16),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+
+    return items;
   }
 
   @override
@@ -176,44 +300,30 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
         ),
       );
     }
-    if (_events.isEmpty) {
-      return const Center(child: Text('Пока нет событий в ленте'));
-    }
 
-    return RefreshIndicator(
-      onRefresh: () => _load(reset: true),
-      child: ListView.builder(
-        controller: _scrollController,
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-        itemCount: _events.length + (_loadingMore ? 1 : 0),
-        itemBuilder: (_, i) {
-          if (i >= _events.length) {
-            return const Padding(
-              padding: EdgeInsets.all(16),
-              child: Center(child: CircularProgressIndicator()),
-            );
-          }
-          final event = _events[i];
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: FeedEventCard(
-              event: event,
-              onOpenSource: () => _openSource(event),
-              onOpenMedia: (photo) async {
-                final status = await ref.read(familychatRepositoryProvider).status();
-                final currentUserId = status['user_id'] is int ? status['user_id'] as int : null;
-                if (currentUserId == null || !mounted) return;
-                await GalleryPhotoViewerScreen.open(
-                  context,
-                  profileUserId: currentUserId,
-                  photo: photo,
-                  currentUserId: currentUserId,
-                );
-              },
-            ),
-          );
-        },
-      ),
+    return Column(
+      children: [
+        FeedPeopleFilterBar(
+          people: _filterPeople,
+          selectedUserId: _personUserId,
+          onSelected: (userId) async {
+            setState(() => _personUserId = userId);
+            await _load(reset: true);
+          },
+        ),
+        Expanded(
+          child: _events.isEmpty
+              ? const Center(child: Text('Пока нет событий в ленте'))
+              : RefreshIndicator(
+                  onRefresh: () => _load(reset: true),
+                  child: ListView(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+                    children: _buildFeedItems(),
+                  ),
+                ),
+        ),
+      ],
     );
   }
 }

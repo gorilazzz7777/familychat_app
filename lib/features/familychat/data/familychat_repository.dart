@@ -669,12 +669,20 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> familyFeed({
     int offset = 0,
     int limit = 30,
+    int? personUserId,
   }) async {
+    final params = <String, dynamic>{'offset': offset, 'limit': limit};
+    if (personUserId != null) params['person_user_id'] = personUserId;
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/feed/',
-      queryParameters: {'offset': offset, 'limit': limit},
+      queryParameters: params,
     );
     return res.data!;
+  }
+
+  Future<Map<String, dynamic>> markFeedRead() async {
+    final res = await _dio.post<Map<String, dynamic>>('familychat/feed/read/');
+    return res.data ?? {};
   }
 
   Future<Map<String, dynamic>> familyGalleryAlbums() async {

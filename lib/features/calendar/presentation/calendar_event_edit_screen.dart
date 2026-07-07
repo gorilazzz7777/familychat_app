@@ -281,9 +281,6 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Создать альбом'),
-                  subtitle: const Text(
-                    'Для отпуска, поездки или праздника — чтобы не забыть собрать фото',
-                  ),
                   value: _createAlbum,
                   onChanged: _saving
                       ? null
@@ -296,9 +293,6 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Подтягивать фото с телефона'),
-                    subtitle: const Text(
-                      'Из папки «Камера» за даты события (+7 дней после окончания)',
-                    ),
                     value: _autoSyncPhotos,
                     onChanged: _saving
                         ? null

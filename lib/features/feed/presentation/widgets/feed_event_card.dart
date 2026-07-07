@@ -80,8 +80,11 @@ class FeedEventCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final createdAt = DateTime.tryParse(event['created_at']?.toString() ?? '');
-    final timeText = createdAt != null ? DateFormat('d MMM, HH:mm').format(createdAt.toLocal()) : '';
+    final timeText = createdAt != null
+        ? DateFormat('d MMM, HH:mm', 'ru').format(createdAt.toLocal())
+        : '';
     final preview = _bodyPreview();
     final where = _whereText();
     final attachments = _attachments();
@@ -91,104 +94,108 @@ class FeedEventCard extends StatelessWidget {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: theme.colorScheme.outlineVariant),
+        side: BorderSide(color: cs.outlineVariant),
       ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onOpenSource,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  ChatAvatar(
-                    name: _actor['name']?.toString() ?? '?',
-                    avatarUrl: _actor['avatar_url']?.toString(),
-                    radius: 20,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_titleText(), style: theme.textTheme.titleSmall),
-                        if (where.isNotEmpty)
-                          Text(where, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.primary)),
-                      ],
-                    ),
-                  ),
-                  Text(timeText, style: theme.textTheme.labelSmall),
-                ],
-              ),
-              if (preview.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Text(
-                  preview,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyMedium,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ChatAvatar(
+                  name: _actor['name']?.toString() ?? '?',
+                  avatarUrl: _actor['avatar_url']?.toString(),
+                  radius: 20,
                 ),
-              ],
-              if (attachments.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                SizedBox(
-                  height: 88,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: attachments.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 8),
-                    itemBuilder: (_, i) {
-                      final att = attachments[i];
-                      final threadId = att['thread_id'] is int
-                          ? att['thread_id'] as int
-                          : int.tryParse('${att['thread_id']}');
-                      if (threadId == null) return const SizedBox.shrink();
-                      return GestureDetector(
-                        onTap: () => onOpenMedia?.call({
-                          ...att,
-                          'thread_id': threadId,
-                        }),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: ChatNetworkImage(
-                            threadId: threadId,
-                            attachment: att,
-                            width: 88,
-                            height: 88,
-                            fit: BoxFit.cover,
-                          ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_titleText(), style: theme.textTheme.titleSmall),
+                      if (where.isNotEmpty)
+                        Text(
+                          where,
+                          style: theme.textTheme.bodySmall?.copyWith(color: cs.primary),
                         ),
-                      );
-                    },
+                    ],
                   ),
                 ),
-              ] else if (singlePhoto != null) ...[
-                const SizedBox(height: 10),
-                GestureDetector(
-                  onTap: () => onOpenMedia?.call(singlePhoto),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: ChatNetworkImage(
-                      threadId: singlePhoto['thread_id'] as int,
-                      attachment: singlePhoto,
-                      height: 180,
-                      width: double.infinity,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
+                IconButton(
+                  tooltip: 'Перейти',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  onPressed: onOpenSource,
+                  icon: Icon(Icons.north_east, size: 20, color: cs.primary),
                 ),
-                const SizedBox(height: 8),
-                _MediaActionsRow(photo: singlePhoto),
+                const SizedBox(width: 4),
+                Text(timeText, style: theme.textTheme.labelSmall),
               ],
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(onPressed: onOpenSource, child: const Text('Открыть')),
+            ),
+            if (preview.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(
+                preview,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium,
               ),
             ],
-          ),
+            if (attachments.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 88,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: attachments.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) {
+                    final att = attachments[i];
+                    final threadId = att['thread_id'] is int
+                        ? att['thread_id'] as int
+                        : int.tryParse('${att['thread_id']}');
+                    if (threadId == null) return const SizedBox.shrink();
+                    return GestureDetector(
+                      onTap: () => onOpenMedia?.call({
+                        ...att,
+                        'thread_id': threadId,
+                      }),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: ChatNetworkImage(
+                          threadId: threadId,
+                          attachment: att,
+                          width: 88,
+                          height: 88,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ] else if (singlePhoto != null) ...[
+              const SizedBox(height: 10),
+              GestureDetector(
+                onTap: () => onOpenMedia?.call(singlePhoto),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: ChatNetworkImage(
+                    threadId: singlePhoto['thread_id'] as int,
+                    attachment: singlePhoto,
+                    height: 180,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              _MediaActionsRow(photo: singlePhoto),
+            ],
+          ],
         ),
       ),
     );
