@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 
 import '../../../core/config/env.dart';
+import '../../../core/debug/upload_image_exif_log.dart';
 import '../../../core/network/api_client.dart';
 
 class ThreadMessagesPage {
@@ -381,6 +382,11 @@ class FamilyChatRepository {
     required String filename,
     String? contentType,
   }) async {
+    await logUploadImageExifDiagnostics(
+      bytes: bytes,
+      filename: filename,
+      readVia: 'upload_chat_attachment',
+    );
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
         bytes,
@@ -683,6 +689,11 @@ class FamilyChatRepository {
     required String filename,
     String? contentType,
   }) async {
+    await logUploadImageExifDiagnostics(
+      bytes: bytes,
+      filename: filename,
+      readVia: 'upload_custom_album',
+    );
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
         bytes,

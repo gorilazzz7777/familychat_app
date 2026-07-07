@@ -3,6 +3,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 
+import '../../../core/debug/upload_image_exif_log.dart';
 import '../../familychat/data/familychat_repository.dart';
 
 class CalendarPhotoSyncInfo {
@@ -156,6 +157,12 @@ class CalendarPhotoSyncService {
       if (bytes.isEmpty) continue;
       final title = await asset.titleAsync;
       final filename = (title.isNotEmpty) ? title : 'photo_${asset.id}.jpg';
+      await logUploadImageExifDiagnostics(
+        bytes: bytes,
+        filename: filename,
+        sourcePath: file.path,
+        readVia: 'photo_manager_originFile',
+      );
       try {
         await _repo.uploadPhotoToCustomAlbum(
           userId,

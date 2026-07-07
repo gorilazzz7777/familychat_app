@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:share_handler/share_handler.dart';
 
+import '../../../core/debug/upload_image_exif_log.dart';
 import 'share_attachment_data.dart';
 
 Future<List<ShareAttachmentData>> loadShareAttachments(SharedMedia media) async {
@@ -16,6 +17,14 @@ Future<List<ShareAttachmentData>> loadShareAttachments(SharedMedia media) async 
     final contentType = _contentTypeFor(filename, attachment?.type);
     final isImage = attachment?.type == SharedAttachmentType.image ||
         (contentType?.startsWith('image/') ?? false);
+    if (isImage) {
+      await logUploadImageExifDiagnostics(
+        bytes: bytes,
+        filename: filename,
+        sourcePath: path,
+        readVia: 'share_handler_path',
+      );
+    }
     result.add(
       ShareAttachmentData(
         bytes: bytes,
