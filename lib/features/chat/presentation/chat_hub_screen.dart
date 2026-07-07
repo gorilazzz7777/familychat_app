@@ -22,6 +22,7 @@ class ChatHubScreen extends ConsumerStatefulWidget {
 class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
   _ChatFilter _filter = _ChatFilter.all;
   List<Map<String, dynamic>> _threads = [];
+  final Map<int, Map<String, dynamic>> _memberByUserId = {};
   bool _loading = true;
   bool _searchVisible = false;
   String _searchQuery = '';
@@ -65,15 +66,57 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
   Future<void> _load({bool silent = false}) async {
     if (!silent) setState(() => _loading = true);
     try {
-      final list = await ref.read(familychatRepositoryProvider).chatThreads();
+      final repo = ref.read(familychatRepositoryProvider);
+      final results = await Future.wait([
+        repo.chatThreads(),
+        repo.members(),
+      ]);
+      final list = (results[0] as List).cast<Map<String, dynamic>>();
+      final members = (results[1] as List).cast<Map<String, dynamic>>();
+      final byUserId = <int, Map<String, dynamic>>{};
+      for (final m in members) {
+        final uid = m['user_id'];
+        final userId = uid is int ? uid : int.tryParse('$uid');
+        if (userId == null) continue;
+        byUserId[userId] = m;
+      }
       if (!mounted) return;
       setState(() {
         _threads = _sortedThreads(list);
+        _memberByUserId
+          ..clear()
+          ..addAll(byUserId);
         _loading = false;
       });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  int? _dmPeerUserId(Map<String, dynamic> thread) {
+    if (thread['kind']?.toString() != 'dm') return null;
+    final raw = thread['peer_user_id'];
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
+  }
+
+  String? _dmAvatarUrl(Map<String, dynamic> thread) {
+    final peerId = _dmPeerUserId(thread);
+    if (peerId == null) return null;
+    final member = _memberByUserId[peerId];
+    final url = member?['avatar_url']?.toString().trim();
+    if (url == null || url.isEmpty) return null;
+    return url;
+  }
+
+  String _avatarName(Map<String, dynamic> thread) {
+    final peerId = _dmPeerUserId(thread);
+    if (peerId != null) {
+      final member = _memberByUserId[peerId];
+      final display = member?['display_name']?.toString().trim();
+      if (display != null && display.isNotEmpty) return display;
+    }
+    return thread['title']?.toString() ?? 'Чат';
   }
 
   List<Map<String, dynamic>> _sortedThreads(List<Map<String, dynamic>> threads) {
@@ -232,7 +275,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
                                 ? DateTime.tryParse(last['created_at']?.toString() ?? '')
                                 : null;
                             return ListTile(
-                              leading: ChatAvatar(name: title, radius: 24),
+                              leading: ChatAvatar(
+                                name: _avatarName(t),
+                                avatarUrl: _dmAvatarUrl(t),
+                                radius: 24,
+                              ),
                               title: Text(title),
                               subtitle: Text(
                                 _preview(t),

@@ -537,37 +537,69 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
     try {
       if (action == 'file') {
-        final picked = await FilePicker.platform.pickFiles(withData: true);
+        final picked = await FilePicker.platform.pickFiles(withData: true, allowMultiple: true);
         if (picked == null || picked.files.isEmpty) return;
-        final f = picked.files.first;
-        if (f.bytes == null) return;
-        setState(() {
-          _pendingFileDraft = _PendingFileDraft(
-            bytes: f.bytes!,
-            filename: f.name,
-            contentType: null,
-          );
-        });
+        if (picked.files.length == 1) {
+          final f = picked.files.first;
+          if (f.bytes == null) return;
+          setState(() {
+            _pendingFileDraft = _PendingFileDraft(
+              bytes: f.bytes!,
+              filename: f.name,
+              contentType: null,
+            );
+          });
+          return;
+        }
+        final atts = <_OutgoingAttachment>[];
+        for (final f in picked.files) {
+          if (f.bytes == null) continue;
+          atts.add(_OutgoingAttachment(bytes: f.bytes!, filename: f.name, contentType: null));
+        }
+        if (atts.isEmpty) return;
+        await _uploadAndSend(_nextTempId(), caption: '', attachments: atts);
       } else {
         final picker = ImagePicker();
         final source = action == 'camera' ? ImageSource.camera : ImageSource.gallery;
         // Без imageQuality: иначе image_picker перекодирует JPEG и удаляет EXIF (GPS, дата).
-        final picked = await picker.pickImage(
-          source: source,
-          requestFullMetadata: true,
-        );
-        if (picked == null) return;
-        final bytes = await picked.readAsBytes();
+        final galleryItems = source == ImageSource.gallery
+            ? await picker.pickMultiImage(requestFullMetadata: true)
+            : const <XFile>[];
+        final picked = source == ImageSource.gallery
+            ? null
+            : await picker.pickImage(
+                source: source,
+                requestFullMetadata: true,
+              );
+        if (source == ImageSource.gallery && galleryItems.isEmpty) return;
+        if (source != ImageSource.gallery && picked == null) return;
+        if (source == ImageSource.gallery && galleryItems.length > 1) {
+          final atts = <_OutgoingAttachment>[];
+          for (final file in galleryItems) {
+            final bytes = await file.readAsBytes();
+            atts.add(
+              _OutgoingAttachment(
+                bytes: bytes,
+                filename: file.name,
+                contentType: file.mimeType ?? _imageContentTypeForFilename(file.name) ?? 'image/jpeg',
+              ),
+            );
+          }
+          await _uploadAndSend(_nextTempId(), caption: '', attachments: atts);
+          return;
+        }
+        final image = source == ImageSource.gallery ? galleryItems.first : picked!;
+        final bytes = await image.readAsBytes();
         final contentType =
-            picked.mimeType ?? _imageContentTypeForFilename(picked.name) ?? 'image/jpeg';
+            image.mimeType ?? _imageContentTypeForFilename(image.name) ?? 'image/jpeg';
         if (!mounted) return;
         await ChatMediaComposeSheet.show(
           context,
           imageBytes: bytes,
-          filename: picked.name,
+          filename: image.name,
           onSend: (caption) => _sendImageWithCaption(
             bytes,
-            picked.name,
+            image.name,
             caption,
             contentType: contentType,
           ),

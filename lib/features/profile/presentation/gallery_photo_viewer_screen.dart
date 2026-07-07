@@ -7,18 +7,22 @@ import '../../chat/presentation/widgets/chat_network_image.dart';
 import 'face_tagging_sheet.dart';
 
 /// Полноэкранный просмотр фото из галереи с меню действий.
-class GalleryPhotoViewerScreen extends ConsumerWidget {
+class GalleryPhotoViewerScreen extends ConsumerStatefulWidget {
   const GalleryPhotoViewerScreen({
     super.key,
     required this.profileUserId,
     required this.photo,
     required this.currentUserId,
+    this.photos,
+    this.initialIndex = 0,
     this.onChanged,
   });
 
   final int profileUserId;
   final Map<String, dynamic> photo;
   final int currentUserId;
+  final List<Map<String, dynamic>>? photos;
+  final int initialIndex;
   final VoidCallback? onChanged;
 
   static Future<void> open(
@@ -26,6 +30,8 @@ class GalleryPhotoViewerScreen extends ConsumerWidget {
     required int profileUserId,
     required Map<String, dynamic> photo,
     required int currentUserId,
+    List<Map<String, dynamic>>? photos,
+    int initialIndex = 0,
     VoidCallback? onChanged,
   }) {
     return Navigator.of(context).push<void>(
@@ -37,6 +43,8 @@ class GalleryPhotoViewerScreen extends ConsumerWidget {
             profileUserId: profileUserId,
             photo: photo,
             currentUserId: currentUserId,
+            photos: photos,
+            initialIndex: initialIndex,
             onChanged: onChanged,
           ),
         ),
@@ -44,26 +52,54 @@ class GalleryPhotoViewerScreen extends ConsumerWidget {
     );
   }
 
+  @override
+  ConsumerState<GalleryPhotoViewerScreen> createState() => _GalleryPhotoViewerScreenState();
+}
+
+class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScreen> {
+  late final List<Map<String, dynamic>> _photos;
+  late int _index;
+  late final PageController _pageController;
+
+  @override
+  void initState() {
+    super.initState();
+    _photos = (widget.photos == null || widget.photos!.isEmpty) ? [widget.photo] : widget.photos!;
+    _index = widget.initialIndex.clamp(0, _photos.length - 1);
+    _pageController = PageController(initialPage: _index);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  Map<String, dynamic> get _photo => _photos[_index];
+
   int? get _attachmentId {
+    final photo = _photo;
     final id = photo['id'];
     if (id is int) return id;
     return int.tryParse(id?.toString() ?? '');
   }
 
   int? get _threadId {
+    final photo = _photo;
     final id = photo['thread_id'];
     if (id is int) return id;
     return int.tryParse(id?.toString() ?? '');
   }
 
   int? get _uploadedByUserId {
+    final photo = _photo;
     final id = photo['uploaded_by_user_id'];
     if (id is int) return id;
     return int.tryParse(id?.toString() ?? '');
   }
 
-  bool get _isOwnGallery => profileUserId == currentUserId;
-  bool get _isOwnUpload => _uploadedByUserId == currentUserId;
+  bool get _isOwnGallery => widget.profileUserId == widget.currentUserId;
+  bool get _isOwnUpload => _uploadedByUserId == widget.currentUserId;
 
   Future<void> _openFaceTagging(BuildContext context, WidgetRef ref) async {
     final threadId = _threadId;
@@ -73,14 +109,14 @@ class GalleryPhotoViewerScreen extends ConsumerWidget {
       context,
       threadId: threadId,
       attachmentId: attachmentId,
-      profileUserId: profileUserId,
+      profileUserId: widget.profileUserId,
       imageChild: ChatNetworkImage(
         threadId: threadId,
-        attachment: photo,
+        attachment: _photo,
         fit: BoxFit.contain,
       ),
     );
-    onChanged?.call();
+    widget.onChanged?.call();
   }
 
   Future<void> _confirmDelete(BuildContext context, WidgetRef ref) async {
@@ -118,7 +154,7 @@ class GalleryPhotoViewerScreen extends ConsumerWidget {
       }
       if (!context.mounted) return;
       Navigator.pop(context);
-      onChanged?.call();
+      widget.onChanged?.call();
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -135,19 +171,19 @@ class GalleryPhotoViewerScreen extends ConsumerWidget {
     final url = chatAttachmentImageUrl(
       repo: repo,
       threadId: threadId,
-      attachment: photo,
+      attachment: _photo,
     );
     await ChatImageViewer.open(
       context,
       imageUrl: url,
       threadId: threadId,
       attachmentId: attachmentId,
-      filename: photo['filename']?.toString(),
+      filename: _photo['filename']?.toString(),
     );
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final threadId = _threadId;
     final attachmentId = _attachmentId;
     return Scaffold(
@@ -188,17 +224,31 @@ class GalleryPhotoViewerScreen extends ConsumerWidget {
         ],
       ),
       body: Center(
-        child: threadId == null
-            ? const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48)
-            : InteractiveViewer(
-                minScale: 0.5,
-                maxScale: 4,
+        child: PageView.builder(
+          controller: _pageController,
+          onPageChanged: (i) => setState(() => _index = i),
+          itemCount: _photos.length,
+          itemBuilder: (_, i) {
+            final p = _photos[i];
+            final tid = p['thread_id'];
+            if (tid is! int) {
+              return const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48);
+            }
+            return Center(
+              child: InteractiveViewer(
+                minScale: 0.7,
+                maxScale: 5,
+                constrained: false,
+                clipBehavior: Clip.none,
                 child: ChatNetworkImage(
-                  threadId: threadId,
-                  attachment: photo,
+                  threadId: tid,
+                  attachment: p,
                   fit: BoxFit.contain,
                 ),
               ),
+            );
+          },
+        ),
       ),
     );
   }

@@ -330,11 +330,33 @@ class FamilyChatRepository {
     String albumId, {
     int offset = 0,
     int limit = 60,
+    String? query,
+    int? personUserId,
   }) async {
     final encodedAlbum = Uri.encodeComponent(albumId);
+    final params = <String, dynamic>{'offset': offset, 'limit': limit};
+    if (query != null && query.trim().isNotEmpty) params['q'] = query.trim();
+    if (personUserId != null) params['person_user_id'] = personUserId;
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/albums/$encodedAlbum/photos/',
-      queryParameters: {'offset': offset, 'limit': limit},
+      queryParameters: params,
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> bulkTagGalleryPhotos(
+    int userId,
+    String albumId, {
+    required List<int> attachmentIds,
+    required String tag,
+  }) async {
+    final encodedAlbum = Uri.encodeComponent(albumId);
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/albums/$encodedAlbum/bulk-tag/',
+      data: {
+        'attachment_ids': attachmentIds,
+        'tag': tag,
+      },
     );
     return res.data!;
   }
@@ -437,5 +459,105 @@ class FamilyChatRepository {
 
   Future<void> hideGalleryPhoto(int attachmentId) async {
     await _dio.post('familychat/gallery/photos/$attachmentId/hide/');
+  }
+
+  Future<Map<String, dynamic>> createCustomGalleryAlbum(
+    int userId, {
+    required String title,
+    String accessMode = 'all',
+    List<int> accessUserIds = const [],
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/custom-albums/',
+      data: {
+        'title': title,
+        'access_mode': accessMode,
+        'access_user_ids': accessUserIds,
+      },
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> updateCustomGalleryAlbum(
+    int userId,
+    int albumPk, {
+    String? title,
+    String? accessMode,
+    List<int>? accessUserIds,
+  }) async {
+    final data = <String, dynamic>{};
+    if (title != null) data['title'] = title;
+    if (accessMode != null) data['access_mode'] = accessMode;
+    if (accessUserIds != null) data['access_user_ids'] = accessUserIds;
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/custom-albums/$albumPk/',
+      data: data,
+    );
+    return res.data!;
+  }
+
+  Future<void> deleteCustomGalleryAlbum(int userId, int albumPk) async {
+    await _dio.delete('familychat/members/$userId/gallery/custom-albums/$albumPk/');
+  }
+
+  Future<int> addPhotosToCustomAlbum(
+    int userId,
+    int albumPk,
+    List<int> attachmentIds,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/custom-albums/$albumPk/photos/',
+      data: {'attachment_ids': attachmentIds},
+    );
+    final added = res.data?['added'];
+    if (added is int) return added;
+    return int.tryParse('$added') ?? 0;
+  }
+
+  Future<Map<String, dynamic>> uploadPhotoToCustomAlbum(
+    int userId,
+    int albumPk, {
+    required Uint8List bytes,
+    required String filename,
+    String? contentType,
+  }) async {
+    final form = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        bytes,
+        filename: filename,
+        contentType: contentType != null ? DioMediaType.parse(contentType) : null,
+      ),
+    });
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/custom-albums/$albumPk/photos/upload/',
+      data: form,
+      options: Options(
+        sendTimeout: const Duration(minutes: 3),
+        receiveTimeout: const Duration(minutes: 3),
+      ),
+    );
+    return res.data!;
+  }
+
+  Future<void> removePhotoFromCustomAlbum(
+    int userId,
+    int albumPk,
+    int attachmentId,
+  ) async {
+    await _dio.delete(
+      'familychat/members/$userId/gallery/custom-albums/$albumPk/photos/$attachmentId/',
+    );
+  }
+
+  Future<Map<String, dynamic>> memberGalleryPickablePhotos(
+    int userId, {
+    int offset = 0,
+    int limit = 60,
+  }) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/pickable-photos/',
+      queryParameters: {'offset': offset, 'limit': limit},
+    );
+    return res.data!;
   }
 }

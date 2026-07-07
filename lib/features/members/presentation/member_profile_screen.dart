@@ -91,7 +91,10 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                   controller: _tabs,
                   children: [
                     _buildMainTab(Theme.of(context)),
-                    ProfileGalleryTab(userId: widget.userId),
+                    ProfileGalleryTab(
+                      userId: widget.userId,
+                      isOwnGallery: _profile?['is_self'] == true,
+                    ),
                   ],
                 ),
     );

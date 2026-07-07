@@ -130,6 +130,25 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
   }
 
   Future<void> _pickMember(int faceIndex) async {
+    Map<String, dynamic>? face;
+    for (final f in _faces) {
+      if (f['face_index'] == faceIndex) {
+        face = f;
+        break;
+      }
+    }
+    final suggestions = (face?['suggestions'] as List<dynamic>? ?? [])
+        .cast<Map<String, dynamic>>();
+    final suggestedIds = suggestions
+        .map((s) => s['user_id'])
+        .whereType<int>()
+        .toSet();
+    final otherMembers = _members.where((m) {
+      final id = m['user_id'];
+      final userId = id is int ? id : int.tryParse(id?.toString() ?? '');
+      return userId != null && !suggestedIds.contains(userId);
+    }).toList();
+
     final picked = await showModalBottomSheet<int>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -139,7 +158,7 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
             const Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                'Выберите участника',
+                'Кто на этом фото?',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
               ),
             ),
@@ -147,7 +166,39 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
               child: ListView(
                 shrinkWrap: true,
                 children: [
-                  for (final m in _members)
+                  if (suggestions.isNotEmpty) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text(
+                        'Возможно',
+                        style: Theme.of(ctx).textTheme.titleSmall?.copyWith(
+                              color: Theme.of(ctx).colorScheme.primary,
+                            ),
+                      ),
+                    ),
+                    for (final s in suggestions)
+                      _SuggestionTile(
+                        suggestion: s,
+                        onTap: () {
+                          final id = s['user_id'];
+                          if (id is int) {
+                            Navigator.pop(ctx, id);
+                          } else {
+                            Navigator.pop(ctx, int.tryParse(id?.toString() ?? ''));
+                          }
+                        },
+                      ),
+                    if (otherMembers.isNotEmpty) const Divider(height: 24),
+                  ],
+                  if (otherMembers.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Text(
+                        suggestions.isEmpty ? 'Участники семьи' : 'Все участники',
+                        style: Theme.of(ctx).textTheme.titleSmall,
+                      ),
+                    ),
+                  for (final m in otherMembers)
                     ListTile(
                       leading: ChatAvatar(
                         name: m['display_name']?.toString() ?? '',
@@ -246,6 +297,37 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SuggestionTile extends StatelessWidget {
+  const _SuggestionTile({
+    required this.suggestion,
+    required this.onTap,
+  });
+
+  final Map<String, dynamic> suggestion;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final name = suggestion['display_name']?.toString() ?? '';
+    final scoreRaw = suggestion['score'];
+    final score = scoreRaw is num ? scoreRaw.toDouble() : double.tryParse('$scoreRaw');
+    final scoreLabel = score != null ? '${(score * 100).round()}% совпадение' : null;
+
+    return ListTile(
+      leading: ChatAvatar(
+        name: name,
+        avatarUrl: suggestion['avatar_url']?.toString(),
+        radius: 20,
+      ),
+      title: Text(name),
+      subtitle: scoreLabel != null ? Text(scoreLabel) : null,
+      trailing: Icon(Icons.auto_awesome, color: theme.colorScheme.primary, size: 20),
+      onTap: onTap,
     );
   }
 }

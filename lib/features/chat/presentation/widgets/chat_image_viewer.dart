@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -69,47 +67,105 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
 
 class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> {
   bool _downloading = false;
-  Uint8List? _webBytes;
-  bool _webLoading = false;
-  bool _webFailed = false;
+  final List<_ChatViewerPhoto> _photos = [];
+  int _index = 0;
+  PageController? _pageController;
 
   @override
   void initState() {
     super.initState();
-    if (kIsWeb) {
-      _loadWebBytes();
-    }
+    _initPhotos();
   }
 
-  Future<void> _loadWebBytes() async {
-    setState(() {
-      _webLoading = true;
-      _webFailed = false;
-    });
-    final bytes = await chatAttachmentBytesForViewer(
-      ref: ref,
+  @override
+  void dispose() {
+    _pageController?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initPhotos() async {
+    final repo = ref.read(familychatRepositoryProvider);
+    final seed = _ChatViewerPhoto(
+      imageUrl: widget.imageUrl,
       threadId: widget.threadId,
       attachmentId: widget.attachmentId,
+      filename: widget.filename,
+      httpHeaders: widget.httpHeaders,
     );
+    final media = <_ChatViewerPhoto>[seed];
+    if (widget.threadId != null) {
+      try {
+        final threadMedia = await repo.threadMedia(widget.threadId!);
+        for (final att in threadMedia) {
+          final kind = att['kind']?.toString();
+          if (kind != 'image') continue;
+          final url = chatAttachmentImageUrl(
+            repo: repo,
+            threadId: widget.threadId!,
+            attachment: att,
+          );
+          media.add(
+            _ChatViewerPhoto(
+              imageUrl: url,
+              threadId: widget.threadId,
+              attachmentId: att['id'] is int ? att['id'] as int : int.tryParse('${att['id']}'),
+              filename: att['filename']?.toString(),
+              attachment: att,
+              httpHeaders: widget.httpHeaders,
+            ),
+          );
+        }
+      } catch (_) {
+        // Fallback to single photo if media list failed.
+      }
+    }
+    final dedup = <String, _ChatViewerPhoto>{};
+    for (final p in media) {
+      final key = '${p.threadId}:${p.attachmentId}:${p.imageUrl}';
+      dedup[key] = p;
+    }
+    final list = dedup.values.toList();
+    var selected = 0;
+    if (widget.attachmentId != null) {
+      final idx = list.indexWhere((p) => p.attachmentId == widget.attachmentId);
+      if (idx >= 0) selected = idx;
+    } else if (widget.imageUrl.isNotEmpty) {
+      final idx = list.indexWhere((p) => p.imageUrl == widget.imageUrl);
+      if (idx >= 0) selected = idx;
+    }
     if (!mounted) return;
     setState(() {
-      _webBytes = bytes;
-      _webLoading = false;
-      _webFailed = bytes == null;
+      _photos
+        ..clear()
+        ..addAll(list.isEmpty ? [seed] : list);
+      _index = selected.clamp(0, _photos.length - 1);
+      _pageController = PageController(initialPage: _index);
     });
   }
 
-  Future<Uint8List?> _resolveBytes() async {
-    if (kIsWeb) {
-      if (_webBytes != null) return _webBytes;
-      return chatAttachmentBytesForViewer(
-        ref: ref,
+  _ChatViewerPhoto get _currentPhoto {
+    if (_photos.isEmpty) {
+      return _ChatViewerPhoto(
+        imageUrl: widget.imageUrl,
         threadId: widget.threadId,
         attachmentId: widget.attachmentId,
+        filename: widget.filename,
+        httpHeaders: widget.httpHeaders,
+      );
+    }
+    return _photos[_index];
+  }
+
+  Future<Uint8List?> _resolveBytes(_ChatViewerPhoto photo) async {
+    if (kIsWeb) {
+      return chatAttachmentBytesForViewer(
+        ref: ref,
+        threadId: photo.threadId,
+        attachmentId: photo.attachmentId,
       );
     }
     final response = await ref.read(apiClientProvider).dio.get<List<int>>(
-          widget.imageUrl,
+          photo.imageUrl,
           options: Options(responseType: ResponseType.bytes),
         );
     final data = response.data;
@@ -119,14 +175,15 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
 
   Future<void> _download() async {
     if (_downloading) return;
+    final photo = _currentPhoto;
     setState(() => _downloading = true);
     try {
-      final bytes = await _resolveBytes();
+      final bytes = await _resolveBytes(photo);
       if (bytes == null || bytes.isEmpty) throw StateError('Пустой файл');
 
-      final name = widget.filename?.trim().isNotEmpty == true
-          ? widget.filename!.trim()
-          : _guessFilename(widget.imageUrl);
+      final name = photo.filename?.trim().isNotEmpty == true
+          ? photo.filename!.trim()
+          : _guessFilename(photo.imageUrl);
 
       // ignore: deprecated_member_use
       await Share.shareXFiles(
@@ -163,26 +220,20 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     widget.onGoToMessage?.call();
   }
 
-  Widget _imageBody() {
+  Widget _imageBody(_ChatViewerPhoto photo) {
     if (kIsWeb) {
-      if (_webLoading) {
-        return const Center(
-          child: CircularProgressIndicator(color: Colors.white),
+      if (photo.threadId != null && photo.attachmentId != null) {
+        return ChatNetworkImage(
+          threadId: photo.threadId!,
+          attachment: photo.attachment ?? {'id': photo.attachmentId, 'file_url': photo.imageUrl},
+          fit: BoxFit.contain,
         );
       }
-      if (_webFailed || _webBytes == null) {
-        return const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48);
-      }
-      return Image.memory(
-        _webBytes!,
-        fit: BoxFit.contain,
-        gaplessPlayback: true,
-      );
     }
 
     return CachedNetworkImage(
-      imageUrl: widget.imageUrl,
-      httpHeaders: widget.httpHeaders,
+      imageUrl: photo.imageUrl,
+      httpHeaders: photo.httpHeaders,
       fit: BoxFit.contain,
     );
   }
@@ -200,11 +251,13 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
             IconButton(
               tooltip: 'Кто на фото',
               onPressed: () {
+                final photo = _currentPhoto;
+                if (photo.threadId == null || photo.attachmentId == null) return;
                 FaceTaggingSheet.show(
                   context,
-                  threadId: widget.threadId!,
-                  attachmentId: widget.attachmentId!,
-                  imageChild: _imageBody(),
+                  threadId: photo.threadId!,
+                  attachmentId: photo.attachmentId!,
+                  imageChild: _imageBody(photo),
                 );
               },
               icon: const Icon(Icons.face_outlined),
@@ -228,13 +281,43 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
           ),
         ],
       ),
-      body: Center(
-        child: InteractiveViewer(
-          minScale: 0.5,
-          maxScale: 4,
-          child: _imageBody(),
-        ),
-      ),
+      body: _photos.isEmpty
+          ? const Center(child: CircularProgressIndicator(color: Colors.white))
+          : PageView.builder(
+              controller: _pageController,
+              onPageChanged: (i) => setState(() => _index = i),
+              itemCount: _photos.length,
+              itemBuilder: (_, i) {
+                final photo = _photos[i];
+                return Center(
+                  child: InteractiveViewer(
+                    minScale: 0.7,
+                    maxScale: 5,
+                    constrained: false,
+                    clipBehavior: Clip.none,
+                    child: _imageBody(photo),
+                  ),
+                );
+              },
+            ),
     );
   }
+}
+
+class _ChatViewerPhoto {
+  const _ChatViewerPhoto({
+    required this.imageUrl,
+    this.threadId,
+    this.attachmentId,
+    this.filename,
+    this.attachment,
+    this.httpHeaders,
+  });
+
+  final String imageUrl;
+  final int? threadId;
+  final int? attachmentId;
+  final String? filename;
+  final Map<String, dynamic>? attachment;
+  final Map<String, String>? httpHeaders;
 }

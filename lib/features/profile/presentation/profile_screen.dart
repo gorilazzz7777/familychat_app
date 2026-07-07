@@ -299,7 +299,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             children: [
               _buildMainTab(context),
               if (userId is int)
-                ProfileGalleryTab(userId: userId)
+                ProfileGalleryTab(userId: userId, isOwnGallery: true)
               else
                 const Center(child: Text('Галерея недоступна')),
             ],
