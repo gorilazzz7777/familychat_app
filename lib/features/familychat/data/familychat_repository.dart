@@ -411,11 +411,16 @@ class FamilyChatRepository {
     int limit = 60,
     String? query,
     int? personUserId,
+    bool personUnidentified = false,
   }) async {
     final encodedAlbum = Uri.encodeComponent(albumId);
     final params = <String, dynamic>{'offset': offset, 'limit': limit};
     if (query != null && query.trim().isNotEmpty) params['q'] = query.trim();
-    if (personUserId != null) params['person_user_id'] = personUserId;
+    if (personUnidentified) {
+      params['person_user_id'] = 'unidentified';
+    } else if (personUserId != null) {
+      params['person_user_id'] = personUserId;
+    }
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/albums/$encodedAlbum/photos/',
       queryParameters: params,
@@ -696,11 +701,16 @@ class FamilyChatRepository {
     int limit = 60,
     String? query,
     int? personUserId,
+    bool personUnidentified = false,
   }) async {
     final encodedAlbum = Uri.encodeComponent(albumId);
     final params = <String, dynamic>{'offset': offset, 'limit': limit};
     if (query != null && query.trim().isNotEmpty) params['q'] = query.trim();
-    if (personUserId != null) params['person_user_id'] = personUserId;
+    if (personUnidentified) {
+      params['person_user_id'] = 'unidentified';
+    } else if (personUserId != null) {
+      params['person_user_id'] = personUserId;
+    }
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/gallery/albums/$encodedAlbum/photos/',
       queryParameters: params,

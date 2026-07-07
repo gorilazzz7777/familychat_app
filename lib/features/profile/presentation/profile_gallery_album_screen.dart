@@ -57,6 +57,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   String? _error;
   String _query = '';
   int? _personUserId;
+  bool _personFilterUnidentified = false;
+  int _unidentifiedCount = 0;
   List<Map<String, dynamic>> _searchPeople = [];
   int _offset = 0;
   int _total = 0;
@@ -257,6 +259,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               limit: _pageSize,
               query: _query,
               personUserId: _personUserId,
+              personUnidentified: _personFilterUnidentified,
             )
           : await repo.memberGalleryPhotos(
               widget.userId,
@@ -265,6 +268,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               limit: _pageSize,
               query: _query,
               personUserId: _personUserId,
+              personUnidentified: _personFilterUnidentified,
             );
       if (!mounted) return;
       final batch = (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
@@ -274,6 +278,9 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
         _offset += batch.length;
         _searchPeople =
             (data['search_people'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        _unidentifiedCount = data['unidentified_count'] is int
+            ? data['unidentified_count'] as int
+            : int.tryParse('${data['unidentified_count']}') ?? 0;
         _loading = false;
         _loadingMore = false;
       });
@@ -376,6 +383,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               limit: fetchLimit,
               query: _query,
               personUserId: _personUserId,
+              personUnidentified: _personFilterUnidentified,
             )
           : await repo.memberGalleryPhotos(
               widget.userId,
@@ -384,6 +392,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               limit: fetchLimit,
               query: _query,
               personUserId: _personUserId,
+              personUnidentified: _personFilterUnidentified,
             );
       if (!mounted) return;
       final batch = (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
@@ -656,6 +665,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     setState(() {
       _query = _searchController.text.trim();
       _personUserId = null;
+      _personFilterUnidentified = false;
     });
     await _load(reset: true);
   }
@@ -959,6 +969,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                     _searchMode = false;
                     _query = '';
                     _personUserId = null;
+                    _personFilterUnidentified = false;
                     _searchController.clear();
                   });
                   await _load(reset: true);
@@ -1086,7 +1097,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                     )
                   : Column(
                       children: [
-                        if (_searchPeople.isNotEmpty)
+                        if (_searchPeople.isNotEmpty || _unidentifiedCount > 0)
                           SizedBox(
                             height: 46,
                             child: ListView(
@@ -1097,14 +1108,50 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                                   padding: const EdgeInsets.symmetric(horizontal: 4),
                                   child: ChoiceChip(
                                     label: const Text('Все люди'),
-                                    selected: _personUserId == null,
+                                    selected: _personUserId == null && !_personFilterUnidentified,
                                     showCheckmark: false,
                                     onSelected: (_) async {
-                                      setState(() => _personUserId = null);
+                                      setState(() {
+                                        _personUserId = null;
+                                        _personFilterUnidentified = false;
+                                      });
                                       await _load(reset: true);
                                     },
                                   ),
                                 ),
+                                if (_unidentifiedCount > 0)
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                                    child: ChoiceChip(
+                                      showCheckmark: false,
+                                      visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
+                                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      label: Tooltip(
+                                        message: 'Не определены',
+                                        child: SizedBox.square(
+                                          dimension: 36,
+                                          child: CircleAvatar(
+                                            radius: 18,
+                                            backgroundColor:
+                                                Theme.of(context).colorScheme.surfaceContainerHighest,
+                                            child: Icon(
+                                              Icons.face_retouching_off,
+                                              size: 20,
+                                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      selected: _personFilterUnidentified,
+                                      onSelected: (_) async {
+                                        setState(() {
+                                          _personFilterUnidentified = true;
+                                          _personUserId = null;
+                                        });
+                                        await _load(reset: true);
+                                      },
+                                    ),
+                                  ),
                                 for (final person in _searchPeople)
                                   Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -1125,7 +1172,10 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                                       ),
                                       selected: _personUserId == person['user_id'],
                                       onSelected: (_) async {
-                                        setState(() => _personUserId = person['user_id'] as int?);
+                                        setState(() {
+                                          _personUserId = person['user_id'] as int?;
+                                          _personFilterUnidentified = false;
+                                        });
                                         await _load(reset: true);
                                       },
                                     ),
