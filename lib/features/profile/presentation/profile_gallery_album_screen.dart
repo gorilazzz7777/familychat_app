@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import 'gallery_photo_viewer_screen.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 
 class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
@@ -128,10 +129,24 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                           if (threadId is! int) {
                             return const ColoredBox(color: Color(0x22000000));
                           }
-                          return ChatNetworkImage(
-                            threadId: threadId,
-                            attachment: photo,
-                            fit: BoxFit.cover,
+                          return GestureDetector(
+                            onTap: () async {
+                              final status = await ref.read(familychatRepositoryProvider).status();
+                              final currentUserId = status['user_id'];
+                              if (!context.mounted || currentUserId is! int) return;
+                              await GalleryPhotoViewerScreen.open(
+                                context,
+                                profileUserId: widget.userId,
+                                photo: photo,
+                                currentUserId: currentUserId,
+                                onChanged: () => _load(reset: true),
+                              );
+                            },
+                            child: ChatNetworkImage(
+                              threadId: threadId,
+                              attachment: photo,
+                              fit: BoxFit.cover,
+                            ),
                           );
                         },
                       ),

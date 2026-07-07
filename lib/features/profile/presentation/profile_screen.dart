@@ -33,6 +33,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   String _gender = 'male';
   DateTime? _birthDate;
   bool _birthdayShowYear = true;
+  bool _suggestFaceTagging = true;
   String? _avatarUrl;
   bool _avatarBusy = false;
   bool _saving = false;
@@ -67,6 +68,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     if (g == 'male' || g == 'female') _gender = g;
     _birthDate = parseBirthDate(status['birth_date']?.toString());
     _birthdayShowYear = status['birthday_show_year'] != false;
+    _suggestFaceTagging = status['suggest_face_tagging'] != false;
     final url = status['avatar_url']?.toString() ?? '';
     _avatarUrl = url.isEmpty ? null : url;
   }
@@ -100,6 +102,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             gender: _gender,
             birthDate: formatBirthDateForApi(_birthDate!),
             birthdayShowYear: _birthdayShowYear,
+            suggestFaceTagging: _suggestFaceTagging,
           );
       if (!mounted) return;
       widget.onStatusChanged();
@@ -424,6 +427,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           onChanged: (v) => setState(() => _birthdayShowYear = v ?? true),
           title: const Text('Показывать год'),
           subtitle: const Text('Если выключено, другим участникам виден только день и месяц'),
+          controlAffinity: ListTileControlAffinity.leading,
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          value: _suggestFaceTagging,
+          onChanged: (v) => setState(() => _suggestFaceTagging = v ?? true),
+          title: const Text('Предлагать указать, кто на фото'),
+          subtitle: const Text('После отправки фото с нераспознанными лицами'),
           controlAffinity: ListTileControlAffinity.leading,
         ),
         const SizedBox(height: 16),

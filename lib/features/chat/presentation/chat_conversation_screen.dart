@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../members/presentation/member_profile_screen.dart';
+import '../../profile/presentation/face_tagging_sheet.dart';
 import '../data/active_chat_context.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/familychat_realtime.dart';
@@ -47,6 +48,16 @@ class _OutgoingAttachment {
   final Uint8List bytes;
   final String filename;
   final String? contentType;
+}
+
+String? _imageContentTypeForFilename(String filename) {
+  final lower = filename.toLowerCase();
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.heic') || lower.endsWith('.heif')) return 'image/heic';
+  return null;
 }
 
 class ChatConversationScreen extends ConsumerStatefulWidget {
@@ -413,6 +424,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (!mounted) return;
       _replaceOptimisticMessage(tempId, msg);
       _scrollToBottom();
+      for (var i = 0; i < attachments.length; i++) {
+        if (i >= ids.length) break;
+        final att = attachments[i];
+        final isImage = att.contentType?.startsWith('image/') ??
+            _imageContentTypeForFilename(att.filename)?.startsWith('image/') ??
+            false;
+        if (isImage) {
+          unawaited(_pollFaceTaggingPrompt(ids[i]));
+        }
+      }
     } catch (_) {
       if (!mounted) return;
       _markOptimisticFailed(tempId);
@@ -422,11 +443,45 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
+  Future<void> _pollFaceTaggingPrompt(int attachmentId) async {
+    final repo = ref.read(familychatRepositoryProvider);
+    for (var attempt = 0; attempt < 40; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (!mounted) return;
+      try {
+        final status = await repo.attachmentTaggingStatus(widget.threadId, attachmentId);
+        final taggingStatus = status['photo_tagging_status']?.toString() ?? '';
+        if (taggingStatus == 'failed') return;
+        if (taggingStatus != 'done') continue;
+        if (status['should_prompt_face_tagging'] != true) return;
+        if (!mounted) return;
+        final attachment = {
+          'id': attachmentId,
+          'thread_id': widget.threadId,
+        };
+        await FaceTaggingSheet.show(
+          context,
+          threadId: widget.threadId,
+          attachmentId: attachmentId,
+          promptMode: true,
+          imageChild: faceTaggingAttachmentPreview(
+            threadId: widget.threadId,
+            attachment: attachment,
+          ),
+        );
+        return;
+      } catch (_) {
+        // retry until timeout
+      }
+    }
+  }
+
   Future<void> _sendImageWithCaption(
     Uint8List bytes,
     String filename,
-    String caption,
-  ) async {
+    String caption, {
+    String? contentType,
+  }) async {
     final tempId = _nextTempId();
     _addOptimisticMessage(
       tempId,
@@ -446,7 +501,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _OutgoingAttachment(
           bytes: bytes,
           filename: filename,
-          contentType: 'image/jpeg',
+          contentType: contentType ?? _imageContentTypeForFilename(filename) ?? 'image/jpeg',
         ),
       ],
     );
@@ -496,15 +551,26 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       } else {
         final picker = ImagePicker();
         final source = action == 'camera' ? ImageSource.camera : ImageSource.gallery;
-        final picked = await picker.pickImage(source: source, imageQuality: 90);
+        // Без imageQuality: иначе image_picker перекодирует JPEG и удаляет EXIF (GPS, дата).
+        final picked = await picker.pickImage(
+          source: source,
+          requestFullMetadata: true,
+        );
         if (picked == null) return;
         final bytes = await picked.readAsBytes();
+        final contentType =
+            picked.mimeType ?? _imageContentTypeForFilename(picked.name) ?? 'image/jpeg';
         if (!mounted) return;
         await ChatMediaComposeSheet.show(
           context,
           imageBytes: bytes,
           filename: picked.name,
-          onSend: (caption) => _sendImageWithCaption(bytes, picked.name, caption),
+          onSend: (caption) => _sendImageWithCaption(
+            bytes,
+            picked.name,
+            caption,
+            contentType: contentType,
+          ),
         );
       }
     } catch (e) {

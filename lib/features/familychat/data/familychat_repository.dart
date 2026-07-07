@@ -51,6 +51,7 @@ class FamilyChatRepository {
     String? gender,
     String? birthDate,
     bool? birthdayShowYear,
+    bool? suggestFaceTagging,
   }) async {
     final data = <String, dynamic>{};
     if (firstName != null) data['first_name'] = firstName;
@@ -58,6 +59,7 @@ class FamilyChatRepository {
     if (gender != null) data['gender'] = gender;
     if (birthDate != null) data['birth_date'] = birthDate;
     if (birthdayShowYear != null) data['birthday_show_year'] = birthdayShowYear;
+    if (suggestFaceTagging != null) data['suggest_face_tagging'] = suggestFaceTagging;
     final res = await _dio.patch<Map<String, dynamic>>(
       'familychat/me/profile/',
       data: data,
@@ -371,5 +373,69 @@ class FamilyChatRepository {
         'platform': platform,
       },
     );
+  }
+
+  Future<Map<String, dynamic>> attachmentTaggingStatus(
+    int threadId,
+    int attachmentId,
+  ) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/attachments/$attachmentId/tagging/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> chatAttachmentFaces(
+    int threadId,
+    int attachmentId,
+  ) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/attachments/$attachmentId/faces/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> assignChatAttachmentFace(
+    int threadId,
+    int attachmentId,
+    int faceIndex,
+    int userId,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/attachments/$attachmentId/faces/$faceIndex/assign/',
+      data: {'user_id': userId},
+    );
+    return res.data!;
+  }
+
+  Future<void> deleteChatAttachment(int threadId, int attachmentId) async {
+    await _dio.delete('familychat/chat/threads/$threadId/attachments/$attachmentId/');
+  }
+
+  Future<Map<String, dynamic>> galleryPhotoFaces(
+    int profileUserId,
+    int attachmentId,
+  ) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/members/$profileUserId/gallery/photos/$attachmentId/faces/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> assignGalleryPhotoFace(
+    int profileUserId,
+    int attachmentId,
+    int faceIndex,
+    int userId,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/$profileUserId/gallery/photos/$attachmentId/faces/$faceIndex/assign/',
+      data: {'user_id': userId},
+    );
+    return res.data!;
+  }
+
+  Future<void> hideGalleryPhoto(int attachmentId) async {
+    await _dio.post('familychat/gallery/photos/$attachmentId/hide/');
   }
 }

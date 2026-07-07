@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/providers/app_providers.dart';
+import '../../../profile/presentation/face_tagging_sheet.dart';
 import 'chat_network_image.dart';
 
 /// Полноэкранный просмотр изображения из чата с загрузкой/шарингом.
@@ -195,6 +196,19 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
         foregroundColor: Colors.white,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
+          if (widget.threadId != null && widget.attachmentId != null)
+            IconButton(
+              tooltip: 'Кто на фото',
+              onPressed: () {
+                FaceTaggingSheet.show(
+                  context,
+                  threadId: widget.threadId!,
+                  attachmentId: widget.attachmentId!,
+                  imageChild: _imageBody(),
+                );
+              },
+              icon: const Icon(Icons.face_outlined),
+            ),
           if (widget.onGoToMessage != null)
             IconButton(
               tooltip: 'Перейти к сообщению',
