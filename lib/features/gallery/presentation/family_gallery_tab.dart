@@ -12,10 +12,10 @@ class FamilyGalleryTab extends ConsumerStatefulWidget {
   final int currentUserId;
 
   @override
-  ConsumerState<FamilyGalleryTab> createState() => _FamilyGalleryTabState();
+  ConsumerState<FamilyGalleryTab> createState() => FamilyGalleryTabState();
 }
 
-class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
+class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _albums = [];
@@ -28,7 +28,10 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
     _load();
   }
 
-  Future<void> _load() async {
+  /// Обновить список альбомов (например при возврате на вкладку).
+  Future<void> refresh({bool silent = false}) => _load(silent: silent);
+
+  Future<void> _load({bool silent = false}) async {
     final cached = await FamilyChatLocalCache.readFamilyAlbums();
     if (cached != null && mounted) {
       setState(() {
@@ -38,7 +41,7 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
         _loading = false;
         _error = null;
       });
-    } else {
+    } else if (!silent || _albums.isEmpty) {
       setState(() {
         _loading = true;
         _error = null;

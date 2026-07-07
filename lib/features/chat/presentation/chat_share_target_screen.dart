@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../../../app/shell_refresh.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/push/push_navigation.dart';
@@ -150,8 +151,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     }
 
     if (!mounted || navigatePk == null) return;
+    final nav = familyChatNavigatorKey.currentState;
     Navigator.of(context).pop();
-    familyChatNavigatorKey.currentState?.push<void>(
+    if (nav == null) return;
+    await nav.push<void>(
       MaterialPageRoute<void>(
         builder: (_) => ProfileGalleryAlbumScreen(
           userId: myUserId,
@@ -162,6 +165,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
         ),
       ),
     );
+    await ShellRefresh.instance.refreshMainTabs();
   }
 
   Future<void> _send() async {

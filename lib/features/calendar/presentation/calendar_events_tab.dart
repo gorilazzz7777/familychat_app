@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/providers/app_providers.dart';
 import 'calendar_event_edit_screen.dart';
+import 'birthday_detail_screen.dart';
 import 'widgets/album_access_fields.dart';
 
 class CalendarEventsTab extends ConsumerStatefulWidget {
@@ -115,6 +116,24 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
     if (changed == true) await _load();
   }
 
+  Future<void> _openBirthdayEvent(Map<String, dynamic> event) async {
+    final userId = event['person_user_id'];
+    final honoreeUserId = userId is int ? userId : int.tryParse('$userId');
+    if (honoreeUserId == null) return;
+    final date = event['date']?.toString() ?? '';
+    final parsed = DateTime.tryParse(date);
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => BirthdayDetailScreen(
+          honoreeUserId: honoreeUserId,
+          initialTitle: event['title']?.toString() ?? 'День рождения',
+          eventDate: date,
+          year: parsed?.year ?? _month.year,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -170,6 +189,8 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                               final e = _events[i];
                               final kind = e['kind']?.toString();
                               final isCustom = kind == 'custom';
+                              final isBirthday = kind == 'birthday';
+                              final isTappable = isCustom || isBirthday;
                               final date = e['date']?.toString() ?? '';
                               final showDateHeader = i == 0 ||
                                   _events[i - 1]['date']?.toString() != date;
@@ -201,10 +222,14 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                                       ),
                                       title: Text(e['title']?.toString() ?? ''),
                                       subtitle: subtitle != null ? Text(subtitle) : null,
-                                      trailing: isCustom
+                                      trailing: isTappable
                                           ? const Icon(Icons.chevron_right)
                                           : null,
-                                      onTap: isCustom ? () => _openCustomEvent(e) : null,
+                                      onTap: isCustom
+                                          ? () => _openCustomEvent(e)
+                                          : isBirthday
+                                              ? () => _openBirthdayEvent(e)
+                                              : null,
                                     ),
                                   ),
                                 ],

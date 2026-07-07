@@ -4,6 +4,31 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
 
+Future<void> openProfileGalleryAlbum(
+  BuildContext context, {
+  required int userId,
+  required String albumId,
+  required String title,
+  bool canManage = false,
+  bool isOwnGallery = false,
+  bool isFamilyGallery = false,
+  Future<void> Function()? onClosed,
+}) async {
+  await Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => ProfileGalleryAlbumScreen(
+        userId: userId,
+        albumId: albumId,
+        title: title,
+        canManage: canManage,
+        isOwnGallery: isOwnGallery,
+        isFamilyGallery: isFamilyGallery,
+      ),
+    ),
+  );
+  await onClosed?.call();
+}
+
 class GalleryAlbumsGroupedView extends StatefulWidget {
   const GalleryAlbumsGroupedView({
     super.key,
@@ -197,6 +222,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
               userId: widget.userId,
               isOwnGallery: widget.isOwnGallery,
               isFamilyGallery: widget.isFamilyGallery,
+              onClosed: widget.onRefresh,
             ),
           ),
         if (_groups.isNotEmpty) ...[
@@ -234,6 +260,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
                       isFamilyGallery: widget.isFamilyGallery,
                       iconForKind: _albumIcon,
                       onAlbumLongPress: widget.onAlbumLongPress,
+                      onAlbumClosed: widget.onRefresh,
                       emptyLabel: 'В разделе «${selectedGroup.label}» пока нет альбомов',
                     ),
                   ),
@@ -262,12 +289,14 @@ class _AllPhotosCard extends ConsumerWidget {
     required this.userId,
     required this.isOwnGallery,
     required this.isFamilyGallery,
+    this.onClosed,
   });
 
   final Map<String, dynamic> album;
   final int userId;
   final bool isOwnGallery;
   final bool isFamilyGallery;
+  final Future<void> Function()? onClosed;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -284,17 +313,15 @@ class _AllPhotosCard extends ConsumerWidget {
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => ProfileGalleryAlbumScreen(
-                userId: userId,
-                albumId: 'all',
-                title: title,
-                isOwnGallery: isOwnGallery,
-                isFamilyGallery: isFamilyGallery,
-              ),
-            ),
+        onTap: () async {
+          await openProfileGalleryAlbum(
+            context,
+            userId: userId,
+            albumId: 'all',
+            title: title,
+            isOwnGallery: isOwnGallery,
+            isFamilyGallery: isFamilyGallery,
+            onClosed: onClosed,
           );
         },
         child: SizedBox(
@@ -366,6 +393,7 @@ class _AlbumGrid extends StatelessWidget {
     required this.isFamilyGallery,
     required this.iconForKind,
     this.onAlbumLongPress,
+    this.onAlbumClosed,
     required this.emptyLabel,
   });
 
@@ -375,6 +403,7 @@ class _AlbumGrid extends StatelessWidget {
   final bool isFamilyGallery;
   final IconData Function(String? kind) iconForKind;
   final void Function(Map<String, dynamic> album)? onAlbumLongPress;
+  final Future<void> Function()? onAlbumClosed;
   final String emptyLabel;
 
   @override
@@ -408,6 +437,7 @@ class _AlbumGrid extends StatelessWidget {
           userId: userId,
           isOwnGallery: isOwnGallery,
           isFamilyGallery: isFamilyGallery,
+          onClosed: onAlbumClosed,
           onLongPress: canManage && onAlbumLongPress != null
               ? () => onAlbumLongPress!(album)
               : null,
@@ -424,6 +454,7 @@ class _AlbumCard extends StatelessWidget {
     required this.userId,
     required this.isOwnGallery,
     required this.isFamilyGallery,
+    this.onClosed,
     this.onLongPress,
   });
 
@@ -432,6 +463,7 @@ class _AlbumCard extends StatelessWidget {
   final int userId;
   final bool isOwnGallery;
   final bool isFamilyGallery;
+  final Future<void> Function()? onClosed;
   final VoidCallback? onLongPress;
 
   @override
@@ -452,18 +484,16 @@ class _AlbumCard extends StatelessWidget {
       child: InkWell(
         onTap: albumId.isEmpty
             ? null
-            : () {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ProfileGalleryAlbumScreen(
-                      userId: userId,
-                      albumId: albumId,
-                      title: title,
-                      canManage: canManage,
-                      isOwnGallery: isOwnGallery,
-                      isFamilyGallery: isFamilyGallery,
-                    ),
-                  ),
+            : () async {
+                await openProfileGalleryAlbum(
+                  context,
+                  userId: userId,
+                  albumId: albumId,
+                  title: title,
+                  canManage: canManage,
+                  isOwnGallery: isOwnGallery,
+                  isFamilyGallery: isFamilyGallery,
+                  onClosed: onClosed,
                 );
               },
         onLongPress: onLongPress,

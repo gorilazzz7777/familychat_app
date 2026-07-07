@@ -74,6 +74,10 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
     this.customTitle = '',
     this.peerUserId,
     this.initialMessageId,
+    this.initialHasLeft = false,
+    this.initialCanRejoin = false,
+    this.initialCanLeave = false,
+    this.initialParticipantUserIds = const [],
   });
 
   final int threadId;
@@ -83,6 +87,10 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
   final String customTitle;
   final int? peerUserId;
   final int? initialMessageId;
+  final bool initialHasLeft;
+  final bool initialCanRejoin;
+  final bool initialCanLeave;
+  final List<int> initialParticipantUserIds;
 
   @override
   ConsumerState<ChatConversationScreen> createState() => _ChatConversationScreenState();
@@ -109,6 +117,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   Map<String, dynamic>? _replyTo;
   late String _title;
   String _customTitle = '';
+  bool _hasLeft = false;
+  bool _canRejoin = false;
+  bool _canLeave = false;
+  List<int> _participantUserIds = [];
   double _lastKeyboardInset = 0;
 
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
@@ -120,12 +132,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     super.initState();
     _title = widget.title;
     _customTitle = widget.customTitle;
+    _hasLeft = widget.initialHasLeft;
+    _canRejoin = widget.initialCanRejoin;
+    _canLeave = widget.initialCanLeave;
+    _participantUserIds = List<int>.from(widget.initialParticipantUserIds);
     WidgetsBinding.instance.addObserver(this);
     _inputFocus.addListener(_onInputFocusChanged);
     ActiveChatContext.instance.setOpenThread(widget.threadId);
     FamilyChatRealtime.instance.addListener(_onRealtime);
     _scrollController.addListener(_onScroll);
-    _init();
+    if (_hasLeft) {
+      _loading = false;
+    } else {
+      _init();
+    }
   }
 
   Future<void> _init() async {
@@ -1031,6 +1051,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     await _deleteMessages(_selectedMessageIds.toList()..sort());
   }
 
+  void _applyThreadMeta(Map<String, dynamic> thread) {
+    setState(() {
+      _title = thread['title']?.toString() ?? _title;
+      _customTitle = thread['custom_title']?.toString() ?? '';
+      _hasLeft = thread['has_left'] == true;
+      _canRejoin = thread['can_rejoin'] == true;
+      _canLeave = thread['can_leave'] == true;
+      _participantUserIds = (thread['participant_user_ids'] as List?)
+              ?.map((e) => e is int ? e : int.tryParse('$e'))
+              .whereType<int>()
+              .toList() ??
+          _participantUserIds;
+    });
+  }
+
+  Future<void> _rejoinChat() async {
+    try {
+      final thread = await ref.read(familychatRepositoryProvider).rejoinChatThread(widget.threadId);
+      if (!mounted) return;
+      _applyThreadMeta(thread);
+      setState(() => _loading = true);
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка: $e')),
+      );
+    }
+  }
+
   Future<void> _openInfo() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -1040,12 +1090,38 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         title: _title,
         defaultTitle: widget.defaultTitle ?? widget.title,
         customTitle: _customTitle,
+        kind: widget.kind,
+        hasLeft: _hasLeft,
+        canRejoin: _canRejoin,
+        canLeave: _canLeave,
+        participantUserIds: _participantUserIds,
         onTitleChanged: (title, customTitle) {
           if (!mounted) return;
           setState(() {
             _title = title;
             _customTitle = customTitle;
           });
+        },
+        onMembershipChanged: () async {
+          try {
+            final threads = await ref.read(familychatRepositoryProvider).chatThreads();
+            final thread = threads.cast<Map<String, dynamic>?>().firstWhere(
+                  (t) => t?['id'] == widget.threadId,
+                  orElse: () => null,
+                );
+            if (thread == null) {
+              if (mounted) Navigator.of(context).pop();
+              return;
+            }
+            if (!mounted) return;
+            _applyThreadMeta(thread);
+            if (_hasLeft) {
+              setState(() => _messages = []);
+            } else {
+              setState(() => _loading = true);
+              await _load();
+            }
+          } catch (_) {}
         },
         onGoToMessage: _scrollToMessage,
         onOpenImage: _openImage,
@@ -1207,6 +1283,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             ),
       body: Column(
         children: [
+          if (_hasLeft)
+            Expanded(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.logout, size: 48),
+                      const SizedBox(height: 16),
+                      Text(
+                        widget.kind == 'family'
+                            ? 'Вы покинули общий чат семьи'
+                            : 'Вы не состоите в этой группе',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      if (_canRejoin) ...[
+                        const SizedBox(height: 16),
+                        FilledButton(
+                          onPressed: _rejoinChat,
+                          child: const Text('Вернуться в чат'),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else ...[
           if (_offlineMode)
             MaterialBanner(
               content: const Text('Показаны сохранённые сообщения. Обновление при появлении сети.'),
@@ -1360,6 +1466,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                 ],
               ),
             ),
+          ],
         ],
       ),
       ),

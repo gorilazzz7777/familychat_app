@@ -21,7 +21,13 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
     required this.title,
     required this.defaultTitle,
     this.customTitle = '',
+    this.kind = 'family',
+    this.hasLeft = false,
+    this.canRejoin = false,
+    this.canLeave = false,
+    this.participantUserIds = const [],
     this.onTitleChanged,
+    this.onMembershipChanged,
     this.onGoToMessage,
     this.onOpenImage,
   });
@@ -30,7 +36,13 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
   final String title;
   final String defaultTitle;
   final String customTitle;
+  final String kind;
+  final bool hasLeft;
+  final bool canRejoin;
+  final bool canLeave;
+  final List<int> participantUserIds;
   final ChatTitleChanged? onTitleChanged;
+  final VoidCallback? onMembershipChanged;
   final ChatGoToMessage? onGoToMessage;
   final ChatOpenImage? onOpenImage;
 
@@ -128,6 +140,95 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
             customTitle.isEmpty ? 'Название сброшено' : 'Название сохранено',
           ),
         ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка: $e')),
+      );
+    }
+  }
+
+  Future<void> _leaveChat() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Покинуть чат?'),
+        content: Text(
+          widget.kind == 'family'
+              ? 'Вы не будете получать сообщения общего чата. Вернуться можно в любой момент из списка чатов.'
+              : 'Вы перестанете видеть сообщения этой группы. Вернуть вас сможет любой участник.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Покинуть')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await ref.read(familychatRepositoryProvider).leaveChatThread(widget.threadId);
+      if (!mounted) return;
+      widget.onMembershipChanged?.call();
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Вы покинули чат')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка: $e')),
+      );
+    }
+  }
+
+  Future<void> _rejoinChat() async {
+    try {
+      await ref.read(familychatRepositoryProvider).rejoinChatThread(widget.threadId);
+      if (!mounted) return;
+      widget.onMembershipChanged?.call();
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Вы снова в общем чате семьи')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка: $e')),
+      );
+    }
+  }
+
+  Future<void> _addMembers() async {
+    if (widget.kind != 'group') return;
+    final members = await ref.read(familychatRepositoryProvider).members();
+    final existing = widget.participantUserIds.toSet();
+    final status = await ref.read(familychatRepositoryProvider).status();
+    final myUserId = status['user_id'] is int ? status['user_id'] as int : null;
+    final candidates = members.where((m) {
+      final uid = m['user_id'];
+      final userId = uid is int ? uid : int.tryParse('$uid');
+      if (userId == null || existing.contains(userId)) return false;
+      return true;
+    }).toList();
+    if (!mounted) return;
+    final selected = await showDialog<Set<int>>(
+      context: context,
+      builder: (ctx) => _AddMembersDialog(
+        members: candidates,
+        myUserId: myUserId,
+      ),
+    );
+    if (selected == null || selected.isEmpty || !mounted) return;
+    try {
+      await ref.read(familychatRepositoryProvider).addChatThreadMembers(
+            widget.threadId,
+            selected.toList(),
+          );
+      if (!mounted) return;
+      widget.onMembershipChanged?.call();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Добавлено: ${selected.length}')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -265,6 +366,30 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                     icon: const Icon(Icons.notifications_off_outlined),
                     label: const Text('Уведомления'),
                   ),
+                  if (widget.canRejoin) ...[
+                    const SizedBox(height: 8),
+                    FilledButton.icon(
+                      onPressed: _rejoinChat,
+                      icon: const Icon(Icons.login),
+                      label: const Text('Вернуться в чат'),
+                    ),
+                  ],
+                  if (widget.canLeave && !widget.hasLeft) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _leaveChat,
+                      icon: const Icon(Icons.logout),
+                      label: const Text('Покинуть чат'),
+                    ),
+                  ],
+                  if (widget.kind == 'group' && !widget.hasLeft) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _addMembers,
+                      icon: const Icon(Icons.person_add_outlined),
+                      label: const Text('Добавить участников'),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -370,6 +495,66 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           ],
         ),
       ),
+    );
+  }
+}
+
+class _AddMembersDialog extends StatefulWidget {
+  const _AddMembersDialog({
+    required this.members,
+    this.myUserId,
+  });
+
+  final List<Map<String, dynamic>> members;
+  final int? myUserId;
+
+  @override
+  State<_AddMembersDialog> createState() => _AddMembersDialogState();
+}
+
+class _AddMembersDialogState extends State<_AddMembersDialog> {
+  final _selected = <int>{};
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Добавить участников'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: widget.members.isEmpty
+            ? const Text('Нет доступных участников семьи')
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: widget.members.length,
+                itemBuilder: (context, index) {
+                  final member = widget.members[index];
+                  final uid = member['user_id'];
+                  final userId = uid is int ? uid : int.tryParse('$uid');
+                  if (userId == null) return const SizedBox.shrink();
+                  final name = member['display_name']?.toString() ?? 'Участник';
+                  return CheckboxListTile(
+                    value: _selected.contains(userId),
+                    onChanged: (value) {
+                      setState(() {
+                        if (value == true) {
+                          _selected.add(userId);
+                        } else {
+                          _selected.remove(userId);
+                        }
+                      });
+                    },
+                    title: Text(name),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+        FilledButton(
+          onPressed: _selected.isEmpty ? null : () => Navigator.pop(context, _selected),
+          child: const Text('Добавить'),
+        ),
+      ],
     );
   }
 }

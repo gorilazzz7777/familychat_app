@@ -8,6 +8,7 @@ import 'package:share_handler/share_handler.dart';
 import '../core/push/push_navigation.dart';
 import '../core/providers/app_providers.dart';
 import '../core/share/incoming_share_bus.dart';
+import 'shell_refresh.dart';
 import '../features/calendar/data/calendar_photo_sync_service.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/data/chat_unread_providers.dart';
@@ -42,7 +43,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
   int _index = 0;
   bool _moreMenuOpen = false;
   late Map<String, dynamic> _status;
+  final _feedKey = GlobalKey<FeedScreenState>();
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
+  final _familyGalleryKey = GlobalKey<FamilyGalleryTabState>();
   Timer? _webPollTimer;
 
   @override
@@ -70,6 +73,13 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
       }
     });
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
+    ShellRefresh.instance.register(_refreshMainTabs);
+  }
+
+  Future<void> _refreshMainTabs({bool silent = true}) async {
+    await _refreshTab(0, silent: silent);
+    await _refreshTab(1, silent: silent);
+    await _refreshTab(2, silent: silent);
   }
 
   void _onChatRealtime(Map<String, dynamic> event) {
@@ -89,6 +99,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
     _webPollTimer?.cancel();
     IncomingShareBus.instance.removeListener(_onIncomingShare);
     FamilyChatRealtime.instance.removeListener(_onChatRealtime);
+    ShellRefresh.instance.unregister();
     super.dispose();
   }
 
@@ -96,6 +107,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
+      unawaited(_refreshTab(_index, silent: true));
       final userId = _currentUserId;
       if (userId != null) {
         unawaited(
@@ -122,11 +134,33 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
   }
 
   void _openShareScreen(SharedMedia media) {
-    familyChatNavigatorKey.currentState?.push<void>(
-      MaterialPageRoute<void>(
+    unawaited(_openShareScreenAndRefresh(media));
+  }
+
+  Future<void> _openShareScreenAndRefresh(SharedMedia media) async {
+    final sent = await familyChatNavigatorKey.currentState?.push<bool>(
+      MaterialPageRoute<bool>(
         builder: (_) => ChatShareTargetScreen(media: media),
       ),
     );
+    if (!mounted) return;
+    if (sent == true) {
+      await _refreshTab(0, silent: true);
+      await _refreshTab(1, silent: true);
+    }
+  }
+
+  Future<void> _refreshTab(int tabIndex, {bool silent = true}) async {
+    switch (tabIndex) {
+      case 0:
+        await _feedKey.currentState?.refresh(silent: silent);
+      case 1:
+        await _chatHubKey.currentState?.refresh(silent: silent);
+      case 2:
+        await _familyGalleryKey.currentState?.refresh(silent: silent);
+      default:
+        break;
+    }
   }
 
   @override
@@ -151,10 +185,14 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
       setState(() => _moreMenuOpen = !_moreMenuOpen);
       return;
     }
+    final previous = _index;
     setState(() {
       _index = i;
       _moreMenuOpen = false;
     });
+    if (previous != i) {
+      unawaited(_refreshTab(i, silent: true));
+    }
   }
 
   Future<void> _handleStatusChanged() async {
@@ -227,11 +265,11 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
           IndexedStack(
             index: _index,
             children: [
-              const FeedScreen(),
+              FeedScreen(key: _feedKey),
               ChatHubScreen(key: _chatHubKey),
               userId == null
                   ? const Center(child: CircularProgressIndicator())
-                  : FamilyGalleryTab(currentUserId: userId),
+                  : FamilyGalleryTab(key: _familyGalleryKey, currentUserId: userId),
               const SizedBox.shrink(),
             ],
           ),

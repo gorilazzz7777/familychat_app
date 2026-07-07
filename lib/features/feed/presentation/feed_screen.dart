@@ -14,10 +14,10 @@ class FeedScreen extends ConsumerStatefulWidget {
   const FeedScreen({super.key});
 
   @override
-  ConsumerState<FeedScreen> createState() => _FeedScreenState();
+  ConsumerState<FeedScreen> createState() => FeedScreenState();
 }
 
-class _FeedScreenState extends ConsumerState<FeedScreen> {
+class FeedScreenState extends ConsumerState<FeedScreen> {
   final List<Map<String, dynamic>> _events = [];
   final ScrollController _scrollController = ScrollController();
   List<Map<String, dynamic>> _filterPeople = [];
@@ -42,6 +42,9 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     _scrollController.dispose();
     super.dispose();
   }
+
+  /// Обновить ленту (например при возврате на вкладку или после отправки из «Поделиться»).
+  Future<void> refresh({bool silent = false}) => _load(reset: true, silent: silent);
 
   void _onScroll() {
     if (_loadingMore || _loading) return;
@@ -86,10 +89,11 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     } catch (_) {}
   }
 
-  Future<void> _load({bool reset = false}) async {
+  Future<void> _load({bool reset = false, bool silent = false}) async {
     if (reset) {
+      final showSpinner = !silent || _events.isEmpty;
       setState(() {
-        _loading = true;
+        if (showSpinner) _loading = true;
         _error = null;
         _offset = 0;
       });
@@ -169,6 +173,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
             ),
           ),
         );
+        if (mounted) await refresh(silent: true);
       case 'photo_added_to_album':
         final albumId = payload['album_id']?.toString();
         final ownerId = actor['user_id'];
@@ -185,6 +190,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
             ),
           ),
         );
+        if (mounted) await refresh(silent: true);
       case 'photo_uploaded':
         if (!mounted) return;
         await Navigator.of(context).push<void>(
@@ -198,6 +204,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
             ),
           ),
         );
+        if (mounted) await refresh(silent: true);
       case 'media_liked':
       case 'media_commented':
         final attachmentId = payload['attachment_id'];
@@ -216,6 +223,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
           photo: photo,
           currentUserId: currentUserId,
         );
+        if (mounted) await refresh(silent: true);
       case 'member_joined':
       case 'profile_updated':
         final userId = payload['user_id'] ?? actor['user_id'];
@@ -226,11 +234,13 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
             builder: (_) => MemberProfileScreen(userId: userId),
           ),
         );
+        if (mounted) await refresh(silent: true);
       case 'calendar_event':
         if (!mounted) return;
         await Navigator.of(context).push<void>(
           MaterialPageRoute<void>(builder: (_) => const CalendarScreen()),
         );
+        if (mounted) await refresh(silent: true);
       default:
         break;
     }

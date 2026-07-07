@@ -188,6 +188,30 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> birthdayDetail({
+    required int userId,
+    required int year,
+  }) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/members/$userId/birthday/',
+      queryParameters: {'year': year},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> updateBirthdayPreference({
+    required int userId,
+    required bool skipCongratulations,
+    required int year,
+  }) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/members/$userId/birthday/',
+      queryParameters: {'year': year},
+      data: {'skip_congratulations': skipCongratulations},
+    );
+    return res.data!;
+  }
+
   Future<Map<String, dynamic>> fetchCalendarEvent(int eventId) async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/calendar/events/$eventId/',
@@ -255,6 +279,31 @@ class FamilyChatRepository {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/groups/',
       data: {'title': title, 'member_user_ids': memberUserIds},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> leaveChatThread(int threadId) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/leave/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> rejoinChatThread(int threadId) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/rejoin/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> addChatThreadMembers(
+    int threadId,
+    List<int> memberUserIds,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/members/',
+      data: {'member_user_ids': memberUserIds},
     );
     return res.data!;
   }

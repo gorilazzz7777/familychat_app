@@ -39,6 +39,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
     });
   }
 
+  /// Обновить список чатов (например при возврате на вкладку).
+  Future<void> refresh({bool silent = true}) => _load(silent: silent);
+
   @override
   void initState() {
     super.initState();
@@ -161,6 +164,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
     return 'Сообщение';
   }
 
+  List<int> _participantIdsOf(Map<String, dynamic> thread) {
+    return (thread['participant_user_ids'] as List?)
+            ?.map((e) => e is int ? e : int.tryParse('$e'))
+            .whereType<int>()
+            .toList() ??
+        const [];
+  }
+
   Future<void> _openThread(Map<String, dynamic> thread) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -171,6 +182,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
           customTitle: thread['custom_title']?.toString() ?? '',
           kind: thread['kind']?.toString() ?? 'family',
           peerUserId: thread['peer_user_id'] as int?,
+          initialHasLeft: thread['has_left'] == true,
+          initialCanRejoin: thread['can_rejoin'] == true,
+          initialCanLeave: thread['can_leave'] == true,
+          initialParticipantUserIds: _participantIdsOf(thread),
         ),
       ),
     );

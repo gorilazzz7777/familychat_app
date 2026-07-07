@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../../../core/providers/app_providers.dart';
 import '../data/calendar_agenda_utils.dart';
 import 'calendar_event_edit_screen.dart';
+import 'birthday_detail_screen.dart';
 import 'widgets/family_calendar_panel.dart';
 
 class CalendarMonthsTab extends ConsumerStatefulWidget {
@@ -115,6 +116,23 @@ class _CalendarMonthsTabState extends ConsumerState<CalendarMonthsTab> {
   }
 
   Future<void> _openAgendaItem(DateTime day, Map<String, dynamic> item) async {
+    final kind = item['kind']?.toString();
+    if (kind == 'birthday') {
+      final userId = item['person_user_id'];
+      final honoreeUserId = userId is int ? userId : int.tryParse('$userId');
+      if (honoreeUserId == null) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => BirthdayDetailScreen(
+            honoreeUserId: honoreeUserId,
+            initialTitle: item['title']?.toString() ?? 'День рождения',
+            eventDate: item['date']?.toString() ?? AgendaUtils.dateKey(day),
+            year: day.year,
+          ),
+        ),
+      );
+      return;
+    }
     if (item['editable'] != true) {
       final title = item['title']?.toString() ?? 'Событие';
       await showDialog<void>(
