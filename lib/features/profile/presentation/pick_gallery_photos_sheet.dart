@@ -102,6 +102,28 @@ class _PickGalleryPhotosSheetState extends ConsumerState<PickGalleryPhotosSheet>
     return int.tryParse('$id');
   }
 
+  List<int> get _selectablePhotoIds => _photos
+      .map(_photoId)
+      .whereType<int>()
+      .where((id) => !widget.excludeAttachmentIds.contains(id))
+      .toList();
+
+  bool get _allPhotosSelected {
+    final ids = _selectablePhotoIds;
+    return ids.isNotEmpty && ids.every(_selected.contains);
+  }
+
+  void _toggleSelectAllPhotos() {
+    final ids = _selectablePhotoIds;
+    setState(() {
+      if (_allPhotosSelected) {
+        _selected.removeAll(ids);
+      } else {
+        _selected.addAll(ids);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -115,6 +137,10 @@ class _PickGalleryPhotosSheetState extends ConsumerState<PickGalleryPhotosSheet>
                   'Выберите фото',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
+              ),
+              TextButton(
+                onPressed: _selectablePhotoIds.isEmpty ? null : _toggleSelectAllPhotos,
+                child: Text(_allPhotosSelected ? 'Снять все' : 'Выбрать все'),
               ),
               TextButton(
                 onPressed: _selected.isEmpty

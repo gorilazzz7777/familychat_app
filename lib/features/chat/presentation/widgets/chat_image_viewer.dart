@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/providers/app_providers.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
+import '../../../profile/presentation/widgets/photo_people_on_photo_bar.dart';
 import 'chat_network_image.dart';
 
 /// Полноэкранный просмотр изображения из чата с загрузкой/шарингом.
@@ -293,28 +294,40 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       ),
       body: _photos.isEmpty
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : PageView.builder(
-              controller: _pageController,
-              onPageChanged: (i) => setState(() => _index = i),
-              itemCount: _photos.length,
-              itemBuilder: (_, i) {
-                final photo = _photos[i];
-                return LayoutBuilder(
-                  builder: (context, constraints) => Center(
-                    child: InteractiveViewer(
-                      minScale: 0.2,
-                      maxScale: 5,
-                      constrained: false,
-                      clipBehavior: Clip.none,
-                      child: SizedBox(
-                        width: constraints.maxWidth,
-                        height: constraints.maxHeight,
-                        child: _imageBody(photo),
-                      ),
-                    ),
+          : Column(
+              children: [
+                Expanded(
+                  child: PageView.builder(
+                    controller: _pageController,
+                    onPageChanged: (i) => setState(() => _index = i),
+                    itemCount: _photos.length,
+                    itemBuilder: (_, i) {
+                      final photo = _photos[i];
+                      return LayoutBuilder(
+                        builder: (context, constraints) => Center(
+                          child: InteractiveViewer(
+                            minScale: 0.2,
+                            maxScale: 5,
+                            constrained: false,
+                            clipBehavior: Clip.none,
+                            child: SizedBox(
+                              width: constraints.maxWidth,
+                              height: constraints.maxHeight,
+                              child: _imageBody(photo),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
+                ),
+                if (_currentPhoto.attachmentId != null)
+                  PhotoPeopleOnPhotoBar(
+                    key: ValueKey<int>(_currentPhoto.attachmentId!),
+                    attachmentId: _currentPhoto.attachmentId!,
+                    threadId: _currentPhoto.threadId,
+                  ),
+              ],
             ),
     );
   }

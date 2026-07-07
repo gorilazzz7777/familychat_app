@@ -6,6 +6,7 @@ import '../../chat/presentation/widgets/chat_image_viewer.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import 'face_tagging_sheet.dart';
 import 'media_engagement_sheet.dart';
+import 'widgets/photo_people_on_photo_bar.dart';
 
 /// Полноэкранный просмотр фото из галереи с меню действий.
 class GalleryPhotoViewerScreen extends ConsumerStatefulWidget {
@@ -231,38 +232,49 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
           ),
         ],
       ),
-      body: Center(
-        child: PageView.builder(
-          controller: _pageController,
-          onPageChanged: (i) => setState(() => _index = i),
-          itemCount: _photos.length,
-          itemBuilder: (_, i) {
-            final p = _photos[i];
-            final tid = p['thread_id'];
-            if (tid is! int) {
-              return const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48);
-            }
-            return Center(
-              child: LayoutBuilder(
-                builder: (context, constraints) => InteractiveViewer(
-                  minScale: 0.2,
-                  maxScale: 5,
-                  constrained: false,
-                  clipBehavior: Clip.none,
-                  child: SizedBox(
-                    width: constraints.maxWidth,
-                    height: constraints.maxHeight,
-                    child: ChatNetworkImage(
-                      threadId: tid,
-                      attachment: p,
-                      fit: BoxFit.contain,
+      body: Column(
+        children: [
+          Expanded(
+            child: PageView.builder(
+              controller: _pageController,
+              onPageChanged: (i) => setState(() => _index = i),
+              itemCount: _photos.length,
+              itemBuilder: (_, i) {
+                final p = _photos[i];
+                final tid = p['thread_id'];
+                if (tid is! int) {
+                  return const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48);
+                }
+                return Center(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) => InteractiveViewer(
+                      minScale: 0.2,
+                      maxScale: 5,
+                      constrained: false,
+                      clipBehavior: Clip.none,
+                      child: SizedBox(
+                        width: constraints.maxWidth,
+                        height: constraints.maxHeight,
+                        child: ChatNetworkImage(
+                          threadId: tid,
+                          attachment: p,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ),
-            );
-          },
-        ),
+                );
+              },
+            ),
+          ),
+          if (attachmentId != null)
+            PhotoPeopleOnPhotoBar(
+              key: ValueKey<int>(attachmentId),
+              attachmentId: attachmentId,
+              profileUserId: widget.profileUserId,
+              threadId: threadId,
+            ),
+        ],
       ),
     );
   }

@@ -68,94 +68,99 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-          child: Row(
-            children: [
-              IconButton(
-                tooltip: 'Предыдущий месяц',
-                onPressed: _loading ? null : () => _shiftMonth(-1),
-                icon: const Icon(Icons.chevron_left),
-              ),
-              Expanded(
-                child: Text(
-                  _monthTitle(),
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Календарь'),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: 'Предыдущий месяц',
+                  onPressed: _loading ? null : () => _shiftMonth(-1),
+                  icon: const Icon(Icons.chevron_left),
+                ),
+                Expanded(
+                  child: Text(
+                    _monthTitle(),
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-              IconButton(
-                tooltip: 'Следующий месяц',
-                onPressed: _loading ? null : () => _shiftMonth(1),
-                icon: const Icon(Icons.chevron_right),
-              ),
-            ],
+                IconButton(
+                  tooltip: 'Следующий месяц',
+                  onPressed: _loading ? null : () => _shiftMonth(1),
+                  icon: const Icon(Icons.chevron_right),
+                ),
+              ],
+            ),
           ),
-        ),
-        Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _error != null
-                  ? Center(child: Text(_error!))
-                  : _events.isEmpty
-                      ? Center(
-                          child: Text(
-                            'В этом месяце нет праздников',
-                            style: theme.textTheme.bodyLarge?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                    ? Center(child: Text(_error!))
+                    : _events.isEmpty
+                        ? Center(
+                            child: Text(
+                              'В этом месяце нет праздников',
+                              style: theme.textTheme.bodyLarge?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          )
+                        : RefreshIndicator(
+                            onRefresh: _load,
+                            child: ListView.builder(
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                              itemCount: _events.length,
+                              itemBuilder: (context, i) {
+                                final e = _events[i];
+                                final isBirthday = e['kind'] == 'birthday';
+                                final date = e['date']?.toString() ?? '';
+                                final showDateHeader = i == 0 ||
+                                    _events[i - 1]['date']?.toString() != date;
+                                return Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (showDateHeader) ...[
+                                      if (i > 0) const SizedBox(height: 12),
+                                      Text(
+                                        _dayLabel(date),
+                                        style: theme.textTheme.labelLarge?.copyWith(
+                                          color: theme.colorScheme.primary,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                    ],
+                                    Card(
+                                      margin: const EdgeInsets.only(bottom: 8),
+                                      child: ListTile(
+                                        leading: Icon(
+                                          isBirthday
+                                              ? Icons.cake_outlined
+                                              : Icons.celebration_outlined,
+                                          color: isBirthday
+                                              ? theme.colorScheme.tertiary
+                                              : theme.colorScheme.primary,
+                                        ),
+                                        title: Text(e['title']?.toString() ?? ''),
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              },
                             ),
                           ),
-                        )
-                      : RefreshIndicator(
-                          onRefresh: _load,
-                          child: ListView.builder(
-                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                            itemCount: _events.length,
-                            itemBuilder: (context, i) {
-                              final e = _events[i];
-                              final isBirthday = e['kind'] == 'birthday';
-                              final date = e['date']?.toString() ?? '';
-                              final showDateHeader = i == 0 ||
-                                  _events[i - 1]['date']?.toString() != date;
-                              return Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (showDateHeader) ...[
-                                    if (i > 0) const SizedBox(height: 12),
-                                    Text(
-                                      _dayLabel(date),
-                                      style: theme.textTheme.labelLarge?.copyWith(
-                                        color: theme.colorScheme.primary,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                  ],
-                                  Card(
-                                    margin: const EdgeInsets.only(bottom: 8),
-                                    child: ListTile(
-                                      leading: Icon(
-                                        isBirthday
-                                            ? Icons.cake_outlined
-                                            : Icons.celebration_outlined,
-                                        color: isBirthday
-                                            ? theme.colorScheme.tertiary
-                                            : theme.colorScheme.primary,
-                                      ),
-                                      title: Text(e['title']?.toString() ?? ''),
-                                    ),
-                                  ),
-                                ],
-                              );
-                            },
-                          ),
-                        ),
-        ),
-      ],
+          ),
+        ],
+      ),
     );
   }
 }

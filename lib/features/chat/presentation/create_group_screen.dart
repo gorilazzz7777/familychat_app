@@ -70,10 +70,38 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
     }
   }
 
+  List<int> get _selectableMemberIds =>
+      _members.map((m) => m['user_id'] as int).toList();
+
+  bool get _allMembersSelected {
+    final ids = _selectableMemberIds;
+    return ids.isNotEmpty && ids.every(_selected.contains);
+  }
+
+  void _toggleSelectAllMembers() {
+    final ids = _selectableMemberIds;
+    setState(() {
+      if (_allMembersSelected) {
+        _selected.removeAll(ids);
+      } else {
+        _selected.addAll(ids);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Новая группа')),
+      appBar: AppBar(
+        title: const Text('Новая группа'),
+        actions: [
+          if (!_loading && _members.isNotEmpty)
+            TextButton(
+              onPressed: _toggleSelectAllMembers,
+              child: Text(_allMembersSelected ? 'Снять все' : 'Выбрать все'),
+            ),
+        ],
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Column(

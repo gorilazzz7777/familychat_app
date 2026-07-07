@@ -64,12 +64,34 @@ class _ChatForwardScreenState extends ConsumerState<ChatForwardScreen> {
     }
   }
 
+  List<int> get _selectableThreadIds => _threads.map(chatAsInt).whereType<int>().toList();
+
+  bool get _allThreadsSelected {
+    final ids = _selectableThreadIds;
+    return ids.isNotEmpty && ids.every(_selected.contains);
+  }
+
+  void _toggleSelectAllThreads() {
+    final ids = _selectableThreadIds;
+    setState(() {
+      if (_allThreadsSelected) {
+        _selected.removeAll(ids);
+      } else {
+        _selected.addAll(ids);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Переслать'),
         actions: [
+          TextButton(
+            onPressed: _selectableThreadIds.isEmpty ? null : _toggleSelectAllThreads,
+            child: Text(_allThreadsSelected ? 'Снять все' : 'Выбрать все'),
+          ),
           TextButton(
             onPressed: _selected.isEmpty || _sending ? null : _send,
             child: _sending

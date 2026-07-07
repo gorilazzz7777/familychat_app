@@ -284,28 +284,27 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   @override
   Widget build(BuildContext context) {
     final userId = widget.status['user_id'];
-    return Column(
-      children: [
-        TabBar(
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Профиль'),
+        bottom: TabBar(
           controller: _tabs,
           tabs: const [
             Tab(text: 'Основное'),
             Tab(text: 'Галерея'),
           ],
         ),
-        Expanded(
-          child: TabBarView(
-            controller: _tabs,
-            children: [
-              _buildMainTab(context),
-              if (userId is int)
-                ProfileGalleryTab(userId: userId, isOwnGallery: true)
-              else
-                const Center(child: Text('Галерея недоступна')),
-            ],
-          ),
-        ),
-      ],
+      ),
+      body: TabBarView(
+        controller: _tabs,
+        children: [
+          _buildMainTab(context),
+          if (userId is int)
+            ProfileGalleryTab(userId: userId, isOwnGallery: true)
+          else
+            const Center(child: Text('Галерея недоступна')),
+        ],
+      ),
     );
   }
 

@@ -711,6 +711,30 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     });
   }
 
+  List<int> get _selectableMessageIds => _messages
+      .map((m) => chatAsInt(m['id']))
+      .whereType<int>()
+      .where((id) => _messageById(id)?['_pending'] != true)
+      .toList();
+
+  bool get _allMessagesSelected {
+    final ids = _selectableMessageIds;
+    return ids.isNotEmpty && ids.every(_selectedMessageIds.contains);
+  }
+
+  void _toggleSelectAllMessages() {
+    final ids = _selectableMessageIds;
+    setState(() {
+      if (_allMessagesSelected) {
+        _selectedMessageIds.removeAll(ids);
+        if (_selectedMessageIds.isEmpty) _selectionMode = false;
+      } else {
+        _selectionMode = true;
+        _selectedMessageIds.addAll(ids);
+      }
+    });
+  }
+
   bool _canDeleteMessage(Map<String, dynamic> message) {
     return _isMine(message) && message['_pending'] != true;
   }
@@ -1020,6 +1044,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               ),
               title: Text('${_selectedMessageIds.length} выбрано'),
               actions: [
+                TextButton(
+                  onPressed: _selectableMessageIds.isEmpty ? null : _toggleSelectAllMessages,
+                  child: Text(_allMessagesSelected ? 'Снять все' : 'Выбрать все'),
+                ),
                 if (_canDeleteSelection)
                   IconButton(
                     tooltip: 'Удалить',

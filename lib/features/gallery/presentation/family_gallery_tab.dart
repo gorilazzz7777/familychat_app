@@ -1,11 +1,8 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
-import '../../profile/presentation/album_upload_file_bytes.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
 
@@ -62,156 +59,6 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
     if (created == true) {
       await _load();
     }
-  }
-
-  Future<void> _pickUploadDestination() async {
-    final destination = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.public_outlined),
-              title: const Text('В общую ленту'),
-              subtitle: const Text('Фото появится в семейной галерее и ленте'),
-              onTap: () => Navigator.pop(ctx, 'family_feed'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.person_outline),
-              title: const Text('Только в мою галерею'),
-              subtitle: const Text('Без события в ленте'),
-              onTap: () => Navigator.pop(ctx, 'my_gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.collections_bookmark_outlined),
-              title: const Text('В альбом'),
-              onTap: () => Navigator.pop(ctx, 'album'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (destination == null || !mounted) return;
-    int? albumPk;
-    if (destination == 'album') {
-      final customAlbums = _albums.where((a) => a['kind']?.toString() == 'custom').toList();
-      if (customAlbums.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Сначала создайте альбом')),
-        );
-        return;
-      }
-      final picked = await showModalBottomSheet<Map<String, dynamic>>(
-        context: context,
-        builder: (ctx) => SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            children: customAlbums
-                .map(
-                  (album) => ListTile(
-                    title: Text(album['title']?.toString() ?? 'Альбом'),
-                    onTap: () => Navigator.pop(ctx, album),
-                  ),
-                )
-                .toList(),
-          ),
-        ),
-      );
-      if (picked == null) return;
-      final id = picked['id']?.toString() ?? '';
-      if (!id.startsWith('custom:')) return;
-      albumPk = int.tryParse(id.substring(7));
-      if (albumPk == null) return;
-    }
-
-    final source = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Галерея телефона'),
-              onTap: () => Navigator.pop(ctx, 'gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: const Text('Файлы с телефона'),
-              onTap: () => Navigator.pop(ctx, 'files'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (source == null || !mounted) return;
-
-    final repo = ref.read(familychatRepositoryProvider);
-    if (source == 'gallery') {
-      final picker = ImagePicker();
-      final picked = await picker.pickMultiImage();
-      for (final file in picked) {
-        final bytes = await file.readAsBytes();
-        await repo.familyGalleryUpload(
-          bytes: bytes,
-          filename: file.name,
-          contentType: file.mimeType,
-          destination: destination,
-          albumPk: albumPk,
-        );
-      }
-    } else {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        allowMultiple: true,
-      );
-      for (final file in result?.files ?? const <PlatformFile>[]) {
-        final bytes = await readAlbumUploadFileBytes(file);
-        if (bytes == null) continue;
-        await repo.familyGalleryUpload(
-          bytes: bytes,
-          filename: file.name,
-          destination: destination,
-          albumPk: albumPk,
-        );
-      }
-    }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Фото загружены')),
-    );
-    await _load();
-  }
-
-  void _showAddMenu() {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.add_photo_alternate_outlined),
-              title: const Text('Добавить фото'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _pickUploadDestination();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.create_new_folder_outlined),
-              title: const Text('Создать альбом'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _createAlbum();
-              },
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   IconData _albumIcon(String? kind) {
@@ -292,9 +139,9 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showAddMenu,
-        icon: const Icon(Icons.add),
-        label: const Text('Добавить'),
+        onPressed: _createAlbum,
+        icon: const Icon(Icons.create_new_folder_outlined),
+        label: const Text('Альбом'),
       ),
     );
   }

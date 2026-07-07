@@ -148,6 +148,11 @@ class FamilyChatRepository {
     return (res.data ?? []).cast<Map<String, dynamic>>();
   }
 
+  Future<Map<String, dynamic>> familyTree() async {
+    final res = await _dio.get<Map<String, dynamic>>('familychat/members/tree/');
+    return res.data ?? {};
+  }
+
   Future<Map<String, dynamic>> calendar({
     required int year,
     required int month,

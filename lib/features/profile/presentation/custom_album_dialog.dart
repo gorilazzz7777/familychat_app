@@ -86,6 +86,30 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
 
   bool get _needsMembers => _accessMode == 'allow' || _accessMode == 'deny';
 
+  List<int> get _selectableMemberIds => _members
+      .map((m) {
+        final uid = m['user_id'];
+        return uid is int ? uid : int.tryParse('$uid');
+      })
+      .whereType<int>()
+      .toList();
+
+  bool get _allMembersSelected {
+    final ids = _selectableMemberIds;
+    return ids.isNotEmpty && ids.every(_selectedUserIds.contains);
+  }
+
+  void _toggleSelectAllMembers() {
+    final ids = _selectableMemberIds;
+    setState(() {
+      if (_allMembersSelected) {
+        _selectedUserIds.removeAll(ids);
+      } else {
+        _selectedUserIds.addAll(ids);
+      }
+    });
+  }
+
   Future<void> _save() async {
     final title = _title.text.trim();
     if (title.isEmpty) {
@@ -182,6 +206,15 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
               ),
               if (_needsMembers) ...[
                 const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: _loadingMembers || _selectableMemberIds.isEmpty
+                        ? null
+                        : _toggleSelectAllMembers,
+                    child: Text(_allMembersSelected ? 'Снять все' : 'Выбрать все'),
+                  ),
+                ),
                 if (_loadingMembers)
                   const Center(child: Padding(
                     padding: EdgeInsets.all(16),

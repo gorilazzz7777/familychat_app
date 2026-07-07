@@ -49,6 +49,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   bool _loading = true;
   bool _loadingMore = false;
   bool _addingPhotos = false;
+  bool _preparingUpload = false;
   bool _selectionMode = false;
   bool _searchMode = false;
   String? _error;
@@ -143,9 +144,28 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     return id is int ? id : int.tryParse('$id');
   }
 
+  void _beginPreparingUpload() {
+    setState(() {
+      _addingPhotos = true;
+      _preparingUpload = true;
+      _uploadTotal = 0;
+      _uploadDone = 0;
+      _uploadFailed = 0;
+    });
+  }
+
+  void _endPreparingIfIdle() {
+    if (!mounted || !_preparingUpload || _uploadTotal > 0) return;
+    setState(() {
+      _preparingUpload = false;
+      _addingPhotos = false;
+    });
+  }
+
   void _beginUploadSession(int total) {
     setState(() {
       _addingPhotos = true;
+      _preparingUpload = false;
       _uploadTotal = total;
       _uploadDone = 0;
       _uploadFailed = 0;
@@ -160,7 +180,10 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     _uploadPollTimer?.cancel();
     _uploadPollTimer = null;
     if (!mounted) return;
-    setState(() => _addingPhotos = false);
+    setState(() {
+      _addingPhotos = false;
+      _preparingUpload = false;
+    });
   }
 
   void _onUploadProgress({required bool success}) {
@@ -371,6 +394,24 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     });
   }
 
+  List<int> get _selectablePhotoIds => _photos.map(_photoId).whereType<int>().toList();
+
+  bool get _allPhotosSelected {
+    final ids = _selectablePhotoIds;
+    return ids.isNotEmpty && ids.every(_selectedPhotoIds.contains);
+  }
+
+  void _toggleSelectAllPhotos() {
+    final ids = _selectablePhotoIds;
+    setState(() {
+      if (_allPhotosSelected) {
+        _selectedPhotoIds.removeAll(ids);
+      } else {
+        _selectedPhotoIds.addAll(ids);
+      }
+    });
+  }
+
   void _togglePhotoSelection(Map<String, dynamic> photo) {
     final id = photo['id'] is int ? photo['id'] as int : int.tryParse('${photo['id']}');
     if (id == null) return;
@@ -492,6 +533,57 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     }
   }
 
+  Future<void> _removeSelectedFromAlbum() async {
+    if (_selectedPhotoIds.isEmpty) return;
+    final pk = widget.customAlbumPk;
+    if (pk == null) return;
+    final count = _selectedPhotoIds.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Убрать из альбома?'),
+        content: Text(
+          count == 1
+              ? 'Фото будет убрано из альбома «${widget.title}», но останется в галерее.'
+              : 'Выбранные фото ($count) будут убраны из альбома «${widget.title}», но останутся в галерее.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Убрать')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final repo = ref.read(familychatRepositoryProvider);
+    final ids = _selectedPhotoIds.toList();
+    var removed = 0;
+    var failed = 0;
+    for (final id in ids) {
+      try {
+        await repo.removePhotoFromCustomAlbum(widget.userId, pk, id);
+        removed++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    if (!mounted) return;
+    if (failed == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Убрано из альбома: $removed')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Убрано: $removed, ошибок: $failed')),
+      );
+    }
+    setState(() {
+      _selectedPhotoIds.clear();
+      _selectionMode = false;
+    });
+    await _load(reset: true);
+  }
+
   Future<void> _deleteAlbum() async {
     final pk = widget.customAlbumPk;
     if (pk == null) return;
@@ -540,31 +632,45 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   Future<void> _uploadFromDevice(ImageSource source) async {
     final pk = widget.customAlbumPk;
     if (pk == null) return;
-    final picker = ImagePicker();
-    final pickedItems = source == ImageSource.gallery
-        ? await picker.pickMultiImage(requestFullMetadata: true)
-        : [
-            if (await picker.pickImage(
-              source: source,
-              requestFullMetadata: true,
-            )
-                case final xfile?)
-              xfile,
-          ];
-    if (pickedItems.isEmpty || !mounted) return;
-    await _uploadDeviceImages(albumPk: pk, pickedItems: pickedItems);
+    _beginPreparingUpload();
+    await Future<void>.delayed(Duration.zero);
+    try {
+      final picker = ImagePicker();
+      final pickedItems = source == ImageSource.gallery
+          ? await picker.pickMultiImage(requestFullMetadata: true)
+          : [
+              if (await picker.pickImage(
+                source: source,
+                requestFullMetadata: true,
+              )
+                  case final xfile?)
+                xfile,
+            ];
+      if (!mounted) return;
+      if (pickedItems.isEmpty) return;
+      await _uploadDeviceImages(albumPk: pk, pickedItems: pickedItems);
+    } finally {
+      _endPreparingIfIdle();
+    }
   }
 
   Future<void> _uploadFromPhoneFiles() async {
     final pk = widget.customAlbumPk;
     if (pk == null) return;
-    final picked = await FilePicker.platform.pickFiles(
-      allowMultiple: true,
-      withData: kIsWeb,
-      type: FileType.image,
-    );
-    if (picked == null || picked.files.isEmpty || !mounted) return;
-    await _uploadPhoneFiles(albumPk: pk, files: picked.files);
+    _beginPreparingUpload();
+    await Future<void>.delayed(Duration.zero);
+    try {
+      final picked = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        withData: kIsWeb,
+        type: FileType.image,
+      );
+      if (!mounted) return;
+      if (picked == null || picked.files.isEmpty) return;
+      await _uploadPhoneFiles(albumPk: pk, files: picked.files);
+    } finally {
+      _endPreparingIfIdle();
+    }
   }
 
   Future<void> _showAddPhotosSheet() async {
@@ -611,11 +717,50 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     }
   }
 
+  Widget _buildPreparingOverlay() {
+    if (!_preparingUpload) return const SizedBox.shrink();
+    return Positioned.fill(
+      child: AbsorbPointer(
+        child: ColoredBox(
+          color: Colors.black.withValues(alpha: 0.35),
+          child: Center(
+            child: Material(
+              elevation: 4,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Обработка выбранных фото...',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Это может занять некоторое время',
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final canManageCustom = widget.canManage && widget.isCustomAlbum;
 
-    return Scaffold(
+    return Stack(
+      children: [
+        Scaffold(
       appBar: AppBar(
         title: _searchMode
             ? TextField(
@@ -637,7 +782,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    '$_uploadDone/$_uploadTotal',
+                    _preparingUpload ? 'Подготовка...' : '$_uploadDone/$_uploadTotal',
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                   const SizedBox(width: 8),
@@ -672,7 +817,18 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
             onPressed: _toggleSelectionMode,
             icon: Icon(_selectionMode ? Icons.close : Icons.checklist_outlined),
           ),
-          if (canManageCustom)
+          if (_selectionMode)
+            TextButton(
+              onPressed: _selectablePhotoIds.isEmpty ? null : _toggleSelectAllPhotos,
+              child: Text(_allPhotosSelected ? 'Снять все' : 'Выбрать все'),
+            ),
+          if (_selectionMode && canManageCustom)
+            IconButton(
+              tooltip: 'Убрать из альбома',
+              onPressed: _selectedPhotoIds.isEmpty ? null : _removeSelectedFromAlbum,
+              icon: const Icon(Icons.remove_circle_outline),
+            ),
+          if (canManageCustom && !_selectionMode)
             PopupMenuButton<String>(
               onSelected: (value) {
                 switch (value) {
@@ -684,7 +840,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               },
               itemBuilder: (ctx) => [
                 const PopupMenuItem(value: 'edit', child: Text('Редактировать')),
-                const PopupMenuItem(value: 'delete', child: Text('Удалить')),
+                const PopupMenuItem(value: 'delete', child: Text('Удалить альбом')),
               ],
             ),
         ],
@@ -734,7 +890,19 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                               children: [
                                 const CircularProgressIndicator(),
                                 const SizedBox(height: 16),
-                                Text('Загрузка $_uploadDone из $_uploadTotal...'),
+                                Text(
+                                  _preparingUpload
+                                      ? 'Обработка выбранных фото...'
+                                      : 'Загрузка $_uploadDone из $_uploadTotal...',
+                                ),
+                                if (_preparingUpload) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Это может занять некоторое время',
+                                    style: Theme.of(context).textTheme.bodySmall,
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
                                 if (_uploadFailed > 0) ...[
                                   const SizedBox(height: 8),
                                   Text('Ошибок: $_uploadFailed'),
@@ -877,6 +1045,9 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                         ),
                       ],
                     ),
+        ),
+        _buildPreparingOverlay(),
+      ],
     );
   }
 }

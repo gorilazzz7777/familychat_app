@@ -150,6 +150,54 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     }
   }
 
+  List<int> get _selectableThreadIds => _threads.map(chatAsInt).whereType<int>().toList();
+
+  List<int> get _selectableAlbumPks => _albums
+      .map((a) {
+        final idStr = a['id']?.toString() ?? '';
+        if (!idStr.startsWith('custom:')) return null;
+        return int.tryParse(idStr.substring(7));
+      })
+      .whereType<int>()
+      .toList();
+
+  bool get _allThreadsSelected {
+    final ids = _selectableThreadIds;
+    return ids.isNotEmpty && ids.every(_selectedThreads.contains);
+  }
+
+  bool get _allAlbumsSelected {
+    final ids = _selectableAlbumPks;
+    return ids.isNotEmpty && ids.every(_selectedAlbumPks.contains);
+  }
+
+  void _toggleSelectAllTargets() {
+    if (_tabIndex == 0) {
+      final ids = _selectableThreadIds;
+      setState(() {
+        if (_allThreadsSelected) {
+          _selectedThreads.removeAll(ids);
+        } else {
+          _selectedThreads.addAll(ids);
+        }
+      });
+      return;
+    }
+    final ids = _selectableAlbumPks;
+    setState(() {
+      if (_allAlbumsSelected) {
+        _selectedAlbumPks.removeAll(ids);
+      } else {
+        _selectedAlbumPks.addAll(ids);
+      }
+    });
+  }
+
+  bool get _allTargetsSelected => _tabIndex == 0 ? _allThreadsSelected : _allAlbumsSelected;
+
+  bool get _hasSelectableTargets =>
+      _tabIndex == 0 ? _selectableThreadIds.isNotEmpty : _selectableAlbumPks.isNotEmpty;
+
   Widget _buildTargetsList() {
     if (_tabIndex == 0) {
       if (_threads.isEmpty) return const Center(child: Text('Нет доступных чатов'));
@@ -215,6 +263,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
       appBar: AppBar(
         title: const Text('Поделиться'),
         actions: [
+          TextButton(
+            onPressed: _hasSelectableTargets ? _toggleSelectAllTargets : null,
+            child: Text(_allTargetsSelected ? 'Снять все' : 'Выбрать все'),
+          ),
           TextButton(
             onPressed: !_canSend || _sending ? null : _send,
             child: _sending

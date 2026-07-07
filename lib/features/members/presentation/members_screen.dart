@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import 'family_tree_tab.dart';
 import 'member_profile_screen.dart';
 
 class MembersScreen extends ConsumerStatefulWidget {
@@ -19,14 +20,23 @@ class MembersScreen extends ConsumerStatefulWidget {
   ConsumerState<MembersScreen> createState() => _MembersScreenState();
 }
 
-class _MembersScreenState extends ConsumerState<MembersScreen> {
+class _MembersScreenState extends ConsumerState<MembersScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabs;
   List<Map<String, dynamic>> _members = [];
   bool _loading = true;
 
   @override
   void initState() {
     super.initState();
+    _tabs = TabController(length: 2, vsync: this);
     _load();
+  }
+
+  @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -62,34 +72,54 @@ class _MembersScreenState extends ConsumerState<MembersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView.builder(
-        itemCount: _members.length,
-        itemBuilder: (context, i) {
-          final m = _members[i];
-          final name = m['display_name']?.toString() ?? '';
-          final avatarUrl = m['avatar_url']?.toString();
-          final birthday = m['birthday_display']?.toString();
-          final subtitleParts = <String>[
-            if (m['kinship_label'] != null) m['kinship_label']!.toString(),
-            if (birthday != null && birthday.isNotEmpty) birthday,
-          ];
-          return ListTile(
-            leading: ChatAvatar(
-              name: name,
-              avatarUrl: avatarUrl?.isNotEmpty == true ? avatarUrl : null,
-              radius: 22,
-            ),
-            title: Text(name),
-            subtitle: Text(subtitleParts.join(' · ')),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _openMember(m),
-          );
-        },
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Семья'),
+        bottom: TabBar(
+          controller: _tabs,
+          tabs: const [
+            Tab(text: 'Участники'),
+            Tab(text: 'Дерево'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabs,
+        children: [
+          _loading
+              ? const Center(child: CircularProgressIndicator())
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView.builder(
+                    itemCount: _members.length,
+                    itemBuilder: (context, i) {
+                      final m = _members[i];
+                      final name = m['display_name']?.toString() ?? '';
+                      final avatarUrl = m['avatar_url']?.toString();
+                      final birthday = m['birthday_display']?.toString();
+                      final subtitleParts = <String>[
+                        if (m['kinship_label'] != null) m['kinship_label']!.toString(),
+                        if (birthday != null && birthday.isNotEmpty) birthday,
+                      ];
+                      return ListTile(
+                        leading: ChatAvatar(
+                          name: name,
+                          avatarUrl: avatarUrl?.isNotEmpty == true ? avatarUrl : null,
+                          radius: 22,
+                        ),
+                        title: Text(name),
+                        subtitle: Text(subtitleParts.join(' · ')),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => _openMember(m),
+                      );
+                    },
+                  ),
+                ),
+          FamilyTreeTab(
+            currentUserId: widget.currentUserId,
+            onOpenOwnProfile: widget.onOpenOwnProfile,
+          ),
+        ],
       ),
     );
   }
