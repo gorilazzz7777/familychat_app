@@ -48,7 +48,6 @@ class FamilyChatRealtime {
         debugPrint('familychat ws connect: $uri');
       }
       _channel = WebSocketChannel.connect(uri);
-      _connected = true;
       _sub = _channel!.stream.listen(
         (data) {
           _reconnectAttempt = 0;
@@ -70,7 +69,18 @@ class FamilyChatRealtime {
           _connected = false;
           _scheduleReconnect();
         },
+        cancelOnError: false,
       );
+      try {
+        await _channel!.ready.timeout(const Duration(seconds: 20));
+        _connected = true;
+        _reconnectAttempt = 0;
+      } catch (e) {
+        debugPrint('familychat ws connect error: $e');
+        _connected = false;
+        await _closeChannel();
+        _scheduleReconnect();
+      }
     } catch (e) {
       debugPrint('familychat ws connect error: $e');
       _connected = false;

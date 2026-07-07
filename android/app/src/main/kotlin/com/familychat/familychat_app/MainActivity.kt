@@ -51,14 +51,10 @@ class MainActivity : FlutterActivity() {
                             TAG,
                             "readPendingImageBytes: uri=$uri bytes=${bytes?.size ?: 0}",
                         )
-                        if (bytes == null || bytes.isEmpty()) {
-                            result.success(null)
-                        } else {
-                            result.success(bytes)
-                        }
+                        result.success(if (bytes == null || bytes.isEmpty()) null else bytes)
                     } catch (e: Exception) {
-                        Log.e(TAG, "readPendingImageBytes failed", e)
-                        result.error("READ_FAILED", e.message, null)
+                        Log.w(TAG, "readPendingImageBytes failed, dart will use cache", e)
+                        result.success(null)
                     }
                 }
 
@@ -119,24 +115,19 @@ class MainActivity : FlutterActivity() {
 
     private fun readUriBytesWithOriginal(uri: Uri): ByteArray? {
         val resolver = applicationContext.contentResolver
-        val canRequireOriginal =
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                hasMediaLocationAccess()
-        val mediaUri =
-            if (canRequireOriginal) {
-                try {
-                    MediaStore.setRequireOriginal(uri)
-                } catch (e: Exception) {
-                    Log.w(TAG, "setRequireOriginal failed for $uri", e)
-                    uri
-                }
-            } else {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    Log.i(TAG, "readUriBytes: ACCESS_MEDIA_LOCATION not granted, reading without requireOriginal")
-                }
-                uri
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasMediaLocationAccess()) {
+            try {
+                val originalUri = MediaStore.setRequireOriginal(uri)
+                return resolver.openInputStream(originalUri)?.use { input -> input.readBytes() }
+            } catch (e: SecurityException) {
+                Log.w(TAG, "requireOriginal denied for $uri, fallback to plain uri", e)
+            } catch (e: Exception) {
+                Log.w(TAG, "requireOriginal read failed for $uri, fallback to plain uri", e)
             }
-        return resolver.openInputStream(mediaUri)?.use { input -> input.readBytes() }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            Log.i(TAG, "readUriBytes: ACCESS_MEDIA_LOCATION not granted, reading without requireOriginal")
+        }
+        return resolver.openInputStream(uri)?.use { input -> input.readBytes() }
     }
 
     private fun hasMediaLocationAccess(): Boolean {
