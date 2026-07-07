@@ -75,7 +75,13 @@ Future<void> _ensureMediaLocationAccess() async {
   if (!Platform.isAndroid) return;
   final status = await Permission.accessMediaLocation.status;
   if (status.isGranted) return;
-  await Permission.accessMediaLocation.request();
+  final result = await Permission.accessMediaLocation.request();
+  if (kDebugMode && !result.isGranted) {
+    debugPrint(
+      'share_bytes: ACCESS_MEDIA_LOCATION not granted ($result); '
+      'will use cache or photo_manager fallback',
+    );
+  }
 }
 
 Uint8List? _decodeBytes(Object? raw) {

@@ -1,11 +1,14 @@
 package com.familychat.familychat_app
 
+import android.Manifest
 import android.content.ClipData
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -116,8 +119,11 @@ class MainActivity : FlutterActivity() {
 
     private fun readUriBytesWithOriginal(uri: Uri): ByteArray? {
         val resolver = applicationContext.contentResolver
+        val canRequireOriginal =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                hasMediaLocationAccess()
         val mediaUri =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (canRequireOriginal) {
                 try {
                     MediaStore.setRequireOriginal(uri)
                 } catch (e: Exception) {
@@ -125,8 +131,19 @@ class MainActivity : FlutterActivity() {
                     uri
                 }
             } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    Log.i(TAG, "readUriBytes: ACCESS_MEDIA_LOCATION not granted, reading without requireOriginal")
+                }
                 uri
             }
         return resolver.openInputStream(mediaUri)?.use { input -> input.readBytes() }
+    }
+
+    private fun hasMediaLocationAccess(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_MEDIA_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
     }
 }
