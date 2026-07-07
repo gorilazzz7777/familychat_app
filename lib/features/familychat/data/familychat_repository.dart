@@ -169,6 +169,69 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> calendarAgenda({required int year}) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/calendar/',
+      queryParameters: {'year': year, 'agenda': '1'},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> fetchCalendarEvent(int eventId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/calendar/events/$eventId/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> createCalendarEvent(Map<String, dynamic> body) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/calendar/events/',
+      data: body,
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> updateCalendarEvent(
+    int eventId,
+    Map<String, dynamic> body,
+  ) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/calendar/events/$eventId/',
+      data: body,
+    );
+    return res.data!;
+  }
+
+  Future<void> deleteCalendarEvent(int eventId) async {
+    await _dio.delete('familychat/calendar/events/$eventId/');
+  }
+
+  Future<Map<String, dynamic>> fetchCalendarAlbumPhotoSync(int albumPk) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/calendar/albums/$albumPk/photo-sync/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> registerCalendarSyncedAssets(
+    int albumPk,
+    List<String> deviceAssetIds,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/calendar/albums/$albumPk/photo-sync/',
+      data: {'device_asset_ids': deviceAssetIds},
+    );
+    return res.data!;
+  }
+
+  Future<List<Map<String, dynamic>>> activeCalendarPhotoSyncs() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/calendar/photo-sync/active/',
+    );
+    return (res.data?['events'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+  }
+
   Future<List<Map<String, dynamic>>> chatThreads() async {
     final res = await _dio.get<Map<String, dynamic>>('familychat/chat/threads/');
     return (res.data?['threads'] as List?)?.cast<Map<String, dynamic>>() ?? [];

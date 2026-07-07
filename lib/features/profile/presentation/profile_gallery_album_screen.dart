@@ -8,6 +8,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../calendar/data/calendar_photo_sync_service.dart';
+import '../../calendar/presentation/calendar_photo_pick_confirm_screen.dart';
 import 'album_upload_file_bytes.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
@@ -63,6 +65,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   int _uploadTotal = 0;
   Timer? _uploadPollTimer;
   bool _uploadPolling = false;
+  CalendarPhotoSyncInfo? _calendarSyncInfo;
+  bool _calendarSyncRunning = false;
   static const _pageSize = 60;
   static const _maxUploadCount = 500;
   static const _galleryAddChunkSize = 50;
@@ -72,6 +76,11 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   void initState() {
     super.initState();
     _load(reset: true);
+    if (widget.isCustomAlbum) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_initCalendarPhotoSync());
+      });
+    }
   }
 
   @override
@@ -79,6 +88,153 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     _uploadPollTimer?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _initCalendarPhotoSync() async {
+    final pk = widget.customAlbumPk;
+    if (pk == null || !widget.canManage) return;
+    final service = CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
+    final info = await service.fetchAlbumSyncInfo(pk);
+    if (!mounted) return;
+    setState(() => _calendarSyncInfo = info);
+    if (info != null &&
+        CalendarPhotoSyncService.isAndroidNative &&
+        info.autoSyncPhotos &&
+        info.syncActive) {
+      await _runCalendarAndroidSync(silent: true);
+    }
+  }
+
+  Future<void> _runCalendarAndroidSync({bool silent = false}) async {
+    final pk = widget.customAlbumPk;
+    final info = _calendarSyncInfo;
+    if (pk == null || info == null || _calendarSyncRunning) return;
+    setState(() => _calendarSyncRunning = true);
+    try {
+      final service = CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
+      final uploaded = await service.syncAndroidCameraPhotos(
+        userId: widget.userId,
+        info: info,
+      );
+      final refreshed = await service.fetchAlbumSyncInfo(pk);
+      if (!mounted) return;
+      setState(() => _calendarSyncInfo = refreshed ?? info);
+      if (uploaded > 0) {
+        await _load(reset: true);
+        if (!mounted) return;
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Добавлено фото: $uploaded')),
+          );
+        }
+      } else if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Новых фото с камеры не найдено')),
+        );
+      }
+    } catch (e) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка синхронизации: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _calendarSyncRunning = false);
+    }
+  }
+
+  Future<void> _uploadCalendarPhotosFromPhone() async {
+    final pk = widget.customAlbumPk;
+    final info = _calendarSyncInfo;
+    if (pk == null || info == null) return;
+    final service = CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
+    final picked = await service.pickWebPhotosWithDateFilter(info);
+    if (!mounted || picked.isEmpty) return;
+    final selected = await Navigator.of(context).push<List<CalendarDevicePhoto>>(
+      MaterialPageRoute(
+        builder: (_) => CalendarPhotoPickConfirmScreen(
+          info: info,
+          photos: picked,
+        ),
+      ),
+    );
+    if (!mounted || selected == null || selected.isEmpty) return;
+    setState(() => _addingPhotos = true);
+    try {
+      final uploaded = await service.uploadDevicePhotos(
+        userId: widget.userId,
+        albumPk: pk,
+        photos: selected,
+        alreadySynced: info.syncedDeviceAssetIds,
+      );
+      final refreshed = await service.fetchAlbumSyncInfo(pk);
+      if (!mounted) return;
+      setState(() => _calendarSyncInfo = refreshed ?? info);
+      if (uploaded > 0) {
+        await _load(reset: true);
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Загружено фото: $uploaded')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка загрузки: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _addingPhotos = false);
+    }
+  }
+
+  Widget _buildCalendarSyncBanner() {
+    final info = _calendarSyncInfo;
+    if (info == null || !widget.canManage) return const SizedBox.shrink();
+
+    final isAndroid = CalendarPhotoSyncService.isAndroidNative;
+    final showWebUpload = kIsWeb;
+    final showAndroidSync = isAndroid && info.syncActive;
+
+    if (!showWebUpload && !showAndroidSync) return const SizedBox.shrink();
+
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                info.autoSyncPhotos && isAndroid
+                    ? 'Альбом события: фото с камеры подтягиваются автоматически'
+                    : 'Альбом события: можно добавить фото с телефона',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            if (showWebUpload)
+              TextButton(
+                onPressed: _addingPhotos || _calendarSyncRunning
+                    ? null
+                    : _uploadCalendarPhotosFromPhone,
+                child: const Text('Загрузить'),
+              ),
+            if (showAndroidSync)
+              TextButton(
+                onPressed: _addingPhotos || _calendarSyncRunning
+                    ? null
+                    : () => _runCalendarAndroidSync(),
+                child: _calendarSyncRunning
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Синхронизировать'),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _load({required bool reset}) async {
@@ -863,7 +1019,11 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                       : const Icon(Icons.add_photo_alternate_outlined),
                 )
               : null,
-      body: _loading
+      body: Column(
+        children: [
+          _buildCalendarSyncBanner(),
+          Expanded(
+            child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? Center(
@@ -1045,7 +1205,10 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                         ),
                       ],
                     ),
-        ),
+          ),
+        ],
+      ),
+    ),
         _buildPreparingOverlay(),
       ],
     );

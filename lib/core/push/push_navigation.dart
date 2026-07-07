@@ -1,17 +1,25 @@
 import 'package:flutter/material.dart';
 
+import '../../features/calendar/presentation/calendar_screen.dart';
 import '../../features/chat/presentation/chat_conversation_screen.dart';
 
 final familyChatNavigatorKey = GlobalKey<NavigatorState>();
 
 /// Отложенный переход, если приложение ещё не готово (cold start по push).
 Map<String, dynamic>? pendingChatPushData;
+Map<String, dynamic>? pendingCalendarPushData;
 
 void flushPendingChatPush() {
   final data = pendingChatPushData;
-  if (data == null) return;
-  pendingChatPushData = null;
-  openChatFromPushData(data);
+  if (data != null) {
+    pendingChatPushData = null;
+    openChatFromPushData(data);
+  }
+  final calendar = pendingCalendarPushData;
+  if (calendar != null) {
+    pendingCalendarPushData = null;
+    openCalendarFromPushData(calendar);
+  }
 }
 
 void openChatFromPushData(Map<String, dynamic> data) {
@@ -40,6 +48,22 @@ void openChatFromPushData(Map<String, dynamic> data) {
         peerUserId: peerUserId,
         initialMessageId: messageId,
       ),
+    ),
+  );
+}
+
+void openCalendarFromPushData(Map<String, dynamic> data) {
+  if (data['type']?.toString() != 'familychat_calendar_reminder') return;
+
+  final nav = familyChatNavigatorKey.currentState;
+  if (nav == null) {
+    pendingCalendarPushData = Map<String, dynamic>.from(data);
+    return;
+  }
+
+  nav.push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => const CalendarScreen(),
     ),
   );
 }

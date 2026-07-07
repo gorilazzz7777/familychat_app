@@ -8,6 +8,7 @@ import 'package:share_handler/share_handler.dart';
 import '../core/push/push_navigation.dart';
 import '../core/providers/app_providers.dart';
 import '../core/share/incoming_share_bus.dart';
+import '../features/calendar/data/calendar_photo_sync_service.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/data/chat_unread_providers.dart';
 import '../features/chat/data/familychat_realtime.dart';
@@ -58,6 +59,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
     WidgetsBinding.instance.addPostFrameCallback((_) {
       flushPendingChatPush();
       _openPendingShareIfAny();
+      final userId = _currentUserId;
+      if (userId != null) {
+        unawaited(
+          runActiveAndroidCalendarSync(
+            repo: ref.read(familychatRepositoryProvider),
+            userId: userId,
+          ),
+        );
+      }
     });
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
   }
@@ -86,6 +96,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
+      final userId = _currentUserId;
+      if (userId != null) {
+        unawaited(
+          runActiveAndroidCalendarSync(
+            repo: ref.read(familychatRepositoryProvider),
+            userId: userId,
+          ),
+        );
+      }
     }
   }
 

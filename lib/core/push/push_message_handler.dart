@@ -35,6 +35,13 @@ void handleFamilyChatRemoteMessage(
     }
   }
 
+  if (type == 'familychat_calendar_reminder') {
+    if (openedFromTap) {
+      openCalendarFromPushData(data);
+      return;
+    }
+  }
+
   if (openedFromTap) return;
 
   final notification = message.notification;
@@ -58,7 +65,12 @@ void handleFamilyChatRemoteMessage(
               label: 'Открыть',
               onPressed: () => openChatFromPushData(pushData),
             )
-          : null,
+          : type == 'familychat_calendar_reminder'
+              ? SnackBarAction(
+                  label: 'Календарь',
+                  onPressed: () => openCalendarFromPushData(pushData),
+                )
+              : null,
     ),
   );
 }
