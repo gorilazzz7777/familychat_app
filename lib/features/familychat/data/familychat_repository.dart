@@ -308,6 +308,15 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<List<Map<String, dynamic>>> threadParticipants(int threadId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/members/',
+    );
+    final raw = res.data?['participants'];
+    if (raw is! List) return [];
+    return raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
   Future<ThreadMessagesPage> threadMessages(
     int threadId, {
     int limit = 20,

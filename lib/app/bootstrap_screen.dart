@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers/app_providers.dart';
 import '../core/routing/app_uri_parser.dart';
+import '../core/push/push_navigation.dart';
 import '../core/session/auth_session_bus.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/chat/data/familychat_realtime.dart';
@@ -168,6 +169,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   }
 
   Future<void> _logout() async {
+    final nav = familyChatNavigatorKey.currentState;
+    if (nav != null && nav.canPop()) {
+      nav.popUntil((route) => route.isFirst);
+    }
     await FamilyChatRealtime.instance.disconnect();
     PushRegistrationService.resetSession();
     await ref.read(authRepositoryProvider).logout();

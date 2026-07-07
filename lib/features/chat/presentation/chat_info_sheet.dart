@@ -3,7 +3,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../members/presentation/member_profile_screen.dart';
+import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'widgets/chat_network_image.dart';
+
+String chatParticipantCountLabel(int count) {
+  final mod10 = count % 10;
+  final mod100 = count % 100;
+  if (mod100 >= 11 && mod100 <= 14) return '$count участников';
+  if (mod10 == 1) return '$count участник';
+  if (mod10 >= 2 && mod10 <= 4) return '$count участника';
+  return '$count участников';
+}
 
 typedef ChatGoToMessage = Future<void> Function(int messageId);
 typedef ChatOpenImage = void Function({
@@ -58,14 +69,20 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   List<Map<String, dynamic>> _media = [];
   List<Map<String, dynamic>> _files = [];
   List<Map<String, dynamic>> _links = [];
+  List<Map<String, dynamic>> _participants = [];
   bool _loading = true;
+
+  bool get _showParticipants =>
+      (widget.kind == 'group' || widget.kind == 'family') && !widget.hasLeft;
+
+  int get _tabCount => _showParticipants ? 4 : 3;
 
   @override
   void initState() {
     super.initState();
     _title = widget.title;
     _customTitle = widget.customTitle;
-    _tabs = TabController(length: 3, vsync: this);
+    _tabs = TabController(length: _tabCount, vsync: this);
     _load();
   }
 
@@ -78,21 +95,39 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   Future<void> _load() async {
     final repo = ref.read(familychatRepositoryProvider);
     try {
-      final results = await Future.wait([
+      final futures = <Future<dynamic>>[
         repo.threadMedia(widget.threadId),
         repo.threadFiles(widget.threadId),
         repo.threadLinks(widget.threadId),
-      ]);
+      ];
+      if (_showParticipants) {
+        futures.add(repo.threadParticipants(widget.threadId));
+      }
+      final results = await Future.wait(futures);
       if (!mounted) return;
       setState(() {
-        _media = results[0];
-        _files = results[1];
-        _links = results[2];
+        _media = (results[0] as List).cast<Map<String, dynamic>>();
+        _files = (results[1] as List).cast<Map<String, dynamic>>();
+        _links = (results[2] as List).cast<Map<String, dynamic>>();
+        if (_showParticipants) {
+          _participants = (results[3] as List).cast<Map<String, dynamic>>();
+        }
         _loading = false;
       });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _reloadParticipants() async {
+    if (!_showParticipants) return;
+    try {
+      final list = await ref.read(familychatRepositoryProvider).threadParticipants(
+            widget.threadId,
+          );
+      if (!mounted) return;
+      setState(() => _participants = list);
+    } catch (_) {}
   }
 
   Future<void> _mute(String key) async {
@@ -202,7 +237,11 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   Future<void> _addMembers() async {
     if (widget.kind != 'group') return;
     final members = await ref.read(familychatRepositoryProvider).members();
-    final existing = widget.participantUserIds.toSet();
+    final existing = _participants
+        .map((p) => p['user_id'])
+        .map((id) => id is int ? id : int.tryParse('$id'))
+        .whereType<int>()
+        .toSet();
     final status = await ref.read(familychatRepositoryProvider).status();
     final myUserId = status['user_id'] is int ? status['user_id'] as int : null;
     final candidates = members.where((m) {
@@ -226,6 +265,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
             selected.toList(),
           );
       if (!mounted) return;
+      await _reloadParticipants();
       widget.onMembershipChanged?.call();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Добавлено: ${selected.length}')),
@@ -236,6 +276,14 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         SnackBar(content: Text('Ошибка: $e')),
       );
     }
+  }
+
+  Future<void> _openParticipantProfile(int userId) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MemberProfileScreen(userId: userId),
+      ),
+    );
   }
 
   Future<void> _showMuteOptions() async {
@@ -344,6 +392,16 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
               child: Column(
                 children: [
                   Text(_title, style: Theme.of(context).textTheme.titleLarge),
+                  if (_showParticipants && _participants.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        chatParticipantCountLabel(_participants.length),
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ),
                   if (_customTitle.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
@@ -395,10 +453,12 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
             ),
             TabBar(
               controller: _tabs,
-              tabs: const [
-                Tab(text: 'Галерея'),
-                Tab(text: 'Ссылки'),
-                Tab(text: 'Файлы'),
+              isScrollable: _showParticipants,
+              tabs: [
+                if (_showParticipants) const Tab(text: 'Участники'),
+                const Tab(text: 'Галерея'),
+                const Tab(text: 'Ссылки'),
+                const Tab(text: 'Файлы'),
               ],
             ),
             Expanded(
@@ -407,6 +467,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                   : TabBarView(
                       controller: _tabs,
                       children: [
+                        if (_showParticipants) _participantsTab(),
                         _media.isEmpty
                             ? const Center(child: Text('Нет изображений'))
                             : GridView.builder(
@@ -497,6 +558,39 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       ),
     );
   }
+
+  Widget _participantsTab() {
+    if (_participants.isEmpty) {
+      return const Center(child: Text('Нет участников'));
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      itemCount: _participants.length,
+      separatorBuilder: (_, __) => Divider(
+        height: 1,
+        indent: 72,
+        color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.4),
+      ),
+      itemBuilder: (context, index) {
+        final participant = _participants[index];
+        final name = participant['display_name']?.toString() ?? 'Участник';
+        final uid = participant['user_id'];
+        final userId = uid is int ? uid : int.tryParse('$uid');
+        if (userId == null) return const SizedBox.shrink();
+        return ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+          leading: ChatAvatar(
+            name: name,
+            avatarUrl: participant['avatar_url']?.toString(),
+            radius: 24,
+          ),
+          title: Text(name),
+          trailing: const Icon(Icons.chevron_right, size: 20),
+          onTap: () => _openParticipantProfile(userId),
+        );
+      },
+    );
+  }
 }
 
 class _AddMembersDialog extends StatefulWidget {
@@ -543,6 +637,11 @@ class _AddMembersDialogState extends State<_AddMembersDialog> {
                         }
                       });
                     },
+                    secondary: ChatAvatar(
+                      name: name,
+                      avatarUrl: member['avatar_url']?.toString(),
+                      radius: 20,
+                    ),
                     title: Text(name),
                   );
                 },

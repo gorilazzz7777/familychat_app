@@ -184,7 +184,9 @@ class _BirthdayDetailScreenState extends ConsumerState<BirthdayDetailScreen> {
                         child: Padding(
                           padding: const EdgeInsets.all(16),
                           child: Text(
-                            'Группа подготовки уже создана. Чтобы не участвовать, покиньте чат в списке групп.',
+                            _data?['is_chat_participant'] == true
+                                ? 'Группа подготовки уже создана. Чтобы не участвовать, покиньте чат в списке групп.'
+                                : 'Группа подготовки создана. Именинник подключится в день праздника — чат откроется, когда вас добавят в участники.',
                             style: theme.textTheme.bodyMedium,
                           ),
                         ),

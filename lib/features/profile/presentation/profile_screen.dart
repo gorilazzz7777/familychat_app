@@ -241,7 +241,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ],
       ),
     );
-    if (ok == true) await widget.onLogout();
+    if (ok != true || !mounted) return;
+    await widget.onLogout();
   }
 
   Future<void> _confirmDeleteAccount() async {

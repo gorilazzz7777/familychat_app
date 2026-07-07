@@ -29,6 +29,7 @@ import 'widgets/chat_message_search_sheet.dart';
 import 'widgets/chat_network_image.dart';
 import 'widgets/chat_pending_file_chip.dart';
 import 'widgets/chat_reply_compose_bar.dart';
+import 'widgets/chat_system_message_banner.dart';
 
 class _PendingFileDraft {
   const _PendingFileDraft({
@@ -107,6 +108,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _loadingOlder = false;
   bool _hasMoreOlder = false;
   bool _offlineMode = false;
+  String? _loadError;
   int? _currentUserId;
   int? _highlightMessageId;
   int? _lastMarkedReadId;
@@ -145,6 +147,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _loading = false;
     } else {
       _init();
+      if (_isGroupLike) {
+        unawaited(_refreshParticipantsMeta());
+      }
     }
   }
 
@@ -153,19 +158,50 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final st = await ref.read(familychatRepositoryProvider).status();
       _currentUserId = st['user_id'] as int?;
     } catch (_) {}
-    final cached = await FamilyChatLocalCache.readThreadMessages(widget.threadId);
-    if (cached != null && cached.isNotEmpty && mounted) {
-      setState(() {
-        _messages = cached;
-        _loading = false;
-        _offlineMode = true;
-      });
+    final skipCache = widget.initialMessageId != null;
+    List<Map<String, dynamic>>? cached;
+    if (!skipCache) {
+      cached = await FamilyChatLocalCache.readThreadMessages(widget.threadId);
+      if (cached != null && cached.isNotEmpty && mounted) {
+        setState(() {
+          _messages = cached!;
+          _loading = false;
+          _offlineMode = true;
+        });
+      }
     }
-    await _load(silent: cached != null && cached.isNotEmpty);
+    await _load(silent: !skipCache && cached != null && cached.isNotEmpty);
     final targetId = widget.initialMessageId;
     if (targetId != null) {
+      await _ensureMessageLoaded(targetId);
       await _scrollToMessage(targetId);
     }
+  }
+
+  Future<void> _ensureMessageLoaded(int messageId) async {
+    if (_messages.any((m) => chatAsInt(m['id']) == messageId)) return;
+    var guard = 0;
+    while (_hasMoreOlder && guard < 30) {
+      guard += 1;
+      await _loadOlder();
+      if (_messages.any((m) => chatAsInt(m['id']) == messageId)) return;
+    }
+  }
+
+  Future<void> _refreshParticipantsMeta() async {
+    try {
+      final list = await ref.read(familychatRepositoryProvider).threadParticipants(
+            widget.threadId,
+          );
+      if (!mounted) return;
+      setState(() {
+        _participantUserIds = list
+            .map((p) => p['user_id'])
+            .map((id) => id is int ? id : int.tryParse('$id'))
+            .whereType<int>()
+            .toList();
+      });
+    } catch (_) {}
   }
 
   void _onScroll() {
@@ -386,7 +422,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent && _messages.isEmpty) setState(() => _loading = true);
+    if (!silent && _messages.isEmpty) {
+      setState(() {
+        _loading = true;
+        _loadError = null;
+      });
+    }
     try {
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
             widget.threadId,
@@ -402,6 +443,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _hasMoreOlder = page.hasMore;
         _loading = false;
         _offlineMode = false;
+        _loadError = null;
       });
       unawaited(_persistMessageCache());
       unawaited(_markLatestRead());
@@ -409,8 +451,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _scrollToBottom();
       }
     } catch (_) {
-      if (mounted && _messages.isEmpty) {
-        setState(() => _loading = false);
+      if (!mounted) return;
+      if (_messages.isEmpty) {
+        setState(() {
+          _loading = false;
+          _loadError = 'Не удалось загрузить сообщения';
+        });
       }
     }
   }
@@ -1115,6 +1161,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             }
             if (!mounted) return;
             _applyThreadMeta(thread);
+            await _refreshParticipantsMeta();
             if (_hasLeft) {
               setState(() => _messages = []);
             } else {
@@ -1271,7 +1318,26 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           : AppBar(
               title: InkWell(
                 onTap: _openInfo,
-                child: Text(_title),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (_isGroupLike && !_hasLeft && _participantUserIds.isNotEmpty)
+                      Text(
+                        chatParticipantCountLabel(_participantUserIds.length),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                  ],
+                ),
               ),
               actions: [
                 IconButton(
@@ -1323,7 +1389,27 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
-                : RefreshIndicator(
+                : _loadError != null && _messages.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _loadError!,
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 12),
+                              FilledButton(
+                                onPressed: _load,
+                                child: const Text('Повторить'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : RefreshIndicator(
                     onRefresh: _load,
                     child: ListView.builder(
                       controller: _scrollController,
@@ -1358,6 +1444,17 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                           currentUserId: _currentUserId,
                         );
                         final replyMessageId = chatAsInt(replyTo?['message_id']);
+                        final isSystem = m['is_system'] == true;
+                        if (isSystem) {
+                          return KeyedSubtree(
+                            key: _messageKeys[msgId],
+                            child: ChatSystemMessageBanner(
+                              body: m['body']?.toString() ?? '',
+                              createdAt: created,
+                              highlighted: _highlightMessageId == msgId,
+                            ),
+                          );
+                        }
                         return KeyedSubtree(
                           key: _messageKeys[msgId],
                           child: ChatMessageBubble(
