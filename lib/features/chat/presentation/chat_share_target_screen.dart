@@ -4,7 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/push/push_navigation.dart';
+import '../../profile/data/album_upload_coordinator.dart';
+import '../../profile/presentation/profile_gallery_album_screen.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/share_attachment_loader.dart';
 
@@ -49,15 +53,34 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
       final repo = ref.read(familychatRepositoryProvider);
       final status = await repo.status();
       final myUserId = status['user_id'] is int ? status['user_id'] as int : null;
-      final list = await repo.chatThreads();
       List<Map<String, dynamic>> albums = const [];
       if (myUserId != null) {
-        final albumsData = await repo.memberGalleryAlbums(myUserId);
-        albums = (albumsData['albums'] as List<dynamic>? ?? [])
-            .cast<Map<String, dynamic>>()
-            .where((a) => a['kind']?.toString() == 'custom')
-            .toList();
+        final cached = await FamilyChatLocalCache.readMemberAlbums(myUserId);
+        if (cached != null) {
+          albums = (cached['albums'] as List<dynamic>? ?? [])
+              .cast<Map<String, dynamic>>()
+              .where((a) => a['kind']?.toString() == 'custom')
+              .toList();
+          if (mounted) {
+            setState(() {
+              _attachments = attachments;
+              _albums = albums;
+              _loading = false;
+            });
+          }
+        }
+        try {
+          final albumsData = await repo.memberGalleryAlbums(myUserId);
+          await FamilyChatLocalCache.saveMemberAlbums(myUserId, albumsData);
+          albums = (albumsData['albums'] as List<dynamic>? ?? [])
+              .cast<Map<String, dynamic>>()
+              .where((a) => a['kind']?.toString() == 'custom')
+              .toList();
+        } catch (_) {
+          if (albums.isEmpty) rethrow;
+        }
       }
+      final list = await repo.chatThreads();
       if (!mounted) return;
       setState(() {
         _attachments = attachments;
@@ -81,6 +104,63 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     }
     final imageCount = _attachments.where((a) => a.isImage).length;
     return _selectedAlbumPks.isNotEmpty && imageCount > 0;
+  }
+
+  Map<String, dynamic>? _albumByPk(int pk) {
+    for (final album in _albums) {
+      final idStr = album['id']?.toString() ?? '';
+      if (idStr == 'custom:$pk') return album;
+    }
+    return null;
+  }
+
+  Future<void> _sendToAlbums({
+    required int myUserId,
+    required List<int> albumPks,
+    required List<ShareAttachmentData> images,
+  }) async {
+    final repo = ref.read(familychatRepositoryProvider);
+    final coordinator = AlbumUploadCoordinator.instance;
+    final photos = images
+        .map(
+          (att) => AlbumUploadPhoto(
+            bytes: Uint8List.fromList(att.bytes),
+            filename: att.filename,
+            contentType: att.contentType ?? 'image/jpeg',
+          ),
+        )
+        .toList();
+
+    int? navigatePk;
+    var navigateTitle = 'Альбом';
+
+    for (final albumPk in albumPks) {
+      final album = _albumByPk(albumPk);
+      final title = album?['title']?.toString() ?? 'Альбом';
+      navigatePk ??= albumPk;
+      navigateTitle = title;
+      coordinator.startUploadToCustomAlbum(
+        repo: repo,
+        userId: myUserId,
+        albumPk: albumPk,
+        albumId: 'custom:$albumPk',
+        title: title,
+        photos: photos,
+      );
+    }
+
+    if (!mounted || navigatePk == null) return;
+    Navigator.of(context).pop();
+    familyChatNavigatorKey.currentState?.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ProfileGalleryAlbumScreen(
+          userId: myUserId,
+          albumId: 'custom:$navigatePk',
+          title: navigateTitle,
+          canManage: true,
+        ),
+      ),
+    );
   }
 
   Future<void> _send() async {
@@ -112,6 +192,14 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
             attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
           );
         }
+        if (!mounted) return;
+        Navigator.of(context).pop(true);
+        final message = threadIds.length == 1
+            ? 'Отправлено в чат'
+            : 'Отправлено в ${threadIds.length} чата';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
       } else {
         final images = _attachments.where((a) => a.isImage).toList();
         final status = await repo.status();
@@ -121,26 +209,13 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
         if (myUserId == null) {
           throw StateError('User id is missing');
         }
-        for (final albumPk in albumPks) {
-          for (final att in images) {
-            await repo.uploadPhotoToCustomAlbum(
-              myUserId,
-              albumPk,
-              bytes: Uint8List.fromList(att.bytes),
-              filename: att.filename,
-              contentType: att.contentType ?? 'image/jpeg',
-            );
-          }
-        }
+        await _sendToAlbums(
+          myUserId: myUserId,
+          albumPks: albumPks,
+          images: images,
+        );
+        return;
       }
-      if (!mounted) return;
-      Navigator.of(context).pop(true);
-      final message = _tabIndex == 0
-          ? (threadIds.length == 1 ? 'Отправлено в чат' : 'Отправлено в ${threadIds.length} чата')
-          : (albumPks.length == 1 ? 'Добавлено в альбом' : 'Добавлено в ${albumPks.length} альбома');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
     } catch (_) {
       if (!mounted) return;
       setState(() => _sending = false);

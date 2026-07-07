@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/face_tagging_sheet.dart';
@@ -92,6 +93,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   final _messageKeys = <int, GlobalKey>{};
   List<Map<String, dynamic>> _messages = [];
   bool _loading = true;
+  bool _loadingOlder = false;
+  bool _hasMoreOlder = false;
+  bool _offlineMode = false;
   int? _currentUserId;
   int? _highlightMessageId;
   int? _lastMarkedReadId;
@@ -117,6 +121,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _inputFocus.addListener(_onInputFocusChanged);
     ActiveChatContext.instance.setOpenThread(widget.threadId);
     FamilyChatRealtime.instance.addListener(_onRealtime);
+    _scrollController.addListener(_onScroll);
     _init();
   }
 
@@ -125,11 +130,39 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final st = await ref.read(familychatRepositoryProvider).status();
       _currentUserId = st['user_id'] as int?;
     } catch (_) {}
-    await _load();
+    final cached = await FamilyChatLocalCache.readThreadMessages(widget.threadId);
+    if (cached != null && cached.isNotEmpty && mounted) {
+      setState(() {
+        _messages = cached;
+        _loading = false;
+        _offlineMode = true;
+      });
+    }
+    await _load(silent: cached != null && cached.isNotEmpty);
     final targetId = widget.initialMessageId;
     if (targetId != null) {
       await _scrollToMessage(targetId);
     }
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder) return;
+    if (_scrollController.position.pixels <= 72) {
+      unawaited(_loadOlder());
+    }
+  }
+
+  Future<void> _persistMessageCache() async {
+    if (_messages.isEmpty) return;
+    final real = _messages.where((m) {
+      final id = chatAsInt(m['id']);
+      return id != null && id > 0;
+    }).toList();
+    if (real.isEmpty) return;
+    final slice = real.length > FamilyChatLocalCache.maxCachedMessagesPerThread
+        ? real.sublist(real.length - FamilyChatLocalCache.maxCachedMessagesPerThread)
+        : real;
+    await FamilyChatLocalCache.saveThreadMessages(widget.threadId, slice);
   }
 
   @override
@@ -248,6 +281,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       });
       _scrollToBottom();
       unawaited(_markLatestRead());
+      unawaited(_persistMessageCache());
       return;
     }
 
@@ -329,20 +363,90 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent) setState(() => _loading = true);
+    if (!silent && _messages.isEmpty) setState(() => _loading = true);
     try {
-      final list = await ref.read(familychatRepositoryProvider).threadMessages(widget.threadId);
+      final page = await ref.read(familychatRepositoryProvider).threadMessages(
+            widget.threadId,
+            limit: 20,
+          );
       if (!mounted) return;
       setState(() {
-        _messages = list;
+        if (silent && _messages.length > 20) {
+          _messages = _mergeLatestMessages(_messages, page.messages);
+        } else {
+          _messages = page.messages;
+        }
+        _hasMoreOlder = page.hasMore;
         _loading = false;
+        _offlineMode = false;
       });
+      unawaited(_persistMessageCache());
       unawaited(_markLatestRead());
       if (silent || widget.initialMessageId == null) {
         _scrollToBottom();
       }
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && _messages.isEmpty) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  List<Map<String, dynamic>> _mergeLatestMessages(
+    List<Map<String, dynamic>> current,
+    List<Map<String, dynamic>> latest,
+  ) {
+    if (latest.isEmpty) return current;
+    final oldestLatestId = chatAsInt(latest.first['id']);
+    if (oldestLatestId == null) return latest;
+    final olderKept = current.where((m) {
+      final id = chatAsInt(m['id']);
+      return id != null && id > 0 && id < oldestLatestId;
+    }).toList();
+    final latestIds = latest.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+    final mergedOlder = olderKept.where((m) => !latestIds.contains(chatAsInt(m['id']))).toList();
+    return [...mergedOlder, ...latest];
+  }
+
+  Future<void> _loadOlder() async {
+    if (_loadingOlder || !_hasMoreOlder || _messages.isEmpty) return;
+    final firstId = chatAsInt(_messages.first['id']);
+    if (firstId == null || firstId <= 0) return;
+
+    setState(() => _loadingOlder = true);
+    final previousExtent = _scrollController.hasClients
+        ? _scrollController.position.maxScrollExtent
+        : 0.0;
+    final previousPixels = _scrollController.hasClients
+        ? _scrollController.position.pixels
+        : 0.0;
+
+    try {
+      final page = await ref.read(familychatRepositoryProvider).threadMessages(
+            widget.threadId,
+            limit: 20,
+            beforeId: firstId,
+          );
+      if (!mounted) return;
+      final existingIds = _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+      final older = page.messages
+          .where((m) {
+            final id = chatAsInt(m['id']);
+            return id != null && !existingIds.contains(id);
+          })
+          .toList();
+      setState(() {
+        _messages = [...older, ..._messages];
+        _hasMoreOlder = page.hasMore;
+        _loadingOlder = false;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scrollController.hasClients) return;
+        final newExtent = _scrollController.position.maxScrollExtent;
+        _scrollController.jumpTo(previousPixels + (newExtent - previousExtent));
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loadingOlder = false);
     }
   }
 
@@ -1076,6 +1180,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             ),
       body: Column(
         children: [
+          if (_offlineMode)
+            MaterialBanner(
+              content: const Text('Показаны сохранённые сообщения. Обновление при появлении сети.'),
+              actions: [
+                TextButton(onPressed: _load, child: const Text('Обновить')),
+              ],
+            ),
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
@@ -1085,9 +1196,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                       controller: _scrollController,
                       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                       padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: _messages.length,
+                      itemCount: _messages.length + (_loadingOlder ? 1 : 0),
                       itemBuilder: (context, i) {
-                        final m = _messages[i];
+                        if (_loadingOlder && i == 0) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: Center(
+                              child: SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            ),
+                          );
+                        }
+                        final msgIndex = _loadingOlder ? i - 1 : i;
+                        final m = _messages[msgIndex];
                         final msgId = chatAsInt(m['id']) ?? 0;
                         _messageKeys.putIfAbsent(msgId, GlobalKey.new);
                         final created = DateTime.tryParse(m['created_at']?.toString() ?? '');

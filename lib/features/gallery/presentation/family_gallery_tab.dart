@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
@@ -29,12 +30,24 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   }
 
   Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    final cached = await FamilyChatLocalCache.readFamilyAlbums();
+    if (cached != null && mounted) {
+      setState(() {
+        _albums = (cached['albums'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        _faceHintMessage = cached['face_hint_message']?.toString() ?? '';
+        _showFaceHint = cached['show_face_hint'] == true;
+        _loading = false;
+        _error = null;
+      });
+    } else {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final data = await ref.read(familychatRepositoryProvider).familyGalleryAlbums();
+      await FamilyChatLocalCache.saveFamilyAlbums(data);
       if (!mounted) return;
       setState(() {
         _albums = (data['albums'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
@@ -44,10 +57,12 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = e.toString();
-      });
+      if (cached == null) {
+        setState(() {
+          _loading = false;
+          _error = e.toString();
+        });
+      }
     }
   }
 

@@ -1,11 +1,14 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
 import '../../../profile/presentation/widgets/photo_people_on_photo_bar.dart';
@@ -68,13 +71,6 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> {
-  static final CacheManager _viewerCacheManager = CacheManager(
-    Config(
-      'familychat_viewer_cache',
-      stalePeriod: const Duration(days: 30),
-      maxNrOfCacheObjects: 2000,
-    ),
-  );
   bool _downloading = false;
   final List<_ChatViewerPhoto> _photos = [];
   int _index = 0;
@@ -243,9 +239,13 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     return CachedNetworkImage(
       imageUrl: photo.imageUrl,
       httpHeaders: photo.httpHeaders,
-      cacheManager: _viewerCacheManager,
+      cacheManager: FamilyChatMediaCache.fullscreen,
       useOldImageOnUrlChange: true,
       fit: BoxFit.contain,
+      imageBuilder: (context, imageProvider) {
+        unawaited(FamilyChatMediaCache.trimIfNeeded());
+        return Image(image: imageProvider, fit: BoxFit.contain, gaplessPlayback: true);
+      },
     );
   }
 

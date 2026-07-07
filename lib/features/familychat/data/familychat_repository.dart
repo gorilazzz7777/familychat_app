@@ -5,6 +5,16 @@ import 'package:dio/dio.dart';
 import '../../../core/config/env.dart';
 import '../../../core/network/api_client.dart';
 
+class ThreadMessagesPage {
+  const ThreadMessagesPage({
+    required this.messages,
+    required this.hasMore,
+  });
+
+  final List<Map<String, dynamic>> messages;
+  final bool hasMore;
+}
+
 class FamilyChatRepository {
   FamilyChatRepository(this._client);
 
@@ -248,9 +258,32 @@ class FamilyChatRepository {
     return res.data!;
   }
 
-  Future<List<Map<String, dynamic>>> threadMessages(int threadId) async {
-    final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/messages/');
-    return (res.data ?? []).cast<Map<String, dynamic>>();
+  Future<ThreadMessagesPage> threadMessages(
+    int threadId, {
+    int limit = 20,
+    int? beforeId,
+  }) async {
+    final res = await _dio.get<dynamic>(
+      'familychat/chat/threads/$threadId/messages/',
+      queryParameters: {
+        'limit': limit,
+        if (beforeId != null) 'before_id': beforeId,
+      },
+    );
+    final data = res.data;
+    if (data is List) {
+      final messages = data.cast<Map<String, dynamic>>();
+      return ThreadMessagesPage(messages: messages, hasMore: messages.length >= limit);
+    }
+    final map = (data as Map<String, dynamic>?) ?? {};
+    final raw = map['messages'];
+    final messages = raw is List
+        ? raw.map((e) => Map<String, dynamic>.from(e as Map)).toList()
+        : <Map<String, dynamic>>[];
+    return ThreadMessagesPage(
+      messages: messages,
+      hasMore: map['has_more'] == true,
+    );
   }
 
   Future<void> markThreadRead(int threadId, {required int lastMessageId}) async {
