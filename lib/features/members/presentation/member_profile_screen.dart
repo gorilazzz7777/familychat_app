@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../chat/presentation/chat_conversation_screen.dart';
 import '../../profile/presentation/profile_gallery_tab.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 
@@ -32,6 +33,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
   late final TabController _tabs;
   Map<String, dynamic>? _profile;
   bool _loading = true;
+  bool _openingChat = false;
   String? _error;
 
   @override
@@ -65,6 +67,38 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
         _loading = false;
         _error = e.toString();
       });
+    }
+  }
+
+  Future<void> _openChat() async {
+    if (_openingChat) return;
+    setState(() => _openingChat = true);
+    try {
+      final thread = await ref.read(familychatRepositoryProvider).memberDmThread(widget.userId);
+      if (!mounted) return;
+      final p = _profile;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChatConversationScreen(
+            threadId: thread['id'] as int,
+            title: thread['title']?.toString() ?? p?['display_name']?.toString() ?? 'Чат',
+            defaultTitle: thread['default_title']?.toString() ??
+                thread['title']?.toString() ??
+                p?['display_name']?.toString() ??
+                'Чат',
+            customTitle: thread['custom_title']?.toString() ?? '',
+            kind: 'dm',
+            peerUserId: widget.userId,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось открыть чат: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _openingChat = false);
     }
   }
 
@@ -136,6 +170,19 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
             ),
           ),
         ],
+        const SizedBox(height: 20),
+        if (!isSelf)
+          FilledButton.icon(
+            onPressed: _openingChat ? null : _openChat,
+            icon: _openingChat
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.chat_outlined),
+            label: Text(_openingChat ? 'Открываю…' : 'Чат'),
+          ),
         const SizedBox(height: 24),
         _InfoTile(
           icon: Icons.badge_outlined,

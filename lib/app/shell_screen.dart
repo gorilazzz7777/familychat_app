@@ -9,6 +9,7 @@ import '../core/push/push_navigation.dart';
 import '../core/providers/app_providers.dart';
 import '../core/share/incoming_share_bus.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
+import '../features/chat/data/chat_unread_providers.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
@@ -58,6 +59,18 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
       flushPendingChatPush();
       _openPendingShareIfAny();
     });
+    FamilyChatRealtime.instance.addListener(_onChatRealtime);
+  }
+
+  void _onChatRealtime(Map<String, dynamic> event) {
+    final ev = event['event']?.toString();
+    if (ev == 'chat_message' ||
+        ev == 'chat_messages_read' ||
+        ev == 'chat_refresh' ||
+        ev == 'chat_messages_deleted' ||
+        ev == 'chat_message_reactions') {
+      invalidateChatUnreadTotal(ref);
+    }
   }
 
   @override
@@ -65,6 +78,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
     WidgetsBinding.instance.removeObserver(this);
     _webPollTimer?.cancel();
     IncomingShareBus.instance.removeListener(_onIncomingShare);
+    FamilyChatRealtime.instance.removeListener(_onChatRealtime);
     super.dispose();
   }
 
@@ -168,6 +182,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
   Widget build(BuildContext context) {
     final userId = _currentUserId;
     final navSelected = _moreMenuOpen ? _moreTabIndex : _index;
+    final chatUnread = ref.watch(chatUnreadTotalProvider).value ?? 0;
+    final chatBadgeLabel = chatUnread > 99 ? '99+' : '$chatUnread';
 
     return Scaffold(
       appBar: AppBar(
@@ -227,11 +243,23 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
           NavigationBar(
             selectedIndex: navSelected,
             onDestinationSelected: _onDestinationSelected,
-            destinations: const [
-              NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Главная'),
-              NavigationDestination(icon: Icon(Icons.chat_outlined), label: 'Чат'),
-              NavigationDestination(icon: Icon(Icons.photo_library_outlined), label: 'Галерея'),
-              NavigationDestination(icon: Icon(Icons.more_horiz), label: 'Ещё'),
+            destinations: [
+              const NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Главная'),
+              NavigationDestination(
+                icon: Badge(
+                  isLabelVisible: chatUnread > 0,
+                  label: Text(chatBadgeLabel),
+                  child: const Icon(Icons.chat_outlined),
+                ),
+                selectedIcon: Badge(
+                  isLabelVisible: chatUnread > 0,
+                  label: Text(chatBadgeLabel),
+                  child: const Icon(Icons.chat),
+                ),
+                label: 'Чат',
+              ),
+              const NavigationDestination(icon: Icon(Icons.photo_library_outlined), label: 'Галерея'),
+              const NavigationDestination(icon: Icon(Icons.more_horiz), label: 'Ещё'),
             ],
           ),
         ],

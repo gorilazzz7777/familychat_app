@@ -85,6 +85,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
       ),
       body: TabBarView(
         controller: _tabs,
+        physics: const NeverScrollableScrollPhysics(),
         children: [
           _loading
               ? const Center(child: CircularProgressIndicator())

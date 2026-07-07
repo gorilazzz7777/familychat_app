@@ -73,6 +73,11 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> memberDmThread(int userId) async {
+    final res = await _dio.post<Map<String, dynamic>>('familychat/members/$userId/dm-thread/');
+    return res.data!;
+  }
+
   Future<List<Map<String, dynamic>>> kinshipOptions() async {
     final res = await _dio.get<List<dynamic>>('familychat/kinship-options/');
     return (res.data ?? []).cast<Map<String, dynamic>>();

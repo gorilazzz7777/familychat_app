@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../data/chat_unread_providers.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_conversation_screen.dart';
 import 'create_group_screen.dart';
@@ -88,6 +89,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
           ..addAll(byUserId);
         _loading = false;
       });
+      invalidateChatUnreadTotal(ref);
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }

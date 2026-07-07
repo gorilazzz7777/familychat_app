@@ -54,6 +54,20 @@ class TreeEdge {
 
 enum _DirectRelation { parent, child, spouse, sibling, other }
 
+class FamilyTreeStats {
+  const FamilyTreeStats({
+    required this.familyTotal,
+    required this.onMap,
+    required this.nearby,
+    required this.links,
+  });
+
+  final int familyTotal;
+  final int onMap;
+  final int nearby;
+  final int links;
+}
+
 class FamilyTreeGraph {
   FamilyTreeGraph({
     required this.personsById,
@@ -112,6 +126,17 @@ class FamilyTreeGraph {
     return edges.where((edge) {
       return visibleIds.contains(edge.fromPersonId) && visibleIds.contains(edge.toPersonId);
     }).toList();
+  }
+
+  FamilyTreeStats stats() {
+    final visible = visiblePersonIds();
+    final ring1 = neighbors(centerPersonId);
+    return FamilyTreeStats(
+      familyTotal: personsById.length,
+      onMap: visible.length,
+      nearby: ring1.length,
+      links: visibleEdges(visible).length,
+    );
   }
 
   String relationLabel(int targetPersonId) {
