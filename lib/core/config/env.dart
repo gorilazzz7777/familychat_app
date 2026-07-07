@@ -46,14 +46,24 @@ abstract final class Env {
   static const String googleAuthNext = 'familychat://auth/google';
 
   static Uri familychatWsUri(String accessToken) {
-    final base = apiBaseUrl.replaceFirst(RegExp(r'/api/v1/?$'), '');
-    final scheme = base.startsWith('https') ? 'wss' : 'ws';
-    final host = Uri.parse(base).host;
-    return Uri(
-      scheme: scheme,
-      host: host,
-      path: '/api/v1/ws/familychat/',
-      queryParameters: {'token': accessToken},
+    final api = Uri.parse(
+      apiBaseUrl.endsWith('/') ? apiBaseUrl : '$apiBaseUrl/',
     );
+    final wsScheme = api.scheme == 'https' ? 'wss' : 'ws';
+    final buffer = StringBuffer()
+      ..write(wsScheme)
+      ..write('://')
+      ..write(api.host);
+    final port = api.port;
+    final includePort = port != 0 &&
+        !((api.scheme == 'https' && port == 443) ||
+            (api.scheme == 'http' && port == 80));
+    if (includePort) {
+      buffer.write(':$port');
+    }
+    buffer
+      ..write('/api/v1/ws/familychat/?token=')
+      ..write(Uri.encodeQueryComponent(accessToken));
+    return Uri.parse(buffer.toString());
   }
 }

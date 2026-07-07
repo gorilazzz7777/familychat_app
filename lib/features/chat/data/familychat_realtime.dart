@@ -44,6 +44,9 @@ class FamilyChatRealtime {
     try {
       await _closeChannel();
       final uri = Env.familychatWsUri(accessToken);
+      if (kDebugMode) {
+        debugPrint('familychat ws connect: $uri');
+      }
       _channel = WebSocketChannel.connect(uri);
       _connected = true;
       _sub = _channel!.stream.listen(
