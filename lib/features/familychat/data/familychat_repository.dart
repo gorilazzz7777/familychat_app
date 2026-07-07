@@ -436,6 +436,19 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> createChatAttachmentManualFace(
+    int threadId,
+    int attachmentId, {
+    required int userId,
+    required Map<String, dynamic> bbox,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/attachments/$attachmentId/faces/manual/',
+      data: {'user_id': userId, 'bbox': bbox},
+    );
+    return res.data!;
+  }
+
   Future<void> deleteChatAttachment(int threadId, int attachmentId) async {
     await _dio.delete('familychat/chat/threads/$threadId/attachments/$attachmentId/');
   }
@@ -459,6 +472,19 @@ class FamilyChatRepository {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/members/$profileUserId/gallery/photos/$attachmentId/faces/$faceIndex/assign/',
       data: {'user_id': userId},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> createGalleryPhotoManualFace(
+    int profileUserId,
+    int attachmentId, {
+    required int userId,
+    required Map<String, dynamic> bbox,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/$profileUserId/gallery/photos/$attachmentId/faces/manual/',
+      data: {'user_id': userId, 'bbox': bbox},
     );
     return res.data!;
   }

@@ -62,6 +62,7 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
   List<Map<String, dynamic>> _faces = [];
   List<Map<String, dynamic>> _members = [];
   int? _selectedFaceIndex;
+  bool _manualMarkMode = false;
 
   @override
   void initState() {
@@ -127,6 +128,82 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
         SnackBar(content: Text('Не удалось сохранить: $e')),
       );
     }
+  }
+
+  Future<void> _createManualFace(Map<String, double> bbox) async {
+    final picked = await _pickMemberFromAll();
+    if (picked == null) return;
+    try {
+      final repo = ref.read(familychatRepositoryProvider);
+      final data = widget.profileUserId != null
+          ? await repo.createGalleryPhotoManualFace(
+              widget.profileUserId!,
+              widget.attachmentId,
+              userId: picked,
+              bbox: bbox,
+            )
+          : await repo.createChatAttachmentManualFace(
+              widget.threadId,
+              widget.attachmentId,
+              userId: picked,
+              bbox: bbox,
+            );
+      if (!mounted) return;
+      setState(() {
+        _faces = (data['faces'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        _manualMarkMode = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось создать рамку: $e')),
+      );
+    }
+  }
+
+  Future<int?> _pickMemberFromAll() async {
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Кто на фото?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final m in _members)
+                    ListTile(
+                      leading: ChatAvatar(
+                        name: m['display_name']?.toString() ?? '',
+                        avatarUrl: m['avatar_url']?.toString(),
+                        radius: 20,
+                      ),
+                      title: Text(m['display_name']?.toString() ?? ''),
+                      onTap: () {
+                        final id = m['user_id'];
+                        if (id is int) {
+                          Navigator.pop(ctx, id);
+                        } else {
+                          Navigator.pop(ctx, int.tryParse(id?.toString() ?? ''));
+                        }
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    return picked;
   }
 
   Future<void> _pickMember(int faceIndex) async {
@@ -247,7 +324,9 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                   ),
                 Expanded(
                   child: Text(
-                    widget.promptMode ? 'Кто на этом фото?' : 'Указать лица',
+                    _manualMarkMode
+                        ? 'Нарисуйте рамку лица'
+                        : (widget.promptMode ? 'Кто на этом фото?' : 'Указать лица'),
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       color: Colors.white,
@@ -262,7 +341,14 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                     child: const Text('Пропустить'),
                   )
                 else
-                  const SizedBox(width: 48),
+                  IconButton(
+                    tooltip: _manualMarkMode ? 'Отменить рамку' : 'Нарисовать рамку',
+                    onPressed: () => setState(() => _manualMarkMode = !_manualMarkMode),
+                    icon: Icon(
+                      _manualMarkMode ? Icons.close : Icons.crop_free_outlined,
+                      color: Colors.white,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -288,9 +374,12 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                           faces: _faces,
                           selectedFaceIndex: _selectedFaceIndex,
                           onFaceTap: (idx) {
+                            if (_manualMarkMode) return;
                             setState(() => _selectedFaceIndex = idx);
                             _pickMember(idx);
                           },
+                          manualMarkMode: _manualMarkMode,
+                          onManualFaceCreated: _createManualFace,
                           child: widget.imageChild,
                         ),
                       ),
@@ -337,12 +426,16 @@ class _FaceOverlay extends StatelessWidget {
     required this.faces,
     required this.child,
     required this.onFaceTap,
+    required this.onManualFaceCreated,
+    this.manualMarkMode = false,
     this.selectedFaceIndex,
   });
 
   final List<Map<String, dynamic>> faces;
   final Widget child;
   final void Function(int faceIndex) onFaceTap;
+  final Future<void> Function(Map<String, double> bbox) onManualFaceCreated;
+  final bool manualMarkMode;
   final int? selectedFaceIndex;
 
   @override
@@ -351,16 +444,76 @@ class _FaceOverlay extends StatelessWidget {
       builder: (context, constraints) {
         final boxW = constraints.maxWidth;
         final boxH = constraints.maxHeight;
+        Offset? startPoint;
+        Offset? endPoint;
         return ClipRRect(
           borderRadius: BorderRadius.circular(12),
           child: Stack(
             fit: StackFit.expand,
             children: [
-              InteractiveViewer(
-                minScale: 0.8,
-                maxScale: 3,
-                child: child,
-              ),
+              if (manualMarkMode)
+                child
+              else
+                InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 3,
+                  child: child,
+                ),
+              if (manualMarkMode)
+                StatefulBuilder(
+                  builder: (context, setLocalState) {
+                    return GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onPanStart: (d) => setLocalState(() {
+                        startPoint = d.localPosition;
+                        endPoint = d.localPosition;
+                      }),
+                      onPanUpdate: (d) => setLocalState(() => endPoint = d.localPosition),
+                      onPanEnd: (_) async {
+                        final s = startPoint;
+                        final e = endPoint;
+                        if (s == null || e == null) return;
+                        final left = (s.dx < e.dx ? s.dx : e.dx).clamp(0.0, boxW);
+                        final top = (s.dy < e.dy ? s.dy : e.dy).clamp(0.0, boxH);
+                        final right = (s.dx > e.dx ? s.dx : e.dx).clamp(0.0, boxW);
+                        final bottom = (s.dy > e.dy ? s.dy : e.dy).clamp(0.0, boxH);
+                        final w = right - left;
+                        final h = bottom - top;
+                        if (w < 12 || h < 12) return;
+                        await onManualFaceCreated({
+                          'x': left / boxW,
+                          'y': top / boxH,
+                          'w': w / boxW,
+                          'h': h / boxH,
+                        });
+                        setLocalState(() {
+                          startPoint = null;
+                          endPoint = null;
+                        });
+                      },
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          if (startPoint != null && endPoint != null)
+                            Positioned(
+                              left: (startPoint!.dx < endPoint!.dx ? startPoint!.dx : endPoint!.dx)
+                                  .clamp(0.0, boxW),
+                              top: (startPoint!.dy < endPoint!.dy ? startPoint!.dy : endPoint!.dy)
+                                  .clamp(0.0, boxH),
+                              width: (startPoint!.dx - endPoint!.dx).abs(),
+                              height: (startPoint!.dy - endPoint!.dy).abs(),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.amberAccent, width: 2),
+                                  color: Colors.amberAccent.withValues(alpha: 0.12),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ...faces.map((face) {
                 final idx = face['face_index'];
                 if (idx is! int) return const SizedBox.shrink();

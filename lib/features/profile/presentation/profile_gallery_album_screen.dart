@@ -7,6 +7,7 @@ import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
 import 'pick_gallery_photos_sheet.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
+import 'widgets/chat_avatar.dart';
 
 class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
   const ProfileGalleryAlbumScreen({
@@ -128,6 +129,30 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
         _selectedPhotoIds.add(id);
       }
     });
+  }
+
+  void _enterSelectionWithPhoto(Map<String, dynamic> photo) {
+    final id = photo['id'] is int ? photo['id'] as int : int.tryParse('${photo['id']}');
+    if (id == null) return;
+    setState(() {
+      _selectionMode = true;
+      _selectedPhotoIds.add(id);
+    });
+  }
+
+  Future<void> _openPhotoViewer(Map<String, dynamic> photo, int index) async {
+    final status = await ref.read(familychatRepositoryProvider).status();
+    final currentUserId = status['user_id'];
+    if (!context.mounted || currentUserId is! int) return;
+    await GalleryPhotoViewerScreen.open(
+      context,
+      profileUserId: widget.userId,
+      photo: photo,
+      currentUserId: currentUserId,
+      photos: _photos,
+      initialIndex: index,
+      onChanged: () => _load(reset: true),
+    );
   }
 
   Future<void> _showBulkTagDialog() async {
@@ -352,37 +377,6 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     }
   }
 
-  Future<void> _removeFromAlbum(Map<String, dynamic> photo) async {
-    final pk = widget.customAlbumPk;
-    final attachmentId = photo['id'];
-    final id = attachmentId is int ? attachmentId : int.tryParse('$attachmentId');
-    if (pk == null || id == null) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Убрать из альбома?'),
-        content: const Text('Фото останется в галерее, но исчезнет из этого альбома.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Убрать')),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    try {
-      await ref.read(familychatRepositoryProvider).removePhotoFromCustomAlbum(
-            widget.userId,
-            pk,
-            id,
-          );
-      if (!mounted) return;
-      await _load(reset: true);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final canManageCustom = widget.canManage && widget.isCustomAlbum;
@@ -520,7 +514,18 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                                   Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 4),
                                     child: ChoiceChip(
-                                      label: Text(person['name']?.toString() ?? ''),
+                                      label: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          ChatAvatar(
+                                            name: person['name']?.toString() ?? '',
+                                            avatarUrl: person['avatar_url']?.toString(),
+                                            radius: 12,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(person['name']?.toString() ?? ''),
+                                        ],
+                                      ),
                                       selected: _personUserId == person['user_id'],
                                       onSelected: (_) async {
                                         setState(() => _personUserId = person['user_id'] as int?);
@@ -566,25 +571,13 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                           final id = photo['id'] is int ? photo['id'] as int : int.tryParse('${photo['id']}');
                           final selected = id != null && _selectedPhotoIds.contains(id);
                           return GestureDetector(
-                            onTap: () async {
-                              if (_selectionMode) {
-                                _togglePhotoSelection(photo);
-                                return;
-                              }
-                              final status = await ref.read(familychatRepositoryProvider).status();
-                              final currentUserId = status['user_id'];
-                              if (!context.mounted || currentUserId is! int) return;
-                              await GalleryPhotoViewerScreen.open(
-                                context,
-                                profileUserId: widget.userId,
-                                photo: photo,
-                                currentUserId: currentUserId,
-                                photos: _photos,
-                                initialIndex: i,
-                                onChanged: () => _load(reset: true),
-                              );
-                            },
-                            onLongPress: canManageCustom ? () => _removeFromAlbum(photo) : null,
+                            behavior: HitTestBehavior.opaque,
+                            onTap: _selectionMode
+                                ? () => _togglePhotoSelection(photo)
+                                : () => _openPhotoViewer(photo, i),
+                            onLongPress: _selectionMode
+                                ? () => _togglePhotoSelection(photo)
+                                : () => _enterSelectionWithPhoto(photo),
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
