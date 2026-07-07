@@ -1,6 +1,5 @@
-import 'dart:typed_data';
-
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +9,13 @@ import '../../../familychat/data/familychat_repository.dart';
 import '../../data/chat_realtime_utils.dart';
 
 final _webAttachmentBytesCache = <String, Uint8List>{};
+final _chatImageCacheManager = CacheManager(
+  Config(
+    'familychat_image_cache',
+    stalePeriod: const Duration(days: 30),
+    maxNrOfCacheObjects: 3000,
+  ),
+);
 
 String _webAttachmentCacheKey(int threadId, int attachmentId) =>
     '$threadId:$attachmentId';
@@ -167,6 +173,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     return CachedNetworkImage(
       imageUrl: url,
       httpHeaders: _headers,
+      cacheManager: _chatImageCacheManager,
+      useOldImageOnUrlChange: true,
       height: widget.height,
       width: widget.width,
       fit: widget.fit,

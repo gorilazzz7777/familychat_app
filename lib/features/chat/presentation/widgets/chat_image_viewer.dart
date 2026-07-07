@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
@@ -66,6 +67,13 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> {
+  static final CacheManager _viewerCacheManager = CacheManager(
+    Config(
+      'familychat_viewer_cache',
+      stalePeriod: const Duration(days: 30),
+      maxNrOfCacheObjects: 2000,
+    ),
+  );
   bool _downloading = false;
   final List<_ChatViewerPhoto> _photos = [];
   int _index = 0;
@@ -234,6 +242,8 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     return CachedNetworkImage(
       imageUrl: photo.imageUrl,
       httpHeaders: photo.httpHeaders,
+      cacheManager: _viewerCacheManager,
+      useOldImageOnUrlChange: true,
       fit: BoxFit.contain,
     );
   }
@@ -289,13 +299,19 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
               itemCount: _photos.length,
               itemBuilder: (_, i) {
                 final photo = _photos[i];
-                return Center(
-                  child: InteractiveViewer(
-                    minScale: 0.7,
-                    maxScale: 5,
-                    constrained: false,
-                    clipBehavior: Clip.none,
-                    child: _imageBody(photo),
+                return LayoutBuilder(
+                  builder: (context, constraints) => Center(
+                    child: InteractiveViewer(
+                      minScale: 0.2,
+                      maxScale: 5,
+                      constrained: false,
+                      clipBehavior: Clip.none,
+                      child: SizedBox(
+                        width: constraints.maxWidth,
+                        height: constraints.maxHeight,
+                        child: _imageBody(photo),
+                      ),
+                    ),
                   ),
                 );
               },

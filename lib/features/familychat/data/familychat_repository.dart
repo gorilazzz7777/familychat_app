@@ -10,6 +10,7 @@ class FamilyChatRepository {
 
   final ApiClient _client;
   Dio get _dio => _client.dio;
+  static final Map<String, Uint8List> _attachmentBytesCache = <String, Uint8List>{};
 
   Future<Map<String, dynamic>> status() async {
     final res = await _dio.get<Map<String, dynamic>>('familychat/status/');
@@ -192,6 +193,9 @@ class FamilyChatRepository {
   }
 
   Future<Uint8List> fetchChatAttachmentBytes(int threadId, int attachmentId) async {
+    final cacheKey = '$threadId:$attachmentId';
+    final cached = _attachmentBytesCache[cacheKey];
+    if (cached != null && cached.isNotEmpty) return cached;
     final res = await _dio.get<List<int>>(
       'familychat/chat/threads/$threadId/attachments/$attachmentId/content/',
       options: Options(responseType: ResponseType.bytes),
@@ -200,7 +204,9 @@ class FamilyChatRepository {
     if (data == null || data.isEmpty) {
       throw StateError('Пустой файл');
     }
-    return data is Uint8List ? data : Uint8List.fromList(data);
+    final bytes = data is Uint8List ? data : Uint8List.fromList(data);
+    _attachmentBytesCache[cacheKey] = bytes;
+    return bytes;
   }
 
   Future<Map<String, dynamic>> sendThreadMessage(

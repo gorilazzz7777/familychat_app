@@ -235,15 +235,21 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
               return const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48);
             }
             return Center(
-              child: InteractiveViewer(
-                minScale: 0.7,
-                maxScale: 5,
-                constrained: false,
-                clipBehavior: Clip.none,
-                child: ChatNetworkImage(
-                  threadId: tid,
-                  attachment: p,
-                  fit: BoxFit.contain,
+              child: LayoutBuilder(
+                builder: (context, constraints) => InteractiveViewer(
+                  minScale: 0.2,
+                  maxScale: 5,
+                  constrained: false,
+                  clipBehavior: Clip.none,
+                  child: SizedBox(
+                    width: constraints.maxWidth,
+                    height: constraints.maxHeight,
+                    child: ChatNetworkImage(
+                      threadId: tid,
+                      attachment: p,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
                 ),
               ),
             );
