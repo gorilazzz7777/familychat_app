@@ -46,16 +46,15 @@ class _GalleryAlbumGroup {
   final List<Map<String, dynamic>> albums;
 }
 
-class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView>
-    with SingleTickerProviderStateMixin {
-  TabController? _tabController;
+class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
   List<_GalleryAlbumGroup> _groups = [];
   Map<String, dynamic>? _allAlbum;
+  int _selectedGroupIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    _rebuildGroups();
+    _applyGroups(_buildGroups());
   }
 
   @override
@@ -66,13 +65,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView>
     }
   }
 
-  @override
-  void dispose() {
-    _tabController?.dispose();
-    super.dispose();
-  }
-
-  void _rebuildGroups() {
+  ({List<_GalleryAlbumGroup> groups, Map<String, dynamic>? allAlbum, int selected}) _buildGroups() {
     final byKind = <String, List<Map<String, dynamic>>>{};
     Map<String, dynamic>? allAlbum;
 
@@ -91,40 +84,50 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView>
           id: 'custom',
           label: widget.customTabLabel,
           icon: Icons.collections_bookmark_outlined,
-          albums: byKind['custom']!,
+          albums: List<Map<String, dynamic>>.from(byKind['custom']!),
         ),
       if ((byKind['face'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(
           id: 'face',
           label: 'Люди',
           icon: Icons.face_outlined,
-          albums: byKind['face']!,
+          albums: List<Map<String, dynamic>>.from(byKind['face']!),
         ),
       if ((byKind['place'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(
           id: 'place',
           label: 'Места',
           icon: Icons.place_outlined,
-          albums: byKind['place']!,
+          albums: List<Map<String, dynamic>>.from(byKind['place']!),
         ),
       if ((byKind['year'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(
           id: 'year',
           label: 'Годы',
           icon: Icons.calendar_today_outlined,
-          albums: byKind['year']!,
+          albums: List<Map<String, dynamic>>.from(byKind['year']!),
         ),
     ];
 
-    _tabController?.dispose();
-    _tabController = groups.isEmpty
-        ? null
-        : TabController(length: groups.length, vsync: this);
+    var selected = _selectedGroupIndex;
+    if (groups.isEmpty) {
+      selected = 0;
+    } else if (selected >= groups.length) {
+      selected = 0;
+    }
 
-    setState(() {
-      _groups = groups;
-      _allAlbum = allAlbum;
-    });
+    return (groups: groups, allAlbum: allAlbum, selected: selected);
+  }
+
+  void _applyGroups(({List<_GalleryAlbumGroup> groups, Map<String, dynamic>? allAlbum, int selected}) data) {
+    _groups = data.groups;
+    _allAlbum = data.allAlbum;
+    _selectedGroupIndex = data.selected;
+  }
+
+  void _rebuildGroups() {
+    _applyGroups(_buildGroups());
+    if (mounted) setState(() {});
   }
 
   IconData _albumIcon(String? kind) {
@@ -154,7 +157,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView>
       );
     }
 
-    final tabController = _tabController;
+    final selectedGroup = _groups.isEmpty ? null : _groups[_selectedGroupIndex];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -196,49 +199,44 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView>
               isFamilyGallery: widget.isFamilyGallery,
             ),
           ),
-        if (tabController != null) ...[
-          const SizedBox(height: 8),
-          Material(
-            color: Theme.of(context).colorScheme.surface,
-            child: TabBar(
-              controller: tabController,
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              tabs: [
-                for (final group in _groups)
-                  Tab(
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(group.icon, size: 18),
-                        const SizedBox(width: 6),
-                        Text('${group.label} (${group.albums.length})'),
-                      ],
-                    ),
-                  ),
-              ],
+        if (_groups.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 44,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: _groups.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final group = _groups[index];
+                final selected = index == _selectedGroupIndex;
+                return FilterChip(
+                  label: Text('${group.label} (${group.albums.length})'),
+                  avatar: Icon(group.icon, size: 18),
+                  selected: selected,
+                  showCheckmark: false,
+                  onSelected: (_) => setState(() => _selectedGroupIndex = index),
+                );
+              },
             ),
           ),
+          const SizedBox(height: 4),
           Expanded(
-            child: TabBarView(
-              controller: tabController,
-              children: [
-                for (final group in _groups)
-                  RefreshIndicator(
+            child: selectedGroup == null
+                ? const SizedBox.shrink()
+                : RefreshIndicator(
                     onRefresh: widget.onRefresh,
                     child: _AlbumGrid(
-                      albums: group.albums,
+                      albums: selectedGroup.albums,
                       userId: widget.userId,
                       isOwnGallery: widget.isOwnGallery,
                       isFamilyGallery: widget.isFamilyGallery,
                       iconForKind: _albumIcon,
                       onAlbumLongPress: widget.onAlbumLongPress,
-                      emptyLabel: 'В разделе «${group.label}» пока нет альбомов',
+                      emptyLabel: 'В разделе «${selectedGroup.label}» пока нет альбомов',
                     ),
                   ),
-              ],
-            ),
           ),
         ] else
           Expanded(

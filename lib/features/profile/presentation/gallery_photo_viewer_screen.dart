@@ -5,7 +5,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/widgets/chat_image_viewer.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import 'face_tagging_sheet.dart';
-import 'media_engagement_sheet.dart';
+import 'media_engagement_inline.dart';
 import 'widgets/photo_people_on_photo_bar.dart';
 
 /// Полноэкранный просмотр фото из галереи с меню действий.
@@ -194,13 +194,6 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         actions: [
-          if (attachmentId != null) ...[
-            IconButton(
-              tooltip: 'Лайки и комментарии',
-              onPressed: () => MediaEngagementSheet.show(context, attachmentId: attachmentId),
-              icon: const Icon(Icons.favorite_border),
-            ),
-          ],
           if (threadId != null && attachmentId != null)
             IconButton(
               tooltip: 'Кто на фото',
@@ -235,6 +228,7 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
       body: Column(
         children: [
           Expanded(
+            flex: 3,
             child: PageView.builder(
               controller: _pageController,
               onPageChanged: (i) => setState(() => _index = i),
@@ -267,6 +261,21 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
               },
             ),
           ),
+          if (attachmentId != null)
+            Expanded(
+              flex: 2,
+              child: ColoredBox(
+                color: Colors.grey.shade900,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                  child: MediaEngagementInline(
+                    key: ValueKey<int>(attachmentId),
+                    attachmentId: attachmentId,
+                    onDarkBackground: true,
+                  ),
+                ),
+              ),
+            ),
           if (attachmentId != null)
             PhotoPeopleOnPhotoBar(
               key: ValueKey<int>(attachmentId),

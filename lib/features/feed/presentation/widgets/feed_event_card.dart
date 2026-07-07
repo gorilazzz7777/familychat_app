@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../../chat/presentation/widgets/chat_network_image.dart';
-import '../../../profile/presentation/media_engagement_sheet.dart';
+import '../../../profile/presentation/media_engagement_inline.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 
 class FeedEventCard extends StatelessWidget {
@@ -51,9 +51,6 @@ class FeedEventCard extends StatelessWidget {
     if (_kind == 'message_sent') {
       return _payload['body_preview']?.toString() ?? '';
     }
-    if (_kind == 'media_commented') {
-      return _payload['body_preview']?.toString() ?? '';
-    }
     if (_kind == 'profile_updated') {
       final fields = (_payload['changed_fields'] as List<dynamic>? ?? []).join(', ');
       return fields.isEmpty ? '' : 'Изменено: $fields';
@@ -65,9 +62,35 @@ class FeedEventCard extends StatelessWidget {
     return (_payload['attachments'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
   }
 
+  int? _parseThreadId(Object? value) {
+    if (value is int) return value;
+    return int.tryParse('$value');
+  }
+
+  int? _payloadThreadId() => _parseThreadId(_payload['thread_id']);
+
+  bool _isImageAttachment(Map<String, dynamic> att) {
+    final kind = att['kind']?.toString();
+    if (kind == 'image') return true;
+    final name = att['filename']?.toString().toLowerCase() ?? '';
+    return name.endsWith('.jpg') ||
+        name.endsWith('.jpeg') ||
+        name.endsWith('.png') ||
+        name.endsWith('.webp') ||
+        name.endsWith('.heic');
+  }
+
+  Map<String, dynamic> _normalizePhoto(Map<String, dynamic> att, {int? threadId}) {
+    final tid = _parseThreadId(att['thread_id']) ?? threadId ?? _payloadThreadId();
+    return {
+      ...att,
+      if (tid != null) 'thread_id': tid,
+    };
+  }
+
   Map<String, dynamic>? _singlePhoto() {
     final id = _payload['attachment_id'];
-    final threadId = _payload['thread_id'];
+    final threadId = _payloadThreadId();
     if (id == null || threadId == null) return null;
     return {
       'id': id,
@@ -75,6 +98,36 @@ class FeedEventCard extends StatelessWidget {
       'file_url': _payload['file_url'],
       'filename': _payload['filename'],
     };
+  }
+
+  Map<String, dynamic>? _primaryPhoto() {
+    final single = _singlePhoto();
+    if (single != null) return single;
+
+    if (_kind == 'message_sent') {
+      final images = _attachments().where(_isImageAttachment).toList();
+      if (images.length == 1) {
+        final photo = _normalizePhoto(images.first);
+        if (photo['thread_id'] == null || photo['id'] == null) return null;
+        return photo;
+      }
+    }
+    return null;
+  }
+
+  List<Map<String, dynamic>> _galleryAttachments() {
+    final payloadThreadId = _payloadThreadId();
+    return _attachments()
+        .where(_isImageAttachment)
+        .map((att) => _normalizePhoto(att, threadId: payloadThreadId))
+        .where((att) => att['thread_id'] != null)
+        .toList();
+  }
+
+  int? _attachmentIdForEngagement(Map<String, dynamic> photo) {
+    final id = photo['id'];
+    if (id is int) return id;
+    return int.tryParse('$id');
   }
 
   @override
@@ -87,8 +140,8 @@ class FeedEventCard extends StatelessWidget {
         : '';
     final preview = _bodyPreview();
     final where = _whereText();
-    final attachments = _attachments();
-    final singlePhoto = _singlePhoto();
+    final primaryPhoto = _primaryPhoto();
+    final galleryAttachments = primaryPhoto == null ? _galleryAttachments() : <Map<String, dynamic>>[];
 
     return Card(
       elevation: 0,
@@ -144,25 +197,19 @@ class FeedEventCard extends StatelessWidget {
                 style: theme.textTheme.bodyMedium,
               ),
             ],
-            if (attachments.isNotEmpty) ...[
+            if (galleryAttachments.isNotEmpty) ...[
               const SizedBox(height: 10),
               SizedBox(
                 height: 88,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
-                  itemCount: attachments.length,
+                  itemCount: galleryAttachments.length,
                   separatorBuilder: (_, __) => const SizedBox(width: 8),
                   itemBuilder: (_, i) {
-                    final att = attachments[i];
-                    final threadId = att['thread_id'] is int
-                        ? att['thread_id'] as int
-                        : int.tryParse('${att['thread_id']}');
-                    if (threadId == null) return const SizedBox.shrink();
+                    final att = galleryAttachments[i];
+                    final threadId = att['thread_id'] as int;
                     return GestureDetector(
-                      onTap: () => onOpenMedia?.call({
-                        ...att,
-                        'thread_id': threadId,
-                      }),
+                      onTap: () => onOpenMedia?.call(att),
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(8),
                         child: ChatNetworkImage(
@@ -177,53 +224,31 @@ class FeedEventCard extends StatelessWidget {
                   },
                 ),
               ),
-            ] else if (singlePhoto != null) ...[
+            ] else if (primaryPhoto != null) ...[
               const SizedBox(height: 10),
               GestureDetector(
-                onTap: () => onOpenMedia?.call(singlePhoto),
+                onTap: () => onOpenMedia?.call(primaryPhoto),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: ChatNetworkImage(
-                    threadId: singlePhoto['thread_id'] as int,
-                    attachment: singlePhoto,
+                    threadId: primaryPhoto['thread_id'] as int,
+                    attachment: primaryPhoto,
                     height: 180,
                     width: double.infinity,
                     fit: BoxFit.cover,
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
-              _MediaActionsRow(photo: singlePhoto),
+              if (_attachmentIdForEngagement(primaryPhoto) case final attachmentId?)
+                MediaEngagementInline(
+                  attachmentId: attachmentId,
+                  maxComments: 4,
+                  dense: true,
+                ),
             ],
           ],
         ),
       ),
-    );
-  }
-}
-
-class _MediaActionsRow extends StatelessWidget {
-  const _MediaActionsRow({required this.photo});
-
-  final Map<String, dynamic> photo;
-
-  @override
-  Widget build(BuildContext context) {
-    final attachmentId = photo['id'] is int ? photo['id'] as int : int.tryParse('${photo['id']}');
-    if (attachmentId == null) return const SizedBox.shrink();
-    return Row(
-      children: [
-        TextButton.icon(
-          onPressed: () => MediaEngagementSheet.show(context, attachmentId: attachmentId),
-          icon: const Icon(Icons.favorite_border, size: 18),
-          label: const Text('Лайки'),
-        ),
-        TextButton.icon(
-          onPressed: () => MediaEngagementSheet.show(context, attachmentId: attachmentId, focusComment: true),
-          icon: const Icon(Icons.chat_bubble_outline, size: 18),
-          label: const Text('Комментарии'),
-        ),
-      ],
     );
   }
 }

@@ -94,14 +94,16 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
     }
 
     return Scaffold(
-      body: GalleryAlbumsGroupedView(
-        albums: _albums,
-        userId: widget.currentUserId,
-        isFamilyGallery: true,
-        onRefresh: _load,
-        faceHintMessage: _faceHintMessage,
-        showFaceHint: _showFaceHint,
-        customTabLabel: 'Альбомы',
+      body: SafeArea(
+        child: GalleryAlbumsGroupedView(
+          albums: _albums,
+          userId: widget.currentUserId,
+          isFamilyGallery: true,
+          onRefresh: _load,
+          faceHintMessage: _faceHintMessage,
+          showFaceHint: _showFaceHint,
+          customTabLabel: 'Альбомы',
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _createAlbum,

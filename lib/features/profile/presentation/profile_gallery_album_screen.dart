@@ -13,6 +13,7 @@ import '../../calendar/data/calendar_photo_sync_service.dart';
 import '../../calendar/presentation/calendar_photo_pick_confirm_screen.dart';
 import '../data/album_upload_coordinator.dart';
 import 'album_upload_file_bytes.dart';
+import 'read_picked_image_bytes.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
 import 'pick_gallery_photos_sheet.dart';
@@ -543,7 +544,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     try {
       final photos = <AlbumUploadPhoto>[];
       for (final picked in items) {
-        final bytes = await picked.readAsBytes();
+        final bytes = await readPickedImageBytes(picked);
         photos.add(
           AlbumUploadPhoto(
             bytes: bytes,
@@ -1020,23 +1021,21 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   Future<void> _uploadFromDevice(ImageSource source) async {
     final pk = widget.customAlbumPk;
     if (pk == null) return;
+    // image_picker на Android копирует фото в cache и обнуляет GPS в EXIF.
+    if (source == ImageSource.gallery) {
+      await _uploadFromPhoneFiles();
+      return;
+    }
     _beginPreparingUpload();
     await Future<void>.delayed(Duration.zero);
     try {
       final picker = ImagePicker();
-      final pickedItems = source == ImageSource.gallery
-          ? await picker.pickMultiImage(requestFullMetadata: true)
-          : [
-              if (await picker.pickImage(
-                source: source,
-                requestFullMetadata: true,
-              )
-                  case final xfile?)
-                xfile,
-            ];
-      if (!mounted) return;
-      if (pickedItems.isEmpty) return;
-      await _uploadDeviceImages(albumPk: pk, pickedItems: pickedItems);
+      final picked = await picker.pickImage(
+        source: source,
+        requestFullMetadata: true,
+      );
+      if (!mounted || picked == null) return;
+      await _uploadDeviceImages(albumPk: pk, pickedItems: [picked]);
     } finally {
       _endPreparingIfIdle();
     }

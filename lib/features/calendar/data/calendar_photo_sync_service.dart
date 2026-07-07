@@ -150,7 +150,7 @@ class CalendarPhotoSyncService {
     for (var i = 0; i < candidates.length; i++) {
       onProgress?.call(i, candidates.length);
       final asset = candidates[i];
-      final file = await asset.file;
+      final file = await asset.originFile ?? await asset.file;
       if (file == null) continue;
       final bytes = await file.readAsBytes();
       if (bytes.isEmpty) continue;

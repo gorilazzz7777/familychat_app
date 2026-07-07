@@ -192,15 +192,17 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
     }
 
     return Scaffold(
-      body: GalleryAlbumsGroupedView(
-        albums: _albums,
-        userId: widget.userId,
-        isOwnGallery: widget.isOwnGallery,
-        onRefresh: _load,
-        faceHintMessage: _faceHintMessage,
-        showFaceHint: _showFaceHint,
-        onAlbumLongPress: widget.isOwnGallery ? _showAlbumMenu : null,
-        customTabLabel: 'Мои альбомы',
+      body: SafeArea(
+        child: GalleryAlbumsGroupedView(
+          albums: _albums,
+          userId: widget.userId,
+          isOwnGallery: widget.isOwnGallery,
+          onRefresh: _load,
+          faceHintMessage: _faceHintMessage,
+          showFaceHint: _showFaceHint,
+          onAlbumLongPress: widget.isOwnGallery ? _showAlbumMenu : null,
+          customTabLabel: 'Мои альбомы',
+        ),
       ),
       floatingActionButton: widget.isOwnGallery
           ? FloatingActionButton.extended(
