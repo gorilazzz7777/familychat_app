@@ -1,28 +1,41 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:share_handler/share_handler.dart';
 
 import '../../../core/debug/upload_image_exif_log.dart';
+import 'share_attachment_bytes_reader.dart';
 import 'share_attachment_data.dart';
 
 Future<List<ShareAttachmentData>> loadShareAttachments(SharedMedia media) async {
   final result = <ShareAttachmentData>[];
-  for (final attachment in media.attachments ?? const []) {
+  final attachments = media.attachments ?? const [];
+  for (var i = 0; i < attachments.length; i++) {
+    final attachment = attachments[i];
     final path = attachment?.path;
     if (path == null || path.isEmpty) continue;
     final file = File(path);
     if (!await file.exists()) continue;
-    final bytes = await file.readAsBytes();
+    final fallbackBytes = await file.readAsBytes();
+    final bytes = await readShareAttachmentBytes(
+          index: i,
+          fallbackBytes: fallbackBytes,
+        ) ??
+        fallbackBytes;
     final filename = _filenameFromPath(path);
     final contentType = _contentTypeFor(filename, attachment?.type);
     final isImage = attachment?.type == SharedAttachmentType.image ||
         (contentType?.startsWith('image/') ?? false);
     if (isImage) {
+      final readVia = bytes.length == fallbackBytes.length &&
+              _bytesEqual(bytes, fallbackBytes)
+          ? 'share_handler_cache'
+          : 'share_intent_original_uri';
       await logUploadImageExifDiagnostics(
         bytes: bytes,
         filename: filename,
         sourcePath: path,
-        readVia: 'share_handler_path',
+        readVia: readVia,
       );
     }
     result.add(
@@ -34,7 +47,16 @@ Future<List<ShareAttachmentData>> loadShareAttachments(SharedMedia media) async 
       ),
     );
   }
+  await clearPendingShareAttachmentUris();
   return result;
+}
+
+bool _bytesEqual(Uint8List a, Uint8List b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 String _filenameFromPath(String path) {

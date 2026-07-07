@@ -59,9 +59,9 @@ Future<void> logUploadImageExifDiagnostics({
 }
 
 bool _looksLikeZeroedGps(String? lat, String? lon) {
-  if (lat == null && lon == null) return false;
-  final combined = '${lat ?? ''} ${lon ?? ''}';
-  if (combined.trim().isEmpty) return true;
-  final onlyZeros = RegExp(r'^[0/,\s]+$');
-  return onlyZeros.hasMatch(combined.replaceAll('deg', '').trim());
+  bool isZero(String? value) {
+    if (value == null || value.trim().isEmpty) return true;
+    return RegExp(r'^[0/,\[\]\sdeg]+$').hasMatch(value.trim());
+  }
+  return isZero(lat) && isZero(lon);
 }
