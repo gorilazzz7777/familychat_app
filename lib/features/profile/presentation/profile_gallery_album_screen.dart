@@ -10,6 +10,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../calendar/data/calendar_photo_sync_service.dart';
 import '../../calendar/presentation/calendar_photo_pick_confirm_screen.dart';
+import '../data/album_upload_coordinator.dart';
 import 'album_upload_file_bytes.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
@@ -77,19 +78,100 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   @override
   void initState() {
     super.initState();
+    final albumPk = widget.customAlbumPk;
+    if (albumPk != null) {
+      AlbumUploadCoordinator.instance.addListener(_onCoordinatorUpdate);
+      AlbumUploadCoordinator.instance.setAlbumScreenVisible(albumPk, true);
+    }
     _load(reset: true);
     if (widget.isCustomAlbum) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_initCalendarPhotoSync());
+        _syncFromCoordinator();
       });
     }
   }
 
   @override
   void dispose() {
+    final albumPk = widget.customAlbumPk;
+    if (albumPk != null) {
+      AlbumUploadCoordinator.instance.removeListener(_onCoordinatorUpdate);
+      AlbumUploadCoordinator.instance.setAlbumScreenVisible(albumPk, false);
+    }
     _uploadPollTimer?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _onCoordinatorUpdate() {
+    if (!mounted) return;
+    final albumPk = widget.customAlbumPk;
+    if (albumPk == null) return;
+
+    final coordinator = AlbumUploadCoordinator.instance;
+    final session = coordinator.sessionForAlbum(albumPk);
+    final pending = coordinator.takePendingPhotos(albumPk);
+    for (final photo in pending) {
+      _prependPhotoIfNew(photo);
+    }
+
+    if (session != null && session.active) {
+      setState(() {
+        _addingPhotos = true;
+        _preparingUpload = false;
+        _uploadTotal = session.total;
+        _uploadDone = session.done;
+        _uploadFailed = session.failed;
+      });
+      _ensureUploadPollTimer();
+      return;
+    }
+
+    if (_addingPhotos) {
+      if (session != null) {
+        setState(() {
+          _uploadDone = session.done;
+          _uploadFailed = session.failed;
+          _uploadTotal = session.total;
+        });
+      }
+      _endUploadSession();
+      coordinator.clearSession(albumPk);
+      unawaited(_pollNewPhotosDuringUpload());
+      _showUploadSummary();
+    }
+  }
+
+  void _syncFromCoordinator() {
+    final albumPk = widget.customAlbumPk;
+    if (albumPk == null) return;
+    final session = AlbumUploadCoordinator.instance.sessionForAlbum(albumPk);
+    if (session == null || !session.active) return;
+    _onCoordinatorUpdate();
+  }
+
+  void _ensureUploadPollTimer() {
+    if (_uploadPollTimer != null) return;
+    _uploadPollTimer = Timer.periodic(_uploadPollInterval, (_) {
+      unawaited(_pollNewPhotosDuringUpload());
+    });
+  }
+
+  void _startCoordinatorUpload({
+    required int albumPk,
+    required List<AlbumUploadPhoto> photos,
+  }) {
+    AlbumUploadCoordinator.instance.startUploadToCustomAlbum(
+      repo: ref.read(familychatRepositoryProvider),
+      userId: widget.userId,
+      albumPk: albumPk,
+      albumId: widget.albumId,
+      title: widget.title,
+      photos: photos,
+    );
+    _ensureUploadPollTimer();
+    _syncFromCoordinator();
   }
 
   Future<void> _initCalendarPhotoSync() async {
@@ -318,7 +400,12 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   }
 
   void _endPreparingIfIdle() {
-    if (!mounted || !_preparingUpload || _uploadTotal > 0) return;
+    if (!mounted || !_preparingUpload) return;
+    final albumPk = widget.customAlbumPk;
+    if (albumPk != null && AlbumUploadCoordinator.instance.isActiveForAlbum(albumPk)) {
+      return;
+    }
+    if (_uploadTotal > 0) return;
     setState(() {
       _preparingUpload = false;
       _addingPhotos = false;
@@ -333,10 +420,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
       _uploadDone = 0;
       _uploadFailed = 0;
     });
-    _uploadPollTimer?.cancel();
-    _uploadPollTimer = Timer.periodic(_uploadPollInterval, (_) {
-      unawaited(_pollNewPhotosDuringUpload());
-    });
+    _ensureUploadPollTimer();
   }
 
   void _endUploadSession() {
@@ -449,31 +533,23 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   }) async {
     final items = _limitUploadSelection(pickedItems);
     if (items.isEmpty) return;
-    _beginUploadSession(items.length);
-    final repo = ref.read(familychatRepositoryProvider);
+    _beginPreparingUpload();
     try {
+      final photos = <AlbumUploadPhoto>[];
       for (final picked in items) {
-        try {
-          final bytes = await picked.readAsBytes();
-          final contentType = picked.mimeType ?? _imageContentTypeForFilename(picked.name);
-          final uploaded = await repo.uploadPhotoToCustomAlbum(
-            widget.userId,
-            albumPk,
+        final bytes = await picked.readAsBytes();
+        photos.add(
+          AlbumUploadPhoto(
             bytes: bytes,
             filename: picked.name,
-            contentType: contentType,
-          );
-          _prependPhotoIfNew(uploaded);
-          _onUploadProgress(success: true);
-          await _pollNewPhotosDuringUpload();
-        } catch (_) {
-          _onUploadProgress(success: false);
-        }
+            contentType: picked.mimeType ?? _imageContentTypeForFilename(picked.name),
+          ),
+        );
       }
-      await _pollNewPhotosDuringUpload();
-      _showUploadSummary();
+      if (photos.isEmpty) return;
+      _startCoordinatorUpload(albumPk: albumPk, photos: photos);
     } finally {
-      _endUploadSession();
+      _endPreparingIfIdle();
     }
   }
 
@@ -483,42 +559,32 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   }) async {
     final items = _limitUploadSelection(files);
     if (items.isEmpty) return;
-    _beginUploadSession(items.length);
-    final repo = ref.read(familychatRepositoryProvider);
+    _beginPreparingUpload();
     try {
+      final photos = <AlbumUploadPhoto>[];
       for (final file in items) {
-        try {
-          final bytes = await readAlbumUploadFileBytes(file);
-          if (bytes == null || bytes.isEmpty) {
-            _onUploadProgress(success: false);
-            continue;
-          }
-          final ext = (file.extension ?? '').toLowerCase();
-          final inferredContentType = switch (ext) {
-            'png' => 'image/png',
-            'webp' => 'image/webp',
-            'heic' || 'heif' => 'image/heic',
-            'gif' => 'image/gif',
-            _ => 'image/jpeg',
-          };
-          final uploaded = await repo.uploadPhotoToCustomAlbum(
-            widget.userId,
-            albumPk,
+        final bytes = await readAlbumUploadFileBytes(file);
+        if (bytes == null || bytes.isEmpty) continue;
+        final ext = (file.extension ?? '').toLowerCase();
+        final inferredContentType = switch (ext) {
+          'png' => 'image/png',
+          'webp' => 'image/webp',
+          'heic' || 'heif' => 'image/heic',
+          'gif' => 'image/gif',
+          _ => 'image/jpeg',
+        };
+        photos.add(
+          AlbumUploadPhoto(
             bytes: bytes,
             filename: file.name,
             contentType: inferredContentType,
-          );
-          _prependPhotoIfNew(uploaded);
-          _onUploadProgress(success: true);
-          await _pollNewPhotosDuringUpload();
-        } catch (_) {
-          _onUploadProgress(success: false);
-        }
+          ),
+        );
       }
-      await _pollNewPhotosDuringUpload();
-      _showUploadSummary();
+      if (photos.isEmpty) return;
+      _startCoordinatorUpload(albumPk: albumPk, photos: photos);
     } finally {
-      _endUploadSession();
+      _endPreparingIfIdle();
     }
   }
 
@@ -1097,7 +1163,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                     )
                   : Column(
                       children: [
-                        if (_searchPeople.isNotEmpty || _unidentifiedCount > 0)
+                        if (_searchPeople.isNotEmpty || _total > 0)
                           SizedBox(
                             height: 46,
                             child: ListView(
@@ -1119,39 +1185,40 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                                     },
                                   ),
                                 ),
-                                if (_unidentifiedCount > 0)
-                                  Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                                    child: ChoiceChip(
-                                      showCheckmark: false,
-                                      visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
-                                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                      label: Tooltip(
-                                        message: 'Не определены',
-                                        child: SizedBox.square(
-                                          dimension: 36,
-                                          child: CircleAvatar(
-                                            radius: 18,
-                                            backgroundColor:
-                                                Theme.of(context).colorScheme.surfaceContainerHighest,
-                                            child: Icon(
-                                              Icons.face_retouching_off,
-                                              size: 20,
-                                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                            ),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                                  child: ChoiceChip(
+                                    showCheckmark: false,
+                                    visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
+                                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    label: Tooltip(
+                                      message: _unidentifiedCount > 0
+                                          ? 'Не определены ($_unidentifiedCount)'
+                                          : 'Не определены',
+                                      child: SizedBox.square(
+                                        dimension: 36,
+                                        child: CircleAvatar(
+                                          radius: 18,
+                                          backgroundColor:
+                                              Theme.of(context).colorScheme.surfaceContainerHighest,
+                                          child: Icon(
+                                            Icons.face_retouching_off,
+                                            size: 20,
+                                            color: Theme.of(context).colorScheme.onSurfaceVariant,
                                           ),
                                         ),
                                       ),
-                                      selected: _personFilterUnidentified,
-                                      onSelected: (_) async {
-                                        setState(() {
-                                          _personFilterUnidentified = true;
-                                          _personUserId = null;
-                                        });
-                                        await _load(reset: true);
-                                      },
                                     ),
+                                    selected: _personFilterUnidentified,
+                                    onSelected: (_) async {
+                                      setState(() {
+                                        _personFilterUnidentified = true;
+                                        _personUserId = null;
+                                      });
+                                      await _load(reset: true);
+                                    },
                                   ),
+                                ),
                                 for (final person in _searchPeople)
                                   Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 4),
