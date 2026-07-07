@@ -1,15 +1,18 @@
 package com.familychat.familychat_app
 
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     companion object {
+        private const val TAG = "FamilyChatShare"
         private var pendingShareUris: List<Uri> = emptyList()
     }
 
@@ -35,17 +38,23 @@ class MainActivity : FlutterActivity() {
                     val index = call.argument<Int>("index") ?: 0
                     val uri = pendingShareUris.getOrNull(index)
                     if (uri == null) {
+                        Log.w(TAG, "readPendingImageBytes: no uri for index=$index count=${pendingShareUris.size}")
                         result.success(null)
                         return@setMethodCallHandler
                     }
                     try {
                         val bytes = readUriBytesWithOriginal(uri)
+                        Log.i(
+                            TAG,
+                            "readPendingImageBytes: uri=$uri bytes=${bytes?.size ?: 0}",
+                        )
                         if (bytes == null || bytes.isEmpty()) {
                             result.success(null)
                         } else {
                             result.success(bytes)
                         }
                     } catch (e: Exception) {
+                        Log.e(TAG, "readPendingImageBytes failed", e)
                         result.error("READ_FAILED", e.message, null)
                     }
                 }
@@ -63,16 +72,28 @@ class MainActivity : FlutterActivity() {
     private fun captureShareUris(intent: Intent?) {
         pendingShareUris = when (intent?.action) {
             Intent.ACTION_SEND -> {
-                val uri = readStreamUri(intent)
-                if (uri != null) listOf(uri) else emptyList()
+                val fromExtra = readStreamUri(intent)
+                if (fromExtra != null) {
+                    listOf(fromExtra)
+                } else {
+                    readClipUris(intent)
+                }
             }
 
             Intent.ACTION_SEND_MULTIPLE -> {
-                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: emptyList()
+                val fromExtra =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                    }
+                if (!fromExtra.isNullOrEmpty()) fromExtra else readClipUris(intent)
             }
 
             else -> emptyList()
         }
+        Log.i(TAG, "captureShareUris action=${intent?.action} count=${pendingShareUris.size} uris=$pendingShareUris")
     }
 
     private fun readStreamUri(intent: Intent): Uri? {
@@ -84,13 +105,23 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun readClipUris(intent: Intent): List<Uri> {
+        val clip: ClipData = intent.clipData ?: return emptyList()
+        val uris = ArrayList<Uri>(clip.itemCount)
+        for (i in 0 until clip.itemCount) {
+            clip.getItemAt(i).uri?.let { uris.add(it) }
+        }
+        return uris
+    }
+
     private fun readUriBytesWithOriginal(uri: Uri): ByteArray? {
         val resolver = applicationContext.contentResolver
         val mediaUri =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
                     MediaStore.setRequireOriginal(uri)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    Log.w(TAG, "setRequireOriginal failed for $uri", e)
                     uri
                 }
             } else {

@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:share_handler/share_handler.dart';
 
@@ -17,25 +16,22 @@ Future<List<ShareAttachmentData>> loadShareAttachments(SharedMedia media) async 
     final file = File(path);
     if (!await file.exists()) continue;
     final fallbackBytes = await file.readAsBytes();
-    final bytes = await readShareAttachmentBytes(
-          index: i,
-          fallbackBytes: fallbackBytes,
-        ) ??
-        fallbackBytes;
     final filename = _filenameFromPath(path);
+    final loaded = await readShareAttachmentBytes(
+      index: i,
+      fallbackBytes: fallbackBytes,
+      filename: filename,
+    );
+    final bytes = loaded.bytes;
     final contentType = _contentTypeFor(filename, attachment?.type);
     final isImage = attachment?.type == SharedAttachmentType.image ||
         (contentType?.startsWith('image/') ?? false);
     if (isImage) {
-      final readVia = bytes.length == fallbackBytes.length &&
-              _bytesEqual(bytes, fallbackBytes)
-          ? 'share_handler_cache'
-          : 'share_intent_original_uri';
       await logUploadImageExifDiagnostics(
         bytes: bytes,
         filename: filename,
         sourcePath: path,
-        readVia: readVia,
+        readVia: loaded.readVia,
       );
     }
     result.add(
@@ -49,14 +45,6 @@ Future<List<ShareAttachmentData>> loadShareAttachments(SharedMedia media) async 
   }
   await clearPendingShareAttachmentUris();
   return result;
-}
-
-bool _bytesEqual(Uint8List a, Uint8List b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
 }
 
 String _filenameFromPath(String path) {
