@@ -181,6 +181,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
               albumId: albumId,
               title: payload['album_title']?.toString() ?? 'Альбом',
               canManage: ownerId == currentUserId,
+              isOwnGallery: ownerId == currentUserId,
             ),
           ),
         );
@@ -192,6 +193,7 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
               userId: currentUserId,
               albumId: 'all',
               title: 'Галерея',
+              isOwnGallery: true,
               isFamilyGallery: true,
             ),
           ),

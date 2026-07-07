@@ -3,9 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
-import '../../chat/presentation/widgets/chat_network_image.dart';
+import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
-import '../../profile/presentation/profile_gallery_album_screen.dart';
 
 class FamilyGalleryTab extends ConsumerStatefulWidget {
   const FamilyGalleryTab({super.key, required this.currentUserId});
@@ -76,16 +75,6 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
     }
   }
 
-  IconData _albumIcon(String? kind) {
-    return switch (kind) {
-      'year' => Icons.calendar_today_outlined,
-      'place' => Icons.place_outlined,
-      'face' => Icons.face_outlined,
-      'custom' => Icons.collections_bookmark_outlined,
-      _ => Icons.photo_library_outlined,
-    };
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -105,131 +94,19 @@ class _FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
     }
 
     return Scaffold(
-      body: RefreshIndicator(
+      body: GalleryAlbumsGroupedView(
+        albums: _albums,
+        userId: widget.currentUserId,
+        isFamilyGallery: true,
         onRefresh: _load,
-        child: CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            if (_showFaceHint && _faceHintMessage.isNotEmpty)
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                  child: Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Text(_faceHintMessage),
-                    ),
-                  ),
-                ),
-              ),
-            if (_albums.isEmpty)
-              const SliverFillRemaining(
-                hasScrollBody: false,
-                child: Center(child: Text('Нет доступных фото')),
-              )
-            else
-              SliverPadding(
-                padding: const EdgeInsets.all(16),
-                sliver: SliverGrid(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                    childAspectRatio: 0.92,
-                  ),
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final album = _albums[index];
-                      return _FamilyAlbumCard(
-                        album: album,
-                        icon: _albumIcon(album['kind']?.toString()),
-                        userId: widget.currentUserId,
-                      );
-                    },
-                    childCount: _albums.length,
-                  ),
-                ),
-              ),
-          ],
-        ),
+        faceHintMessage: _faceHintMessage,
+        showFaceHint: _showFaceHint,
+        customTabLabel: 'Альбомы',
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _createAlbum,
         icon: const Icon(Icons.create_new_folder_outlined),
         label: const Text('Альбом'),
-      ),
-    );
-  }
-}
-
-class _FamilyAlbumCard extends StatelessWidget {
-  const _FamilyAlbumCard({
-    required this.album,
-    required this.icon,
-    required this.userId,
-  });
-
-  final Map<String, dynamic> album;
-  final IconData icon;
-  final int userId;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final title = album['title']?.toString() ?? '';
-    final count = album['count']?.toString() ?? '0';
-    final albumId = album['id']?.toString() ?? '';
-    final canManage = album['can_manage'] == true;
-    final cover = album['cover'] is Map<String, dynamic>
-        ? album['cover'] as Map<String, dynamic>
-        : null;
-
-    return Material(
-      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
-      borderRadius: BorderRadius.circular(14),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: albumId.isEmpty
-            ? null
-            : () {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ProfileGalleryAlbumScreen(
-                      userId: userId,
-                      albumId: albumId,
-                      title: title,
-                      canManage: canManage,
-                      isFamilyGallery: true,
-                    ),
-                  ),
-                );
-              },
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: cover != null && cover['thread_id'] != null
-                  ? ChatNetworkImage(
-                      threadId: cover['thread_id'] is int
-                          ? cover['thread_id'] as int
-                          : int.tryParse('${cover['thread_id']}') ?? 0,
-                      attachment: cover,
-                      fit: BoxFit.cover,
-                    )
-                  : Center(child: Icon(icon, size: 40, color: theme.colorScheme.primary)),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.titleSmall),
-                  Text('$count фото', style: theme.textTheme.bodySmall),
-                ],
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

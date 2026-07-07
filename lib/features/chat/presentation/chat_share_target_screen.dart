@@ -158,6 +158,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
           albumId: 'custom:$navigatePk',
           title: navigateTitle,
           canManage: true,
+          isOwnGallery: true,
         ),
       ),
     );

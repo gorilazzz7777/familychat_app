@@ -478,6 +478,25 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> deduplicateGalleryAlbum(int userId, String albumId) async {
+    final encodedAlbum = Uri.encodeComponent(albumId);
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/albums/$encodedAlbum/deduplicate/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> bulkDeleteGalleryPhotos(
+    int userId, {
+    required List<int> attachmentIds,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/$userId/gallery/photos/bulk-delete/',
+      data: {'attachment_ids': attachmentIds},
+    );
+    return res.data!;
+  }
+
   Future<List<Map<String, dynamic>>> threadFiles(int threadId) async {
     final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/files/');
     return (res.data ?? []).cast<Map<String, dynamic>>();

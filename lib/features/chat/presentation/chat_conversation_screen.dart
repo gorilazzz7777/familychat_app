@@ -980,15 +980,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _forwardMessageIds(List<int> ids) async {
     if (ids.isEmpty) return;
-    final ok = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(
+    final targets = await Navigator.of(context).push<List<int>>(
+      MaterialPageRoute<List<int>>(
         builder: (_) => ChatForwardScreen(
           sourceThreadId: widget.threadId,
           messageIds: ids,
         ),
       ),
     );
-    if (ok == true && mounted) {
+    if (targets != null && targets.isNotEmpty && mounted) {
       _exitSelection();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Переслано')),

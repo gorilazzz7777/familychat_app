@@ -54,7 +54,7 @@ class _ChatForwardScreenState extends ConsumerState<ChatForwardScreen> {
             threadIds: _selected.toList(),
           );
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      Navigator.of(context).pop(_selected.toList());
     } catch (_) {
       if (!mounted) return;
       setState(() => _sending = false);

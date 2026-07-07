@@ -3,9 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
-import '../../chat/presentation/widgets/chat_network_image.dart';
+import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import 'custom_album_dialog.dart';
-import 'profile_gallery_album_screen.dart';
 
 class ProfileGalleryTab extends ConsumerStatefulWidget {
   const ProfileGalleryTab({
@@ -79,16 +78,6 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
     if (created == true) {
       await _load();
     }
-  }
-
-  IconData _albumIcon(String? kind) {
-    return switch (kind) {
-      'year' => Icons.calendar_today_outlined,
-      'place' => Icons.place_outlined,
-      'face' => Icons.face_outlined,
-      'custom' => Icons.collections_bookmark_outlined,
-      _ => Icons.photo_library_outlined,
-    };
   }
 
   int? _customAlbumPk(Map<String, dynamic> album) {
@@ -203,72 +192,15 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
     }
 
     return Scaffold(
-      body: RefreshIndicator(
+      body: GalleryAlbumsGroupedView(
+        albums: _albums,
+        userId: widget.userId,
+        isOwnGallery: widget.isOwnGallery,
         onRefresh: _load,
-        child: CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            if (_showFaceHint && _faceHintMessage.isNotEmpty)
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                  child: Material(
-                    color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.45),
-                    borderRadius: BorderRadius.circular(12),
-                    child: Padding(
-                      padding: const EdgeInsets.all(14),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.face_retouching_natural_outlined,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              _faceHintMessage,
-                              style: Theme.of(context).textTheme.bodyMedium,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            if (_albums.isEmpty)
-              const SliverFillRemaining(
-                hasScrollBody: false,
-                child: Center(child: Text('Пока нет фото в галерее')),
-              )
-            else
-              SliverPadding(
-                padding: const EdgeInsets.all(16),
-                sliver: SliverGrid(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                    childAspectRatio: 0.92,
-                  ),
-                  delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                      final album = _albums[index];
-                      final canManage = album['can_manage'] == true;
-                      return _AlbumCard(
-                        album: album,
-                        icon: _albumIcon(album['kind']?.toString()),
-                        userId: widget.userId,
-                        onLongPress: canManage ? () => _showAlbumMenu(album) : null,
-                      );
-                    },
-                    childCount: _albums.length,
-                  ),
-                ),
-              ),
-          ],
-        ),
+        faceHintMessage: _faceHintMessage,
+        showFaceHint: _showFaceHint,
+        onAlbumLongPress: widget.isOwnGallery ? _showAlbumMenu : null,
+        customTabLabel: 'Мои альбомы',
       ),
       floatingActionButton: widget.isOwnGallery
           ? FloatingActionButton.extended(
@@ -277,114 +209,6 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
               label: const Text('Альбом'),
             )
           : null,
-    );
-  }
-}
-
-class _AlbumCard extends ConsumerWidget {
-  const _AlbumCard({
-    required this.album,
-    required this.icon,
-    required this.userId,
-    this.onLongPress,
-  });
-
-  final Map<String, dynamic> album;
-  final IconData icon;
-  final int userId;
-  final VoidCallback? onLongPress;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final title = album['title']?.toString() ?? '';
-    final count = album['count']?.toString() ?? '0';
-    final albumId = album['id']?.toString() ?? '';
-    final canManage = album['can_manage'] == true;
-    final cover = album['cover'] is Map<String, dynamic>
-        ? album['cover'] as Map<String, dynamic>
-        : null;
-
-    return Material(
-      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
-      borderRadius: BorderRadius.circular(14),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: albumId.isEmpty
-            ? null
-            : () {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ProfileGalleryAlbumScreen(
-                      userId: userId,
-                      albumId: albumId,
-                      title: title,
-                      canManage: canManage,
-                    ),
-                  ),
-                );
-              },
-        onLongPress: onLongPress,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: _AlbumCover(
-                cover: cover,
-                icon: icon,
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleSmall,
-                  ),
-                  Text(
-                    '$count фото',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AlbumCover extends StatelessWidget {
-  const _AlbumCover({
-    required this.cover,
-    required this.icon,
-  });
-
-  final Map<String, dynamic>? cover;
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) {
-    final threadId = cover?['thread_id'];
-    if (cover != null && threadId is int) {
-      return ChatNetworkImage(
-        threadId: threadId,
-        attachment: cover!,
-        fit: BoxFit.cover,
-      );
-    }
-    return ColoredBox(
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Center(
-        child: Icon(icon, size: 40, color: Theme.of(context).colorScheme.primary),
-      ),
     );
   }
 }

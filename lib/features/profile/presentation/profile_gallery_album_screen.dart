@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../calendar/data/calendar_photo_sync_service.dart';
@@ -26,6 +27,7 @@ class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
     required this.title,
     this.canManage = false,
     this.isFamilyGallery = false,
+    this.isOwnGallery = false,
   });
 
   final int userId;
@@ -33,6 +35,7 @@ class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
   final String title;
   final bool canManage;
   final bool isFamilyGallery;
+  final bool isOwnGallery;
 
   bool get isCustomAlbum => albumId.startsWith('custom:');
 
@@ -70,6 +73,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   bool _uploadPolling = false;
   CalendarPhotoSyncInfo? _calendarSyncInfo;
   bool _calendarSyncRunning = false;
+  bool _bulkActionRunning = false;
+  int? _currentUserId;
   static const _pageSize = 60;
   static const _maxUploadCount = 500;
   static const _galleryAddChunkSize = 50;
@@ -84,6 +89,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
       AlbumUploadCoordinator.instance.setAlbumScreenVisible(albumPk, true);
     }
     _load(reset: true);
+    unawaited(_loadCurrentUserId());
     if (widget.isCustomAlbum) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_initCalendarPhotoSync());
@@ -627,6 +633,34 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
 
   List<int> get _selectablePhotoIds => _photos.map(_photoId).whereType<int>().toList();
 
+  bool _photoIsOwnUpload(Map<String, dynamic> photo) {
+    final myId = _currentUserId;
+    if (myId == null) return false;
+    final uploader = photo['uploaded_by_user_id'];
+    final uid = uploader is int ? uploader : int.tryParse('$uploader');
+    return uid == myId;
+  }
+
+  List<int> get _selectedOwnPhotoIds => _photos
+      .where((photo) {
+        final id = _photoId(photo);
+        return id != null && _selectedPhotoIds.contains(id) && _photoIsOwnUpload(photo);
+      })
+      .map(_photoId)
+      .whereType<int>()
+      .toList();
+
+  Future<void> _loadCurrentUserId() async {
+    try {
+      final status = await ref.read(familychatRepositoryProvider).status();
+      final userId = status['user_id'];
+      if (!mounted) return;
+      setState(() {
+        _currentUserId = userId is int ? userId : int.tryParse('$userId');
+      });
+    } catch (_) {}
+  }
+
   bool get _allPhotosSelected {
     final ids = _selectablePhotoIds;
     return ids.isNotEmpty && ids.every(_selectedPhotoIds.contains);
@@ -765,55 +799,177 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     }
   }
 
-  Future<void> _removeSelectedFromAlbum() async {
-    if (_selectedPhotoIds.isEmpty) return;
-    final pk = widget.customAlbumPk;
-    if (pk == null) return;
-    final count = _selectedPhotoIds.length;
+  Future<void> _deleteSelectedPhotos() async {
+    final ids = _selectedOwnPhotoIds;
+    if (ids.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Можно удалить только свои фото')),
+      );
+      return;
+    }
+
+    final skipped = _selectedPhotoIds.length - ids.length;
+    final count = ids.length;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Убрать из альбома?'),
+        title: const Text('Удалить фото?'),
         content: Text(
-          count == 1
-              ? 'Фото будет убрано из альбома «${widget.title}», но останется в галерее.'
-              : 'Выбранные фото ($count) будут убраны из альбома «${widget.title}», но останутся в галерее.',
+          skipped > 0
+              ? 'Будет удалено $count ${_photoWord(count)} совсем — из всех альбомов и чата. '
+                  'Ещё $skipped ${_photoWord(skipped)} не ваши и не будут удалены.'
+              : count == 1
+                  ? 'Фото будет удалено совсем — из всех альбомов и чата.'
+                  : 'Выбранные фото ($count) будут удалены совсем — из всех альбомов и чата.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Убрать')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
 
+    try {
+      final res = await ref.read(familychatRepositoryProvider).bulkDeleteGalleryPhotos(
+            widget.userId,
+            attachmentIds: ids,
+          );
+      if (!mounted) return;
+      final deleted = res['deleted'];
+      final notOwner = res['skipped_not_owner'];
+      final message = deleted == ids.length
+          ? 'Удалено: $deleted'
+          : 'Удалено: ${deleted ?? 0}, пропущено: ${notOwner ?? 0}';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      setState(() {
+        _selectedPhotoIds.clear();
+        _selectionMode = false;
+      });
+      await _load(reset: true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+    }
+  }
+
+  String _photoWord(int count) {
+    final mod10 = count % 10;
+    final mod100 = count % 100;
+    if (mod10 == 1 && mod100 != 11) return 'фото';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'фото';
+    return 'фото';
+  }
+
+  List<Map<String, dynamic>> get _selectedPhotos => _photos.where((photo) {
+        final id = _photoId(photo);
+        return id != null && _selectedPhotoIds.contains(id);
+      }).toList();
+
+  Future<List<XFile>> _loadSelectedPhotoFiles() async {
     final repo = ref.read(familychatRepositoryProvider);
-    final ids = _selectedPhotoIds.toList();
-    var removed = 0;
-    var failed = 0;
-    for (final id in ids) {
-      try {
-        await repo.removePhotoFromCustomAlbum(widget.userId, pk, id);
-        removed++;
-      } catch (_) {
-        failed++;
+    final files = <XFile>[];
+    for (final photo in _selectedPhotos) {
+      final threadId = photo['thread_id'];
+      final attachmentId = _photoId(photo);
+      if (threadId is! int || attachmentId == null) continue;
+      final bytes = await repo.fetchChatAttachmentBytes(threadId, attachmentId);
+      final rawName = photo['filename']?.toString().trim() ?? '';
+      final name = rawName.isNotEmpty ? rawName : 'photo_$attachmentId.jpg';
+      files.add(XFile.fromData(bytes, name: name));
+    }
+    return files;
+  }
+
+  Future<void> _downloadSelectedPhotos() async {
+    final selected = _selectedPhotos;
+    if (selected.isEmpty || _bulkActionRunning) return;
+    setState(() => _bulkActionRunning = true);
+    try {
+      final files = await _loadSelectedPhotoFiles();
+      if (files.isEmpty) {
+        throw StateError('Не удалось загрузить файлы');
       }
-    }
-    if (!mounted) return;
-    if (failed == 0) {
+      // ignore: deprecated_member_use
+      await Share.shareXFiles(files);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Убрано из альбома: $removed')),
+        SnackBar(content: Text('Готово: ${files.length} фото')),
       );
-    } else {
+    } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Убрано: $removed, ошибок: $failed')),
+        SnackBar(content: Text('Ошибка скачивания: $e')),
       );
+    } finally {
+      if (mounted) setState(() => _bulkActionRunning = false);
     }
-    setState(() {
-      _selectedPhotoIds.clear();
-      _selectionMode = false;
-    });
-    await _load(reset: true);
+  }
+
+  Future<void> _shareSelectedPhotos() async {
+    final selected = _selectedPhotos;
+    if (selected.isEmpty || _bulkActionRunning) return;
+    setState(() => _bulkActionRunning = true);
+    try {
+      final files = await _loadSelectedPhotoFiles();
+      if (files.isEmpty) {
+        throw StateError('Не удалось подготовить файлы');
+      }
+      // ignore: deprecated_member_use
+      await Share.shareXFiles(files);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _bulkActionRunning = false);
+    }
+  }
+
+  Future<void> _deduplicateAlbum() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить дубликаты?'),
+        content: const Text(
+          'В альбоме будут найдены одинаковые фото (по содержимому). '
+          'Останется самое раннее, остальные ваши копии будут удалены совсем.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Удалить дубликаты')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      final res = await ref.read(familychatRepositoryProvider).deduplicateGalleryAlbum(
+            widget.userId,
+            widget.albumId,
+          );
+      if (!mounted) return;
+      final deleted = res['deleted'] ?? 0;
+      final skipped = res['skipped_not_owner'] ?? 0;
+      final groups = res['duplicate_groups'] ?? 0;
+      final text = deleted == 0
+          ? (groups == 0 ? 'Дубликатов не найдено' : 'Удалено: 0 (чужие копии не трогаем)')
+          : 'Удалено дубликатов: $deleted${skipped > 0 ? ', пропущено чужих: $skipped' : ''}';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+      await _load(reset: true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+    }
   }
 
   Future<void> _deleteAlbum() async {
@@ -1055,16 +1211,49 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               onPressed: _selectablePhotoIds.isEmpty ? null : _toggleSelectAllPhotos,
               child: Text(_allPhotosSelected ? 'Снять все' : 'Выбрать все'),
             ),
-          if (_selectionMode && canManageCustom)
-            IconButton(
-              tooltip: 'Убрать из альбома',
-              onPressed: _selectedPhotoIds.isEmpty ? null : _removeSelectedFromAlbum,
-              icon: const Icon(Icons.remove_circle_outline),
+          if (_selectionMode)
+            PopupMenuButton<String>(
+              enabled: _selectedPhotoIds.isNotEmpty && !_bulkActionRunning,
+              tooltip: 'Действия',
+              onSelected: (value) {
+                switch (value) {
+                  case 'download':
+                    _downloadSelectedPhotos();
+                  case 'share':
+                    _shareSelectedPhotos();
+                  case 'tag':
+                    _showBulkTagDialog();
+                  case 'delete':
+                    _deleteSelectedPhotos();
+                }
+              },
+              itemBuilder: (ctx) => [
+                const PopupMenuItem(value: 'download', child: Text('Скачать')),
+                const PopupMenuItem(value: 'share', child: Text('Поделиться')),
+                const PopupMenuItem(value: 'tag', child: Text('Добавить тег')),
+                if (widget.isOwnGallery)
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Text('Удалить', style: TextStyle(color: Colors.red)),
+                  ),
+              ],
+              icon: _bulkActionRunning
+                  ? const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: Padding(
+                        padding: EdgeInsets.all(4),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : const Icon(Icons.more_vert),
             ),
-          if (canManageCustom && !_selectionMode)
+          if (!_selectionMode && (canManageCustom || widget.isOwnGallery))
             PopupMenuButton<String>(
               onSelected: (value) {
                 switch (value) {
+                  case 'dedupe':
+                    _deduplicateAlbum();
                   case 'edit':
                     _editAlbum();
                   case 'delete':
@@ -1072,8 +1261,12 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                 }
               },
               itemBuilder: (ctx) => [
-                const PopupMenuItem(value: 'edit', child: Text('Редактировать')),
-                const PopupMenuItem(value: 'delete', child: Text('Удалить альбом')),
+                if (widget.isOwnGallery)
+                  const PopupMenuItem(value: 'dedupe', child: Text('Удалить дубликаты')),
+                if (canManageCustom) ...[
+                  const PopupMenuItem(value: 'edit', child: Text('Редактировать')),
+                  const PopupMenuItem(value: 'delete', child: Text('Удалить альбом')),
+                ],
               ],
             ),
         ],
