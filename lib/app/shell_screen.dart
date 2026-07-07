@@ -4,9 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
-import 'package:share_plus/share_plus.dart';
 
-import '../core/config/env.dart';
 import '../core/push/push_navigation.dart';
 import '../core/providers/app_providers.dart';
 import '../core/share/incoming_share_bus.dart';
@@ -14,8 +12,10 @@ import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
-import '../features/members/presentation/invite_kinship_dialog.dart';
+import '../features/feed/presentation/feed_screen.dart';
+import '../features/gallery/presentation/family_gallery_tab.dart';
 import '../features/members/presentation/members_screen.dart';
+import '../features/more/presentation/more_menu_panel.dart';
 import '../features/profile/presentation/profile_screen.dart';
 
 class ShellScreen extends ConsumerStatefulWidget {
@@ -35,7 +35,10 @@ class ShellScreen extends ConsumerStatefulWidget {
 }
 
 class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingObserver {
+  static const _moreTabIndex = 3;
+
   int _index = 0;
+  bool _moreMenuOpen = false;
   late Map<String, dynamic> _status;
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
   Timer? _webPollTimer;
@@ -101,30 +104,24 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
     }
   }
 
+  int? get _currentUserId => _status['user_id'] is int ? _status['user_id'] as int : null;
+
   String get _title => switch (_index) {
-        0 => 'Семейный чат',
-        1 => 'Семья',
-        2 => 'Календарь',
-        _ => 'Профиль',
+        0 => 'Главная',
+        1 => 'Семейный чат',
+        2 => 'Галерея',
+        _ => 'Ещё',
       };
 
-  Future<void> _inviteMember() async {
-    try {
-      final repo = ref.read(familychatRepositoryProvider);
-      final options = await repo.kinshipOptions();
-      if (!mounted) return;
-      final code = await showInviteKinshipDialog(context, options: options);
-      if (code == null || !mounted) return;
-      final inv = await repo.createInvite(code);
-      final url = inv['invite_url'] as String? ??
-          '${Env.inviteBaseUrl}${inv['invite_url_path']}';
-      await Share.share('Приглашение в Family Chat: $url');
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось создать приглашение: $e')),
-      );
+  void _onDestinationSelected(int i) {
+    if (i == _moreTabIndex) {
+      setState(() => _moreMenuOpen = !_moreMenuOpen);
+      return;
     }
+    setState(() {
+      _index = i;
+      _moreMenuOpen = false;
+    });
   }
 
   Future<void> _handleStatusChanged() async {
@@ -136,13 +133,47 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
     } catch (_) {}
   }
 
+  void _openFamily() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MembersScreen(
+          currentUserId: _currentUserId,
+          onOpenOwnProfile: _openProfile,
+        ),
+      ),
+    );
+  }
+
+  void _openCalendar() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const CalendarScreen()),
+    );
+  }
+
+  void _openProfile() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ProfileScreen(
+          status: _status,
+          onLogout: widget.onLogout,
+          onStatusChanged: () {
+            unawaited(_handleStatusChanged());
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final userId = _currentUserId;
+    final navSelected = _moreMenuOpen ? _moreTabIndex : _index;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_title),
         actions: [
-          if (_index == 0) ...[
+          if (_index == 1) ...[
             IconButton(
               icon: const Icon(Icons.search),
               tooltip: 'Поиск',
@@ -154,40 +185,55 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
               onPressed: () => _chatHubKey.currentState?.createGroup(),
             ),
           ],
-          if (_index == 1)
-            IconButton(
-              icon: const Icon(Icons.add),
-              tooltip: 'Пригласить',
-              onPressed: _inviteMember,
+        ],
+      ),
+      body: Stack(
+        children: [
+          IndexedStack(
+            index: _index,
+            children: [
+              const FeedScreen(),
+              ChatHubScreen(key: _chatHubKey),
+              userId == null
+                  ? const Center(child: CircularProgressIndicator())
+                  : FamilyGalleryTab(currentUserId: userId),
+              const SizedBox.shrink(),
+            ],
+          ),
+          if (_moreMenuOpen)
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () => setState(() => _moreMenuOpen = false),
+                child: ColoredBox(color: Colors.black.withValues(alpha: 0.35)),
+              ),
             ),
         ],
       ),
-      body: IndexedStack(
-        index: _index,
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          ChatHubScreen(key: _chatHubKey),
-          MembersScreen(
-            currentUserId: _status['user_id'] as int?,
-            onOpenOwnProfile: () => setState(() => _index = 3),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            child: _moreMenuOpen
+                ? MoreMenuPanel(
+                    onClose: () => setState(() => _moreMenuOpen = false),
+                    onOpenFamily: _openFamily,
+                    onOpenCalendar: _openCalendar,
+                    onOpenProfile: _openProfile,
+                  )
+                : const SizedBox.shrink(),
           ),
-          const CalendarScreen(),
-          ProfileScreen(
-            status: _status,
-            onLogout: widget.onLogout,
-            onStatusChanged: () {
-              unawaited(_handleStatusChanged());
-            },
+          NavigationBar(
+            selectedIndex: navSelected,
+            onDestinationSelected: _onDestinationSelected,
+            destinations: const [
+              NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Главная'),
+              NavigationDestination(icon: Icon(Icons.chat_outlined), label: 'Чат'),
+              NavigationDestination(icon: Icon(Icons.photo_library_outlined), label: 'Галерея'),
+              NavigationDestination(icon: Icon(Icons.more_horiz), label: 'Ещё'),
+            ],
           ),
-        ],
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.chat_outlined), label: 'Чат'),
-          NavigationDestination(icon: Icon(Icons.people_outline), label: 'Семья'),
-          NavigationDestination(icon: Icon(Icons.calendar_month_outlined), label: 'Календарь'),
-          NavigationDestination(icon: Icon(Icons.person_outline), label: 'Профиль'),
         ],
       ),
     );

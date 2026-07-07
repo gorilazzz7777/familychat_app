@@ -592,4 +592,94 @@ class FamilyChatRepository {
     );
     return res.data!;
   }
+
+  Future<Map<String, dynamic>> familyFeed({
+    int offset = 0,
+    int limit = 30,
+  }) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/feed/',
+      queryParameters: {'offset': offset, 'limit': limit},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> familyGalleryAlbums() async {
+    final res = await _dio.get<Map<String, dynamic>>('familychat/gallery/albums/');
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> familyGalleryPhotos(
+    String albumId, {
+    int offset = 0,
+    int limit = 60,
+    String? query,
+    int? personUserId,
+  }) async {
+    final encodedAlbum = Uri.encodeComponent(albumId);
+    final params = <String, dynamic>{'offset': offset, 'limit': limit};
+    if (query != null && query.trim().isNotEmpty) params['q'] = query.trim();
+    if (personUserId != null) params['person_user_id'] = personUserId;
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/gallery/albums/$encodedAlbum/photos/',
+      queryParameters: params,
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> familyGalleryUpload({
+    required Uint8List bytes,
+    required String filename,
+    String? contentType,
+    required String destination,
+    int? albumPk,
+  }) async {
+    final form = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        bytes,
+        filename: filename,
+        contentType: contentType != null ? DioMediaType.parse(contentType) : null,
+      ),
+      'destination': destination,
+      if (albumPk != null) 'album_pk': albumPk,
+    });
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/gallery/upload/',
+      data: form,
+      options: Options(
+        sendTimeout: const Duration(minutes: 3),
+        receiveTimeout: const Duration(minutes: 3),
+      ),
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> mediaEngagement(int attachmentId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/media/$attachmentId/engagement/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> toggleMediaLike(int attachmentId) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/media/$attachmentId/engagement/',
+    );
+    return res.data!;
+  }
+
+  Future<List<Map<String, dynamic>>> mediaComments(int attachmentId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/media/$attachmentId/comments/',
+    );
+    return (res.data?['comments'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> addMediaComment(int attachmentId, String body) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/media/$attachmentId/comments/',
+      data: {'body': body},
+    );
+    return res.data!;
+  }
 }

@@ -5,6 +5,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/widgets/chat_image_viewer.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import 'face_tagging_sheet.dart';
+import 'media_engagement_sheet.dart';
 
 /// Полноэкранный просмотр фото из галереи с меню действий.
 class GalleryPhotoViewerScreen extends ConsumerStatefulWidget {
@@ -192,6 +193,13 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         actions: [
+          if (attachmentId != null) ...[
+            IconButton(
+              tooltip: 'Лайки и комментарии',
+              onPressed: () => MediaEngagementSheet.show(context, attachmentId: attachmentId),
+              icon: const Icon(Icons.favorite_border),
+            ),
+          ],
           if (threadId != null && attachmentId != null)
             IconButton(
               tooltip: 'Кто на фото',

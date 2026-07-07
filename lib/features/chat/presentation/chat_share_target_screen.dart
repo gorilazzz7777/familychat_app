@@ -20,7 +20,10 @@ class ChatShareTargetScreen extends ConsumerStatefulWidget {
 
 class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
   List<Map<String, dynamic>> _threads = [];
-  final _selected = <int>{};
+  List<Map<String, dynamic>> _albums = [];
+  final _selectedThreads = <int>{};
+  final _selectedAlbumPks = <int>{};
+  int _tabIndex = 0;
   bool _loading = true;
   bool _sending = false;
   String? _loadError;
@@ -43,11 +46,23 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
   Future<void> _load() async {
     try {
       final attachments = await readShareAttachments(widget.media);
-      final list = await ref.read(familychatRepositoryProvider).chatThreads();
+      final repo = ref.read(familychatRepositoryProvider);
+      final status = await repo.status();
+      final myUserId = status['user_id'] is int ? status['user_id'] as int : null;
+      final list = await repo.chatThreads();
+      List<Map<String, dynamic>> albums = const [];
+      if (myUserId != null) {
+        final albumsData = await repo.memberGalleryAlbums(myUserId);
+        albums = (albumsData['albums'] as List<dynamic>? ?? [])
+            .cast<Map<String, dynamic>>()
+            .where((a) => a['kind']?.toString() == 'custom')
+            .toList();
+      }
       if (!mounted) return;
       setState(() {
         _attachments = attachments;
         _threads = list;
+        _albums = albums;
         _loading = false;
       });
     } catch (_) {
@@ -61,7 +76,11 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
 
   bool get _canSend {
     final caption = _captionController.text.trim();
-    return _selected.isNotEmpty && (caption.isNotEmpty || _attachments.isNotEmpty);
+    if (_tabIndex == 0) {
+      return _selectedThreads.isNotEmpty && (caption.isNotEmpty || _attachments.isNotEmpty);
+    }
+    final imageCount = _attachments.where((a) => a.isImage).length;
+    return _selectedAlbumPks.isNotEmpty && imageCount > 0;
   }
 
   Future<void> _send() async {
@@ -70,35 +89,57 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
 
     final caption = _captionController.text.trim();
     final repo = ref.read(familychatRepositoryProvider);
-    final threadIds = _selected.toList();
+    final threadIds = _selectedThreads.toList();
+    final albumPks = _selectedAlbumPks.toList();
 
     try {
-      for (final threadId in threadIds) {
-        final attachmentIds = <int>[];
-        for (final att in _attachments) {
-          final uploaded = await repo.uploadChatAttachmentBytes(
+      if (_tabIndex == 0) {
+        for (final threadId in threadIds) {
+          final attachmentIds = <int>[];
+          for (final att in _attachments) {
+            final uploaded = await repo.uploadChatAttachmentBytes(
+              threadId,
+              bytes: Uint8List.fromList(att.bytes),
+              filename: att.filename,
+              contentType: att.contentType,
+            );
+            final id = chatAsInt(uploaded['id']);
+            if (id != null) attachmentIds.add(id);
+          }
+          await repo.sendThreadMessage(
             threadId,
-            bytes: Uint8List.fromList(att.bytes),
-            filename: att.filename,
-            contentType: att.contentType,
+            body: caption.isEmpty ? null : caption,
+            attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
           );
-          final id = chatAsInt(uploaded['id']);
-          if (id != null) attachmentIds.add(id);
         }
-        await repo.sendThreadMessage(
-          threadId,
-          body: caption.isEmpty ? null : caption,
-          attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
-        );
+      } else {
+        final images = _attachments.where((a) => a.isImage).toList();
+        final status = await repo.status();
+        final myUserId = status['user_id'] is int
+            ? status['user_id'] as int
+            : int.tryParse('${status['user_id']}');
+        if (myUserId == null) {
+          throw StateError('User id is missing');
+        }
+        for (final albumPk in albumPks) {
+          for (final att in images) {
+            await repo.uploadPhotoToCustomAlbum(
+              myUserId,
+              albumPk,
+              bytes: Uint8List.fromList(att.bytes),
+              filename: att.filename,
+              contentType: att.contentType ?? 'image/jpeg',
+            );
+          }
+        }
       }
       if (!mounted) return;
       Navigator.of(context).pop(true);
+      final message = _tabIndex == 0
+          ? (threadIds.length == 1 ? 'Отправлено в чат' : 'Отправлено в ${threadIds.length} чата')
+          : (albumPks.length == 1 ? 'Добавлено в альбом' : 'Добавлено в ${albumPks.length} альбома');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            threadIds.length == 1 ? 'Отправлено' : 'Отправлено в ${threadIds.length} чата',
-          ),
-        ),
+        SnackBar(content: Text(message)),
       );
     } catch (_) {
       if (!mounted) return;
@@ -109,6 +150,62 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     }
   }
 
+  Widget _buildTargetsList() {
+    if (_tabIndex == 0) {
+      if (_threads.isEmpty) return const Center(child: Text('Нет доступных чатов'));
+      return ListView.builder(
+        itemCount: _threads.length,
+        itemBuilder: (_, i) {
+          final t = _threads[i];
+          final id = chatAsInt(t['id']);
+          if (id == null) return const SizedBox.shrink();
+          final selected = _selectedThreads.contains(id);
+          return CheckboxListTile(
+            value: selected,
+            onChanged: (v) {
+              setState(() {
+                if (v == true) {
+                  _selectedThreads.add(id);
+                } else {
+                  _selectedThreads.remove(id);
+                }
+              });
+            },
+            title: Text(t['title']?.toString() ?? 'Чат'),
+            subtitle: Text(_preview(t)),
+          );
+        },
+      );
+    }
+    if (_albums.isEmpty) {
+      return const Center(child: Text('Нет доступных альбомов'));
+    }
+    return ListView.builder(
+      itemCount: _albums.length,
+      itemBuilder: (_, i) {
+        final a = _albums[i];
+        final idStr = a['id']?.toString() ?? '';
+        final pk = idStr.startsWith('custom:') ? int.tryParse(idStr.substring(7)) : null;
+        if (pk == null) return const SizedBox.shrink();
+        final selected = _selectedAlbumPks.contains(pk);
+        return CheckboxListTile(
+          value: selected,
+          onChanged: (v) {
+            setState(() {
+              if (v == true) {
+                _selectedAlbumPks.add(pk);
+              } else {
+                _selectedAlbumPks.remove(pk);
+              }
+            });
+          },
+          title: Text(a['title']?.toString() ?? 'Альбом'),
+          subtitle: Text('${a['count'] ?? 0} фото'),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final caption = _captionController.text.trim();
@@ -116,7 +213,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Поделиться в чат'),
+        title: const Text('Поделиться'),
         actions: [
           TextButton(
             onPressed: !_canSend || _sending ? null : _send,
@@ -126,7 +223,11 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Text('Отправить (${_selected.length})'),
+                : Text(
+                    _tabIndex == 0
+                        ? 'Отправить (${_selectedThreads.length})'
+                        : 'Добавить (${_selectedAlbumPks.length})',
+                  ),
           ),
         ],
       ),
@@ -205,32 +306,21 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                           ),
                         ),
                         const Divider(height: 1),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                          child: SegmentedButton<int>(
+                            segments: const [
+                              ButtonSegment(value: 0, label: Text('Чаты')),
+                              ButtonSegment(value: 1, label: Text('Галерея')),
+                            ],
+                            selected: {_tabIndex},
+                            onSelectionChanged: (s) {
+                              setState(() => _tabIndex = s.first);
+                            },
+                          ),
+                        ),
                         Expanded(
-                          child: _threads.isEmpty
-                              ? const Center(child: Text('Нет доступных чатов'))
-                              : ListView.builder(
-                                  itemCount: _threads.length,
-                                  itemBuilder: (_, i) {
-                                    final t = _threads[i];
-                                    final id = chatAsInt(t['id']);
-                                    if (id == null) return const SizedBox.shrink();
-                                    final selected = _selected.contains(id);
-                                    return CheckboxListTile(
-                                      value: selected,
-                                      onChanged: (v) {
-                                        setState(() {
-                                          if (v == true) {
-                                            _selected.add(id);
-                                          } else {
-                                            _selected.remove(id);
-                                          }
-                                        });
-                                      },
-                                      title: Text(t['title']?.toString() ?? 'Чат'),
-                                      subtitle: Text(_preview(t)),
-                                    );
-                                  },
-                                ),
+                          child: _buildTargetsList(),
                         ),
                       ],
                     ),

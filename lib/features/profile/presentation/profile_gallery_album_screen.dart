@@ -1,8 +1,14 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/providers/app_providers.dart';
+import 'album_upload_file_bytes.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
 import 'pick_gallery_photos_sheet.dart';
@@ -16,12 +22,14 @@ class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
     required this.albumId,
     required this.title,
     this.canManage = false,
+    this.isFamilyGallery = false,
   });
 
   final int userId;
   final String albumId;
   final String title;
   final bool canManage;
+  final bool isFamilyGallery;
 
   bool get isCustomAlbum => albumId.startsWith('custom:');
 
@@ -49,7 +57,15 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   List<Map<String, dynamic>> _searchPeople = [];
   int _offset = 0;
   int _total = 0;
+  int _uploadDone = 0;
+  int _uploadFailed = 0;
+  int _uploadTotal = 0;
+  Timer? _uploadPollTimer;
+  bool _uploadPolling = false;
   static const _pageSize = 60;
+  static const _maxUploadCount = 500;
+  static const _galleryAddChunkSize = 50;
+  static const _uploadPollInterval = Duration(seconds: 3);
 
   @override
   void initState() {
@@ -59,6 +75,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
 
   @override
   void dispose() {
+    _uploadPollTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -75,14 +92,23 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
       setState(() => _loadingMore = true);
     }
     try {
-      final data = await ref.read(familychatRepositoryProvider).memberGalleryPhotos(
-            widget.userId,
-            widget.albumId,
-            offset: _offset,
-            limit: _pageSize,
-            query: _query,
-            personUserId: _personUserId,
-          );
+      final repo = ref.read(familychatRepositoryProvider);
+      final data = widget.isFamilyGallery
+          ? await repo.familyGalleryPhotos(
+              widget.albumId,
+              offset: _offset,
+              limit: _pageSize,
+              query: _query,
+              personUserId: _personUserId,
+            )
+          : await repo.memberGalleryPhotos(
+              widget.userId,
+              widget.albumId,
+              offset: _offset,
+              limit: _pageSize,
+              query: _query,
+              personUserId: _personUserId,
+            );
       if (!mounted) return;
       final batch = (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
       setState(() {
@@ -110,6 +136,232 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
         .map((id) => id is int ? id : int.tryParse('$id'))
         .whereType<int>()
         .toSet();
+  }
+
+  int? _photoId(Map<String, dynamic> photo) {
+    final id = photo['id'];
+    return id is int ? id : int.tryParse('$id');
+  }
+
+  void _beginUploadSession(int total) {
+    setState(() {
+      _addingPhotos = true;
+      _uploadTotal = total;
+      _uploadDone = 0;
+      _uploadFailed = 0;
+    });
+    _uploadPollTimer?.cancel();
+    _uploadPollTimer = Timer.periodic(_uploadPollInterval, (_) {
+      unawaited(_pollNewPhotosDuringUpload());
+    });
+  }
+
+  void _endUploadSession() {
+    _uploadPollTimer?.cancel();
+    _uploadPollTimer = null;
+    if (!mounted) return;
+    setState(() => _addingPhotos = false);
+  }
+
+  void _onUploadProgress({required bool success}) {
+    if (!mounted) return;
+    setState(() {
+      if (success) {
+        _uploadDone++;
+      } else {
+        _uploadFailed++;
+      }
+    });
+  }
+
+  void _prependPhotoIfNew(Map<String, dynamic> photo) {
+    final id = _photoId(photo);
+    if (id == null || _currentPhotoIds.contains(id)) return;
+    setState(() {
+      _photos.insert(0, photo);
+      _offset++;
+      _total++;
+    });
+  }
+
+  Future<void> _pollNewPhotosDuringUpload() async {
+    if (!mounted || !_addingPhotos || _uploadPolling || _searchMode || _query.isNotEmpty) return;
+    _uploadPolling = true;
+    try {
+      final fetchLimit = math.min(math.max(_photos.length + _pageSize, _pageSize), 200);
+      final repo = ref.read(familychatRepositoryProvider);
+      final data = widget.isFamilyGallery
+          ? await repo.familyGalleryPhotos(
+              widget.albumId,
+              offset: 0,
+              limit: fetchLimit,
+              query: _query,
+              personUserId: _personUserId,
+            )
+          : await repo.memberGalleryPhotos(
+              widget.userId,
+              widget.albumId,
+              offset: 0,
+              limit: fetchLimit,
+              query: _query,
+              personUserId: _personUserId,
+            );
+      if (!mounted) return;
+      final batch = (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final newTotal =
+          data['total'] is int ? data['total'] as int : int.tryParse('${data['total']}') ?? _total;
+      final existingIds = _currentPhotoIds;
+      final fresh = batch
+          .where((photo) {
+            final id = _photoId(photo);
+            return id != null && !existingIds.contains(id);
+          })
+          .toList();
+      if (fresh.isEmpty && newTotal == _total) return;
+      setState(() {
+        if (fresh.isNotEmpty) {
+          _photos.insertAll(0, fresh);
+          _offset += fresh.length;
+        }
+        _total = newTotal;
+      });
+    } catch (_) {
+      // Ignore polling errors while upload continues.
+    } finally {
+      _uploadPolling = false;
+    }
+  }
+
+  void _showUploadSummary() {
+    if (!mounted) return;
+    final message = _uploadFailed == 0
+        ? 'Загружено фото: $_uploadDone'
+        : 'Загружено: $_uploadDone, ошибок: $_uploadFailed';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  List<T> _limitUploadSelection<T>(List<T> items) {
+    if (items.length <= _maxUploadCount) return items;
+    if (!mounted) return items.take(_maxUploadCount).toList();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Можно загрузить не более $_maxUploadCount фото. Выбрано первые $_maxUploadCount.',
+        ),
+      ),
+    );
+    return items.take(_maxUploadCount).toList();
+  }
+
+  Future<void> _uploadDeviceImages({
+    required int albumPk,
+    required List<XFile> pickedItems,
+  }) async {
+    final items = _limitUploadSelection(pickedItems);
+    if (items.isEmpty) return;
+    _beginUploadSession(items.length);
+    final repo = ref.read(familychatRepositoryProvider);
+    try {
+      for (final picked in items) {
+        try {
+          final bytes = await picked.readAsBytes();
+          final contentType = picked.mimeType ?? _imageContentTypeForFilename(picked.name);
+          final uploaded = await repo.uploadPhotoToCustomAlbum(
+            widget.userId,
+            albumPk,
+            bytes: bytes,
+            filename: picked.name,
+            contentType: contentType,
+          );
+          _prependPhotoIfNew(uploaded);
+          _onUploadProgress(success: true);
+          await _pollNewPhotosDuringUpload();
+        } catch (_) {
+          _onUploadProgress(success: false);
+        }
+      }
+      await _pollNewPhotosDuringUpload();
+      _showUploadSummary();
+    } finally {
+      _endUploadSession();
+    }
+  }
+
+  Future<void> _uploadPhoneFiles({
+    required int albumPk,
+    required List<PlatformFile> files,
+  }) async {
+    final items = _limitUploadSelection(files);
+    if (items.isEmpty) return;
+    _beginUploadSession(items.length);
+    final repo = ref.read(familychatRepositoryProvider);
+    try {
+      for (final file in items) {
+        try {
+          final bytes = await readAlbumUploadFileBytes(file);
+          if (bytes == null || bytes.isEmpty) {
+            _onUploadProgress(success: false);
+            continue;
+          }
+          final ext = (file.extension ?? '').toLowerCase();
+          final inferredContentType = switch (ext) {
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'heic' || 'heif' => 'image/heic',
+            'gif' => 'image/gif',
+            _ => 'image/jpeg',
+          };
+          final uploaded = await repo.uploadPhotoToCustomAlbum(
+            widget.userId,
+            albumPk,
+            bytes: bytes,
+            filename: file.name,
+            contentType: inferredContentType,
+          );
+          _prependPhotoIfNew(uploaded);
+          _onUploadProgress(success: true);
+          await _pollNewPhotosDuringUpload();
+        } catch (_) {
+          _onUploadProgress(success: false);
+        }
+      }
+      await _pollNewPhotosDuringUpload();
+      _showUploadSummary();
+    } finally {
+      _endUploadSession();
+    }
+  }
+
+  Future<void> _addGalleryPhotosInChunks({
+    required int albumPk,
+    required List<int> attachmentIds,
+  }) async {
+    final ids = _limitUploadSelection(attachmentIds);
+    if (ids.isEmpty) return;
+    _beginUploadSession(ids.length);
+    final repo = ref.read(familychatRepositoryProvider);
+    try {
+      for (var i = 0; i < ids.length; i += _galleryAddChunkSize) {
+        final chunk = ids.sublist(i, math.min(i + _galleryAddChunkSize, ids.length));
+        try {
+          await repo.addPhotosToCustomAlbum(widget.userId, albumPk, chunk);
+          for (var j = 0; j < chunk.length; j++) {
+            _onUploadProgress(success: true);
+          }
+          await _pollNewPhotosDuringUpload();
+        } catch (_) {
+          for (var j = 0; j < chunk.length; j++) {
+            _onUploadProgress(success: false);
+          }
+        }
+      }
+      await _pollNewPhotosDuringUpload();
+      _showUploadSummary();
+    } finally {
+      _endUploadSession();
+    }
   }
 
   void _toggleSelectionMode() {
@@ -274,24 +526,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
       excludeAttachmentIds: _currentPhotoIds,
     );
     if (ids == null || ids.isEmpty || !mounted) return;
-    setState(() => _addingPhotos = true);
-    try {
-      final added = await ref.read(familychatRepositoryProvider).addPhotosToCustomAlbum(
-            widget.userId,
-            pk,
-            ids,
-          );
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Добавлено фото: $added')),
-      );
-      await _load(reset: true);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
-    } finally {
-      if (mounted) setState(() => _addingPhotos = false);
-    }
+    await _addGalleryPhotosInChunks(albumPk: pk, attachmentIds: ids);
   }
 
   String? _imageContentTypeForFilename(String name) {
@@ -317,27 +552,19 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               xfile,
           ];
     if (pickedItems.isEmpty || !mounted) return;
-    setState(() => _addingPhotos = true);
-    try {
-      for (final picked in pickedItems) {
-        final bytes = await picked.readAsBytes();
-        final contentType = picked.mimeType ?? _imageContentTypeForFilename(picked.name);
-        await ref.read(familychatRepositoryProvider).uploadPhotoToCustomAlbum(
-              widget.userId,
-              pk,
-              bytes: bytes,
-              filename: picked.name,
-              contentType: contentType,
-            );
-      }
-      if (!mounted) return;
-      await _load(reset: true);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
-    } finally {
-      if (mounted) setState(() => _addingPhotos = false);
-    }
+    await _uploadDeviceImages(albumPk: pk, pickedItems: pickedItems);
+  }
+
+  Future<void> _uploadFromPhoneFiles() async {
+    final pk = widget.customAlbumPk;
+    if (pk == null) return;
+    final picked = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      withData: kIsWeb,
+      type: FileType.image,
+    );
+    if (picked == null || picked.files.isEmpty || !mounted) return;
+    await _uploadPhoneFiles(albumPk: pk, files: picked.files);
   }
 
   Future<void> _showAddPhotosSheet() async {
@@ -354,8 +581,13 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
             ),
             ListTile(
               leading: const Icon(Icons.photo_outlined),
-              title: const Text('С телефона'),
+              title: const Text('Галерея телефона'),
               onTap: () => Navigator.pop(ctx, 'phone'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder_open_outlined),
+              title: const Text('Файлы с телефона'),
+              onTap: () => Navigator.pop(ctx, 'files'),
             ),
             ListTile(
               leading: const Icon(Icons.camera_alt_outlined),
@@ -372,6 +604,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
         await _pickFromGallery();
       case 'phone':
         await _uploadFromDevice(ImageSource.gallery);
+      case 'files':
+        await _uploadFromPhoneFiles();
       case 'camera':
         await _uploadFromDevice(ImageSource.camera);
     }
@@ -396,7 +630,26 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               )
             : Text(widget.title),
         actions: [
-          if (!_selectionMode)
+          if (_addingPhotos)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$_uploadDone/$_uploadTotal',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(width: 8),
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ],
+              ),
+            ),
+          if (!_selectionMode && !_addingPhotos)
             IconButton(
               tooltip: 'Поиск',
               onPressed: () async {
@@ -475,7 +728,20 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                 )
               : _photos.isEmpty
                   ? Center(
-                      child: canManageCustom
+                      child: _addingPhotos
+                          ? Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const CircularProgressIndicator(),
+                                const SizedBox(height: 16),
+                                Text('Загрузка $_uploadDone из $_uploadTotal...'),
+                                if (_uploadFailed > 0) ...[
+                                  const SizedBox(height: 8),
+                                  Text('Ошибок: $_uploadFailed'),
+                                ],
+                              ],
+                            )
+                          : canManageCustom
                           ? Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -504,6 +770,7 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                                   child: ChoiceChip(
                                     label: const Text('Все люди'),
                                     selected: _personUserId == null,
+                                    showCheckmark: false,
                                     onSelected: (_) async {
                                       setState(() => _personUserId = null);
                                       await _load(reset: true);
@@ -514,17 +781,19 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                                   Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 4),
                                     child: ChoiceChip(
-                                      label: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          ChatAvatar(
+                                      showCheckmark: false,
+                                      visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
+                                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      label: Tooltip(
+                                        message: person['name']?.toString() ?? '',
+                                        child: SizedBox.square(
+                                          dimension: 36,
+                                          child: ChatAvatar(
                                             name: person['name']?.toString() ?? '',
                                             avatarUrl: person['avatar_url']?.toString(),
-                                            radius: 12,
+                                            radius: 18,
                                           ),
-                                          const SizedBox(width: 6),
-                                          Text(person['name']?.toString() ?? ''),
-                                        ],
+                                        ),
                                       ),
                                       selected: _personUserId == person['user_id'],
                                       onSelected: (_) async {
