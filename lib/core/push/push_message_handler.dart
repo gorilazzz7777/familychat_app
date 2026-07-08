@@ -48,10 +48,6 @@ void handleFamilyChatRemoteMessage(
   }
 
   if (type == 'familychat_call') {
-    if (openedFromTap) {
-      IncomingCallCoordinator.instance.presentFromPushData(data);
-      return;
-    }
     IncomingCallCoordinator.instance.presentFromPushData(data);
     return;
   }
@@ -59,7 +55,19 @@ void handleFamilyChatRemoteMessage(
   if (openedFromTap) return;
 
   final notification = message.notification;
-  if (notification == null) return;
+  if (notification == null) {
+    final title = data['title']?.toString().trim();
+    final body = data['body']?.toString().trim();
+    if (title == null && body == null) return;
+    unawaited(
+      FamilyChatNotifications.showForegroundPush(
+        title: title != null && title.isNotEmpty ? title : 'Family Chat',
+        body: body != null && body.isNotEmpty ? body : 'Новое уведомление',
+        data: Map<String, dynamic>.from(data),
+      ),
+    );
+    return;
+  }
 
   final title = notification.title?.trim();
   final body = notification.body?.trim();

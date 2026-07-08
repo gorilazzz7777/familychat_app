@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../../core/call/call_proximity_controller.dart';
 import '../../../core/providers/app_providers.dart';
 import '../data/familychat_realtime.dart';
 
@@ -135,6 +136,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
         await _peer!.addTrack(track, _localStream!);
       }
       await _setSpeakerphone(false);
+      await _syncProximity();
       _peer!.onIceCandidate = (candidate) {
         final cid = _callId;
         if (cid == null) return;
@@ -267,9 +269,15 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
     try {
       await Helper.setSpeakerphoneOn(enabled);
       if (mounted) setState(() => _speakerOn = enabled);
+      await _syncProximity();
     } catch (e) {
       debugPrint('speaker toggle failed: $e');
     }
+  }
+
+  Future<void> _syncProximity() async {
+    if (kIsWeb || _ended) return;
+    await CallProximityController.setEnabled(!_speakerOn);
   }
 
   Future<void> _toggleSpeaker() async {
@@ -277,6 +285,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
   }
 
   Future<void> _cleanup() async {
+    await CallProximityController.disable();
     if (!kIsWeb) {
       try {
         await Helper.setSpeakerphoneOn(false);

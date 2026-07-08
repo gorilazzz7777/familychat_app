@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../core/notifications/familychat_foreground_bridge.dart';
+import '../../../core/notifications/familychat_notifications.dart';
 import '../../../core/push/push_message_handler.dart';
 import '../../../core/push/push_navigation.dart';
 import '../presentation/incoming_call_screen.dart';
@@ -45,9 +46,8 @@ class IncomingCallCoordinator {
   }) {
     if (_presenting && _activeCallId == callId) return;
     _activeCallId = callId;
-    _presenting = true;
     familyChatScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
-
+    unawaited(FamilyChatNotifications.cancelCallNotification(callId));
     unawaited(_presentWhenReady(
       callId: callId,
       threadId: threadId,
@@ -62,28 +62,28 @@ class IncomingCallCoordinator {
     required int callerUserId,
     required String callerName,
   }) async {
-    if (FamilyChatForegroundBridge.isAppInBackground()) {
-      await FamilyChatForegroundBridge.bringToForegroundIfNeeded();
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-    }
-
-    final nav = familyChatNavigatorKey.currentState;
-    if (nav == null) {
-      pendingCallPushData = {
-        'type': 'familychat_call',
-        'session_id': '$callId',
-        'thread_id': '$threadId',
-        'caller_user_id': '$callerUserId',
-        'caller_name': callerName,
-      };
-      return;
-    }
-
-    if (_presenting && _activeCallId == callId) {
-      return;
-    }
-
+    if (_presenting) return;
+    _presenting = true;
     try {
+      if (FamilyChatForegroundBridge.isAppInBackground()) {
+        await FamilyChatForegroundBridge.bringToForegroundIfNeeded();
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+
+      final nav = await _waitForNavigator();
+      if (nav == null) {
+        pendingCallPushData = {
+          'type': 'familychat_call',
+          'session_id': '$callId',
+          'thread_id': '$threadId',
+          'caller_user_id': '$callerUserId',
+          'caller_name': callerName,
+        };
+        return;
+      }
+
+      if (!nav.mounted) return;
+
       await nav.push<void>(
         MaterialPageRoute<void>(
           fullscreenDialog: true,
@@ -104,6 +104,15 @@ class IncomingCallCoordinator {
     }
   }
 
+  Future<NavigatorState?> _waitForNavigator() async {
+    for (var attempt = 0; attempt < 30; attempt++) {
+      final nav = familyChatNavigatorKey.currentState;
+      if (nav != null) return nav;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    return familyChatNavigatorKey.currentState;
+  }
+
   void flushPendingIfAny() {
     final pending = pendingCallPushData;
     if (pending == null) return;
@@ -117,5 +126,6 @@ class IncomingCallCoordinator {
       _presenting = false;
     }
     familyChatScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
+    unawaited(FamilyChatNotifications.cancelCallNotification(callId));
   }
 }

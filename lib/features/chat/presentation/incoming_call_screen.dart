@@ -102,7 +102,9 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
     await CallRingtoneController.instance.stop();
     await FamilyChatNotifications.cancelCallNotification(widget.callId);
     IncomingCallCoordinator.instance.markHandled(widget.callId);
-    Navigator.of(context).maybePop();
+    if (!mounted) return;
+    setState(() {});
+    Navigator.of(context).pop();
   }
 
   Future<void> _decline() async {
@@ -152,7 +154,10 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return PopScope(
-      canPop: false,
+      canPop: _closed,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && !_busy) unawaited(_decline());
+      },
       child: Scaffold(
         backgroundColor: const Color(0xFF0F1419),
         body: SafeArea(

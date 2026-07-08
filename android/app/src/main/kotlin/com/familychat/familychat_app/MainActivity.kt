@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -22,6 +23,8 @@ class MainActivity : FlutterActivity() {
         private const val TAG = "FamilyChatShare"
         private var pendingShareUris: List<Uri> = emptyList()
     }
+
+    private var proximityWakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,6 +54,24 @@ class MainActivity : FlutterActivity() {
                         )
                     }
                     startActivity(intent)
+                    result.success(null)
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.familychat/call_proximity",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "enable" -> {
+                    enableCallProximity()
+                    result.success(null)
+                }
+
+                "disable" -> {
+                    disableCallProximity()
                     result.success(null)
                 }
 
@@ -203,5 +224,28 @@ class MainActivity : FlutterActivity() {
 
         manager.createNotificationChannel(messages)
         manager.createNotificationChannel(calls)
+    }
+
+    override fun onDestroy() {
+        disableCallProximity()
+        super.onDestroy()
+    }
+
+    private fun enableCallProximity() {
+        if (proximityWakeLock?.isHeld == true) return
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        @Suppress("DEPRECATION")
+        proximityWakeLock = pm.newWakeLock(
+            PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+            "familychat:call_proximity",
+        )
+        proximityWakeLock?.acquire()
+    }
+
+    private fun disableCallProximity() {
+        proximityWakeLock?.let {
+            if (it.isHeld) it.release()
+        }
+        proximityWakeLock = null
     }
 }

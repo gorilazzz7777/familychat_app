@@ -143,7 +143,18 @@ class FamilyTreeGraph {
     if (targetPersonId == centerPersonId) return 'Вы';
     final path = _shortestPath(centerPersonId, targetPersonId);
     if (path == null) return 'Родственник';
-    return _labelFromPath(path, personsById[targetPersonId]);
+    return _labelFromPath(
+      path,
+      personsById[targetPersonId],
+      personsById[centerPersonId],
+    );
+  }
+
+  List<int> parentIds(int personId) {
+    return edges
+        .where((edge) => edge.kind == 'parent' && edge.toPersonId == personId)
+        .map((edge) => edge.fromPersonId)
+        .toList();
   }
 
   Map<int, Offset> layoutPositions() {
@@ -190,7 +201,38 @@ class FamilyTreeGraph {
 
     final ring2 = visible.where((id) => id != centerPersonId && !ring1.contains(id)).toList()
       ..sort((a, b) => a.compareTo(b));
+    final spouseIds = buckets[_DirectRelation.spouse]!;
     for (final personId in ring2) {
+      final positionedParents = parentIds(personId).where(positions.containsKey).toList();
+      if (positionedParents.isNotEmpty) {
+        final usesCoupleAnchor = spouseIds.any(positionedParents.contains);
+        if (usesCoupleAnchor && spouseIds.isNotEmpty) {
+          final spousePos = positions[spouseIds.first]!;
+          final centerPos = positions[centerPersonId]!;
+          final mid = Offset(
+            (centerPos.dx + spousePos.dx) / 2,
+            (centerPos.dy + spousePos.dy) / 2,
+          );
+          positions[personId] = mid + const Offset(0, ring2Radius + 50);
+          continue;
+        }
+        if (positionedParents.length >= 2) {
+          final avgX = positionedParents
+                  .map((id) => positions[id]!.dx)
+                  .reduce((a, b) => a + b) /
+              positionedParents.length;
+          final avgY = positionedParents
+                  .map((id) => positions[id]!.dy)
+                  .reduce((a, b) => a + b) /
+              positionedParents.length;
+          positions[personId] = Offset(avgX, avgY + ring2Radius + 50);
+          continue;
+        }
+        final parentPos = positions[positionedParents.first]!;
+        positions[personId] = Offset(parentPos.dx, parentPos.dy + ring2Radius + 50);
+        continue;
+      }
+
       final anchorIds = neighbors(personId).where(positions.containsKey).toList();
       if (anchorIds.isEmpty) {
         final angle = (personId % 360) * math.pi / 180;
@@ -278,8 +320,9 @@ class FamilyTreeGraph {
     }
   }
 
-  String _labelFromPath(List<String> path, TreePerson? target) {
+  String _labelFromPath(List<String> path, TreePerson? target, TreePerson? viewer) {
     final g = target?.gender ?? '';
+    final vg = viewer?.gender ?? '';
     if (path.isEmpty) return 'Вы';
     if (path.length == 1) {
       return switch (path.first) {
@@ -287,7 +330,11 @@ class FamilyTreeGraph {
             ? 'Муж'
             : g == 'female'
                 ? 'Жена'
-                : 'Супруг(а)',
+                : vg == 'male'
+                    ? 'Жена'
+                    : vg == 'female'
+                        ? 'Муж'
+                        : 'Супруг(а)',
         'parent' => g == 'male'
             ? 'Отец'
             : g == 'female'
@@ -306,14 +353,45 @@ class FamilyTreeGraph {
         _ => 'Родственник',
       };
     }
+    if (path.length == 2 && path[0] == 'sibling' && path[1] == 'spouse') {
+      return g == 'female'
+          ? 'Жена брата/сестры'
+          : g == 'male'
+              ? 'Муж брата/сестры'
+              : 'Супруг(а) брата/сестры';
+    }
+    if (path.length == 2 && path[0] == 'spouse' && path[1] == 'sibling') {
+      return g == 'male'
+          ? 'Деверь/Шурин/Свояк'
+          : g == 'female'
+              ? 'Золовка/Свояченица'
+              : 'Брат/сестра супруга';
+    }
+    if (path.length == 2 && path[0] == 'spouse' && path[1] == 'child') {
+      return g == 'male' ? 'Сын' : g == 'female' ? 'Дочь' : 'Ребёнок';
+    }
+    if (path.length == 2 && path[0] == 'parent' && path[1] == 'spouse') {
+      return g == 'male' ? 'Отец' : g == 'female' ? 'Мать' : 'Родитель';
+    }
+    if (path.length == 2 && path[0] == 'spouse' && path[1] == 'parent') {
+      return g == 'male'
+          ? 'Свёкор/Тесть'
+          : g == 'female'
+              ? 'Свекровь/Тёща'
+              : 'Родитель супруга';
+    }
     if (path.length == 2 && path.every((s) => s == 'parent')) {
       return g == 'male' ? 'Дедушка' : g == 'female' ? 'Бабушка' : 'Дед/бабушка';
     }
     if (path.length == 2 && path.every((s) => s == 'child')) {
       return g == 'male' ? 'Внук' : g == 'female' ? 'Внучка' : 'Внук/внучка';
     }
+    if (path.contains('sibling') ||
+        (path.where((s) => s == 'parent').length == 1 &&
+            path.where((s) => s == 'child').length == 1)) {
+      return g == 'male' ? 'Брат' : g == 'female' ? 'Сестра' : 'Брат/сестра';
+    }
     if (path.contains('spouse')) return 'Свойственник';
-    if (path.contains('sibling')) return 'Брат/сестра';
     return 'Родственник';
   }
 }

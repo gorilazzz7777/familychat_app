@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../../features/chat/data/incoming_call_coordinator.dart';
@@ -81,7 +82,9 @@ class FamilyChatNotifications {
       } else if (type == 'familychat_calendar_reminder') {
         openCalendarFromPushData(data);
       } else if (type == 'familychat_call') {
-        IncomingCallCoordinator.instance.presentFromPushData(data);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          IncomingCallCoordinator.instance.presentFromPushData(data);
+        });
       }
     } catch (e) {
       debugPrint('notification tap payload error: $e');
@@ -102,8 +105,10 @@ class FamilyChatNotifications {
     final type = data['type']?.toString() ?? '';
     if (type != 'familychat_call') return;
 
-    final title = message.notification?.title?.trim();
-    final body = message.notification?.body?.trim();
+    final title = data['title']?.toString().trim() ??
+        message.notification?.title?.trim();
+    final body = data['body']?.toString().trim() ??
+        message.notification?.body?.trim();
     await showIncomingCallWakeUp(
       title: title != null && title.isNotEmpty ? title : 'Входящий звонок',
       body: body != null && body.isNotEmpty ? body : 'Family Chat',
@@ -175,7 +180,6 @@ class FamilyChatNotifications {
 
     final type = data['type']?.toString() ?? '';
     if (type == 'familychat_call') {
-      await showIncomingCallWakeUp(title: title, body: body, data: data);
       return;
     }
 

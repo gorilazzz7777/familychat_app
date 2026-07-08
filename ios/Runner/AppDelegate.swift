@@ -12,5 +12,23 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+
+    let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "FamilyChatCallProximity")!
+    let channel = FlutterMethodChannel(
+      name: "com.familychat/call_proximity",
+      binaryMessenger: registrar.messenger()
+    )
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "enable":
+        UIDevice.current.isProximityMonitoringEnabled = true
+        result(nil)
+      case "disable":
+        UIDevice.current.isProximityMonitoringEnabled = false
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
   }
 }
