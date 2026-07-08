@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -39,14 +40,44 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
   bool _ended = false;
   bool _remoteDescriptionSet = false;
   bool _processingSignals = false;
-  bool _persistedSignalsLoaded = false;
+  int _lastPersistedSignalId = 0;
   final Set<String> _sentIce = <String>{};
   final List<Map<String, dynamic>> _pendingSignals = [];
   final List<Map<String, dynamic>> _pendingIce = [];
+  int? _myUserId;
+  bool _speakerOn = false;
 
   bool _showingMicHint = false;
 
+  bool _shouldAcceptSignal(String type, {int? fromUserId}) {
+    if (fromUserId != null && _myUserId != null && fromUserId == _myUserId) {
+      return false;
+    }
+    if (type == 'ice') return true;
+    if (widget.isCaller) return type == 'answer';
+    return type == 'offer';
+  }
+
+  int? _parseUserId(Object? raw) {
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
+  }
+
+  int? _parseCallId(Object? raw) {
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
+  }
+
   String _friendlyCallError(Object error) {
+    if (error is DioException) {
+      final status = error.response?.statusCode;
+      if (status == 500) {
+        return 'Ошибка сервера при звонке. Убедитесь, что сервер обновлён и миграции применены.';
+      }
+      if (status != null) {
+        return 'Ошибка сети при звонке (код $status). Попробуйте ещё раз.';
+      }
+    }
     final text = '$error';
     if (text.contains('NotAllowedError') || text.contains('PermissionDenied')) {
       return 'Доступ к микрофону не разрешен. Разрешите его в настройках и попробуйте снова.';
@@ -79,6 +110,8 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
 
   Future<void> _initCall() async {
     try {
+      final status = await ref.read(familychatRepositoryProvider).status();
+      _myUserId = _parseUserId(status['user_id']);
       final micPermission = await _ensureMicrophonePermission();
       if (!micPermission.granted) {
         if (!mounted) return;
@@ -101,6 +134,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
       for (final track in _localStream!.getAudioTracks()) {
         await _peer!.addTrack(track, _localStream!);
       }
+      await _setSpeakerphone(false);
       _peer!.onIceCandidate = (candidate) {
         final cid = _callId;
         if (cid == null) return;
@@ -119,7 +153,10 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
 
       if (widget.isCaller) {
         final started = await repo.startThreadCall(widget.threadId);
-        _callId = started['id'] as int?;
+        _callId = _parseCallId(started['id']);
+        if (_callId == null) {
+          throw StateError('Сервер не вернул id звонка');
+        }
         final offer = await _peer!.createOffer();
         await _peer!.setLocalDescription(offer);
         _localOffer = offer;
@@ -128,6 +165,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
           signalType: 'offer',
           payload: {'sdp': offer.sdp, 'type': offer.type},
         );
+        if (!mounted) return;
         setState(() {
           _stateText = 'Звоним...';
           _busy = false;
@@ -140,13 +178,13 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
         if (widget.autoAccept) {
           await repo.callAction(_callId!, 'accept');
         }
+        if (!mounted) return;
         setState(() {
           _stateText = 'Ожидание соединения...';
           _busy = false;
         });
       }
-      await _loadPersistedSignals();
-      await _processPendingSignals();
+      await _syncCallSignals();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -224,7 +262,26 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
     _showingMicHint = false;
   }
 
+  Future<void> _setSpeakerphone(bool enabled) async {
+    if (kIsWeb) return;
+    try {
+      await Helper.setSpeakerphoneOn(enabled);
+      if (mounted) setState(() => _speakerOn = enabled);
+    } catch (e) {
+      debugPrint('speaker toggle failed: $e');
+    }
+  }
+
+  Future<void> _toggleSpeaker() async {
+    await _setSpeakerphone(!_speakerOn);
+  }
+
   Future<void> _cleanup() async {
+    if (!kIsWeb) {
+      try {
+        await Helper.setSpeakerphoneOn(false);
+      } catch (_) {}
+    }
     try {
       await _localStream?.dispose();
     } catch (_) {}
@@ -235,27 +292,50 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
     _peer = null;
   }
 
-  void _enqueueSignal(String type, Map<String, dynamic> payload) {
+  void _enqueueSignal(
+    String type,
+    Map<String, dynamic> payload, {
+    int? fromUserId,
+  }) {
+    if (!_shouldAcceptSignal(type, fromUserId: fromUserId)) return;
     _pendingSignals.add({'signal_type': type, 'payload': payload});
     unawaited(_processPendingSignals());
   }
 
-  Future<void> _loadPersistedSignals() async {
-    if (_callId == null || _persistedSignalsLoaded) return;
-    _persistedSignalsLoaded = true;
+  Future<void> _syncCallSignals() async {
     try {
-      final stored =
-          await ref.read(familychatRepositoryProvider).callSignals(_callId!);
+      await _loadPersistedSignals();
+      await _processPendingSignals();
+    } catch (e, st) {
+      debugPrint('call signal sync warning: $e\n$st');
+    }
+  }
+
+  Future<void> _loadPersistedSignals() async {
+    if (_callId == null) return;
+    try {
+      final stored = await ref
+          .read(familychatRepositoryProvider)
+          .callSignals(_callId!, afterId: _lastPersistedSignalId);
       for (final item in stored) {
+        final signalId = _parseCallId(item['id']);
+        if (signalId != null && signalId > _lastPersistedSignalId) {
+          _lastPersistedSignalId = signalId;
+        }
+        final type = item['signal_type']?.toString() ?? '';
         final payload = item['payload'];
+        final fromUserId = _parseUserId(item['from_user_id']);
+        if (!_shouldAcceptSignal(type, fromUserId: fromUserId)) continue;
         _pendingSignals.add({
-          'signal_type': item['signal_type']?.toString() ?? '',
+          'signal_type': type,
           'payload': payload is Map
               ? Map<String, dynamic>.from(payload)
               : <String, dynamic>{},
         });
       }
-    } catch (_) {}
+    } catch (e, st) {
+      debugPrint('call persisted signals load failed: $e\n$st');
+    }
   }
 
   Future<void> _processPendingSignals() async {
@@ -264,10 +344,14 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
     try {
       while (_pendingSignals.isNotEmpty && _peer != null) {
         final item = _pendingSignals.removeAt(0);
-        await _applySignal(
-          item['signal_type']?.toString() ?? '',
-          item['payload'] as Map<String, dynamic>? ?? const {},
-        );
+        try {
+          await _applySignal(
+            item['signal_type']?.toString() ?? '',
+            item['payload'] as Map<String, dynamic>? ?? const {},
+          );
+        } catch (e, st) {
+          debugPrint('call signal apply failed: $e\n$st');
+        }
       }
       await _flushPendingIce();
     } finally {
@@ -299,6 +383,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
         if (widget.isCaller) {
           unawaited(_maybeResendOffer());
         }
+        unawaited(_syncCallSignals());
         if (_remoteDescriptionSet) {
           setState(() => _stateText = 'Разговор идет');
         }
@@ -314,7 +399,8 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
     if (ev != 'chat_call_signal') return;
     final type = event['signal_type']?.toString() ?? '';
     final payload = event['payload'] as Map<String, dynamic>? ?? const {};
-    _enqueueSignal(type, payload);
+    final fromUserId = _parseUserId(event['from_user_id']);
+    _enqueueSignal(type, payload, fromUserId: fromUserId);
   }
 
   Future<void> _applySignal(String type, Map<String, dynamic> payload) async {
@@ -428,6 +514,18 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
+                if (!kIsWeb) ...[
+                  const SizedBox(height: 20),
+                  FilledButton.tonalIcon(
+                    onPressed: _busy ? null : () => unawaited(_toggleSpeaker()),
+                    icon: Icon(
+                      _speakerOn ? Icons.volume_up : Icons.phone_in_talk,
+                    ),
+                    label: Text(
+                      _speakerOn ? 'Громкая связь вкл.' : 'Громкая связь',
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 24),
                 FilledButton.icon(
                   style: FilledButton.styleFrom(backgroundColor: Colors.red),

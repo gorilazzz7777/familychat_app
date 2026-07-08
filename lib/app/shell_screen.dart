@@ -14,7 +14,7 @@ import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/data/chat_unread_providers.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
-import '../features/chat/presentation/chat_incoming_call_sheet.dart';
+import '../features/chat/data/incoming_call_coordinator.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../features/feed/presentation/feed_screen.dart';
 import '../features/gallery/presentation/gallery_menu_screen.dart';
@@ -55,7 +55,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
   Timer? _webPollTimer;
   Timer? _presenceTimer;
-  final Set<int> _shownIncomingCallIds = <int>{};
 
   @override
   void initState() {
@@ -124,20 +123,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           ? event['thread_id'] as int
           : int.tryParse('${event['thread_id']}');
       if (callId == null || threadId == null) return;
-      if (_shownIncomingCallIds.contains(callId)) return;
-      _shownIncomingCallIds.add(callId);
+      final callerUserId = event['caller_user_id'] is int
+          ? event['caller_user_id'] as int
+          : int.tryParse('${event['caller_user_id']}') ?? 0;
       final callerName = event['caller_name']?.toString() ?? 'Family Chat';
-      final nav = familyChatNavigatorKey.currentState;
-      final navCtx = nav?.context;
-      if (navCtx == null) return;
-      unawaited(
-        showIncomingCallDialog(
-          navCtx,
-          repository: ref.read(familychatRepositoryProvider),
-          callId: callId,
-          threadId: threadId,
-          callerName: callerName,
-        ),
+      IncomingCallCoordinator.instance.present(
+        callId: callId,
+        threadId: threadId,
+        callerUserId: callerUserId,
+        callerName: callerName,
       );
     }
   }

@@ -8,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../network/api_client.dart';
+import '../notifications/familychat_notifications.dart';
 import '../platform/browser_info.dart';
 import '../../features/familychat/data/familychat_repository.dart';
 import '../../firebase_options.dart';
@@ -226,6 +227,8 @@ class PushRegistrationService {
     if (Firebase.apps.isEmpty) return false;
 
     if (!await Permission.notification.isGranted) return false;
+
+    await FamilyChatNotifications.initialize();
 
     final messaging = FirebaseMessaging.instance;
     try {

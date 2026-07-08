@@ -9,6 +9,7 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'app/bootstrap_screen.dart';
+import 'core/notifications/familychat_notifications.dart';
 import 'core/push/push_message_handler.dart';
 import 'core/push/push_navigation.dart';
 import 'core/push/push_registration_service.dart';
@@ -26,6 +27,7 @@ Future<void> main() async {
       debugPrint('[FCM] init failed: $e');
     }
     FirebaseMessaging.onBackgroundMessage(familychatFirebaseBackgroundHandler);
+    unawaited(FamilyChatNotifications.initialize());
     unawaited(IncomingShareBus.instance.init());
   }
   runApp(const ProviderScope(child: FamilyChatApp()));

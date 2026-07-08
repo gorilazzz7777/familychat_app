@@ -452,9 +452,13 @@ class FamilyChatRepository {
     );
   }
 
-  Future<List<Map<String, dynamic>>> callSignals(int callId) async {
+  Future<List<Map<String, dynamic>>> callSignals(
+    int callId, {
+    int afterId = 0,
+  }) async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/chat/calls/$callId/signal/',
+      queryParameters: afterId > 0 ? {'after_id': afterId} : null,
     );
     final list = res.data?['signals'];
     if (list is! List) return const [];

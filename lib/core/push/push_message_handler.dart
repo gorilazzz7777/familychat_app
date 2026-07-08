@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 
+import '../notifications/familychat_notifications.dart';
 import '../../features/chat/data/active_chat_context.dart';
 import '../../features/chat/data/familychat_realtime.dart';
+import '../../features/chat/data/incoming_call_coordinator.dart';
 import 'push_navigation.dart';
 
 /// Показать push в UI, когда приложение на переднем плане (Android не показывает системный баннер).
@@ -45,9 +49,11 @@ void handleFamilyChatRemoteMessage(
 
   if (type == 'familychat_call') {
     if (openedFromTap) {
-      openCallFromPushData(data);
+      IncomingCallCoordinator.instance.presentFromPushData(data);
       return;
     }
+    IncomingCallCoordinator.instance.presentFromPushData(data);
+    return;
   }
 
   if (openedFromTap) return;
@@ -57,34 +63,16 @@ void handleFamilyChatRemoteMessage(
 
   final title = notification.title?.trim();
   final body = notification.body?.trim();
-  if ((title == null || title.isEmpty) && (body == null || body.isEmpty))
+  if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) {
     return;
+  }
 
   final pushData = Map<String, dynamic>.from(data);
-  familyChatScaffoldMessengerKey.currentState?.showSnackBar(
-    SnackBar(
-      content: Text(
-        title != null && title.isNotEmpty
-            ? (body != null && body.isNotEmpty ? '$title\n$body' : title)
-            : body!,
-      ),
-      duration: const Duration(seconds: 5),
-      action: type == 'familychat_chat'
-          ? SnackBarAction(
-              label: 'Открыть',
-              onPressed: () => openChatFromPushData(pushData),
-            )
-          : type == 'familychat_calendar_reminder'
-              ? SnackBarAction(
-                  label: 'Календарь',
-                  onPressed: () => openCalendarFromPushData(pushData),
-                )
-              : type == 'familychat_call'
-                  ? SnackBarAction(
-                      label: 'Ответить',
-                      onPressed: () => openCallFromPushData(pushData),
-                    )
-                  : null,
+  unawaited(
+    FamilyChatNotifications.showForegroundPush(
+      title: title != null && title.isNotEmpty ? title : 'Family Chat',
+      body: body != null && body.isNotEmpty ? body : 'Новое уведомление',
+      data: pushData,
     ),
   );
 }

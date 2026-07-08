@@ -1,6 +1,10 @@
 package com.familychat.familychat_app
 
 import android.Manifest
+import android.media.AudioAttributes
+import android.media.RingtoneManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -21,6 +25,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
+        createNotificationChannels()
         captureShareUris(intent)
     }
 
@@ -136,5 +141,47 @@ class MainActivity : FlutterActivity() {
             this,
             Manifest.permission.ACCESS_MEDIA_LOCATION,
         ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun createNotificationChannels() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+
+        val messageSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val messages = NotificationChannel(
+            "familychat_messages",
+            "Сообщения",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Новые сообщения в чатах"
+            enableVibration(true)
+            setSound(
+                messageSound,
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+        }
+
+        val ringtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        val calls = NotificationChannel(
+            "familychat_calls",
+            "Звонки",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "Входящие звонки"
+            enableVibration(true)
+            setSound(
+                ringtone,
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+        }
+
+        manager.createNotificationChannel(messages)
+        manager.createNotificationChannel(calls)
     }
 }
