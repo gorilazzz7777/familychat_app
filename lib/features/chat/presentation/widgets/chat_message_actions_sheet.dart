@@ -18,19 +18,27 @@ class ChatMessageActionsSheet {
   static Future<ChatMessageMenuResult?> show(
     BuildContext context, {
     required bool canDelete,
+    required bool canEdit,
   }) {
     return showModalBottomSheet<ChatMessageMenuResult>(
       context: context,
       isScrollControlled: true,
-      builder: (ctx) => _ChatMessageActionsSheetBody(canDelete: canDelete),
+      builder: (ctx) => _ChatMessageActionsSheetBody(
+        canDelete: canDelete,
+        canEdit: canEdit,
+      ),
     );
   }
 }
 
 class _ChatMessageActionsSheetBody extends StatefulWidget {
-  const _ChatMessageActionsSheetBody({required this.canDelete});
+  const _ChatMessageActionsSheetBody({
+    required this.canDelete,
+    required this.canEdit,
+  });
 
   final bool canDelete;
+  final bool canEdit;
 
   @override
   State<_ChatMessageActionsSheetBody> createState() =>
@@ -97,10 +105,19 @@ class _ChatMessageActionsSheetBodyState extends State<_ChatMessageActionsSheetBo
               leading: const Icon(Icons.reply_outlined),
               title: const Text('Ответить'),
               onTap: () => Navigator.pop(
-                context,
-                const ChatMessageMenuResult.action('reply'),
-              ),
+                    context,
+                    const ChatMessageMenuResult.action('reply'),
+                  ),
             ),
+            if (widget.canEdit)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Редактировать'),
+                onTap: () => Navigator.pop(
+                  context,
+                  const ChatMessageMenuResult.action('edit'),
+                ),
+              ),
             ListTile(
               leading: const Icon(Icons.copy_outlined),
               title: const Text('Копировать'),

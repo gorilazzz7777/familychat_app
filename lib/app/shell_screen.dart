@@ -53,6 +53,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   final _feedKey = GlobalKey<FeedScreenState>();
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
   Timer? _webPollTimer;
+  Timer? _presenceTimer;
   final Set<int> _shownIncomingCallIds = <int>{};
 
   @override
@@ -82,6 +83,21 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     });
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
     ShellRefresh.instance.register(_refreshMainTabs);
+    _startPresenceHeartbeat();
+  }
+
+  void _startPresenceHeartbeat() {
+    _presenceTimer?.cancel();
+    unawaited(_touchPresence());
+    _presenceTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+      unawaited(_touchPresence());
+    });
+  }
+
+  Future<void> _touchPresence() async {
+    try {
+      await ref.read(familychatRepositoryProvider).status();
+    } catch (_) {}
   }
 
   Future<void> _refreshMainTabs({bool silent = true}) async {
@@ -129,6 +145,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _webPollTimer?.cancel();
+    _presenceTimer?.cancel();
     IncomingShareBus.instance.removeListener(_onIncomingShare);
     FamilyChatRealtime.instance.removeListener(_onChatRealtime);
     ShellRefresh.instance.unregister();
@@ -140,6 +157,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     if (state == AppLifecycleState.resumed) {
       unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
       unawaited(_refreshTab(_index, silent: true));
+      unawaited(_touchPresence());
       final userId = _currentUserId;
       if (userId != null) {
         unawaited(

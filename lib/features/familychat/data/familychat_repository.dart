@@ -405,6 +405,18 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> updateThreadMessage(
+    int threadId,
+    int messageId, {
+    required String body,
+  }) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/messages/$messageId/',
+      data: {'body': body},
+    );
+    return res.data ?? {};
+  }
+
   Future<List<Map<String, dynamic>>> threadCallIceServers(int threadId) async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/call/ice-config/',

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/presence/user_presence.dart';
 import '../../chat/presentation/chat_call_screen.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
 import '../../profile/presentation/profile_gallery_tab.dart';
@@ -240,6 +241,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
     final name = p['display_name']?.toString() ?? '';
     final avatarUrl = p['avatar_url']?.toString();
     final birthday = p['birthday_display']?.toString();
+    final status = userPresenceFromProfile(p).label;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
@@ -264,14 +266,30 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
             textAlign: TextAlign.center,
           ),
         ),
-        if (p['kinship_label'] != null) ...[
+        if (p['kinship_label'] != null || !isSelf) ...[
           const SizedBox(height: 4),
           Center(
-            child: Text(
-              p['kinship_label']?.toString() ?? '',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (p['kinship_label'] != null)
+                  Text(
+                    p['kinship_label']?.toString() ?? '',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                if (!isSelf)
+                  Padding(
+                    padding: EdgeInsets.only(top: p['kinship_label'] != null ? 2 : 0),
+                    child: Text(
+                      status,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],

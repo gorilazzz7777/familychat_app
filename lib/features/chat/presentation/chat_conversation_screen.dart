@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/face_tagging_sheet.dart';
@@ -119,6 +120,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _selectionMode = false;
   final Set<int> _selectedMessageIds = {};
   Map<String, dynamic>? _replyTo;
+  int? _editingMessageId;
   late String _title;
   String _customTitle = '';
   bool _hasLeft = false;
@@ -130,6 +132,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
 
   bool get _isDm => widget.kind == 'dm';
+
+  String? _peerStatusLabel;
+  Timer? _peerStatusTimer;
 
   @override
   void initState() {
@@ -153,6 +158,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         unawaited(_refreshParticipantsMeta());
       }
     }
+    if (_isDm && widget.peerUserId != null) {
+      unawaited(_loadPeerStatus(widget.peerUserId!));
+      _peerStatusTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+        unawaited(_loadPeerStatus(widget.peerUserId!));
+      });
+    }
+  }
+
+  Future<void> _loadPeerStatus(int userId) async {
+    try {
+      final profile =
+          await ref.read(familychatRepositoryProvider).memberProfile(userId);
+      if (!mounted) return;
+      setState(() {
+        _peerStatusLabel = userPresenceFromProfile(profile).label;
+      });
+    } catch (_) {}
   }
 
   Future<void> _init() async {
@@ -231,6 +253,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   @override
   void dispose() {
+    _peerStatusTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _inputFocus.removeListener(_onInputFocusChanged);
     _inputFocus.dispose();
@@ -830,12 +853,47 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final fileDraft = _pendingFileDraft;
     if (body.isEmpty && fileDraft == null) return;
 
+    final editingId = _editingMessageId;
+    if (editingId != null && fileDraft == null) {
+      // Редактирование существующего текстового сообщения.
+      if (body.isEmpty) return;
+      _controller.clear();
+      setState(() {
+        _editingMessageId = null;
+      });
+      try {
+        final repo = ref.read(familychatRepositoryProvider);
+        final updated = await repo.updateThreadMessage(
+          widget.threadId,
+          editingId,
+          body: body,
+        );
+        if (!mounted) return;
+        setState(() {
+          _messages = _messages.map((m) {
+            final id = chatAsInt(m['id']);
+            if (id == editingId) {
+              return {...m, ...updated};
+            }
+            return m;
+          }).toList();
+        });
+      } catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось изменить сообщение')),
+        );
+      }
+      return;
+    }
+
     final replyTo = _replyTo;
     final replyId = chatAsInt(replyTo?['message_id']);
     _controller.clear();
     setState(() {
       _pendingFileDraft = null;
       _replyTo = null;
+      _editingMessageId = null;
     });
 
     final tempId = _nextTempId();
@@ -902,6 +960,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         ..clear()
         ..add(messageId);
       _replyTo = null;
+      _editingMessageId = null;
     });
   }
 
@@ -920,6 +979,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     setState(() {
       _selectionMode = false;
       _selectedMessageIds.clear();
+      _editingMessageId = null;
     });
   }
 
@@ -951,6 +1011,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     return _isMine(message) && message['_pending'] != true;
   }
 
+  bool _canEditMessage(Map<String, dynamic> message) {
+    if (!_isMine(message)) return false;
+    if (message['_pending'] == true) return false;
+    if (message['is_system'] == true) return false;
+    return true;
+  }
+
   bool _canDeleteMessageId(int id) {
     final message = _messageById(id);
     return message != null && _canDeleteMessage(message);
@@ -965,6 +1032,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final result = await ChatMessageActionsSheet.show(
       context,
       canDelete: _canDeleteMessage(message),
+      canEdit: _canEditMessage(message),
     );
     if (!mounted || result == null) return;
 
@@ -979,6 +1047,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     switch (result.action) {
       case 'reply':
         _startReply(message);
+      case 'edit':
+        _startEdit(message);
       case 'copy':
         await _copyMessages([message]);
       case 'forward':
@@ -988,6 +1058,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         final id = chatAsInt(message['id']);
         if (id != null) await _deleteMessages([id]);
     }
+  }
+
+  void _startEdit(Map<String, dynamic> message) {
+    final id = chatAsInt(message['id']);
+    if (id == null) return;
+    final body = message['body']?.toString() ?? '';
+    setState(() {
+      _selectionMode = false;
+      _selectedMessageIds.clear();
+      _replyTo = null;
+      _editingMessageId = id;
+    });
+    _controller
+      ..text = body
+      ..selection = TextSelection.collapsed(offset: body.length);
+    _inputFocus.requestFocus();
   }
 
   Future<void> _toggleReaction(int messageId, String emoji) async {
@@ -1369,6 +1455,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         .onSurfaceVariant,
                                   ),
                         ),
+                      if (_isDm && _peerStatusLabel != null)
+                        Text(
+                          _peerStatusLabel!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                        ),
                     ],
                   ),
                 ),
@@ -1612,6 +1710,33 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               _replyTo!['sender_name']?.toString() ?? '',
                           body: _replyTo!['body']?.toString() ?? '',
                           onCancel: () => setState(() => _replyTo = null),
+                        ),
+                      if (_editingMessageId != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Редактирование сообщения',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                      ),
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: () => setState(
+                                  () => _editingMessageId = null,
+                                ),
+                                child: const Text('Отмена'),
+                              ),
+                            ],
+                          ),
                         ),
                       if (_pendingFileDraft != null)
                         Padding(
