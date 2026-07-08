@@ -30,100 +30,122 @@ class DdMmYyyyTextInputFormatter extends TextInputFormatter {
 Future<DateTime?> showBirthDatePicker(
   BuildContext context, {
   DateTime? initial,
-}) async {
-  final now = DateTime.now();
-  final initialDate = initial ?? DateTime(now.year - 25, now.month, now.day);
-  final controller = TextEditingController(
-    text: formatBirthDateDisplay(initialDate, showYear: true),
+}) {
+  return showDialog<DateTime>(
+    context: context,
+    builder: (ctx) => _BirthDatePickerDialog(initial: initial),
   );
-  String? errorText;
+}
 
-  try {
-    return await showDialog<DateTime>(
-      context: context,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setDialogState) {
-            void submit() {
-              final parsed = parseDdMmYyyy(controller.text);
-              if (parsed == null) {
-                setDialogState(() => errorText = 'Некорректная дата');
-                return;
-              }
-              if (parsed.isAfter(now)) {
-                setDialogState(() => errorText = 'Дата не может быть в будущем');
-                return;
-              }
-              if (parsed.isBefore(DateTime(1900))) {
-                setDialogState(() => errorText = 'Укажите год не ранее 1900');
-                return;
-              }
-              Navigator.pop(ctx, parsed);
-            }
+class _BirthDatePickerDialog extends StatefulWidget {
+  const _BirthDatePickerDialog({this.initial});
 
-            return AlertDialog(
-              title: const Text('День рождения'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TextField(
-                    controller: controller,
-                    autofocus: true,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [DdMmYyyyTextInputFormatter()],
-                    decoration: InputDecoration(
-                      labelText: 'ДД.ММ.ГГГГ',
-                      hintText: '09.06.1986',
-                      errorText: errorText,
-                      border: const OutlineInputBorder(),
-                    ),
-                    onChanged: (_) {
-                      if (errorText != null) {
-                        setDialogState(() => errorText = null);
-                      }
-                    },
-                    onSubmitted: (_) => submit(),
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      onPressed: () async {
-                        final cal = await showDatePicker(
-                          context: ctx,
-                          initialDate: parseDdMmYyyy(controller.text) ?? initialDate,
-                          firstDate: DateTime(1900),
-                          lastDate: now,
-                          initialEntryMode: DatePickerEntryMode.calendarOnly,
-                          locale: const Locale('ru'),
-                        );
-                        if (cal != null && ctx.mounted) {
-                          Navigator.pop(ctx, cal);
-                        }
-                      },
-                      icon: const Icon(Icons.calendar_month_outlined),
-                      label: const Text('Выбрать в календаре'),
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Отмена'),
-                ),
-                FilledButton(
-                  onPressed: submit,
-                  child: const Text('OK'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+  final DateTime? initial;
+
+  @override
+  State<_BirthDatePickerDialog> createState() => _BirthDatePickerDialogState();
+}
+
+class _BirthDatePickerDialogState extends State<_BirthDatePickerDialog> {
+  late final TextEditingController _controller;
+  late final DateTime _initialDate;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    _initialDate = widget.initial ?? DateTime(now.year - 25, now.month, now.day);
+    _controller = TextEditingController(
+      text: formatBirthDateDisplay(_initialDate, showYear: true),
     );
-  } finally {
-    controller.dispose();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final now = DateTime.now();
+    final parsed = parseDdMmYyyy(_controller.text);
+    if (parsed == null) {
+      setState(() => _errorText = 'Некорректная дата');
+      return;
+    }
+    if (parsed.isAfter(now)) {
+      setState(() => _errorText = 'Дата не может быть в будущем');
+      return;
+    }
+    if (parsed.isBefore(DateTime(1900))) {
+      setState(() => _errorText = 'Укажите год не ранее 1900');
+      return;
+    }
+    Navigator.pop(context, parsed);
+  }
+
+  Future<void> _pickFromCalendar() async {
+    final now = DateTime.now();
+    final cal = await showDatePicker(
+      context: context,
+      initialDate: parseDdMmYyyy(_controller.text) ?? _initialDate,
+      firstDate: DateTime(1900),
+      lastDate: now,
+      initialEntryMode: DatePickerEntryMode.calendarOnly,
+      locale: const Locale('ru'),
+    );
+    if (!mounted || cal == null) return;
+    Navigator.pop(context, cal);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('День рождения'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [DdMmYyyyTextInputFormatter()],
+            decoration: InputDecoration(
+              labelText: 'ДД.ММ.ГГГГ',
+              hintText: '09.06.1986',
+              errorText: _errorText,
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (_) {
+              if (_errorText != null) {
+                setState(() => _errorText = null);
+              }
+            },
+            onSubmitted: (_) => _submit(),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _pickFromCalendar,
+              icon: const Icon(Icons.calendar_month_outlined),
+              label: const Text('Выбрать в календаре'),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('OK'),
+        ),
+      ],
+    );
   }
 }

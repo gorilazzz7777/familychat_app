@@ -32,11 +32,17 @@ class ChatCallScreen extends ConsumerStatefulWidget {
 class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
   RTCPeerConnection? _peer;
   MediaStream? _localStream;
+  RTCSessionDescription? _localOffer;
   int? _callId;
   String _stateText = 'Подключение...';
   bool _busy = true;
   bool _ended = false;
+  bool _remoteDescriptionSet = false;
+  bool _processingSignals = false;
+  bool _persistedSignalsLoaded = false;
   final Set<String> _sentIce = <String>{};
+  final List<Map<String, dynamic>> _pendingSignals = [];
+  final List<Map<String, dynamic>> _pendingIce = [];
 
   bool _showingMicHint = false;
 
@@ -57,6 +63,9 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
   @override
   void initState() {
     super.initState();
+    if (!widget.isCaller && widget.callId != null) {
+      _callId = widget.callId;
+    }
     FamilyChatRealtime.instance.addListener(_onRealtime);
     unawaited(_initCall());
   }
@@ -113,6 +122,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
         _callId = started['id'] as int?;
         final offer = await _peer!.createOffer();
         await _peer!.setLocalDescription(offer);
+        _localOffer = offer;
         await repo.sendCallSignal(
           _callId!,
           signalType: 'offer',
@@ -123,7 +133,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
           _busy = false;
         });
       } else {
-        _callId = widget.callId;
+        _callId ??= widget.callId;
         if (_callId == null) {
           throw StateError('Не передан callId');
         }
@@ -135,6 +145,8 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
           _busy = false;
         });
       }
+      await _loadPersistedSignals();
+      await _processPendingSignals();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -223,6 +235,55 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
     _peer = null;
   }
 
+  void _enqueueSignal(String type, Map<String, dynamic> payload) {
+    _pendingSignals.add({'signal_type': type, 'payload': payload});
+    unawaited(_processPendingSignals());
+  }
+
+  Future<void> _loadPersistedSignals() async {
+    if (_callId == null || _persistedSignalsLoaded) return;
+    _persistedSignalsLoaded = true;
+    try {
+      final stored =
+          await ref.read(familychatRepositoryProvider).callSignals(_callId!);
+      for (final item in stored) {
+        final payload = item['payload'];
+        _pendingSignals.add({
+          'signal_type': item['signal_type']?.toString() ?? '',
+          'payload': payload is Map
+              ? Map<String, dynamic>.from(payload)
+              : <String, dynamic>{},
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _processPendingSignals() async {
+    if (_peer == null || _processingSignals) return;
+    _processingSignals = true;
+    try {
+      while (_pendingSignals.isNotEmpty && _peer != null) {
+        final item = _pendingSignals.removeAt(0);
+        await _applySignal(
+          item['signal_type']?.toString() ?? '',
+          item['payload'] as Map<String, dynamic>? ?? const {},
+        );
+      }
+      await _flushPendingIce();
+    } finally {
+      _processingSignals = false;
+    }
+  }
+
+  Future<void> _maybeResendOffer() async {
+    if (!widget.isCaller || _callId == null || _localOffer == null) return;
+    await ref.read(familychatRepositoryProvider).sendCallSignal(
+          _callId!,
+          signalType: 'offer',
+          payload: {'sdp': _localOffer!.sdp, 'type': _localOffer!.type},
+        );
+  }
+
   void _onRealtime(Map<String, dynamic> event) {
     final cid = _callId;
     if (cid == null) return;
@@ -235,7 +296,12 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
       final status = event['status']?.toString() ?? '';
       if (!mounted) return;
       if (status == 'active') {
-        setState(() => _stateText = 'Разговор идет');
+        if (widget.isCaller) {
+          unawaited(_maybeResendOffer());
+        }
+        if (_remoteDescriptionSet) {
+          setState(() => _stateText = 'Разговор идет');
+        }
       } else if (status == 'declined') {
         setState(() => _stateText = 'Звонок отклонен');
         unawaited(_hangup(localOnly: true));
@@ -248,43 +314,72 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
     if (ev != 'chat_call_signal') return;
     final type = event['signal_type']?.toString() ?? '';
     final payload = event['payload'] as Map<String, dynamic>? ?? const {};
+    _enqueueSignal(type, payload);
+  }
+
+  Future<void> _applySignal(String type, Map<String, dynamic> payload) async {
+    if (_peer == null) {
+      _pendingSignals.insert(0, {'signal_type': type, 'payload': payload});
+      return;
+    }
     if (type == 'offer') {
-      unawaited(_handleOffer(payload));
+      await _applyOffer(payload);
     } else if (type == 'answer') {
-      unawaited(_handleAnswer(payload));
+      await _applyAnswer(payload);
     } else if (type == 'ice') {
-      unawaited(_handleIce(payload));
+      await _applyIce(payload);
     }
   }
 
-  Future<void> _handleOffer(Map<String, dynamic> payload) async {
+  Future<void> _applyOffer(Map<String, dynamic> payload) async {
     if (_peer == null || _callId == null) return;
     final sdp = payload['sdp']?.toString();
     final type = payload['type']?.toString() ?? 'offer';
     if (sdp == null || sdp.isEmpty) return;
     await _peer!.setRemoteDescription(RTCSessionDescription(sdp, type));
+    _remoteDescriptionSet = true;
     final answer = await _peer!.createAnswer();
     await _peer!.setLocalDescription(answer);
     await ref.read(familychatRepositoryProvider).sendCallSignal(
-      _callId!,
-      signalType: 'answer',
-      payload: {'sdp': answer.sdp, 'type': answer.type},
-    );
+          _callId!,
+          signalType: 'answer',
+          payload: {'sdp': answer.sdp, 'type': answer.type},
+        );
     if (!mounted) return;
     setState(() => _stateText = 'Разговор идет');
+    await _flushPendingIce();
   }
 
-  Future<void> _handleAnswer(Map<String, dynamic> payload) async {
+  Future<void> _applyAnswer(Map<String, dynamic> payload) async {
     if (_peer == null) return;
     final sdp = payload['sdp']?.toString();
     final type = payload['type']?.toString() ?? 'answer';
     if (sdp == null || sdp.isEmpty) return;
     await _peer!.setRemoteDescription(RTCSessionDescription(sdp, type));
+    _remoteDescriptionSet = true;
     if (!mounted) return;
     setState(() => _stateText = 'Разговор идет');
+    await _flushPendingIce();
   }
 
-  Future<void> _handleIce(Map<String, dynamic> payload) async {
+  Future<void> _applyIce(Map<String, dynamic> payload) async {
+    if (!_remoteDescriptionSet) {
+      _pendingIce.add(payload);
+      return;
+    }
+    await _addIceCandidate(payload);
+  }
+
+  Future<void> _flushPendingIce() async {
+    if (!_remoteDescriptionSet || _peer == null) return;
+    final queue = List<Map<String, dynamic>>.from(_pendingIce);
+    _pendingIce.clear();
+    for (final payload in queue) {
+      await _addIceCandidate(payload);
+    }
+  }
+
+  Future<void> _addIceCandidate(Map<String, dynamic> payload) async {
     if (_peer == null) return;
     final candidate = payload['candidate']?.toString();
     if (candidate == null || candidate.isEmpty) return;

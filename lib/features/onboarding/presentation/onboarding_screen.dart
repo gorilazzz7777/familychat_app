@@ -9,6 +9,10 @@ import '../../profile/presentation/birthday_format.dart';
 import '../../profile/presentation/birthday_picker.dart';
 import 'ios_safari_install_hint.dart';
 
+String _cleanOnboardingOptionLabel(String option) {
+  return option.replaceAll(RegExp(r'\s*\([^)]*\d+[^)]*\)\s*$'), '').trim();
+}
+
 enum _OnboardingStep { choose, profile, createFamily, inviteKinship, questions }
 
 class OnboardingScreen extends ConsumerStatefulWidget {
@@ -43,6 +47,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   int? _sessionId;
   List<Map<String, dynamic>> _questions = [];
   final Map<String, String> _answers = {};
+  int _questionRound = 1;
 
   @override
   void initState() {
@@ -222,10 +227,23 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _loading = true;
     });
     try {
-      await ref.read(familychatRepositoryProvider).completeOnboarding(
+      final result = await ref.read(familychatRepositoryProvider).completeOnboarding(
             sessionId: _sessionId!,
             answers: answers,
           );
+      if (!mounted) return;
+      if (result['needs_more_answers'] == true) {
+        final nextQuestions =
+            (result['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        setState(() {
+          _loading = false;
+          _questions = nextQuestions;
+          _answers.clear();
+          _questionRound += 1;
+          _step = _OnboardingStep.questions;
+        });
+        return;
+      }
       widget.onComplete();
     } catch (e) {
       if (!mounted) return;
@@ -354,7 +372,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
           ],
           if (_step == _OnboardingStep.questions) ...[
-            const Text('Уточним ваше место в семье:'),
+            Text(
+              _questionRound == 1
+                  ? 'Уточним ваше место в семье:'
+                  : 'Нужно уточнить ещё несколько деталей:',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
             const SizedBox(height: 16),
             ..._questions.map((q) {
               final id = q['id']?.toString() ?? '';
@@ -370,7 +393,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                       DropdownButtonFormField<String>(
                         decoration: const InputDecoration(border: OutlineInputBorder()),
                         items: options
-                            .map((o) => DropdownMenuItem(value: o, child: Text(o)))
+                            .map(
+                              (o) => DropdownMenuItem(
+                                value: o,
+                                child: Text(_cleanOnboardingOptionLabel(o)),
+                              ),
+                            )
                             .toList(),
                         onChanged: (v) => setState(() => _answers[id] = v ?? ''),
                       )
@@ -388,7 +416,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   ? null
                   : () {
                       final answers = _answers.entries
-                          .map((e) => {'question_id': e.key, 'answer': e.value})
+                          .map(
+                            (e) => {
+                              'question_id': e.key,
+                              'answer': _cleanOnboardingOptionLabel(e.value),
+                            },
+                          )
                           .toList();
                       _completeOnboarding(answers);
                     },

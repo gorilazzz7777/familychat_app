@@ -452,6 +452,15 @@ class FamilyChatRepository {
     );
   }
 
+  Future<List<Map<String, dynamic>>> callSignals(int callId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/chat/calls/$callId/signal/',
+    );
+    final list = res.data?['signals'];
+    if (list is! List) return const [];
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
   Future<void> forwardMessages({
     required int sourceThreadId,
     required List<int> messageIds,

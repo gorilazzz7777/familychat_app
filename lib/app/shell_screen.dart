@@ -18,6 +18,7 @@ import '../features/chat/presentation/chat_incoming_call_sheet.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../features/feed/presentation/feed_screen.dart';
 import '../features/gallery/presentation/gallery_menu_screen.dart';
+import '../features/members/presentation/family_invite_flow.dart';
 import '../features/members/presentation/members_screen.dart';
 import '../features/more/presentation/more_menu_panel.dart';
 import '../features/profile/presentation/profile_screen.dart';
@@ -305,6 +306,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                     onPressed: () => _chatHubKey.currentState?.createGroup(),
                   ),
                 ],
+                if (_index == 2)
+                  IconButton(
+                    icon: const Icon(Icons.person_add_outlined),
+                    tooltip: 'Добавить в семью',
+                    onPressed: () => runFamilyInviteFlow(
+                      context,
+                      ref.read(familychatRepositoryProvider),
+                    ),
+                  ),
               ],
             ),
       body: Stack(
