@@ -25,7 +25,8 @@ void handleFamilyChatRemoteMessage(
       'message_id': messageId,
     });
 
-    if (threadId != null && ActiveChatContext.instance.isViewingThread(threadId)) {
+    if (threadId != null &&
+        ActiveChatContext.instance.isViewingThread(threadId)) {
       return;
     }
 
@@ -42,6 +43,13 @@ void handleFamilyChatRemoteMessage(
     }
   }
 
+  if (type == 'familychat_call') {
+    if (openedFromTap) {
+      openCallFromPushData(data);
+      return;
+    }
+  }
+
   if (openedFromTap) return;
 
   final notification = message.notification;
@@ -49,7 +57,8 @@ void handleFamilyChatRemoteMessage(
 
   final title = notification.title?.trim();
   final body = notification.body?.trim();
-  if ((title == null || title.isEmpty) && (body == null || body.isEmpty)) return;
+  if ((title == null || title.isEmpty) && (body == null || body.isEmpty))
+    return;
 
   final pushData = Map<String, dynamic>.from(data);
   familyChatScaffoldMessengerKey.currentState?.showSnackBar(
@@ -70,7 +79,12 @@ void handleFamilyChatRemoteMessage(
                   label: 'Календарь',
                   onPressed: () => openCalendarFromPushData(pushData),
                 )
-              : null,
+              : type == 'familychat_call'
+                  ? SnackBarAction(
+                      label: 'Ответить',
+                      onPressed: () => openCallFromPushData(pushData),
+                    )
+                  : null,
     ),
   );
 }

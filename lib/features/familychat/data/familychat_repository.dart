@@ -21,7 +21,8 @@ class FamilyChatRepository {
 
   final ApiClient _client;
   Dio get _dio => _client.dio;
-  static final Map<String, Uint8List> _attachmentBytesCache = <String, Uint8List>{};
+  static final Map<String, Uint8List> _attachmentBytesCache =
+      <String, Uint8List>{};
 
   Future<Map<String, dynamic>> status() async {
     final res = await _dio.get<Map<String, dynamic>>('familychat/status/');
@@ -48,12 +49,14 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> deleteProfileAvatar() async {
-    final res = await _dio.delete<Map<String, dynamic>>('familychat/me/avatar/');
+    final res =
+        await _dio.delete<Map<String, dynamic>>('familychat/me/avatar/');
     return res.data!;
   }
 
   Future<Map<String, dynamic>> onboardingPrefill() async {
-    final res = await _dio.get<Map<String, dynamic>>('familychat/onboarding/prefill/');
+    final res =
+        await _dio.get<Map<String, dynamic>>('familychat/onboarding/prefill/');
     return res.data!;
   }
 
@@ -71,7 +74,8 @@ class FamilyChatRepository {
     if (gender != null) data['gender'] = gender;
     if (birthDate != null) data['birth_date'] = birthDate;
     if (birthdayShowYear != null) data['birthday_show_year'] = birthdayShowYear;
-    if (suggestFaceTagging != null) data['suggest_face_tagging'] = suggestFaceTagging;
+    if (suggestFaceTagging != null)
+      data['suggest_face_tagging'] = suggestFaceTagging;
     final res = await _dio.patch<Map<String, dynamic>>(
       'familychat/me/profile/',
       data: data,
@@ -80,12 +84,14 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> memberProfile(int userId) async {
-    final res = await _dio.get<Map<String, dynamic>>('familychat/members/$userId/');
+    final res =
+        await _dio.get<Map<String, dynamic>>('familychat/members/$userId/');
     return res.data!;
   }
 
   Future<Map<String, dynamic>> memberDmThread(int userId) async {
-    final res = await _dio.post<Map<String, dynamic>>('familychat/members/$userId/dm-thread/');
+    final res = await _dio
+        .post<Map<String, dynamic>>('familychat/members/$userId/dm-thread/');
     return res.data!;
   }
 
@@ -165,7 +171,8 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> familyTree() async {
-    final res = await _dio.get<Map<String, dynamic>>('familychat/members/tree/');
+    final res =
+        await _dio.get<Map<String, dynamic>>('familychat/members/tree/');
     return res.data ?? {};
   }
 
@@ -219,7 +226,8 @@ class FamilyChatRepository {
     return res.data!;
   }
 
-  Future<Map<String, dynamic>> createCalendarEvent(Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>> createCalendarEvent(
+      Map<String, dynamic> body) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/calendar/events/',
       data: body,
@@ -268,7 +276,8 @@ class FamilyChatRepository {
   }
 
   Future<List<Map<String, dynamic>>> chatThreads() async {
-    final res = await _dio.get<Map<String, dynamic>>('familychat/chat/threads/');
+    final res =
+        await _dio.get<Map<String, dynamic>>('familychat/chat/threads/');
     return (res.data?['threads'] as List?)?.cast<Map<String, dynamic>>() ?? [];
   }
 
@@ -332,7 +341,8 @@ class FamilyChatRepository {
     final data = res.data;
     if (data is List) {
       final messages = data.cast<Map<String, dynamic>>();
-      return ThreadMessagesPage(messages: messages, hasMore: messages.length >= limit);
+      return ThreadMessagesPage(
+          messages: messages, hasMore: messages.length >= limit);
     }
     final map = (data as Map<String, dynamic>?) ?? {};
     final raw = map['messages'];
@@ -345,7 +355,8 @@ class FamilyChatRepository {
     );
   }
 
-  Future<void> markThreadRead(int threadId, {required int lastMessageId}) async {
+  Future<void> markThreadRead(int threadId,
+      {required int lastMessageId}) async {
     await _dio.post(
       'familychat/chat/threads/$threadId/read/',
       data: {'last_message_id': lastMessageId},
@@ -353,11 +364,13 @@ class FamilyChatRepository {
   }
 
   String chatAttachmentContentUrl(int threadId, int attachmentId) {
-    final base = Env.apiBaseUrl.endsWith('/') ? Env.apiBaseUrl : '${Env.apiBaseUrl}/';
+    final base =
+        Env.apiBaseUrl.endsWith('/') ? Env.apiBaseUrl : '${Env.apiBaseUrl}/';
     return '${base}familychat/chat/threads/$threadId/attachments/$attachmentId/content/';
   }
 
-  Future<Uint8List> fetchChatAttachmentBytes(int threadId, int attachmentId) async {
+  Future<Uint8List> fetchChatAttachmentBytes(
+      int threadId, int attachmentId) async {
     final cacheKey = '$threadId:$attachmentId';
     final cached = _attachmentBytesCache[cacheKey];
     if (cached != null && cached.isNotEmpty) return cached;
@@ -390,6 +403,41 @@ class FamilyChatRepository {
       },
     );
     return res.data!;
+  }
+
+  Future<List<Map<String, dynamic>>> threadCallIceServers(int threadId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/call/ice-config/',
+    );
+    final list = res.data?['ice_servers'];
+    if (list is! List) return const [];
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  Future<Map<String, dynamic>> startThreadCall(int threadId) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/call/start/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> callAction(int callId, String action) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/calls/$callId/action/',
+      data: {'action': action},
+    );
+    return res.data ?? {};
+  }
+
+  Future<void> sendCallSignal(
+    int callId, {
+    required String signalType,
+    required Map<String, dynamic> payload,
+  }) async {
+    await _dio.post(
+      'familychat/chat/calls/$callId/signal/',
+      data: {'signal_type': signalType, 'payload': payload},
+    );
   }
 
   Future<void> forwardMessages({
@@ -449,7 +497,8 @@ class FamilyChatRepository {
       'file': MultipartFile.fromBytes(
         bytes,
         filename: filename,
-        contentType: contentType != null ? DioMediaType.parse(contentType) : null,
+        contentType:
+            contentType != null ? DioMediaType.parse(contentType) : null,
       ),
     });
     final res = await _dio.post<Map<String, dynamic>>(
@@ -490,7 +539,8 @@ class FamilyChatRepository {
   }
 
   Future<List<Map<String, dynamic>>> threadMedia(int threadId) async {
-    final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/media/');
+    final res = await _dio
+        .get<List<dynamic>>('familychat/chat/threads/$threadId/media/');
     return (res.data ?? []).cast<Map<String, dynamic>>();
   }
 
@@ -542,7 +592,8 @@ class FamilyChatRepository {
     return res.data!;
   }
 
-  Future<Map<String, dynamic>> deduplicateGalleryAlbum(int userId, String albumId) async {
+  Future<Map<String, dynamic>> deduplicateGalleryAlbum(
+      int userId, String albumId) async {
     final encodedAlbum = Uri.encodeComponent(albumId);
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/albums/$encodedAlbum/deduplicate/',
@@ -562,17 +613,20 @@ class FamilyChatRepository {
   }
 
   Future<List<Map<String, dynamic>>> threadFiles(int threadId) async {
-    final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/files/');
+    final res = await _dio
+        .get<List<dynamic>>('familychat/chat/threads/$threadId/files/');
     return (res.data ?? []).cast<Map<String, dynamic>>();
   }
 
   Future<List<Map<String, dynamic>>> threadLinks(int threadId) async {
-    final res = await _dio.get<List<dynamic>>('familychat/chat/threads/$threadId/links/');
+    final res = await _dio
+        .get<List<dynamic>>('familychat/chat/threads/$threadId/links/');
     return (res.data ?? []).cast<Map<String, dynamic>>();
   }
 
   Future<List<Map<String, dynamic>>> familyChatMessages() async {
-    final res = await _dio.get<List<dynamic>>('familychat/chat/family/messages/');
+    final res =
+        await _dio.get<List<dynamic>>('familychat/chat/family/messages/');
     return (res.data ?? []).cast<Map<String, dynamic>>();
   }
 
@@ -644,7 +698,8 @@ class FamilyChatRepository {
   }
 
   Future<void> deleteChatAttachment(int threadId, int attachmentId) async {
-    await _dio.delete('familychat/chat/threads/$threadId/attachments/$attachmentId/');
+    await _dio
+        .delete('familychat/chat/threads/$threadId/attachments/$attachmentId/');
   }
 
   Future<Map<String, dynamic>> galleryPhotoFaces(
@@ -723,7 +778,8 @@ class FamilyChatRepository {
   }
 
   Future<void> deleteCustomGalleryAlbum(int userId, int albumPk) async {
-    await _dio.delete('familychat/members/$userId/gallery/custom-albums/$albumPk/');
+    await _dio
+        .delete('familychat/members/$userId/gallery/custom-albums/$albumPk/');
   }
 
   Future<int> addPhotosToCustomAlbum(
@@ -756,7 +812,8 @@ class FamilyChatRepository {
       'file': MultipartFile.fromBytes(
         bytes,
         filename: filename,
-        contentType: contentType != null ? DioMediaType.parse(contentType) : null,
+        contentType:
+            contentType != null ? DioMediaType.parse(contentType) : null,
       ),
     });
     final res = await _dio.post<Map<String, dynamic>>(
@@ -812,7 +869,8 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> familyGalleryAlbums() async {
-    final res = await _dio.get<Map<String, dynamic>>('familychat/gallery/albums/');
+    final res =
+        await _dio.get<Map<String, dynamic>>('familychat/gallery/albums/');
     return res.data!;
   }
 
@@ -850,7 +908,8 @@ class FamilyChatRepository {
       'file': MultipartFile.fromBytes(
         bytes,
         filename: filename,
-        contentType: contentType != null ? DioMediaType.parse(contentType) : null,
+        contentType:
+            contentType != null ? DioMediaType.parse(contentType) : null,
       ),
       'destination': destination,
       if (albumPk != null) 'album_pk': albumPk,
@@ -884,10 +943,12 @@ class FamilyChatRepository {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/media/$attachmentId/comments/',
     );
-    return (res.data?['comments'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+    return (res.data?['comments'] as List<dynamic>? ?? [])
+        .cast<Map<String, dynamic>>();
   }
 
-  Future<Map<String, dynamic>> addMediaComment(int attachmentId, String body) async {
+  Future<Map<String, dynamic>> addMediaComment(
+      int attachmentId, String body) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/media/$attachmentId/comments/',
       data: {'body': body},

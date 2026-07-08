@@ -19,6 +19,7 @@ import '../data/chat_realtime_utils.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
+import 'chat_call_screen.dart';
 import 'widgets/chat_compose_input.dart';
 import 'widgets/chat_image_viewer.dart';
 import 'widgets/chat_media_compose_sheet.dart';
@@ -94,7 +95,8 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
   final List<int> initialParticipantUserIds;
 
   @override
-  ConsumerState<ChatConversationScreen> createState() => _ChatConversationScreenState();
+  ConsumerState<ChatConversationScreen> createState() =>
+      _ChatConversationScreenState();
 }
 
 class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
@@ -190,9 +192,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _refreshParticipantsMeta() async {
     try {
-      final list = await ref.read(familychatRepositoryProvider).threadParticipants(
-            widget.threadId,
-          );
+      final list =
+          await ref.read(familychatRepositoryProvider).threadParticipants(
+                widget.threadId,
+              );
       if (!mounted) return;
       setState(() {
         _participantUserIds = list
@@ -205,7 +208,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   void _onScroll() {
-    if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder) return;
+    if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder)
+      return;
     if (_scrollController.position.pixels <= 72) {
       unawaited(_loadOlder());
     }
@@ -219,7 +223,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }).toList();
     if (real.isEmpty) return;
     final slice = real.length > FamilyChatLocalCache.maxCachedMessagesPerThread
-        ? real.sublist(real.length - FamilyChatLocalCache.maxCachedMessagesPerThread)
+        ? real.sublist(
+            real.length - FamilyChatLocalCache.maxCachedMessagesPerThread)
         : real;
     await FamilyChatLocalCache.saveThreadMessages(widget.threadId, slice);
   }
@@ -284,7 +289,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (!exists) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сообщение не найдено в загруженной истории')),
+        const SnackBar(
+            content: Text('Сообщение не найдено в загруженной истории')),
       );
       return;
     }
@@ -328,13 +334,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (!mounted) return;
       final msgId = chatAsInt(map['id']);
       setState(() {
-        if (_currentUserId != null && chatAsInt(map['sender_user_id']) == _currentUserId) {
+        if (_currentUserId != null &&
+            chatAsInt(map['sender_user_id']) == _currentUserId) {
           final pendingIdx = _messages.indexWhere((m) => m['_pending'] == true);
           if (pendingIdx >= 0) {
-            _messages = List<Map<String, dynamic>>.from(_messages)..removeAt(pendingIdx);
+            _messages = List<Map<String, dynamic>>.from(_messages)
+              ..removeAt(pendingIdx);
           }
         }
-        if (msgId == null || !_messages.any((m) => chatAsInt(m['id']) == msgId)) {
+        if (msgId == null ||
+            !_messages.any((m) => chatAsInt(m['id']) == msgId)) {
           _messages = [..._messages, map];
         }
       });
@@ -472,8 +481,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final id = chatAsInt(m['id']);
       return id != null && id > 0 && id < oldestLatestId;
     }).toList();
-    final latestIds = latest.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
-    final mergedOlder = olderKept.where((m) => !latestIds.contains(chatAsInt(m['id']))).toList();
+    final latestIds =
+        latest.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+    final mergedOlder = olderKept
+        .where((m) => !latestIds.contains(chatAsInt(m['id'])))
+        .toList();
     return [...mergedOlder, ...latest];
   }
 
@@ -486,9 +498,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final previousExtent = _scrollController.hasClients
         ? _scrollController.position.maxScrollExtent
         : 0.0;
-    final previousPixels = _scrollController.hasClients
-        ? _scrollController.position.pixels
-        : 0.0;
+    final previousPixels =
+        _scrollController.hasClients ? _scrollController.position.pixels : 0.0;
 
     try {
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
@@ -497,13 +508,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             beforeId: firstId,
           );
       if (!mounted) return;
-      final existingIds = _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
-      final older = page.messages
-          .where((m) {
-            final id = chatAsInt(m['id']);
-            return id != null && !existingIds.contains(id);
-          })
-          .toList();
+      final existingIds =
+          _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+      final older = page.messages.where((m) {
+        final id = chatAsInt(m['id']);
+        return id != null && !existingIds.contains(id);
+      }).toList();
       setState(() {
         _messages = [...older, ..._messages];
         _hasMoreOlder = page.hasMore;
@@ -622,7 +632,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       await Future<void>.delayed(const Duration(seconds: 2));
       if (!mounted) return;
       try {
-        final status = await repo.attachmentTaggingStatus(widget.threadId, attachmentId);
+        final status =
+            await repo.attachmentTaggingStatus(widget.threadId, attachmentId);
         final taggingStatus = status['photo_tagging_status']?.toString() ?? '';
         if (taggingStatus == 'failed') return;
         if (taggingStatus != 'done') continue;
@@ -674,7 +685,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _OutgoingAttachment(
           bytes: bytes,
           filename: filename,
-          contentType: contentType ?? _imageContentTypeForFilename(filename) ?? 'image/jpeg',
+          contentType: contentType ??
+              _imageContentTypeForFilename(filename) ??
+              'image/jpeg',
         ),
       ],
     );
@@ -732,7 +745,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         for (final f in picked.files) {
           final bytes = await readAlbumUploadFileBytes(f);
           if (bytes == null || bytes.isEmpty) continue;
-          atts.add(_OutgoingAttachment(bytes: bytes, filename: f.name, contentType: null));
+          atts.add(_OutgoingAttachment(
+              bytes: bytes, filename: f.name, contentType: null));
         }
         if (atts.isEmpty) return;
         await _uploadAndSend(_nextTempId(), caption: '', attachments: atts);
@@ -787,8 +801,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         );
         if (picked == null) return;
         final bytes = await readPickedImageBytes(picked);
-        final contentType =
-            picked.mimeType ?? _imageContentTypeForFilename(picked.name) ?? 'image/jpeg';
+        final contentType = picked.mimeType ??
+            _imageContentTypeForFilename(picked.name) ??
+            'image/jpeg';
         if (!mounted) return;
         await ChatMediaComposeSheet.show(
           context,
@@ -977,11 +992,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _toggleReaction(int messageId, String emoji) async {
     try {
-      final raw = await ref.read(familychatRepositoryProvider).toggleMessageReaction(
-            widget.threadId,
-            messageId,
-            emoji,
-          );
+      final raw =
+          await ref.read(familychatRepositoryProvider).toggleMessageReaction(
+                widget.threadId,
+                messageId,
+                emoji,
+              );
       if (!mounted) return;
       _applyMessageReactions(
         messageId,
@@ -996,7 +1012,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _copyMessages(List<Map<String, dynamic>> messages) async {
-    final parts = messages.map(_messagePreviewText).where((t) => t.isNotEmpty).toList();
+    final parts =
+        messages.map(_messagePreviewText).where((t) => t.isNotEmpty).toList();
     if (parts.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: parts.join('\n\n')));
     if (!mounted) return;
@@ -1033,10 +1050,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (ok != true || !mounted) return;
 
     try {
-      final deleted = await ref.read(familychatRepositoryProvider).deleteMessages(
-            widget.threadId,
-            messageIds,
-          );
+      final deleted =
+          await ref.read(familychatRepositoryProvider).deleteMessages(
+                widget.threadId,
+                messageIds,
+              );
       if (!mounted) return;
       _removeMessagesLocally(deleted);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1114,7 +1132,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _rejoinChat() async {
     try {
-      final thread = await ref.read(familychatRepositoryProvider).rejoinChatThread(widget.threadId);
+      final thread = await ref
+          .read(familychatRepositoryProvider)
+          .rejoinChatThread(widget.threadId);
       if (!mounted) return;
       _applyThreadMeta(thread);
       setState(() => _loading = true);
@@ -1150,7 +1170,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         },
         onMembershipChanged: () async {
           try {
-            final threads = await ref.read(familychatRepositoryProvider).chatThreads();
+            final threads =
+                await ref.read(familychatRepositoryProvider).chatThreads();
             final thread = threads.cast<Map<String, dynamic>?>().firstWhere(
                   (t) => t?['id'] == widget.threadId,
                   orElse: () => null,
@@ -1205,12 +1226,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       attachmentId: chatAsInt(attachment?['id']),
       filename: filename,
       messageId: messageId,
-      onGoToMessage: messageId != null ? () => _scrollToMessage(messageId) : null,
+      onGoToMessage:
+          messageId != null ? () => _scrollToMessage(messageId) : null,
       httpHeaders: headers,
     );
   }
 
-  void _openImageFromAttachment(Map<String, dynamic> attachment, {int? messageId}) {
+  void _openImageFromAttachment(Map<String, dynamic> attachment,
+      {int? messageId}) {
     final repo = ref.read(familychatRepositoryProvider);
     _openImage(
       imageUrl: chatAttachmentImageUrl(
@@ -1264,7 +1287,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _clusteredWithNext(int index) {
     final nextIndex = index + 1;
     if (nextIndex >= _messages.length) return false;
-    if (_isMine(_messages[index]) != _isMine(_messages[nextIndex])) return false;
+    if (_isMine(_messages[index]) != _isMine(_messages[nextIndex]))
+      return false;
     return _senderId(_messages[index]) == _senderId(_messages[nextIndex]);
   }
 
@@ -1288,284 +1312,331 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         if (!didPop && _selectionMode) _exitSelection();
       },
       child: Scaffold(
-      resizeToAvoidBottomInset: true,
-      appBar: _selectionMode
-          ? AppBar(
-              leading: IconButton(
-                tooltip: 'Отменить выбор',
-                onPressed: _exitSelection,
-                icon: const Icon(Icons.close),
-              ),
-              title: Text('${_selectedMessageIds.length} выбрано'),
-              actions: [
-                TextButton(
-                  onPressed: _selectableMessageIds.isEmpty ? null : _toggleSelectAllMessages,
-                  child: Text(_allMessagesSelected ? 'Снять все' : 'Выбрать все'),
+        resizeToAvoidBottomInset: true,
+        appBar: _selectionMode
+            ? AppBar(
+                leading: IconButton(
+                  tooltip: 'Отменить выбор',
+                  onPressed: _exitSelection,
+                  icon: const Icon(Icons.close),
                 ),
-                if (_canDeleteSelection)
-                  IconButton(
-                    tooltip: 'Удалить',
-                    onPressed: _deleteSelected,
-                    icon: const Icon(Icons.delete_outline),
+                title: Text('${_selectedMessageIds.length} выбрано'),
+                actions: [
+                  TextButton(
+                    onPressed: _selectableMessageIds.isEmpty
+                        ? null
+                        : _toggleSelectAllMessages,
+                    child: Text(
+                        _allMessagesSelected ? 'Снять все' : 'Выбрать все'),
                   ),
-                IconButton(
-                  tooltip: 'Скопировать',
-                  onPressed: _selectedMessageIds.isEmpty ? null : _copySelected,
-                  icon: const Icon(Icons.copy),
-                ),
-              ],
-            )
-          : AppBar(
-              title: InkWell(
-                onTap: _openInfo,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      _title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                  if (_canDeleteSelection)
+                    IconButton(
+                      tooltip: 'Удалить',
+                      onPressed: _deleteSelected,
+                      icon: const Icon(Icons.delete_outline),
                     ),
-                    if (_isGroupLike && !_hasLeft && _participantUserIds.isNotEmpty)
-                      Text(
-                        chatParticipantCountLabel(_participantUserIds.length),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            ),
-                      ),
-                  ],
-                ),
-              ),
-              actions: [
-                IconButton(
-                  tooltip: 'Поиск',
-                  onPressed: _loading ? null : _openSearch,
-                  icon: const Icon(Icons.search),
-                ),
-              ],
-            ),
-      body: Column(
-        children: [
-          if (_hasLeft)
-            Expanded(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
+                  IconButton(
+                    tooltip: 'Скопировать',
+                    onPressed:
+                        _selectedMessageIds.isEmpty ? null : _copySelected,
+                    icon: const Icon(Icons.copy),
+                  ),
+                ],
+              )
+            : AppBar(
+                title: InkWell(
+                  onTap: _openInfo,
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.logout, size: 48),
-                      const SizedBox(height: 16),
                       Text(
-                        widget.kind == 'family'
-                            ? 'Вы покинули общий чат семьи'
-                            : 'Вы не состоите в этой группе',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.titleMedium,
+                        _title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      if (_canRejoin) ...[
-                        const SizedBox(height: 16),
-                        FilledButton(
-                          onPressed: _rejoinChat,
-                          child: const Text('Вернуться в чат'),
+                      if (_isGroupLike &&
+                          !_hasLeft &&
+                          _participantUserIds.isNotEmpty)
+                        Text(
+                          chatParticipantCountLabel(_participantUserIds.length),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
                         ),
-                      ],
                     ],
                   ),
                 ),
-              ),
-            )
-          else ...[
-          if (_offlineMode)
-            MaterialBanner(
-              content: const Text('Показаны сохранённые сообщения. Обновление при появлении сети.'),
-              actions: [
-                TextButton(onPressed: _load, child: const Text('Обновить')),
-              ],
-            ),
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _loadError != null && _messages.isEmpty
-                    ? Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                _loadError!,
-                                textAlign: TextAlign.center,
-                              ),
-                              const SizedBox(height: 12),
-                              FilledButton(
-                                onPressed: _load,
-                                child: const Text('Повторить'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      )
-                    : RefreshIndicator(
-                    onRefresh: _load,
-                    child: ListView.builder(
-                      controller: _scrollController,
-                      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      itemCount: _messages.length + (_loadingOlder ? 1 : 0),
-                      itemBuilder: (context, i) {
-                        if (_loadingOlder && i == 0) {
-                          return const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 12),
-                            child: Center(
-                              child: SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                actions: [
+                  if (_isDm && !_loading)
+                    IconButton(
+                      tooltip: 'Аудиозвонок',
+                      onPressed: () {
+                        unawaited(
+                          Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) => ChatCallScreen(
+                                threadId: widget.threadId,
+                                title: _title,
+                                isCaller: true,
                               ),
                             ),
-                          );
-                        }
-                        final msgIndex = _loadingOlder ? i - 1 : i;
-                        final m = _messages[msgIndex];
-                        final msgId = chatAsInt(m['id']) ?? 0;
-                        _messageKeys.putIfAbsent(msgId, GlobalKey.new);
-                        final created = DateTime.tryParse(m['created_at']?.toString() ?? '');
-                        final atts = chatAttachmentsOf(m);
-                        final isMine = _isMine(m);
-                        final senderUserId = _senderId(m);
-                        final replyTo = m['reply_to'] as Map<String, dynamic>?;
-                        final forward = m['forward'] as Map<String, dynamic>?;
-                        final reactions = chatParseReactions(
-                          m['reactions'],
-                          currentUserId: _currentUserId,
-                        );
-                        final replyMessageId = chatAsInt(replyTo?['message_id']);
-                        final isSystem = m['is_system'] == true;
-                        if (isSystem) {
-                          return KeyedSubtree(
-                            key: _messageKeys[msgId],
-                            child: ChatSystemMessageBanner(
-                              body: m['body']?.toString() ?? '',
-                              createdAt: created,
-                              highlighted: _highlightMessageId == msgId,
-                            ),
-                          );
-                        }
-                        return KeyedSubtree(
-                          key: _messageKeys[msgId],
-                          child: ChatMessageBubble(
-                            threadId: widget.threadId,
-                            isMine: isMine,
-                            body: m['body']?.toString() ?? '',
-                            attachments: atts,
-                            createdAt: created,
-                            replyTo: replyTo,
-                            forward: forward,
-                            reactions: reactions,
-                            isGroupLike: _isGroupLike,
-                            readStatus: isMine
-                                ? m['read_status']?.toString() ??
-                                    (m['_pending'] == true ? 'sending' : 'sent')
-                                : null,
-                            showGroupAvatarColumn: _showGroupAvatarColumn(i),
-                            showSenderAvatar: _showSenderAvatar(i),
-                            senderName: m['sender_name']?.toString(),
-                            senderAvatarUrl: m['sender_avatar_url']?.toString(),
-                            onSenderAvatarTap: senderUserId != null
-                                ? () => _openSenderProfile(senderUserId)
-                                : null,
-                            compactWithNext: _clusteredWithNext(i),
-                            highlighted: _highlightMessageId == msgId,
-                            selectionMode: _selectionMode,
-                            selected: _selectedMessageIds.contains(msgId),
-                            onTap: _selectionMode
-                                ? () => _toggleSelection(msgId)
-                                : () => _openMessageMenu(m),
-                            onLongPress: m['_pending'] == true
-                                ? null
-                                : () => _enterSelection(msgId),
-                            onReplyTap: replyMessageId != null
-                                ? () => _scrollToMessage(replyMessageId)
-                                : null,
-                            onReactionTap: m['_pending'] == true
-                                ? null
-                                : (emoji) => _toggleReaction(msgId, emoji),
-                            onImageTap: (a) => _openImageFromAttachment(a, messageId: msgId),
                           ),
                         );
                       },
+                      icon: const Icon(Icons.call_outlined),
                     ),
-                  ),
-          ),
-          if (_selectionMode)
-            SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    if (_selectedMessageIds.length == 1) ...[
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () {
-                            final msg = _messageById(_selectedMessageIds.first);
-                            if (msg != null) _startReply(msg);
-                          },
-                          icon: const Icon(Icons.reply_outlined),
-                          label: const Text('Ответить'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed:
-                            _selectedMessageIds.isEmpty ? null : _forwardSelected,
-                        icon: const Icon(Icons.forward_outlined),
-                        label: const Text('Переслать'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          else
-            SafeArea(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_replyTo != null)
-                    ChatReplyComposeBar(
-                      senderName: _replyTo!['sender_name']?.toString() ?? '',
-                      body: _replyTo!['body']?.toString() ?? '',
-                      onCancel: () => setState(() => _replyTo = null),
-                    ),
-                  if (_pendingFileDraft != null)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-                      child: ChatPendingFileChip(
-                        filename: _pendingFileDraft!.filename,
-                        onRemove: () => setState(() => _pendingFileDraft = null),
-                      ),
-                    ),
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: ChatComposeInput(
-                      controller: _controller,
-                      focusNode: _inputFocus,
-                      onAttach: _pickAttachment,
-                      onSend: _send,
-                    ),
+                  IconButton(
+                    tooltip: 'Поиск',
+                    onPressed: _loading ? null : _openSearch,
+                    icon: const Icon(Icons.search),
                   ),
                 ],
               ),
-            ),
+        body: Column(
+          children: [
+            if (_hasLeft)
+              Expanded(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.logout, size: 48),
+                        const SizedBox(height: 16),
+                        Text(
+                          widget.kind == 'family'
+                              ? 'Вы покинули общий чат семьи'
+                              : 'Вы не состоите в этой группе',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        if (_canRejoin) ...[
+                          const SizedBox(height: 16),
+                          FilledButton(
+                            onPressed: _rejoinChat,
+                            child: const Text('Вернуться в чат'),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            else ...[
+              if (_offlineMode)
+                MaterialBanner(
+                  content: const Text(
+                      'Показаны сохранённые сообщения. Обновление при появлении сети.'),
+                  actions: [
+                    TextButton(onPressed: _load, child: const Text('Обновить')),
+                  ],
+                ),
+              Expanded(
+                child: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _loadError != null && _messages.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    _loadError!,
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  FilledButton(
+                                    onPressed: _load,
+                                    child: const Text('Повторить'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        : RefreshIndicator(
+                            onRefresh: _load,
+                            child: ListView.builder(
+                              controller: _scrollController,
+                              keyboardDismissBehavior:
+                                  ScrollViewKeyboardDismissBehavior.onDrag,
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              itemCount:
+                                  _messages.length + (_loadingOlder ? 1 : 0),
+                              itemBuilder: (context, i) {
+                                if (_loadingOlder && i == 0) {
+                                  return const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 12),
+                                    child: Center(
+                                      child: SizedBox(
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2),
+                                      ),
+                                    ),
+                                  );
+                                }
+                                final msgIndex = _loadingOlder ? i - 1 : i;
+                                final m = _messages[msgIndex];
+                                final msgId = chatAsInt(m['id']) ?? 0;
+                                _messageKeys.putIfAbsent(msgId, GlobalKey.new);
+                                final created = DateTime.tryParse(
+                                    m['created_at']?.toString() ?? '');
+                                final atts = chatAttachmentsOf(m);
+                                final isMine = _isMine(m);
+                                final senderUserId = _senderId(m);
+                                final replyTo =
+                                    m['reply_to'] as Map<String, dynamic>?;
+                                final forward =
+                                    m['forward'] as Map<String, dynamic>?;
+                                final reactions = chatParseReactions(
+                                  m['reactions'],
+                                  currentUserId: _currentUserId,
+                                );
+                                final replyMessageId =
+                                    chatAsInt(replyTo?['message_id']);
+                                final isSystem = m['is_system'] == true;
+                                if (isSystem) {
+                                  return KeyedSubtree(
+                                    key: _messageKeys[msgId],
+                                    child: ChatSystemMessageBanner(
+                                      body: m['body']?.toString() ?? '',
+                                      createdAt: created,
+                                      highlighted: _highlightMessageId == msgId,
+                                    ),
+                                  );
+                                }
+                                return KeyedSubtree(
+                                  key: _messageKeys[msgId],
+                                  child: ChatMessageBubble(
+                                    threadId: widget.threadId,
+                                    isMine: isMine,
+                                    body: m['body']?.toString() ?? '',
+                                    attachments: atts,
+                                    createdAt: created,
+                                    replyTo: replyTo,
+                                    forward: forward,
+                                    reactions: reactions,
+                                    isGroupLike: _isGroupLike,
+                                    readStatus: isMine
+                                        ? m['read_status']?.toString() ??
+                                            (m['_pending'] == true
+                                                ? 'sending'
+                                                : 'sent')
+                                        : null,
+                                    showGroupAvatarColumn:
+                                        _showGroupAvatarColumn(i),
+                                    showSenderAvatar: _showSenderAvatar(i),
+                                    senderName: m['sender_name']?.toString(),
+                                    senderAvatarUrl:
+                                        m['sender_avatar_url']?.toString(),
+                                    onSenderAvatarTap: senderUserId != null
+                                        ? () => _openSenderProfile(senderUserId)
+                                        : null,
+                                    compactWithNext: _clusteredWithNext(i),
+                                    highlighted: _highlightMessageId == msgId,
+                                    selectionMode: _selectionMode,
+                                    selected:
+                                        _selectedMessageIds.contains(msgId),
+                                    onTap: _selectionMode
+                                        ? () => _toggleSelection(msgId)
+                                        : () => _openMessageMenu(m),
+                                    onLongPress: m['_pending'] == true
+                                        ? null
+                                        : () => _enterSelection(msgId),
+                                    onReplyTap: replyMessageId != null
+                                        ? () => _scrollToMessage(replyMessageId)
+                                        : null,
+                                    onReactionTap: m['_pending'] == true
+                                        ? null
+                                        : (emoji) =>
+                                            _toggleReaction(msgId, emoji),
+                                    onImageTap: (a) => _openImageFromAttachment(
+                                        a,
+                                        messageId: msgId),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+              ),
+              if (_selectionMode)
+                SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        if (_selectedMessageIds.length == 1) ...[
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () {
+                                final msg =
+                                    _messageById(_selectedMessageIds.first);
+                                if (msg != null) _startReply(msg);
+                              },
+                              icon: const Icon(Icons.reply_outlined),
+                              label: const Text('Ответить'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                        ],
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _selectedMessageIds.isEmpty
+                                ? null
+                                : _forwardSelected,
+                            icon: const Icon(Icons.forward_outlined),
+                            label: const Text('Переслать'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                SafeArea(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_replyTo != null)
+                        ChatReplyComposeBar(
+                          senderName:
+                              _replyTo!['sender_name']?.toString() ?? '',
+                          body: _replyTo!['body']?.toString() ?? '',
+                          onCancel: () => setState(() => _replyTo = null),
+                        ),
+                      if (_pendingFileDraft != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                          child: ChatPendingFileChip(
+                            filename: _pendingFileDraft!.filename,
+                            onRemove: () =>
+                                setState(() => _pendingFileDraft = null),
+                          ),
+                        ),
+                      Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: ChatComposeInput(
+                          controller: _controller,
+                          focusNode: _inputFocus,
+                          onAttach: _pickAttachment,
+                          onSend: _send,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
           ],
-        ],
-      ),
+        ),
       ),
     );
   }

@@ -14,6 +14,7 @@ import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/data/chat_unread_providers.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
+import '../features/chat/presentation/chat_incoming_call_sheet.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../features/feed/presentation/feed_screen.dart';
 import '../features/gallery/presentation/family_gallery_tab.dart';
@@ -37,7 +38,8 @@ class ShellScreen extends ConsumerStatefulWidget {
   ConsumerState<ShellScreen> createState() => _ShellScreenState();
 }
 
-class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingObserver {
+class _ShellScreenState extends ConsumerState<ShellScreen>
+    with WidgetsBindingObserver {
   static const _moreTabIndex = 3;
 
   int _index = 0;
@@ -47,6 +49,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
   final _familyGalleryKey = GlobalKey<FamilyGalleryTabState>();
   Timer? _webPollTimer;
+  final Set<int> _shownIncomingCallIds = <int>{};
 
   @override
   void initState() {
@@ -56,7 +59,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
     IncomingShareBus.instance.addListener(_onIncomingShare);
     if (kIsWeb) {
       _webPollTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-        FamilyChatRealtime.instance.emitSyntheticEvent({'event': 'chat_refresh'});
+        FamilyChatRealtime.instance
+            .emitSyntheticEvent({'event': 'chat_refresh'});
       });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -90,6 +94,30 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
         ev == 'chat_messages_deleted' ||
         ev == 'chat_message_reactions') {
       invalidateChatUnreadTotal(ref);
+    }
+    if (ev == 'chat_call_incoming') {
+      final callId = event['session_id'] is int
+          ? event['session_id'] as int
+          : int.tryParse('${event['session_id']}');
+      final threadId = event['thread_id'] is int
+          ? event['thread_id'] as int
+          : int.tryParse('${event['thread_id']}');
+      if (callId == null || threadId == null) return;
+      if (_shownIncomingCallIds.contains(callId)) return;
+      _shownIncomingCallIds.add(callId);
+      final callerName = event['caller_name']?.toString() ?? 'Family Chat';
+      final nav = familyChatNavigatorKey.currentState;
+      final navCtx = nav?.context;
+      if (navCtx == null) return;
+      unawaited(
+        showIncomingCallDialog(
+          navCtx,
+          repository: ref.read(familychatRepositoryProvider),
+          callId: callId,
+          threadId: threadId,
+          callerName: callerName,
+        ),
+      );
     }
   }
 
@@ -171,7 +199,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
     }
   }
 
-  int? get _currentUserId => _status['user_id'] is int ? _status['user_id'] as int : null;
+  int? get _currentUserId =>
+      _status['user_id'] is int ? _status['user_id'] as int : null;
 
   String get _title => switch (_index) {
         0 => 'Главная',
@@ -269,7 +298,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
               ChatHubScreen(key: _chatHubKey),
               userId == null
                   ? const Center(child: CircularProgressIndicator())
-                  : FamilyGalleryTab(key: _familyGalleryKey, currentUserId: userId),
+                  : FamilyGalleryTab(
+                      key: _familyGalleryKey, currentUserId: userId),
               const SizedBox.shrink(),
             ],
           ),
@@ -301,7 +331,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
             selectedIndex: navSelected,
             onDestinationSelected: _onDestinationSelected,
             destinations: [
-              const NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Главная'),
+              const NavigationDestination(
+                  icon: Icon(Icons.home_outlined), label: 'Главная'),
               NavigationDestination(
                 icon: Badge(
                   isLabelVisible: chatUnread > 0,
@@ -315,8 +346,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen> with WidgetsBindingOb
                 ),
                 label: 'Чат',
               ),
-              const NavigationDestination(icon: Icon(Icons.photo_library_outlined), label: 'Галерея'),
-              const NavigationDestination(icon: Icon(Icons.more_horiz), label: 'Ещё'),
+              const NavigationDestination(
+                  icon: Icon(Icons.photo_library_outlined), label: 'Галерея'),
+              const NavigationDestination(
+                  icon: Icon(Icons.more_horiz), label: 'Ещё'),
             ],
           ),
         ],

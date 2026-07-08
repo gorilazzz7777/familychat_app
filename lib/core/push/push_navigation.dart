@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../features/calendar/presentation/calendar_screen.dart';
+import '../../features/chat/presentation/chat_call_screen.dart';
 import '../../features/chat/presentation/chat_conversation_screen.dart';
 
 final familyChatNavigatorKey = GlobalKey<NavigatorState>();
@@ -8,6 +9,7 @@ final familyChatNavigatorKey = GlobalKey<NavigatorState>();
 /// Отложенный переход, если приложение ещё не готово (cold start по push).
 Map<String, dynamic>? pendingChatPushData;
 Map<String, dynamic>? pendingCalendarPushData;
+Map<String, dynamic>? pendingCallPushData;
 
 void flushPendingChatPush() {
   final data = pendingChatPushData;
@@ -19,6 +21,11 @@ void flushPendingChatPush() {
   if (calendar != null) {
     pendingCalendarPushData = null;
     openCalendarFromPushData(calendar);
+  }
+  final call = pendingCallPushData;
+  if (call != null) {
+    pendingCallPushData = null;
+    openCallFromPushData(call);
   }
 }
 
@@ -64,6 +71,30 @@ void openCalendarFromPushData(Map<String, dynamic> data) {
   nav.push<void>(
     MaterialPageRoute<void>(
       builder: (_) => const CalendarScreen(),
+    ),
+  );
+}
+
+void openCallFromPushData(Map<String, dynamic> data) {
+  if (data['type']?.toString() != 'familychat_call') return;
+  final nav = familyChatNavigatorKey.currentState;
+  if (nav == null) {
+    pendingCallPushData = Map<String, dynamic>.from(data);
+    return;
+  }
+  final callId = int.tryParse(data['session_id']?.toString() ?? '');
+  final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+  if (callId == null || threadId == null) return;
+  final callerName = data['caller_name']?.toString().trim();
+  nav.push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => ChatCallScreen(
+        threadId: threadId,
+        title: callerName != null && callerName.isNotEmpty ? callerName : 'Чат',
+        callId: callId,
+        isCaller: false,
+        autoAccept: true,
+      ),
     ),
   );
 }
