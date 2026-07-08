@@ -44,6 +44,11 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
   bool _autoSyncPhotos = false;
   String _albumAccessMode = 'all';
   Set<int> _albumAccessUserIds = {};
+  Set<int> _participantUserIds = {};
+  String _albumAddMode = 'owner';
+  Set<int> _albumAddUserIds = {};
+  List<Map<String, dynamic>> _members = [];
+  bool _loadingMembers = true;
   bool _loading = false;
   bool _saving = false;
 
@@ -65,6 +70,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
     if (widget.isEditing) {
       _load();
     }
+    _loadMembers();
   }
 
   @override
@@ -98,6 +104,21 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
               .whereType<int>()
               .toSet();
         }
+        final rawParticipants = data['participant_user_ids'];
+        if (rawParticipants is List) {
+          _participantUserIds = rawParticipants
+              .map((e) => e is int ? e : int.tryParse('$e'))
+              .whereType<int>()
+              .toSet();
+        }
+        _albumAddMode = data['album_add_mode']?.toString() ?? 'owner';
+        final rawAddIds = data['album_add_user_ids'];
+        if (rawAddIds is List) {
+          _albumAddUserIds = rawAddIds
+              .map((e) => e is int ? e : int.tryParse('$e'))
+              .whereType<int>()
+              .toSet();
+        }
         _loading = false;
       });
     } catch (e) {
@@ -106,6 +127,20 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Ошибка загрузки: $e')),
       );
+    }
+  }
+
+  Future<void> _loadMembers() async {
+    try {
+      final list = await ref.read(familychatRepositoryProvider).members();
+      if (!mounted) return;
+      setState(() {
+        _members = list;
+        _loadingMembers = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingMembers = false);
     }
   }
 
@@ -140,6 +175,9 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
       'auto_sync_photos': _createAlbum && _autoSyncPhotos,
       'album_access_mode': _albumAccessMode,
       'album_access_user_ids': _albumAccessUserIds.toList(),
+      'participant_user_ids': _participantUserIds.toList(),
+      'album_add_mode': _albumAddMode,
+      'album_add_user_ids': _albumAddUserIds.toList(),
     };
   }
 
@@ -159,6 +197,14 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
         _albumAccessUserIds.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Выберите участников для альбома')),
+      );
+      return;
+    }
+    if (_createAlbum &&
+        _albumAddMode == 'selected' &&
+        _albumAddUserIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Выберите, кто может добавлять фото')),
       );
       return;
     }
@@ -278,6 +324,41 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                       : (v) => setState(() => _reminderMinutes = v),
                 ),
                 const SizedBox(height: 16),
+                Text('Участники события',
+                    style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                if (_loadingMembers)
+                  const Center(child: CircularProgressIndicator())
+                else
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _members.length,
+                      itemBuilder: (context, i) {
+                        final m = _members[i];
+                        final uid = m['user_id'];
+                        final userId = uid is int ? uid : int.tryParse('$uid');
+                        if (userId == null) return const SizedBox.shrink();
+                        final name = m['display_name']?.toString() ?? '';
+                        return CheckboxListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(name),
+                          value: _participantUserIds.contains(userId),
+                          onChanged: _saving
+                              ? null
+                              : (v) => setState(() {
+                                    if (v == true) {
+                                      _participantUserIds.add(userId);
+                                    } else {
+                                      _participantUserIds.remove(userId);
+                                    }
+                                  }),
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 16),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Создать альбом'),
@@ -309,6 +390,67 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                     onSelectedUserIdsChanged: (ids) =>
                         setState(() => _albumAccessUserIds = ids),
                   ),
+                  const SizedBox(height: 8),
+                  Text('Кто может добавлять фото',
+                      style: Theme.of(context).textTheme.titleSmall),
+                  RadioListTile<String>(
+                    value: 'owner',
+                    groupValue: _albumAddMode,
+                    onChanged: _saving
+                        ? null
+                        : (v) => setState(() => _albumAddMode = v ?? 'owner'),
+                    title: const Text('Только создатель'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  RadioListTile<String>(
+                    value: 'all',
+                    groupValue: _albumAddMode,
+                    onChanged: _saving
+                        ? null
+                        : (v) => setState(() => _albumAddMode = v ?? 'all'),
+                    title: const Text('Все участники семьи'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  RadioListTile<String>(
+                    value: 'selected',
+                    groupValue: _albumAddMode,
+                    onChanged: _saving
+                        ? null
+                        : (v) =>
+                            setState(() => _albumAddMode = v ?? 'selected'),
+                    title: const Text('Выбранные участники'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  if (_albumAddMode == 'selected')
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 220),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: _members.length,
+                        itemBuilder: (context, i) {
+                          final m = _members[i];
+                          final uid = m['user_id'];
+                          final userId =
+                              uid is int ? uid : int.tryParse('$uid');
+                          if (userId == null) return const SizedBox.shrink();
+                          final name = m['display_name']?.toString() ?? '';
+                          return CheckboxListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(name),
+                            value: _albumAddUserIds.contains(userId),
+                            onChanged: _saving
+                                ? null
+                                : (v) => setState(() {
+                                      if (v == true) {
+                                        _albumAddUserIds.add(userId);
+                                      } else {
+                                        _albumAddUserIds.remove(userId);
+                                      }
+                                    }),
+                          );
+                        },
+                      ),
+                    ),
                 ],
               ],
             ),

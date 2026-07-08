@@ -747,6 +747,8 @@ class FamilyChatRepository {
     required String title,
     String accessMode = 'all',
     List<int> accessUserIds = const [],
+    String addMode = 'owner',
+    List<int> addUserIds = const [],
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/custom-albums/',
@@ -754,6 +756,8 @@ class FamilyChatRepository {
         'title': title,
         'access_mode': accessMode,
         'access_user_ids': accessUserIds,
+        'add_mode': addMode,
+        'add_user_ids': addUserIds,
       },
     );
     return res.data!;
@@ -765,11 +769,15 @@ class FamilyChatRepository {
     String? title,
     String? accessMode,
     List<int>? accessUserIds,
+    String? addMode,
+    List<int>? addUserIds,
   }) async {
     final data = <String, dynamic>{};
     if (title != null) data['title'] = title;
     if (accessMode != null) data['access_mode'] = accessMode;
     if (accessUserIds != null) data['access_user_ids'] = accessUserIds;
+    if (addMode != null) data['add_mode'] = addMode;
+    if (addUserIds != null) data['add_user_ids'] = addUserIds;
     final res = await _dio.patch<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/custom-albums/$albumPk/',
       data: data,

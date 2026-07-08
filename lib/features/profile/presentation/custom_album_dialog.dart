@@ -12,6 +12,8 @@ class CustomAlbumDialog extends ConsumerStatefulWidget {
     this.initialTitle = '',
     this.initialAccessMode = 'all',
     this.initialAccessUserIds = const [],
+    this.initialAddMode = 'owner',
+    this.initialAddUserIds = const [],
     this.albumPk,
   });
 
@@ -19,6 +21,8 @@ class CustomAlbumDialog extends ConsumerStatefulWidget {
   final String initialTitle;
   final String initialAccessMode;
   final List<int> initialAccessUserIds;
+  final String initialAddMode;
+  final List<int> initialAddUserIds;
   final int? albumPk;
 
   static Future<bool?> show(
@@ -27,6 +31,8 @@ class CustomAlbumDialog extends ConsumerStatefulWidget {
     String initialTitle = '',
     String initialAccessMode = 'all',
     List<int> initialAccessUserIds = const [],
+    String initialAddMode = 'owner',
+    List<int> initialAddUserIds = const [],
     int? albumPk,
   }) {
     return showDialog<bool>(
@@ -38,6 +44,8 @@ class CustomAlbumDialog extends ConsumerStatefulWidget {
           initialTitle: initialTitle,
           initialAccessMode: initialAccessMode,
           initialAccessUserIds: initialAccessUserIds,
+          initialAddMode: initialAddMode,
+          initialAddUserIds: initialAddUserIds,
           albumPk: albumPk,
         ),
       ),
@@ -52,6 +60,8 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
   late final TextEditingController _title;
   late String _accessMode;
   late Set<int> _selectedUserIds;
+  late String _addMode;
+  late Set<int> _selectedAddUserIds;
   List<Map<String, dynamic>> _members = [];
   bool _loadingMembers = true;
   bool _saving = false;
@@ -62,6 +72,8 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
     _title = TextEditingController(text: widget.initialTitle);
     _accessMode = widget.initialAccessMode;
     _selectedUserIds = widget.initialAccessUserIds.toSet();
+    _addMode = widget.initialAddMode;
+    _selectedAddUserIds = widget.initialAddUserIds.toSet();
     _loadMembers();
   }
 
@@ -85,6 +97,7 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
   }
 
   bool get _needsMembers => _accessMode == 'allow' || _accessMode == 'deny';
+  bool get _needsAddMembers => _addMode == 'selected';
 
   List<int> get _selectableMemberIds => _members
       .map((m) {
@@ -124,10 +137,17 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
       );
       return;
     }
+    if (_needsAddMembers && _selectedAddUserIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Выберите, кто может добавлять фото')),
+      );
+      return;
+    }
     setState(() => _saving = true);
     try {
       final repo = ref.read(familychatRepositoryProvider);
       final userIds = _needsMembers ? _selectedUserIds.toList() : <int>[];
+      final addUserIds = _needsAddMembers ? _selectedAddUserIds.toList() : <int>[];
       if (widget.albumPk != null) {
         await repo.updateCustomGalleryAlbum(
           widget.userId,
@@ -135,6 +155,8 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
           title: title,
           accessMode: _accessMode,
           accessUserIds: userIds,
+          addMode: _addMode,
+          addUserIds: addUserIds,
         );
       } else {
         await repo.createCustomGalleryAlbum(
@@ -142,6 +164,8 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
           title: title,
           accessMode: _accessMode,
           accessUserIds: userIds,
+          addMode: _addMode,
+          addUserIds: addUserIds,
         );
       }
       if (!mounted) return;
@@ -242,6 +266,82 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
                                       _selectedUserIds.add(userId);
                                     } else {
                                       _selectedUserIds.remove(userId);
+                                    }
+                                  });
+                                },
+                          secondary: ChatAvatar(
+                            name: name,
+                            avatarUrl: m['avatar_url']?.toString(),
+                            radius: 18,
+                          ),
+                          title: Text(name),
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.zero,
+                        );
+                      },
+                    ),
+                  ),
+              ],
+              const SizedBox(height: 12),
+              Text('Кто может добавлять фото',
+                  style: Theme.of(context).textTheme.titleSmall),
+              RadioListTile<String>(
+                value: 'owner',
+                groupValue: _addMode,
+                onChanged: _saving
+                    ? null
+                    : (v) => setState(() => _addMode = v ?? 'owner'),
+                title: const Text('Только создатель'),
+                contentPadding: EdgeInsets.zero,
+              ),
+              RadioListTile<String>(
+                value: 'all',
+                groupValue: _addMode,
+                onChanged: _saving
+                    ? null
+                    : (v) => setState(() => _addMode = v ?? 'all'),
+                title: const Text('Все участники семьи'),
+                contentPadding: EdgeInsets.zero,
+              ),
+              RadioListTile<String>(
+                value: 'selected',
+                groupValue: _addMode,
+                onChanged: _saving
+                    ? null
+                    : (v) => setState(() => _addMode = v ?? 'selected'),
+                title: const Text('Выбранные участники'),
+                contentPadding: EdgeInsets.zero,
+              ),
+              if (_needsAddMembers) ...[
+                const SizedBox(height: 8),
+                if (_loadingMembers)
+                  const Center(
+                      child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: CircularProgressIndicator(),
+                  ))
+                else
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _members.length,
+                      itemBuilder: (context, i) {
+                        final m = _members[i];
+                        final uid = m['user_id'];
+                        final userId = uid is int ? uid : int.tryParse('$uid');
+                        if (userId == null) return const SizedBox.shrink();
+                        final name = m['display_name']?.toString() ?? '';
+                        return CheckboxListTile(
+                          value: _selectedAddUserIds.contains(userId),
+                          onChanged: _saving
+                              ? null
+                              : (v) {
+                                  setState(() {
+                                    if (v == true) {
+                                      _selectedAddUserIds.add(userId);
+                                    } else {
+                                      _selectedAddUserIds.remove(userId);
                                     }
                                   });
                                 },

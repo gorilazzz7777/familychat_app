@@ -122,9 +122,10 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   Future<void> _reloadParticipants() async {
     if (!_showParticipants) return;
     try {
-      final list = await ref.read(familychatRepositoryProvider).threadParticipants(
-            widget.threadId,
-          );
+      final list =
+          await ref.read(familychatRepositoryProvider).threadParticipants(
+                widget.threadId,
+              );
       if (!mounted) return;
       setState(() => _participants = list);
     } catch (_) {}
@@ -132,10 +133,15 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
 
   Future<void> _mute(String key) async {
     try {
-      await ref.read(familychatRepositoryProvider).setThreadMute(widget.threadId, key);
+      await ref
+          .read(familychatRepositoryProvider)
+          .setThreadMute(widget.threadId, key);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(key == 'off' ? 'Уведомления включены' : 'Уведомления отключены')),
+        SnackBar(
+            content: Text(key == 'off'
+                ? 'Уведомления включены'
+                : 'Уведомления отключены')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -157,10 +163,11 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     if (!mounted || result == null) return;
 
     try {
-      final data = await ref.read(familychatRepositoryProvider).setThreadCustomTitle(
-            widget.threadId,
-            result,
-          );
+      final data =
+          await ref.read(familychatRepositoryProvider).setThreadCustomTitle(
+                widget.threadId,
+                result,
+              );
       if (!mounted) return;
       final title = data['title']?.toString() ?? widget.defaultTitle;
       final customTitle = data['custom_title']?.toString() ?? '';
@@ -195,14 +202,20 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
               : 'Вы перестанете видеть сообщения этой группы. Вернуть вас сможет любой участник.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Покинуть')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Покинуть')),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
     try {
-      await ref.read(familychatRepositoryProvider).leaveChatThread(widget.threadId);
+      await ref
+          .read(familychatRepositoryProvider)
+          .leaveChatThread(widget.threadId);
       if (!mounted) return;
       widget.onMembershipChanged?.call();
       Navigator.of(context).pop();
@@ -219,7 +232,9 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
 
   Future<void> _rejoinChat() async {
     try {
-      await ref.read(familychatRepositoryProvider).rejoinChatThread(widget.threadId);
+      await ref
+          .read(familychatRepositoryProvider)
+          .rejoinChatThread(widget.threadId);
       if (!mounted) return;
       widget.onMembershipChanged?.call();
       Navigator.of(context).pop();
@@ -293,12 +308,42 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(title: const Text('1 час'), onTap: () { Navigator.pop(ctx); _mute('1h'); }),
-            ListTile(title: const Text('4 часа'), onTap: () { Navigator.pop(ctx); _mute('4h'); }),
-            ListTile(title: const Text('8 часов'), onTap: () { Navigator.pop(ctx); _mute('8h'); }),
-            ListTile(title: const Text('24 часа'), onTap: () { Navigator.pop(ctx); _mute('24h'); }),
-            ListTile(title: const Text('Навсегда'), onTap: () { Navigator.pop(ctx); _mute('forever'); }),
-            ListTile(title: const Text('Включить уведомления'), onTap: () { Navigator.pop(ctx); _mute('off'); }),
+            ListTile(
+                title: const Text('1 час'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _mute('1h');
+                }),
+            ListTile(
+                title: const Text('4 часа'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _mute('4h');
+                }),
+            ListTile(
+                title: const Text('8 часов'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _mute('8h');
+                }),
+            ListTile(
+                title: const Text('24 часа'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _mute('24h');
+                }),
+            ListTile(
+                title: const Text('Навсегда'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _mute('forever');
+                }),
+            ListTile(
+                title: const Text('Включить уведомления'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _mute('off');
+                }),
           ],
         ),
       ),
@@ -398,7 +443,9 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                       child: Text(
                         chatParticipantCountLabel(_participants.length),
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                       ),
                     ),
@@ -408,46 +455,57 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                       child: Text(
                         widget.defaultTitle,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                       ),
                     ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: _renameChat,
-                    icon: const Icon(Icons.drive_file_rename_outline),
-                    label: const Text('Переименовать'),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 40,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      shrinkWrap: true,
+                      children: [
+                        _InfoCompactAction(
+                          icon: Icons.drive_file_rename_outline,
+                          label: 'Переименовать',
+                          onTap: _renameChat,
+                        ),
+                        const SizedBox(width: 8),
+                        _InfoCompactAction(
+                          icon: Icons.notifications_off_outlined,
+                          label: 'Уведомления',
+                          onTap: _showMuteOptions,
+                        ),
+                        if (widget.canRejoin) ...[
+                          const SizedBox(width: 8),
+                          _InfoCompactAction(
+                            icon: Icons.login,
+                            label: 'Вернуться в чат',
+                            onTap: _rejoinChat,
+                          ),
+                        ],
+                        if (widget.canLeave && !widget.hasLeft) ...[
+                          const SizedBox(width: 8),
+                          _InfoCompactAction(
+                            icon: Icons.logout,
+                            label: 'Покинуть чат',
+                            onTap: _leaveChat,
+                          ),
+                        ],
+                        if (widget.kind == 'group' && !widget.hasLeft) ...[
+                          const SizedBox(width: 8),
+                          _InfoCompactAction(
+                            icon: Icons.person_add_outlined,
+                            label: 'Добавить участников',
+                            onTap: _addMembers,
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: _showMuteOptions,
-                    icon: const Icon(Icons.notifications_off_outlined),
-                    label: const Text('Уведомления'),
-                  ),
-                  if (widget.canRejoin) ...[
-                    const SizedBox(height: 8),
-                    FilledButton.icon(
-                      onPressed: _rejoinChat,
-                      icon: const Icon(Icons.login),
-                      label: const Text('Вернуться в чат'),
-                    ),
-                  ],
-                  if (widget.canLeave && !widget.hasLeft) ...[
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: _leaveChat,
-                      icon: const Icon(Icons.logout),
-                      label: const Text('Покинуть чат'),
-                    ),
-                  ],
-                  if (widget.kind == 'group' && !widget.hasLeft) ...[
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: _addMembers,
-                      icon: const Icon(Icons.person_add_outlined),
-                      label: const Text('Добавить участников'),
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -535,14 +593,17 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                                   final url = f['file_url']?.toString();
                                   final messageId = _messageIdOf(f);
                                   return ListTile(
-                                    leading: const Icon(Icons.insert_drive_file_outlined),
-                                    title: Text(f['filename']?.toString() ?? 'Файл'),
+                                    leading: const Icon(
+                                        Icons.insert_drive_file_outlined),
+                                    title: Text(
+                                        f['filename']?.toString() ?? 'Файл'),
                                     onTap: () => _showItemActions(
                                       title: 'Открыть файл',
                                       onOpen: url != null
                                           ? () => launchUrl(
                                                 Uri.parse(url),
-                                                mode: LaunchMode.externalApplication,
+                                                mode: LaunchMode
+                                                    .externalApplication,
                                               )
                                           : null,
                                       messageId: messageId,
@@ -569,7 +630,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       separatorBuilder: (_, __) => Divider(
         height: 1,
         indent: 72,
-        color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.4),
+        color:
+            Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.4),
       ),
       itemBuilder: (context, index) {
         final participant = _participants[index];
@@ -578,7 +640,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         final userId = uid is int ? uid : int.tryParse('$uid');
         if (userId == null) return const SizedBox.shrink();
         return ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
           leading: ChatAvatar(
             name: name,
             avatarUrl: participant['avatar_url']?.toString(),
@@ -648,9 +711,13 @@ class _AddMembersDialogState extends State<_AddMembersDialog> {
               ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена')),
         FilledButton(
-          onPressed: _selected.isEmpty ? null : () => Navigator.pop(context, _selected),
+          onPressed: _selected.isEmpty
+              ? null
+              : () => Navigator.pop(context, _selected),
           child: const Text('Добавить'),
         ),
       ],
@@ -716,6 +783,52 @@ class _RenameChatDialogState extends State<_RenameChatDialog> {
           child: const Text('Сохранить'),
         ),
       ],
+    );
+  }
+}
+
+class _InfoCompactAction extends StatelessWidget {
+  const _InfoCompactAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Tooltip(
+      message: label,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Container(
+          height: 36,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest
+                .withValues(alpha: 0.45),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 18, color: theme.colorScheme.primary),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -10,6 +10,7 @@ Future<void> openProfileGalleryAlbum(
   required String albumId,
   required String title,
   bool canManage = false,
+  bool canAddPhotos = false,
   bool isOwnGallery = false,
   bool isFamilyGallery = false,
   int? excludeUploadedByUserId,
@@ -22,6 +23,7 @@ Future<void> openProfileGalleryAlbum(
         albumId: albumId,
         title: title,
         canManage: canManage,
+        canAddPhotos: canAddPhotos,
         isOwnGallery: isOwnGallery,
         isFamilyGallery: isFamilyGallery,
         excludeUploadedByUserId: excludeUploadedByUserId,
@@ -504,6 +506,7 @@ class _AlbumCard extends StatelessWidget {
     final count = album['count']?.toString() ?? '0';
     final albumId = album['id']?.toString() ?? '';
     final canManage = album['can_manage'] == true;
+    final canAddPhotos = album['can_add'] == true;
     final cover = album['cover'] is Map<String, dynamic>
         ? album['cover'] as Map<String, dynamic>
         : null;
@@ -522,6 +525,7 @@ class _AlbumCard extends StatelessWidget {
                   albumId: albumId,
                   title: title,
                   canManage: canManage,
+                  canAddPhotos: canAddPhotos,
                   isOwnGallery: isOwnGallery,
                   isFamilyGallery: isFamilyGallery,
                   excludeUploadedByUserId: excludeUploadedByUserId,

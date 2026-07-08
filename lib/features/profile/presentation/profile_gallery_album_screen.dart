@@ -27,6 +27,7 @@ class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
     required this.albumId,
     required this.title,
     this.canManage = false,
+    this.canAddPhotos = false,
     this.isFamilyGallery = false,
     this.isOwnGallery = false,
     this.excludeUploadedByUserId,
@@ -36,6 +37,7 @@ class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
   final String albumId;
   final String title;
   final bool canManage;
+  final bool canAddPhotos;
   final bool isFamilyGallery;
   final bool isOwnGallery;
   final int? excludeUploadedByUserId;
@@ -839,6 +841,10 @@ class _ProfileGalleryAlbumScreenState
         .map((e) => e is int ? e : int.tryParse('$e'))
         .whereType<int>()
         .toList();
+    final addIds = (album['add_user_ids'] as List<dynamic>? ?? [])
+        .map((e) => e is int ? e : int.tryParse('$e'))
+        .whereType<int>()
+        .toList();
     final updated = await CustomAlbumDialog.show(
       context,
       userId: widget.userId,
@@ -846,6 +852,8 @@ class _ProfileGalleryAlbumScreenState
       initialTitle: album['title']?.toString() ?? widget.title,
       initialAccessMode: album['access_mode']?.toString() ?? 'all',
       initialAccessUserIds: accessIds,
+      initialAddMode: album['add_mode']?.toString() ?? 'owner',
+      initialAddUserIds: addIds,
     );
     if (updated == true && mounted) {
       await _load(reset: true);
@@ -1243,6 +1251,7 @@ class _ProfileGalleryAlbumScreenState
   @override
   Widget build(BuildContext context) {
     final canManageCustom = widget.canManage && widget.isCustomAlbum;
+    final canAddToCustom = widget.canAddPhotos && widget.isCustomAlbum;
 
     return Stack(
       children: [
@@ -1388,7 +1397,7 @@ class _ProfileGalleryAlbumScreenState
                   icon: const Icon(Icons.sell_outlined),
                   label: Text('Тег (${_selectedPhotoIds.length})'),
                 )
-              : canManageCustom
+              : canAddToCustom
                   ? FloatingActionButton(
                       onPressed: _addingPhotos ? null : _showAddPhotosSheet,
                       child: _addingPhotos
@@ -1453,7 +1462,7 @@ class _ProfileGalleryAlbumScreenState
                                           ],
                                         ],
                                       )
-                                    : canManageCustom
+                                    : canAddToCustom
                                         ? Column(
                                             mainAxisSize: MainAxisSize.min,
                                             children: [

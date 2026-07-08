@@ -94,6 +94,10 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
         .map((e) => e is int ? e : int.tryParse('$e'))
         .whereType<int>()
         .toList();
+    final addIds = (album['add_user_ids'] as List<dynamic>? ?? [])
+        .map((e) => e is int ? e : int.tryParse('$e'))
+        .whereType<int>()
+        .toList();
     final updated = await CustomAlbumDialog.show(
       context,
       userId: widget.userId,
@@ -101,6 +105,8 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
       initialTitle: album['title']?.toString() ?? '',
       initialAccessMode: album['access_mode']?.toString() ?? 'all',
       initialAccessUserIds: accessIds,
+      initialAddMode: album['add_mode']?.toString() ?? 'owner',
+      initialAddUserIds: addIds,
     );
     if (updated == true) {
       await _load();

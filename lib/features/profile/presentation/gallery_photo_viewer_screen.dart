@@ -65,6 +65,7 @@ class _GalleryPhotoViewerScreenState
   late int _index;
   late final PageController _pageController;
   bool _commentsExpanded = false;
+  bool _likeBusy = false;
 
   @override
   void initState() {
@@ -104,6 +105,56 @@ class _GalleryPhotoViewerScreenState
     final raw = _photo['comments_count'];
     if (raw is int) return raw;
     return int.tryParse('$raw') ?? 0;
+  }
+
+  int get _likesCount {
+    final raw = _photo['likes_count'];
+    if (raw is int) return raw;
+    return int.tryParse('$raw') ?? 0;
+  }
+
+  bool get _likedByMe => _photo['liked_by_me'] == true;
+
+  Future<void> _toggleLikeQuick() async {
+    final attachmentId = _attachmentId;
+    if (attachmentId == null || _likeBusy) return;
+    final wasLiked = _likedByMe;
+    final prevCount = _likesCount;
+    setState(() {
+      _likeBusy = true;
+      _photos[_index] = {
+        ..._photo,
+        'liked_by_me': !wasLiked,
+        'likes_count':
+            wasLiked ? (prevCount > 0 ? prevCount - 1 : 0) : prevCount + 1,
+      };
+    });
+    try {
+      final data = await ref
+          .read(familychatRepositoryProvider)
+          .toggleMediaLike(attachmentId);
+      if (!mounted) return;
+      setState(() {
+        _photos[_index] = {
+          ..._photo,
+          'liked_by_me': data['liked_by_me'] == true,
+          'likes_count': data['likes_count'] is int
+              ? data['likes_count'] as int
+              : int.tryParse('${data['likes_count']}') ?? _likesCount,
+        };
+        _likeBusy = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _photos[_index] = {
+          ..._photo,
+          'liked_by_me': wasLiked,
+          'likes_count': prevCount,
+        };
+        _likeBusy = false;
+      });
+    }
   }
 
   int? get _attachmentId {
@@ -296,66 +347,118 @@ class _GalleryPhotoViewerScreenState
             ),
           ),
           if (attachmentId != null)
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutCubic,
-              color: Colors.grey.shade900,
-              height: _commentsExpanded
-                  ? MediaQuery.sizeOf(context).height * 0.34
-                  : 46,
-              child: Column(
-                children: [
-                  InkWell(
-                    onTap: () =>
-                        setState(() => _commentsExpanded = !_commentsExpanded),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-                      child: Row(
-                        children: [
-                          Icon(
-                            _commentsExpanded
-                                ? Icons.keyboard_arrow_down
-                                : Icons.keyboard_arrow_up,
-                            size: 18,
-                            color: Colors.white70,
+            SafeArea(
+              top: false,
+              child: Container(
+                color: Colors.grey.shade900,
+                child: AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      InkWell(
+                        onTap: () =>
+                            setState(() => _commentsExpanded = !_commentsExpanded),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 12, 8, 10),
+                          child: Row(
+                            children: [
+                              Icon(
+                                _commentsExpanded
+                                    ? Icons.keyboard_arrow_down
+                                    : Icons.keyboard_arrow_up,
+                                size: 18,
+                                color: Colors.white70,
+                              ),
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 24, minHeight: 24),
+                                tooltip: _likedByMe ? 'Убрать лайк' : 'Лайк',
+                                onPressed: _likeBusy ? null : _toggleLikeQuick,
+                                icon: Icon(
+                                  _likedByMe
+                                      ? Icons.favorite
+                                      : Icons.favorite_border,
+                                  size: 18,
+                                  color: _likedByMe
+                                      ? Colors.redAccent
+                                      : Colors.white70,
+                                ),
+                              ),
+                              if (_likesCount > 0)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: Text(
+                                    '$_likesCount',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          color: Colors.white70,
+                                          fontSize: 12,
+                                        ),
+                                  ),
+                                ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'Комментарии ($_commentsCount)',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                width: 110,
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: Text(
+                                    _commentsExpanded ? 'Свернуть' : 'Развернуть',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.right,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          color: Colors.white54,
+                                          fontSize: 11,
+                                        ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Комментарии ($_commentsCount)',
-                            style:
-                                Theme.of(context).textTheme.bodySmall?.copyWith(
-                                      color: Colors.white70,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                          ),
-                          const Spacer(),
-                          Text(
-                            _commentsExpanded ? 'Свернуть' : 'Развернуть',
-                            style:
-                                Theme.of(context).textTheme.bodySmall?.copyWith(
-                                      color: Colors.white54,
-                                      fontSize: 11,
-                                    ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (_commentsExpanded)
-                    const Divider(height: 1, color: Colors.white12),
-                  if (_commentsExpanded)
-                    Expanded(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                        child: MediaEngagementInline(
-                          key: ValueKey<int>(attachmentId),
-                          attachmentId: attachmentId,
-                          onDarkBackground: true,
                         ),
                       ),
-                    ),
-                ],
+                      if (_commentsExpanded)
+                        const Divider(height: 1, color: Colors.white12),
+                      if (_commentsExpanded)
+                        SizedBox(
+                          height: MediaQuery.sizeOf(context).height * 0.30,
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                            child: MediaEngagementInline(
+                              key: ValueKey<int>(attachmentId),
+                              attachmentId: attachmentId,
+                              onDarkBackground: true,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ),
           if (attachmentId != null)
