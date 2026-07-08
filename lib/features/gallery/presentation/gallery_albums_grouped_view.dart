@@ -12,6 +12,7 @@ Future<void> openProfileGalleryAlbum(
   bool canManage = false,
   bool isOwnGallery = false,
   bool isFamilyGallery = false,
+  int? excludeUploadedByUserId,
   Future<void> Function()? onClosed,
 }) async {
   await Navigator.of(context).push<void>(
@@ -23,6 +24,7 @@ Future<void> openProfileGalleryAlbum(
         canManage: canManage,
         isOwnGallery: isOwnGallery,
         isFamilyGallery: isFamilyGallery,
+        excludeUploadedByUserId: excludeUploadedByUserId,
       ),
     ),
   );
@@ -41,6 +43,7 @@ class GalleryAlbumsGroupedView extends StatefulWidget {
     this.showFaceHint = false,
     this.onAlbumLongPress,
     this.customTabLabel = 'Мои альбомы',
+    this.excludeUploadedByUserId,
   });
 
   final List<Map<String, dynamic>> albums;
@@ -52,9 +55,11 @@ class GalleryAlbumsGroupedView extends StatefulWidget {
   final bool showFaceHint;
   final void Function(Map<String, dynamic> album)? onAlbumLongPress;
   final String customTabLabel;
+  final int? excludeUploadedByUserId;
 
   @override
-  State<GalleryAlbumsGroupedView> createState() => _GalleryAlbumsGroupedViewState();
+  State<GalleryAlbumsGroupedView> createState() =>
+      _GalleryAlbumsGroupedViewState();
 }
 
 class _GalleryAlbumGroup {
@@ -90,7 +95,11 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
     }
   }
 
-  ({List<_GalleryAlbumGroup> groups, Map<String, dynamic>? allAlbum, int selected}) _buildGroups() {
+  ({
+    List<_GalleryAlbumGroup> groups,
+    Map<String, dynamic>? allAlbum,
+    int selected
+  }) _buildGroups() {
     final byKind = <String, List<Map<String, dynamic>>>{};
     Map<String, dynamic>? allAlbum;
 
@@ -144,7 +153,12 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
     return (groups: groups, allAlbum: allAlbum, selected: selected);
   }
 
-  void _applyGroups(({List<_GalleryAlbumGroup> groups, Map<String, dynamic>? allAlbum, int selected}) data) {
+  void _applyGroups(
+      ({
+        List<_GalleryAlbumGroup> groups,
+        Map<String, dynamic>? allAlbum,
+        int selected
+      }) data) {
     _groups = data.groups;
     _allAlbum = data.allAlbum;
     _selectedGroupIndex = data.selected;
@@ -191,7 +205,10 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
             child: Material(
-              color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.45),
+              color: Theme.of(context)
+                  .colorScheme
+                  .primaryContainer
+                  .withValues(alpha: 0.45),
               borderRadius: BorderRadius.circular(12),
               child: Padding(
                 padding: const EdgeInsets.all(14),
@@ -222,6 +239,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
               userId: widget.userId,
               isOwnGallery: widget.isOwnGallery,
               isFamilyGallery: widget.isFamilyGallery,
+              excludeUploadedByUserId: widget.excludeUploadedByUserId,
               onClosed: widget.onRefresh,
             ),
           ),
@@ -242,7 +260,8 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
                   avatar: Icon(group.icon, size: 18),
                   selected: selected,
                   showCheckmark: false,
-                  onSelected: (_) => setState(() => _selectedGroupIndex = index),
+                  onSelected: (_) =>
+                      setState(() => _selectedGroupIndex = index),
                 );
               },
             ),
@@ -258,10 +277,12 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
                       userId: widget.userId,
                       isOwnGallery: widget.isOwnGallery,
                       isFamilyGallery: widget.isFamilyGallery,
+                      excludeUploadedByUserId: widget.excludeUploadedByUserId,
                       iconForKind: _albumIcon,
                       onAlbumLongPress: widget.onAlbumLongPress,
                       onAlbumClosed: widget.onRefresh,
-                      emptyLabel: 'В разделе «${selectedGroup.label}» пока нет альбомов',
+                      emptyLabel:
+                          'В разделе «${selectedGroup.label}» пока нет альбомов',
                     ),
                   ),
           ),
@@ -289,6 +310,7 @@ class _AllPhotosCard extends ConsumerWidget {
     required this.userId,
     required this.isOwnGallery,
     required this.isFamilyGallery,
+    this.excludeUploadedByUserId,
     this.onClosed,
   });
 
@@ -296,6 +318,7 @@ class _AllPhotosCard extends ConsumerWidget {
   final int userId;
   final bool isOwnGallery;
   final bool isFamilyGallery;
+  final int? excludeUploadedByUserId;
   final Future<void> Function()? onClosed;
 
   @override
@@ -321,6 +344,7 @@ class _AllPhotosCard extends ConsumerWidget {
             title: title,
             isOwnGallery: isOwnGallery,
             isFamilyGallery: isFamilyGallery,
+            excludeUploadedByUserId: excludeUploadedByUserId,
             onClosed: onClosed,
           );
         },
@@ -391,6 +415,7 @@ class _AlbumGrid extends StatelessWidget {
     required this.userId,
     required this.isOwnGallery,
     required this.isFamilyGallery,
+    this.excludeUploadedByUserId,
     required this.iconForKind,
     this.onAlbumLongPress,
     this.onAlbumClosed,
@@ -401,6 +426,7 @@ class _AlbumGrid extends StatelessWidget {
   final int userId;
   final bool isOwnGallery;
   final bool isFamilyGallery;
+  final int? excludeUploadedByUserId;
   final IconData Function(String? kind) iconForKind;
   final void Function(Map<String, dynamic> album)? onAlbumLongPress;
   final Future<void> Function()? onAlbumClosed;
@@ -437,6 +463,7 @@ class _AlbumGrid extends StatelessWidget {
           userId: userId,
           isOwnGallery: isOwnGallery,
           isFamilyGallery: isFamilyGallery,
+          excludeUploadedByUserId: excludeUploadedByUserId,
           onClosed: onAlbumClosed,
           onLongPress: canManage && onAlbumLongPress != null
               ? () => onAlbumLongPress!(album)
@@ -454,6 +481,7 @@ class _AlbumCard extends StatelessWidget {
     required this.userId,
     required this.isOwnGallery,
     required this.isFamilyGallery,
+    this.excludeUploadedByUserId,
     this.onClosed,
     this.onLongPress,
   });
@@ -463,6 +491,7 @@ class _AlbumCard extends StatelessWidget {
   final int userId;
   final bool isOwnGallery;
   final bool isFamilyGallery;
+  final int? excludeUploadedByUserId;
   final Future<void> Function()? onClosed;
   final VoidCallback? onLongPress;
 
@@ -493,6 +522,7 @@ class _AlbumCard extends StatelessWidget {
                   canManage: canManage,
                   isOwnGallery: isOwnGallery,
                   isFamilyGallery: isFamilyGallery,
+                  excludeUploadedByUserId: excludeUploadedByUserId,
                   onClosed: onClosed,
                 );
               },
@@ -555,7 +585,8 @@ class _AlbumCover extends StatelessWidget {
     return ColoredBox(
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
       child: Center(
-        child: Icon(icon, size: 40, color: Theme.of(context).colorScheme.primary),
+        child:
+            Icon(icon, size: 40, color: Theme.of(context).colorScheme.primary),
       ),
     );
   }

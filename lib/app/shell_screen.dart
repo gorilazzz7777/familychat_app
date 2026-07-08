@@ -17,7 +17,7 @@ import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/chat/presentation/chat_incoming_call_sheet.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../features/feed/presentation/feed_screen.dart';
-import '../features/gallery/presentation/family_gallery_tab.dart';
+import '../features/gallery/presentation/gallery_menu_screen.dart';
 import '../features/members/presentation/members_screen.dart';
 import '../features/more/presentation/more_menu_panel.dart';
 import '../features/profile/presentation/profile_screen.dart';
@@ -41,13 +41,17 @@ class ShellScreen extends ConsumerStatefulWidget {
 class _ShellScreenState extends ConsumerState<ShellScreen>
     with WidgetsBindingObserver {
   static const _moreTabIndex = 3;
+  static const _moreSectionNone = 'none';
+  static const _moreSectionGallery = 'gallery';
+  static const _moreSectionCalendar = 'calendar';
+  static const _moreSectionProfile = 'profile';
 
   int _index = 0;
   bool _moreMenuOpen = false;
+  String _moreSection = _moreSectionNone;
   late Map<String, dynamic> _status;
   final _feedKey = GlobalKey<FeedScreenState>();
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
-  final _familyGalleryKey = GlobalKey<FamilyGalleryTabState>();
   Timer? _webPollTimer;
   final Set<int> _shownIncomingCallIds = <int>{};
 
@@ -184,8 +188,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         await _feedKey.currentState?.refresh(silent: silent);
       case 1:
         await _chatHubKey.currentState?.refresh(silent: silent);
-      case 2:
-        await _familyGalleryKey.currentState?.refresh(silent: silent);
       default:
         break;
     }
@@ -205,7 +207,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   String get _title => switch (_index) {
         0 => 'Главная',
         1 => 'Семейный чат',
-        2 => 'Галерея',
+        2 => 'Семья',
         _ => 'Ещё',
       };
 
@@ -218,6 +220,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     setState(() {
       _index = i;
       _moreMenuOpen = false;
+      _moreSection = _moreSectionNone;
     });
     if (previous != i) {
       unawaited(_refreshTab(i, silent: true));
@@ -233,35 +236,28 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     } catch (_) {}
   }
 
-  void _openFamily() {
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => MembersScreen(
-          currentUserId: _currentUserId,
-          onOpenOwnProfile: _openProfile,
-        ),
-      ),
-    );
+  void _openGalleryFromMore() {
+    setState(() {
+      _index = _moreTabIndex;
+      _moreMenuOpen = false;
+      _moreSection = _moreSectionGallery;
+    });
   }
 
   void _openCalendar() {
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (_) => const CalendarScreen()),
-    );
+    setState(() {
+      _index = _moreTabIndex;
+      _moreMenuOpen = false;
+      _moreSection = _moreSectionCalendar;
+    });
   }
 
   void _openProfile() {
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => ProfileScreen(
-          status: _status,
-          onLogout: widget.onLogout,
-          onStatusChanged: () {
-            unawaited(_handleStatusChanged());
-          },
-        ),
-      ),
-    );
+    setState(() {
+      _index = _moreTabIndex;
+      _moreMenuOpen = false;
+      _moreSection = _moreSectionProfile;
+    });
   }
 
   @override
@@ -270,25 +266,29 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     final navSelected = _moreMenuOpen ? _moreTabIndex : _index;
     final chatUnread = ref.watch(chatUnreadTotalProvider).value ?? 0;
     final chatBadgeLabel = chatUnread > 99 ? '99+' : '$chatUnread';
+    final showingNestedMoreScreen =
+        _index == _moreTabIndex && _moreSection != _moreSectionNone;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_title),
-        actions: [
-          if (_index == 1) ...[
-            IconButton(
-              icon: const Icon(Icons.search),
-              tooltip: 'Поиск',
-              onPressed: () => _chatHubKey.currentState?.toggleSearch(),
+      appBar: showingNestedMoreScreen
+          ? null
+          : AppBar(
+              title: Text(_title),
+              actions: [
+                if (_index == 1) ...[
+                  IconButton(
+                    icon: const Icon(Icons.search),
+                    tooltip: 'Поиск',
+                    onPressed: () => _chatHubKey.currentState?.toggleSearch(),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add),
+                    tooltip: 'Создать группу',
+                    onPressed: () => _chatHubKey.currentState?.createGroup(),
+                  ),
+                ],
+              ],
             ),
-            IconButton(
-              icon: const Icon(Icons.add),
-              tooltip: 'Создать группу',
-              onPressed: () => _chatHubKey.currentState?.createGroup(),
-            ),
-          ],
-        ],
-      ),
       body: Stack(
         children: [
           IndexedStack(
@@ -296,11 +296,25 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
             children: [
               FeedScreen(key: _feedKey),
               ChatHubScreen(key: _chatHubKey),
-              userId == null
-                  ? const Center(child: CircularProgressIndicator())
-                  : FamilyGalleryTab(
-                      key: _familyGalleryKey, currentUserId: userId),
-              const SizedBox.shrink(),
+              MembersScreen(
+                currentUserId: _currentUserId,
+                onOpenOwnProfile: _openProfile,
+                showAppBar: false,
+              ),
+              switch (_moreSection) {
+                _moreSectionGallery => userId == null
+                    ? const Center(child: CircularProgressIndicator())
+                    : GalleryMenuScreen(currentUserId: userId),
+                _moreSectionCalendar => const CalendarScreen(),
+                _moreSectionProfile => ProfileScreen(
+                    status: _status,
+                    onLogout: widget.onLogout,
+                    onStatusChanged: () {
+                      unawaited(_handleStatusChanged());
+                    },
+                  ),
+                _ => const SizedBox.shrink(),
+              },
             ],
           ),
           if (_moreMenuOpen)
@@ -321,7 +335,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
             child: _moreMenuOpen
                 ? MoreMenuPanel(
                     onClose: () => setState(() => _moreMenuOpen = false),
-                    onOpenFamily: _openFamily,
+                    onOpenGallery: _openGalleryFromMore,
                     onOpenCalendar: _openCalendar,
                     onOpenProfile: _openProfile,
                   )
@@ -347,7 +361,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                 label: 'Чат',
               ),
               const NavigationDestination(
-                  icon: Icon(Icons.photo_library_outlined), label: 'Галерея'),
+                  icon: Icon(Icons.people_outline), label: 'Семья'),
               const NavigationDestination(
                   icon: Icon(Icons.more_horiz), label: 'Ещё'),
             ],

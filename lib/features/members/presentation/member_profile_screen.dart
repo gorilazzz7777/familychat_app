@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../chat/presentation/chat_call_screen.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
 import '../../profile/presentation/profile_gallery_tab.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
@@ -25,7 +27,8 @@ class MemberProfileScreen extends ConsumerStatefulWidget {
   final VoidCallback? onOpenOwnProfile;
 
   @override
-  ConsumerState<MemberProfileScreen> createState() => _MemberProfileScreenState();
+  ConsumerState<MemberProfileScreen> createState() =>
+      _MemberProfileScreenState();
 }
 
 class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
@@ -34,6 +37,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
   Map<String, dynamic>? _profile;
   bool _loading = true;
   bool _openingChat = false;
+  bool _openingCall = false;
   String? _error;
 
   @override
@@ -55,7 +59,9 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
       _error = null;
     });
     try {
-      final data = await ref.read(familychatRepositoryProvider).memberProfile(widget.userId);
+      final data = await ref
+          .read(familychatRepositoryProvider)
+          .memberProfile(widget.userId);
       if (!mounted) return;
       setState(() {
         _profile = data;
@@ -71,17 +77,21 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
   }
 
   Future<void> _openChat() async {
-    if (_openingChat) return;
+    if (_openingChat || _openingCall) return;
     setState(() => _openingChat = true);
     try {
-      final thread = await ref.read(familychatRepositoryProvider).memberDmThread(widget.userId);
+      final thread = await ref
+          .read(familychatRepositoryProvider)
+          .memberDmThread(widget.userId);
       if (!mounted) return;
       final p = _profile;
       await Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
           builder: (_) => ChatConversationScreen(
             threadId: thread['id'] as int,
-            title: thread['title']?.toString() ?? p?['display_name']?.toString() ?? 'Чат',
+            title: thread['title']?.toString() ??
+                p?['display_name']?.toString() ??
+                'Чат',
             defaultTitle: thread['default_title']?.toString() ??
                 thread['title']?.toString() ??
                 p?['display_name']?.toString() ??
@@ -100,6 +110,96 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
     } finally {
       if (mounted) setState(() => _openingChat = false);
     }
+  }
+
+  Future<void> _startCall() async {
+    if (_openingCall || _openingChat) return;
+    setState(() => _openingCall = true);
+    try {
+      final thread = await ref
+          .read(familychatRepositoryProvider)
+          .memberDmThread(widget.userId);
+      if (!mounted) return;
+      final p = _profile;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChatCallScreen(
+            threadId: thread['id'] as int,
+            title: thread['title']?.toString() ??
+                p?['display_name']?.toString() ??
+                'Чат',
+            isCaller: true,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось начать звонок: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _openingCall = false);
+    }
+  }
+
+  Future<void> _openAvatarPreview(String avatarUrl, String name) async {
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
+          children: [
+            InteractiveViewer(
+              minScale: 1,
+              maxScale: 4,
+              child: Center(
+                child: CachedNetworkImage(
+                  imageUrl: avatarUrl,
+                  fit: BoxFit.contain,
+                  placeholder: (_, __) => const Center(
+                    child: CircularProgressIndicator(),
+                  ),
+                  errorWidget: (_, __, ___) => Container(
+                    padding: const EdgeInsets.all(24),
+                    color: Colors.black54,
+                    child: Text(
+                      'Не удалось загрузить фото',
+                      style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+                            color: Colors.white,
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton.filledTonal(
+                onPressed: () => Navigator.of(ctx).pop(),
+                icon: const Icon(Icons.close),
+                tooltip: 'Закрыть',
+              ),
+            ),
+            Positioned(
+              left: 12,
+              bottom: 12,
+              right: 12,
+              child: Text(
+                name,
+                textAlign: TextAlign.center,
+                style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -145,10 +245,15 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
       padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
       children: [
         Center(
-          child: ChatAvatar(
-            name: name,
-            avatarUrl: avatarUrl?.isNotEmpty == true ? avatarUrl : null,
-            radius: 48,
+          child: GestureDetector(
+            onTap: avatarUrl?.isNotEmpty == true
+                ? () => _openAvatarPreview(avatarUrl!, name)
+                : null,
+            child: ChatAvatar(
+              name: name,
+              avatarUrl: avatarUrl?.isNotEmpty == true ? avatarUrl : null,
+              radius: 48,
+            ),
           ),
         ),
         const SizedBox(height: 16),
@@ -172,16 +277,37 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
         ],
         const SizedBox(height: 20),
         if (!isSelf)
-          FilledButton.icon(
-            onPressed: _openingChat ? null : _openChat,
-            icon: _openingChat
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                  )
-                : const Icon(Icons.chat_outlined),
-            label: Text(_openingChat ? 'Открываю…' : 'Чат'),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _openingChat || _openingCall ? null : _openChat,
+                  icon: _openingChat
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.chat_outlined),
+                  label: Text(_openingChat ? 'Открываю…' : 'Чат'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _openingChat || _openingCall ? null : _startCall,
+                  icon: _openingCall
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.call_outlined),
+                  label: Text(_openingCall ? 'Запуск…' : 'Позвонить'),
+                ),
+              ),
+            ],
           ),
         const SizedBox(height: 24),
         _InfoTile(

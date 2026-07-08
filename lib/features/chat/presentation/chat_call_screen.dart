@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../data/familychat_realtime.dart';
@@ -36,6 +38,22 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
   bool _ended = false;
   final Set<String> _sentIce = <String>{};
 
+  bool _showingMicHint = false;
+
+  String _friendlyCallError(Object error) {
+    final text = '$error';
+    if (text.contains('NotAllowedError') || text.contains('PermissionDenied')) {
+      return 'Доступ к микрофону не разрешен. Разрешите его в настройках и попробуйте снова.';
+    }
+    if (text.contains('NotFoundError') || text.contains('DevicesNotFoundError')) {
+      return 'Микрофон не найден на устройстве.';
+    }
+    if (text.contains('NotReadableError')) {
+      return 'Не удалось получить доступ к микрофону. Возможно, он занят другим приложением.';
+    }
+    return 'Не удалось начать звонок. Попробуйте еще раз.';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -52,6 +70,18 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
 
   Future<void> _initCall() async {
     try {
+      final micPermission = await _ensureMicrophonePermission();
+      if (!micPermission.granted) {
+        if (!mounted) return;
+        setState(() {
+          _stateText = 'Нет доступа к микрофону';
+          _busy = false;
+        });
+        if (micPermission.shouldOpenSettingsHint) {
+          await _showMicPermissionHint();
+        }
+        return;
+      }
       final repo = ref.read(familychatRepositoryProvider);
       final ice = await repo.threadCallIceServers(widget.threadId);
       _peer = await createPeerConnection({'iceServers': ice});
@@ -108,10 +138,78 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _stateText = 'Ошибка звонка: $e';
+        _stateText = _friendlyCallError(e);
         _busy = false;
       });
+      if ('$e'.contains('NotAllowedError') && kIsWeb) {
+        await _showMicPermissionHint();
+      }
     }
+  }
+
+  Future<({bool granted, bool shouldOpenSettingsHint})>
+      _ensureMicrophonePermission() async {
+    if (kIsWeb) {
+      try {
+        final testStream = await navigator.mediaDevices.getUserMedia({
+          'audio': true,
+          'video': false,
+        });
+        for (final track in testStream.getTracks()) {
+          track.stop();
+        }
+        await testStream.dispose();
+        return (granted: true, shouldOpenSettingsHint: false);
+      } catch (_) {
+        return (granted: false, shouldOpenSettingsHint: true);
+      }
+    }
+    final status = await Permission.microphone.request();
+    if (status.isGranted) {
+      return (granted: true, shouldOpenSettingsHint: false);
+    }
+    final needsSettings = status.isPermanentlyDenied || status.isRestricted;
+    return (granted: false, shouldOpenSettingsHint: needsSettings);
+  }
+
+  Future<void> _showMicPermissionHint() async {
+    if (!mounted || _showingMicHint) return;
+    _showingMicHint = true;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Нужен доступ к микрофону'),
+        content: const Text(
+          'Для звонка разрешите доступ к микрофону. После этого нажмите "Повторить".',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Закрыть'),
+          ),
+          TextButton(
+            onPressed: () async {
+              await openAppSettings();
+              if (ctx.mounted) Navigator.of(ctx).pop();
+            },
+            child: const Text('Настройки'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              if (!mounted) return;
+              setState(() {
+                _busy = true;
+                _stateText = 'Повторный запрос микрофона...';
+              });
+              await _initCall();
+            },
+            child: const Text('Повторить'),
+          ),
+        ],
+      ),
+    );
+    _showingMicHint = false;
   }
 
   Future<void> _cleanup() async {

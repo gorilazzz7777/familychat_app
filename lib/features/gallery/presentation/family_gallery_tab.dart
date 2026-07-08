@@ -7,9 +7,16 @@ import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 
 class FamilyGalleryTab extends ConsumerStatefulWidget {
-  const FamilyGalleryTab({super.key, required this.currentUserId});
+  const FamilyGalleryTab({
+    super.key,
+    required this.currentUserId,
+    this.excludeUploadedByUserId,
+    this.allowCreateAlbum = true,
+  });
 
   final int currentUserId;
+  final int? excludeUploadedByUserId;
+  final bool allowCreateAlbum;
 
   @override
   ConsumerState<FamilyGalleryTab> createState() => FamilyGalleryTabState();
@@ -21,6 +28,22 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   List<Map<String, dynamic>> _albums = [];
   String _faceHintMessage = '';
   bool _showFaceHint = false;
+
+  List<Map<String, dynamic>> _filterCommonAlbums(
+      List<Map<String, dynamic>> albums) {
+    final excludedUserId = widget.excludeUploadedByUserId;
+    if (excludedUserId == null) return albums;
+    return albums.where((album) {
+      final kind = album['kind']?.toString() ?? '';
+      final id = album['id']?.toString() ?? '';
+      final ownerId = album['owner_user_id'] is int
+          ? album['owner_user_id'] as int
+          : int.tryParse('${album['owner_user_id']}');
+      if (kind == 'custom' && ownerId == excludedUserId) return false;
+      if (id == 'face:$excludedUserId') return false;
+      return true;
+    }).toList();
+  }
 
   @override
   void initState() {
@@ -35,7 +58,9 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
     final cached = await FamilyChatLocalCache.readFamilyAlbums();
     if (cached != null && mounted) {
       setState(() {
-        _albums = (cached['albums'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        final raw = (cached['albums'] as List<dynamic>? ?? [])
+            .cast<Map<String, dynamic>>();
+        _albums = _filterCommonAlbums(raw);
         _faceHintMessage = cached['face_hint_message']?.toString() ?? '';
         _showFaceHint = cached['show_face_hint'] == true;
         _loading = false;
@@ -48,11 +73,14 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
       });
     }
     try {
-      final data = await ref.read(familychatRepositoryProvider).familyGalleryAlbums();
+      final data =
+          await ref.read(familychatRepositoryProvider).familyGalleryAlbums();
       await FamilyChatLocalCache.saveFamilyAlbums(data);
       if (!mounted) return;
       setState(() {
-        _albums = (data['albums'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        final raw = (data['albums'] as List<dynamic>? ?? [])
+            .cast<Map<String, dynamic>>();
+        _albums = _filterCommonAlbums(raw);
         _faceHintMessage = data['face_hint_message']?.toString() ?? '';
         _showFaceHint = data['show_face_hint'] == true;
         _loading = false;
@@ -105,14 +133,17 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
           onRefresh: _load,
           faceHintMessage: _faceHintMessage,
           showFaceHint: _showFaceHint,
+          excludeUploadedByUserId: widget.excludeUploadedByUserId,
           customTabLabel: 'Альбомы',
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _createAlbum,
-        icon: const Icon(Icons.create_new_folder_outlined),
-        label: const Text('Альбом'),
-      ),
+      floatingActionButton: widget.allowCreateAlbum
+          ? FloatingActionButton.extended(
+              onPressed: _createAlbum,
+              icon: const Icon(Icons.create_new_folder_outlined),
+              label: const Text('Альбом'),
+            )
+          : null,
     );
   }
 }

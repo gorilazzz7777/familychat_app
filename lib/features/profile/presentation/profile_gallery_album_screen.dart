@@ -29,6 +29,7 @@ class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
     this.canManage = false,
     this.isFamilyGallery = false,
     this.isOwnGallery = false,
+    this.excludeUploadedByUserId,
   });
 
   final int userId;
@@ -37,6 +38,7 @@ class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
   final bool canManage;
   final bool isFamilyGallery;
   final bool isOwnGallery;
+  final int? excludeUploadedByUserId;
 
   bool get isCustomAlbum => albumId.startsWith('custom:');
 
@@ -46,10 +48,12 @@ class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
   }
 
   @override
-  ConsumerState<ProfileGalleryAlbumScreen> createState() => _ProfileGalleryAlbumScreenState();
+  ConsumerState<ProfileGalleryAlbumScreen> createState() =>
+      _ProfileGalleryAlbumScreenState();
 }
 
-class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumScreen> {
+class _ProfileGalleryAlbumScreenState
+    extends ConsumerState<ProfileGalleryAlbumScreen> {
   final List<Map<String, dynamic>> _photos = [];
   final TextEditingController _searchController = TextEditingController();
   final Set<int> _selectedPhotoIds = {};
@@ -80,6 +84,18 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   static const _maxUploadCount = 500;
   static const _galleryAddChunkSize = 50;
   static const _uploadPollInterval = Duration(seconds: 3);
+
+  int? _photoUploaderId(Map<String, dynamic> photo) {
+    final id = photo['uploaded_by_user_id'];
+    return id is int ? id : int.tryParse('$id');
+  }
+
+  List<Map<String, dynamic>> _applyUploadOwnerFilter(
+      List<Map<String, dynamic>> photos) {
+    final excluded = widget.excludeUploadedByUserId;
+    if (excluded == null) return photos;
+    return photos.where((p) => _photoUploaderId(p) != excluded).toList();
+  }
 
   @override
   void initState() {
@@ -184,7 +200,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   Future<void> _initCalendarPhotoSync() async {
     final pk = widget.customAlbumPk;
     if (pk == null || !widget.canManage) return;
-    final service = CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
+    final service =
+        CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
     final info = await service.fetchAlbumSyncInfo(pk);
     if (!mounted) return;
     setState(() => _calendarSyncInfo = info);
@@ -202,7 +219,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     if (pk == null || info == null || _calendarSyncRunning) return;
     setState(() => _calendarSyncRunning = true);
     try {
-      final service = CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
+      final service =
+          CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
       final uploaded = await service.syncAndroidCameraPhotos(
         userId: widget.userId,
         info: info,
@@ -238,10 +256,12 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     final pk = widget.customAlbumPk;
     final info = _calendarSyncInfo;
     if (pk == null || info == null) return;
-    final service = CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
+    final service =
+        CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
     final picked = await service.pickWebPhotosWithDateFilter(info);
     if (!mounted || picked.isEmpty) return;
-    final selected = await Navigator.of(context).push<List<CalendarDevicePhoto>>(
+    final selected =
+        await Navigator.of(context).push<List<CalendarDevicePhoto>>(
       MaterialPageRoute(
         builder: (_) => CalendarPhotoPickConfirmScreen(
           info: info,
@@ -289,7 +309,10 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     if (!showWebUpload && !showAndroidSync) return const SizedBox.shrink();
 
     return Material(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      color: Theme.of(context)
+          .colorScheme
+          .surfaceContainerHighest
+          .withValues(alpha: 0.5),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
         child: Row(
@@ -360,13 +383,20 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               personUnidentified: _personFilterUnidentified,
             );
       if (!mounted) return;
-      final batch = (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final rawBatch =
+          (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final batch = _applyUploadOwnerFilter(rawBatch);
       setState(() {
-        _total = data['total'] is int ? data['total'] as int : int.tryParse('${data['total']}') ?? 0;
+        _total = data['total'] is int
+            ? data['total'] as int
+            : int.tryParse('${data['total']}') ?? 0;
+        if (rawBatch.isEmpty && widget.excludeUploadedByUserId != null) {
+          _total = _photos.length;
+        }
         _photos.addAll(batch);
-        _offset += batch.length;
-        _searchPeople =
-            (data['search_people'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        _offset += rawBatch.length;
+        _searchPeople = (data['search_people'] as List<dynamic>? ?? [])
+            .cast<Map<String, dynamic>>();
         _unidentifiedCount = data['unidentified_count'] is int
             ? data['unidentified_count'] as int
             : int.tryParse('${data['unidentified_count']}') ?? 0;
@@ -409,7 +439,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   void _endPreparingIfIdle() {
     if (!mounted || !_preparingUpload) return;
     final albumPk = widget.customAlbumPk;
-    if (albumPk != null && AlbumUploadCoordinator.instance.isActiveForAlbum(albumPk)) {
+    if (albumPk != null &&
+        AlbumUploadCoordinator.instance.isActiveForAlbum(albumPk)) {
       return;
     }
     if (_uploadTotal > 0) return;
@@ -462,10 +493,15 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   }
 
   Future<void> _pollNewPhotosDuringUpload() async {
-    if (!mounted || !_addingPhotos || _uploadPolling || _searchMode || _query.isNotEmpty) return;
+    if (!mounted ||
+        !_addingPhotos ||
+        _uploadPolling ||
+        _searchMode ||
+        _query.isNotEmpty) return;
     _uploadPolling = true;
     try {
-      final fetchLimit = math.min(math.max(_photos.length + _pageSize, _pageSize), 200);
+      final fetchLimit =
+          math.min(math.max(_photos.length + _pageSize, _pageSize), 200);
       final repo = ref.read(familychatRepositoryProvider);
       final data = widget.isFamilyGallery
           ? await repo.familyGalleryPhotos(
@@ -486,22 +522,23 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               personUnidentified: _personFilterUnidentified,
             );
       if (!mounted) return;
-      final batch = (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
-      final newTotal =
-          data['total'] is int ? data['total'] as int : int.tryParse('${data['total']}') ?? _total;
+      final rawBatch =
+          (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final batch = _applyUploadOwnerFilter(rawBatch);
+      final newTotal = data['total'] is int
+          ? data['total'] as int
+          : int.tryParse('${data['total']}') ?? _total;
       final existingIds = _currentPhotoIds;
-      final fresh = batch
-          .where((photo) {
-            final id = _photoId(photo);
-            return id != null && !existingIds.contains(id);
-          })
-          .toList();
+      final fresh = batch.where((photo) {
+        final id = _photoId(photo);
+        return id != null && !existingIds.contains(id);
+      }).toList();
       if (fresh.isEmpty && newTotal == _total) return;
       setState(() {
         if (fresh.isNotEmpty) {
           _photos.insertAll(0, fresh);
-          _offset += fresh.length;
         }
+        _offset += rawBatch.length;
         _total = newTotal;
       });
     } catch (_) {
@@ -549,7 +586,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
           AlbumUploadPhoto(
             bytes: bytes,
             filename: picked.name,
-            contentType: picked.mimeType ?? _imageContentTypeForFilename(picked.name),
+            contentType:
+                picked.mimeType ?? _imageContentTypeForFilename(picked.name),
           ),
         );
       }
@@ -605,7 +643,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     final repo = ref.read(familychatRepositoryProvider);
     try {
       for (var i = 0; i < ids.length; i += _galleryAddChunkSize) {
-        final chunk = ids.sublist(i, math.min(i + _galleryAddChunkSize, ids.length));
+        final chunk =
+            ids.sublist(i, math.min(i + _galleryAddChunkSize, ids.length));
         try {
           await repo.addPhotosToCustomAlbum(widget.userId, albumPk, chunk);
           for (var j = 0; j < chunk.length; j++) {
@@ -632,7 +671,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     });
   }
 
-  List<int> get _selectablePhotoIds => _photos.map(_photoId).whereType<int>().toList();
+  List<int> get _selectablePhotoIds =>
+      _photos.map(_photoId).whereType<int>().toList();
 
   bool _photoIsOwnUpload(Map<String, dynamic> photo) {
     final myId = _currentUserId;
@@ -645,7 +685,9 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   List<int> get _selectedOwnPhotoIds => _photos
       .where((photo) {
         final id = _photoId(photo);
-        return id != null && _selectedPhotoIds.contains(id) && _photoIsOwnUpload(photo);
+        return id != null &&
+            _selectedPhotoIds.contains(id) &&
+            _photoIsOwnUpload(photo);
       })
       .map(_photoId)
       .whereType<int>()
@@ -679,7 +721,9 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   }
 
   void _togglePhotoSelection(Map<String, dynamic> photo) {
-    final id = photo['id'] is int ? photo['id'] as int : int.tryParse('${photo['id']}');
+    final id = photo['id'] is int
+        ? photo['id'] as int
+        : int.tryParse('${photo['id']}');
     if (id == null) return;
     setState(() {
       if (_selectedPhotoIds.contains(id)) {
@@ -691,7 +735,9 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   }
 
   void _enterSelectionWithPhoto(Map<String, dynamic> photo) {
-    final id = photo['id'] is int ? photo['id'] as int : int.tryParse('${photo['id']}');
+    final id = photo['id'] is int
+        ? photo['id'] as int
+        : int.tryParse('${photo['id']}');
     if (id == null) return;
     setState(() {
       _selectionMode = true;
@@ -730,7 +776,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, controller.text.trim()),
             child: const Text('Добавить'),
@@ -740,12 +787,13 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     );
     if (tag == null || tag.isEmpty || !mounted) return;
     try {
-      final res = await ref.read(familychatRepositoryProvider).bulkTagGalleryPhotos(
-            widget.userId,
-            widget.albumId,
-            attachmentIds: _selectedPhotoIds.toList(),
-            tag: tag,
-          );
+      final res =
+          await ref.read(familychatRepositoryProvider).bulkTagGalleryPhotos(
+                widget.userId,
+                widget.albumId,
+                attachmentIds: _selectedPhotoIds.toList(),
+                tag: tag,
+              );
       if (!mounted) return;
       final created = res['created'];
       ScaffoldMessenger.of(context).showSnackBar(
@@ -758,7 +806,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
       await _load(reset: true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Ошибка: $e')));
     }
   }
 
@@ -774,9 +823,12 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
   Future<void> _editAlbum() async {
     final pk = widget.customAlbumPk;
     if (pk == null) return;
-    final albums = await ref.read(familychatRepositoryProvider).memberGalleryAlbums(widget.userId);
+    final albums = await ref
+        .read(familychatRepositoryProvider)
+        .memberGalleryAlbums(widget.userId);
     Map<String, dynamic>? album;
-    for (final a in (albums['albums'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>()) {
+    for (final a in (albums['albums'] as List<dynamic>? ?? [])
+        .cast<Map<String, dynamic>>()) {
       if (a['id']?.toString() == widget.albumId) {
         album = a;
         break;
@@ -825,7 +877,9 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
                   : 'Выбранные фото ($count) будут удалены совсем — из всех альбомов и чата.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Отмена')),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: Theme.of(ctx).colorScheme.error,
@@ -840,17 +894,19 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     if (confirmed != true || !mounted) return;
 
     try {
-      final res = await ref.read(familychatRepositoryProvider).bulkDeleteGalleryPhotos(
-            widget.userId,
-            attachmentIds: ids,
-          );
+      final res =
+          await ref.read(familychatRepositoryProvider).bulkDeleteGalleryPhotos(
+                widget.userId,
+                attachmentIds: ids,
+              );
       if (!mounted) return;
       final deleted = res['deleted'];
       final notOwner = res['skipped_not_owner'];
       final message = deleted == ids.length
           ? 'Удалено: $deleted'
           : 'Удалено: ${deleted ?? 0}, пропущено: ${notOwner ?? 0}';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
       setState(() {
         _selectedPhotoIds.clear();
         _selectionMode = false;
@@ -858,7 +914,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
       await _load(reset: true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Ошибка: $e')));
     }
   }
 
@@ -946,30 +1003,38 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
           'Останется самое раннее, остальные ваши копии будут удалены совсем.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Удалить дубликаты')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Удалить дубликаты')),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
 
     try {
-      final res = await ref.read(familychatRepositoryProvider).deduplicateGalleryAlbum(
-            widget.userId,
-            widget.albumId,
-          );
+      final res =
+          await ref.read(familychatRepositoryProvider).deduplicateGalleryAlbum(
+                widget.userId,
+                widget.albumId,
+              );
       if (!mounted) return;
       final deleted = res['deleted'] ?? 0;
       final skipped = res['skipped_not_owner'] ?? 0;
       final groups = res['duplicate_groups'] ?? 0;
       final text = deleted == 0
-          ? (groups == 0 ? 'Дубликатов не найдено' : 'Удалено: 0 (чужие копии не трогаем)')
+          ? (groups == 0
+              ? 'Дубликатов не найдено'
+              : 'Удалено: 0 (чужие копии не трогаем)')
           : 'Удалено дубликатов: $deleted${skipped > 0 ? ', пропущено чужих: $skipped' : ''}';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
       await _load(reset: true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Ошибка: $e')));
     }
   }
 
@@ -980,21 +1045,29 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Удалить альбом?'),
-        content: Text('Альбом «${widget.title}» будет удалён. Фото останутся в галерее.'),
+        content: Text(
+            'Альбом «${widget.title}» будет удалён. Фото останутся в галерее.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Удалить')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Отмена')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Удалить')),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
     try {
-      await ref.read(familychatRepositoryProvider).deleteCustomGalleryAlbum(widget.userId, pk);
+      await ref
+          .read(familychatRepositoryProvider)
+          .deleteCustomGalleryAlbum(widget.userId, pk);
       if (!mounted) return;
       Navigator.pop(context);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Ошибка: $e')));
     }
   }
 
@@ -1115,7 +1188,8 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
               elevation: 4,
               borderRadius: BorderRadius.circular(12),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -1148,376 +1222,452 @@ class _ProfileGalleryAlbumScreenState extends ConsumerState<ProfileGalleryAlbumS
     return Stack(
       children: [
         Scaffold(
-      appBar: AppBar(
-        title: _searchMode
-            ? TextField(
-                controller: _searchController,
-                autofocus: true,
-                textInputAction: TextInputAction.search,
-                decoration: const InputDecoration(
-                  hintText: 'Поиск по тегам',
-                  border: InputBorder.none,
-                ),
-                onSubmitted: (_) => _applySearch(),
-              )
-            : Text(widget.title),
-        actions: [
-          if (_addingPhotos)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _preparingUpload ? 'Подготовка...' : '$_uploadDone/$_uploadTotal',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                  const SizedBox(width: 8),
-                  const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ],
-              ),
-            ),
-          if (!_selectionMode && !_addingPhotos)
-            IconButton(
-              tooltip: 'Поиск',
-              onPressed: () async {
-                if (_searchMode) {
-                  setState(() {
-                    _searchMode = false;
-                    _query = '';
-                    _personUserId = null;
-                    _personFilterUnidentified = false;
-                    _searchController.clear();
-                  });
-                  await _load(reset: true);
-                } else {
-                  setState(() => _searchMode = true);
-                }
-              },
-              icon: Icon(_searchMode ? Icons.close : Icons.search),
-            ),
-          IconButton(
-            tooltip: _selectionMode ? 'Отменить выбор' : 'Выбрать',
-            onPressed: _toggleSelectionMode,
-            icon: Icon(_selectionMode ? Icons.close : Icons.checklist_outlined),
-          ),
-          if (_selectionMode)
-            TextButton(
-              onPressed: _selectablePhotoIds.isEmpty ? null : _toggleSelectAllPhotos,
-              child: Text(_allPhotosSelected ? 'Снять все' : 'Выбрать все'),
-            ),
-          if (_selectionMode)
-            PopupMenuButton<String>(
-              enabled: _selectedPhotoIds.isNotEmpty && !_bulkActionRunning,
-              tooltip: 'Действия',
-              onSelected: (value) {
-                switch (value) {
-                  case 'download':
-                    _downloadSelectedPhotos();
-                  case 'share':
-                    _shareSelectedPhotos();
-                  case 'tag':
-                    _showBulkTagDialog();
-                  case 'delete':
-                    _deleteSelectedPhotos();
-                }
-              },
-              itemBuilder: (ctx) => [
-                const PopupMenuItem(value: 'download', child: Text('Скачать')),
-                const PopupMenuItem(value: 'share', child: Text('Поделиться')),
-                const PopupMenuItem(value: 'tag', child: Text('Добавить тег')),
-                if (widget.isOwnGallery)
-                  const PopupMenuItem(
-                    value: 'delete',
-                    child: Text('Удалить', style: TextStyle(color: Colors.red)),
-                  ),
-              ],
-              icon: _bulkActionRunning
-                  ? const SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: Padding(
-                        padding: EdgeInsets.all(4),
+          appBar: AppBar(
+            title: _searchMode
+                ? TextField(
+                    controller: _searchController,
+                    autofocus: true,
+                    textInputAction: TextInputAction.search,
+                    decoration: const InputDecoration(
+                      hintText: 'Поиск по тегам',
+                      border: InputBorder.none,
+                    ),
+                    onSubmitted: (_) => _applySearch(),
+                  )
+                : Text(widget.title),
+            actions: [
+              if (_addingPhotos)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _preparingUpload
+                            ? 'Подготовка...'
+                            : '$_uploadDone/$_uploadTotal',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(width: 8),
+                      const SizedBox(
+                        width: 20,
+                        height: 20,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       ),
-                    )
-                  : const Icon(Icons.more_vert),
-            ),
-          if (!_selectionMode && (canManageCustom || widget.isOwnGallery))
-            PopupMenuButton<String>(
-              onSelected: (value) {
-                switch (value) {
-                  case 'dedupe':
-                    _deduplicateAlbum();
-                  case 'edit':
-                    _editAlbum();
-                  case 'delete':
-                    _deleteAlbum();
-                }
-              },
-              itemBuilder: (ctx) => [
-                if (widget.isOwnGallery)
-                  const PopupMenuItem(value: 'dedupe', child: Text('Удалить дубликаты')),
-                if (canManageCustom) ...[
-                  const PopupMenuItem(value: 'edit', child: Text('Редактировать')),
-                  const PopupMenuItem(value: 'delete', child: Text('Удалить альбом')),
-                ],
-              ],
-            ),
-        ],
-      ),
-      floatingActionButton: _selectionMode
-          ? FloatingActionButton.extended(
-              onPressed: _selectedPhotoIds.isEmpty ? null : _showBulkTagDialog,
-              icon: const Icon(Icons.sell_outlined),
-              label: Text('Тег (${_selectedPhotoIds.length})'),
-            )
-          : canManageCustom
-              ? FloatingActionButton(
-                  onPressed: _addingPhotos ? null : _showAddPhotosSheet,
-                  child: _addingPhotos
+                    ],
+                  ),
+                ),
+              if (!_selectionMode && !_addingPhotos)
+                IconButton(
+                  tooltip: 'Поиск',
+                  onPressed: () async {
+                    if (_searchMode) {
+                      setState(() {
+                        _searchMode = false;
+                        _query = '';
+                        _personUserId = null;
+                        _personFilterUnidentified = false;
+                        _searchController.clear();
+                      });
+                      await _load(reset: true);
+                    } else {
+                      setState(() => _searchMode = true);
+                    }
+                  },
+                  icon: Icon(_searchMode ? Icons.close : Icons.search),
+                ),
+              IconButton(
+                tooltip: _selectionMode ? 'Отменить выбор' : 'Выбрать',
+                onPressed: _toggleSelectionMode,
+                icon: Icon(
+                    _selectionMode ? Icons.close : Icons.checklist_outlined),
+              ),
+              if (_selectionMode)
+                TextButton(
+                  onPressed: _selectablePhotoIds.isEmpty
+                      ? null
+                      : _toggleSelectAllPhotos,
+                  child: Text(_allPhotosSelected ? 'Снять все' : 'Выбрать все'),
+                ),
+              if (_selectionMode)
+                PopupMenuButton<String>(
+                  enabled: _selectedPhotoIds.isNotEmpty && !_bulkActionRunning,
+                  tooltip: 'Действия',
+                  onSelected: (value) {
+                    switch (value) {
+                      case 'download':
+                        _downloadSelectedPhotos();
+                      case 'share':
+                        _shareSelectedPhotos();
+                      case 'tag':
+                        _showBulkTagDialog();
+                      case 'delete':
+                        _deleteSelectedPhotos();
+                    }
+                  },
+                  itemBuilder: (ctx) => [
+                    const PopupMenuItem(
+                        value: 'download', child: Text('Скачать')),
+                    const PopupMenuItem(
+                        value: 'share', child: Text('Поделиться')),
+                    const PopupMenuItem(
+                        value: 'tag', child: Text('Добавить тег')),
+                    if (widget.isOwnGallery)
+                      const PopupMenuItem(
+                        value: 'delete',
+                        child: Text('Удалить',
+                            style: TextStyle(color: Colors.red)),
+                      ),
+                  ],
+                  icon: _bulkActionRunning
                       ? const SizedBox(
                           width: 24,
                           height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                        )
-                      : const Icon(Icons.add_photo_alternate_outlined),
-                )
-              : null,
-      body: Column(
-        children: [
-          _buildCalendarSyncBanner(),
-          Expanded(
-            child: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(_error!, textAlign: TextAlign.center),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: () => _load(reset: true),
-                          child: const Text('Повторить'),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              : _photos.isEmpty
-                  ? Center(
-                      child: _addingPhotos
-                          ? Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const CircularProgressIndicator(),
-                                const SizedBox(height: 16),
-                                Text(
-                                  _preparingUpload
-                                      ? 'Обработка выбранных фото...'
-                                      : 'Загрузка $_uploadDone из $_uploadTotal...',
-                                ),
-                                if (_preparingUpload) ...[
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Это может занять некоторое время',
-                                    style: Theme.of(context).textTheme.bodySmall,
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
-                                if (_uploadFailed > 0) ...[
-                                  const SizedBox(height: 8),
-                                  Text('Ошибок: $_uploadFailed'),
-                                ],
-                              ],
-                            )
-                          : canManageCustom
-                          ? Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('Альбом пуст'),
-                                const SizedBox(height: 12),
-                                FilledButton.icon(
-                                  onPressed: _addingPhotos ? null : _showAddPhotosSheet,
-                                  icon: const Icon(Icons.add_photo_alternate_outlined),
-                                  label: const Text('Добавить фото'),
-                                ),
-                              ],
-                            )
-                          : const Text('Нет фото'),
-                    )
-                  : Column(
-                      children: [
-                        if (_searchPeople.isNotEmpty || _total > 0)
-                          SizedBox(
-                            height: 46,
-                            child: ListView(
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              scrollDirection: Axis.horizontal,
-                              children: [
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                                  child: ChoiceChip(
-                                    label: const Text('Все люди'),
-                                    selected: _personUserId == null && !_personFilterUnidentified,
-                                    showCheckmark: false,
-                                    onSelected: (_) async {
-                                      setState(() {
-                                        _personUserId = null;
-                                        _personFilterUnidentified = false;
-                                      });
-                                      await _load(reset: true);
-                                    },
-                                  ),
-                                ),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                                  child: ChoiceChip(
-                                    showCheckmark: false,
-                                    visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
-                                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                    label: Tooltip(
-                                      message: _unidentifiedCount > 0
-                                          ? 'Не определены ($_unidentifiedCount)'
-                                          : 'Не определены',
-                                      child: SizedBox.square(
-                                        dimension: 36,
-                                        child: CircleAvatar(
-                                          radius: 18,
-                                          backgroundColor:
-                                              Theme.of(context).colorScheme.surfaceContainerHighest,
-                                          child: Icon(
-                                            Icons.face_retouching_off,
-                                            size: 20,
-                                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    selected: _personFilterUnidentified,
-                                    onSelected: (_) async {
-                                      setState(() {
-                                        _personFilterUnidentified = true;
-                                        _personUserId = null;
-                                      });
-                                      await _load(reset: true);
-                                    },
-                                  ),
-                                ),
-                                for (final person in _searchPeople)
-                                  Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                                    child: ChoiceChip(
-                                      showCheckmark: false,
-                                      visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
-                                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                      label: Tooltip(
-                                        message: person['name']?.toString() ?? '',
-                                        child: SizedBox.square(
-                                          dimension: 36,
-                                          child: ChatAvatar(
-                                            name: person['name']?.toString() ?? '',
-                                            avatarUrl: person['avatar_url']?.toString(),
-                                            radius: 18,
-                                          ),
-                                        ),
-                                      ),
-                                      selected: _personUserId == person['user_id'],
-                                      onSelected: (_) async {
-                                        setState(() {
-                                          _personUserId = person['user_id'] as int?;
-                                          _personFilterUnidentified = false;
-                                        });
-                                        await _load(reset: true);
-                                      },
-                                    ),
-                                  ),
-                              ],
-                            ),
+                          child: Padding(
+                            padding: EdgeInsets.all(4),
+                            child: CircularProgressIndicator(strokeWidth: 2),
                           ),
-                        Expanded(
-                          child: NotificationListener<ScrollNotification>(
-                      onNotification: (n) {
-                        if (n.metrics.pixels >= n.metrics.maxScrollExtent - 200 &&
-                            !_loadingMore &&
-                            _photos.length < _total) {
-                          _load(reset: false);
-                        }
-                        return false;
-                      },
-                      child: GridView.builder(
-                        padding: const EdgeInsets.all(8),
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 3,
-                          crossAxisSpacing: 4,
-                          mainAxisSpacing: 4,
-                        ),
-                        itemCount: _photos.length + (_loadingMore ? 1 : 0),
-                        itemBuilder: (_, i) {
-                          if (i >= _photos.length) {
-                            return const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(12),
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.more_vert),
+                ),
+              if (!_selectionMode && (canManageCustom || widget.isOwnGallery))
+                PopupMenuButton<String>(
+                  onSelected: (value) {
+                    switch (value) {
+                      case 'dedupe':
+                        _deduplicateAlbum();
+                      case 'edit':
+                        _editAlbum();
+                      case 'delete':
+                        _deleteAlbum();
+                    }
+                  },
+                  itemBuilder: (ctx) => [
+                    if (widget.isOwnGallery)
+                      const PopupMenuItem(
+                          value: 'dedupe', child: Text('Удалить дубликаты')),
+                    if (canManageCustom) ...[
+                      const PopupMenuItem(
+                          value: 'edit', child: Text('Редактировать')),
+                      const PopupMenuItem(
+                          value: 'delete', child: Text('Удалить альбом')),
+                    ],
+                  ],
+                ),
+            ],
+          ),
+          floatingActionButton: _selectionMode
+              ? FloatingActionButton.extended(
+                  onPressed:
+                      _selectedPhotoIds.isEmpty ? null : _showBulkTagDialog,
+                  icon: const Icon(Icons.sell_outlined),
+                  label: Text('Тег (${_selectedPhotoIds.length})'),
+                )
+              : canManageCustom
+                  ? FloatingActionButton(
+                      onPressed: _addingPhotos ? null : _showAddPhotosSheet,
+                      child: _addingPhotos
+                          ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Icon(Icons.add_photo_alternate_outlined),
+                    )
+                  : null,
+          body: Column(
+            children: [
+              _buildCalendarSyncBanner(),
+              Expanded(
+                child: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _error != null
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(_error!, textAlign: TextAlign.center),
+                                  const SizedBox(height: 12),
+                                  FilledButton(
+                                    onPressed: () => _load(reset: true),
+                                    child: const Text('Повторить'),
+                                  ),
+                                ],
                               ),
-                            );
-                          }
-                          final photo = _photos[i];
-                          final threadId = photo['thread_id'];
-                          if (threadId is! int) {
-                            return const ColoredBox(color: Color(0x22000000));
-                          }
-                          final id = photo['id'] is int ? photo['id'] as int : int.tryParse('${photo['id']}');
-                          final selected = id != null && _selectedPhotoIds.contains(id);
-                          return GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: _selectionMode
-                                ? () => _togglePhotoSelection(photo)
-                                : () => _openPhotoViewer(photo, i),
-                            onLongPress: _selectionMode
-                                ? () => _togglePhotoSelection(photo)
-                                : () => _enterSelectionWithPhoto(photo),
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                ChatNetworkImage(
-                                  threadId: threadId,
-                                  attachment: photo,
-                                  fit: BoxFit.cover,
-                                ),
-                                if (_selectionMode)
-                                  Align(
-                                    alignment: Alignment.topRight,
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(6),
-                                      child: Icon(
-                                        selected
-                                            ? Icons.check_circle
-                                            : Icons.radio_button_unchecked,
-                                        color: selected ? Colors.lightGreenAccent : Colors.white70,
+                            ),
+                          )
+                        : _photos.isEmpty
+                            ? Center(
+                                child: _addingPhotos
+                                    ? Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const CircularProgressIndicator(),
+                                          const SizedBox(height: 16),
+                                          Text(
+                                            _preparingUpload
+                                                ? 'Обработка выбранных фото...'
+                                                : 'Загрузка $_uploadDone из $_uploadTotal...',
+                                          ),
+                                          if (_preparingUpload) ...[
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              'Это может занять некоторое время',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall,
+                                              textAlign: TextAlign.center,
+                                            ),
+                                          ],
+                                          if (_uploadFailed > 0) ...[
+                                            const SizedBox(height: 8),
+                                            Text('Ошибок: $_uploadFailed'),
+                                          ],
+                                        ],
+                                      )
+                                    : canManageCustom
+                                        ? Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Text('Альбом пуст'),
+                                              const SizedBox(height: 12),
+                                              FilledButton.icon(
+                                                onPressed: _addingPhotos
+                                                    ? null
+                                                    : _showAddPhotosSheet,
+                                                icon: const Icon(Icons
+                                                    .add_photo_alternate_outlined),
+                                                label:
+                                                    const Text('Добавить фото'),
+                                              ),
+                                            ],
+                                          )
+                                        : const Text('Нет фото'),
+                              )
+                            : Column(
+                                children: [
+                                  if (_searchPeople.isNotEmpty || _total > 0)
+                                    SizedBox(
+                                      height: 46,
+                                      child: ListView(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 8),
+                                        scrollDirection: Axis.horizontal,
+                                        children: [
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 4),
+                                            child: ChoiceChip(
+                                              label: const Text('Все люди'),
+                                              selected: _personUserId == null &&
+                                                  !_personFilterUnidentified,
+                                              showCheckmark: false,
+                                              onSelected: (_) async {
+                                                setState(() {
+                                                  _personUserId = null;
+                                                  _personFilterUnidentified =
+                                                      false;
+                                                });
+                                                await _load(reset: true);
+                                              },
+                                            ),
+                                          ),
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 4),
+                                            child: ChoiceChip(
+                                              showCheckmark: false,
+                                              visualDensity:
+                                                  const VisualDensity(
+                                                      horizontal: -4,
+                                                      vertical: -4),
+                                              materialTapTargetSize:
+                                                  MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                              label: Tooltip(
+                                                message: _unidentifiedCount > 0
+                                                    ? 'Не определены ($_unidentifiedCount)'
+                                                    : 'Не определены',
+                                                child: SizedBox.square(
+                                                  dimension: 36,
+                                                  child: CircleAvatar(
+                                                    radius: 18,
+                                                    backgroundColor: Theme.of(
+                                                            context)
+                                                        .colorScheme
+                                                        .surfaceContainerHighest,
+                                                    child: Icon(
+                                                      Icons.face_retouching_off,
+                                                      size: 20,
+                                                      color: Theme.of(context)
+                                                          .colorScheme
+                                                          .onSurfaceVariant,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                              selected:
+                                                  _personFilterUnidentified,
+                                              onSelected: (_) async {
+                                                setState(() {
+                                                  _personFilterUnidentified =
+                                                      true;
+                                                  _personUserId = null;
+                                                });
+                                                await _load(reset: true);
+                                              },
+                                            ),
+                                          ),
+                                          for (final person in _searchPeople)
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 4),
+                                              child: ChoiceChip(
+                                                showCheckmark: false,
+                                                visualDensity:
+                                                    const VisualDensity(
+                                                        horizontal: -4,
+                                                        vertical: -4),
+                                                materialTapTargetSize:
+                                                    MaterialTapTargetSize
+                                                        .shrinkWrap,
+                                                label: Tooltip(
+                                                  message: person['name']
+                                                          ?.toString() ??
+                                                      '',
+                                                  child: SizedBox.square(
+                                                    dimension: 36,
+                                                    child: ChatAvatar(
+                                                      name: person['name']
+                                                              ?.toString() ??
+                                                          '',
+                                                      avatarUrl:
+                                                          person['avatar_url']
+                                                              ?.toString(),
+                                                      radius: 18,
+                                                    ),
+                                                  ),
+                                                ),
+                                                selected: _personUserId ==
+                                                    person['user_id'],
+                                                onSelected: (_) async {
+                                                  setState(() {
+                                                    _personUserId =
+                                                        person['user_id']
+                                                            as int?;
+                                                    _personFilterUnidentified =
+                                                        false;
+                                                  });
+                                                  await _load(reset: true);
+                                                },
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  Expanded(
+                                    child: NotificationListener<
+                                        ScrollNotification>(
+                                      onNotification: (n) {
+                                        if (n.metrics.pixels >=
+                                                n.metrics.maxScrollExtent -
+                                                    200 &&
+                                            !_loadingMore &&
+                                            _photos.length < _total) {
+                                          _load(reset: false);
+                                        }
+                                        return false;
+                                      },
+                                      child: GridView.builder(
+                                        padding: const EdgeInsets.all(8),
+                                        gridDelegate:
+                                            const SliverGridDelegateWithFixedCrossAxisCount(
+                                          crossAxisCount: 3,
+                                          crossAxisSpacing: 4,
+                                          mainAxisSpacing: 4,
+                                        ),
+                                        itemCount: _photos.length +
+                                            (_loadingMore ? 1 : 0),
+                                        itemBuilder: (_, i) {
+                                          if (i >= _photos.length) {
+                                            return const Center(
+                                              child: Padding(
+                                                padding: EdgeInsets.all(12),
+                                                child:
+                                                    CircularProgressIndicator(
+                                                        strokeWidth: 2),
+                                              ),
+                                            );
+                                          }
+                                          final photo = _photos[i];
+                                          final threadId = photo['thread_id'];
+                                          if (threadId is! int) {
+                                            return const ColoredBox(
+                                                color: Color(0x22000000));
+                                          }
+                                          final id = photo['id'] is int
+                                              ? photo['id'] as int
+                                              : int.tryParse('${photo['id']}');
+                                          final selected = id != null &&
+                                              _selectedPhotoIds.contains(id);
+                                          return GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: _selectionMode
+                                                ? () =>
+                                                    _togglePhotoSelection(photo)
+                                                : () =>
+                                                    _openPhotoViewer(photo, i),
+                                            onLongPress: _selectionMode
+                                                ? () =>
+                                                    _togglePhotoSelection(photo)
+                                                : () =>
+                                                    _enterSelectionWithPhoto(
+                                                        photo),
+                                            child: Stack(
+                                              fit: StackFit.expand,
+                                              children: [
+                                                ChatNetworkImage(
+                                                  threadId: threadId,
+                                                  attachment: photo,
+                                                  fit: BoxFit.cover,
+                                                ),
+                                                if (_selectionMode)
+                                                  Align(
+                                                    alignment:
+                                                        Alignment.topRight,
+                                                    child: Padding(
+                                                      padding:
+                                                          const EdgeInsets.all(
+                                                              6),
+                                                      child: Icon(
+                                                        selected
+                                                            ? Icons.check_circle
+                                                            : Icons
+                                                                .radio_button_unchecked,
+                                                        color: selected
+                                                            ? Colors
+                                                                .lightGreenAccent
+                                                            : Colors.white70,
+                                                      ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          );
+                                        },
                                       ),
                                     ),
                                   ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                        ),
-                      ],
-                    ),
+                                ],
+                              ),
+              ),
+            ],
           ),
-        ],
-      ),
-    ),
+        ),
         _buildPreparingOverlay(),
       ],
     );
