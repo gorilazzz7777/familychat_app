@@ -44,6 +44,7 @@ class GalleryAlbumsGroupedView extends StatefulWidget {
     this.onAlbumLongPress,
     this.customTabLabel = 'Мои альбомы',
     this.excludeUploadedByUserId,
+    this.alwaysShowCustomGroup = false,
   });
 
   final List<Map<String, dynamic>> albums;
@@ -56,6 +57,7 @@ class GalleryAlbumsGroupedView extends StatefulWidget {
   final void Function(Map<String, dynamic> album)? onAlbumLongPress;
   final String customTabLabel;
   final int? excludeUploadedByUserId;
+  final bool alwaysShowCustomGroup;
 
   @override
   State<GalleryAlbumsGroupedView> createState() =>
@@ -113,12 +115,12 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
     }
 
     final groups = <_GalleryAlbumGroup>[
-      if ((byKind['custom'] ?? []).isNotEmpty)
+      if (widget.alwaysShowCustomGroup || (byKind['custom'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(
           id: 'custom',
           label: widget.customTabLabel,
           icon: Icons.collections_bookmark_outlined,
-          albums: List<Map<String, dynamic>>.from(byKind['custom']!),
+          albums: List<Map<String, dynamic>>.from(byKind['custom'] ?? const []),
         ),
       if ((byKind['face'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(

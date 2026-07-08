@@ -135,6 +135,7 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
           showFaceHint: _showFaceHint,
           excludeUploadedByUserId: widget.excludeUploadedByUserId,
           customTabLabel: 'Альбомы',
+          alwaysShowCustomGroup: true,
         ),
       ),
       floatingActionButton: widget.allowCreateAlbum

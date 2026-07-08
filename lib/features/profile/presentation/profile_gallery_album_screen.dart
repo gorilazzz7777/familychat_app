@@ -1094,9 +1094,8 @@ class _ProfileGalleryAlbumScreenState
   Future<void> _uploadFromDevice(ImageSource source) async {
     final pk = widget.customAlbumPk;
     if (pk == null) return;
-    // image_picker на Android копирует фото в cache и обнуляет GPS в EXIF.
     if (source == ImageSource.gallery) {
-      await _uploadFromPhoneFiles();
+      await _uploadFromPhoneGallery();
       return;
     }
     _beginPreparingUpload();
@@ -1109,6 +1108,32 @@ class _ProfileGalleryAlbumScreenState
       );
       if (!mounted || picked == null) return;
       await _uploadDeviceImages(albumPk: pk, pickedItems: [picked]);
+    } finally {
+      _endPreparingIfIdle();
+    }
+  }
+
+  Future<void> _uploadFromPhoneGallery() async {
+    final pk = widget.customAlbumPk;
+    if (pk == null) return;
+    _beginPreparingUpload();
+    await Future<void>.delayed(Duration.zero);
+    try {
+      final picker = ImagePicker();
+      final pickedMany = await picker.pickMultiImage(
+        requestFullMetadata: true,
+      );
+      if (!mounted) return;
+      if (pickedMany.isNotEmpty) {
+        await _uploadDeviceImages(albumPk: pk, pickedItems: pickedMany);
+        return;
+      }
+      final pickedOne = await picker.pickImage(
+        source: ImageSource.gallery,
+        requestFullMetadata: true,
+      );
+      if (!mounted || pickedOne == null) return;
+      await _uploadDeviceImages(albumPk: pk, pickedItems: [pickedOne]);
     } finally {
       _endPreparingIfIdle();
     }

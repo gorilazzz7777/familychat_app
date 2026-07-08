@@ -55,18 +55,23 @@ class GalleryPhotoViewerScreen extends ConsumerStatefulWidget {
   }
 
   @override
-  ConsumerState<GalleryPhotoViewerScreen> createState() => _GalleryPhotoViewerScreenState();
+  ConsumerState<GalleryPhotoViewerScreen> createState() =>
+      _GalleryPhotoViewerScreenState();
 }
 
-class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScreen> {
+class _GalleryPhotoViewerScreenState
+    extends ConsumerState<GalleryPhotoViewerScreen> {
   late final List<Map<String, dynamic>> _photos;
   late int _index;
   late final PageController _pageController;
+  bool _commentsExpanded = false;
 
   @override
   void initState() {
     super.initState();
-    _photos = (widget.photos == null || widget.photos!.isEmpty) ? [widget.photo] : widget.photos!;
+    _photos = (widget.photos == null || widget.photos!.isEmpty)
+        ? [widget.photo]
+        : widget.photos!;
     _index = widget.initialIndex.clamp(0, _photos.length - 1);
     _pageController = PageController(initialPage: _index);
   }
@@ -78,6 +83,28 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
   }
 
   Map<String, dynamic> get _photo => _photos[_index];
+
+  List<String> get _photoTags {
+    final raw = _photo['photo_tags'] ?? _photo['tags'];
+    if (raw is! List) return const [];
+    final out = <String>[];
+    for (final item in raw) {
+      if (item is Map) {
+        final label = item['tag_label']?.toString().trim() ?? '';
+        if (label.isNotEmpty && !out.contains(label)) out.add(label);
+      } else {
+        final text = item?.toString().trim() ?? '';
+        if (text.isNotEmpty && !out.contains(text)) out.add(text);
+      }
+    }
+    return out;
+  }
+
+  int get _commentsCount {
+    final raw = _photo['comments_count'];
+    if (raw is int) return raw;
+    return int.tryParse('$raw') ?? 0;
+  }
 
   int? get _attachmentId {
     final photo = _photo;
@@ -137,7 +164,9 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
               : 'Фото останется у других участников, но исчезнет из всех ваших альбомов.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Отмена')),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: Text(isPhysical ? 'Удалить' : 'Убрать'),
@@ -215,12 +244,16 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
               }
             },
             itemBuilder: (context) => [
-              const PopupMenuItem(value: 'faces', child: Text('Указать, кто на фото')),
+              const PopupMenuItem(
+                  value: 'faces', child: Text('Указать, кто на фото')),
               if (_isOwnGallery && !_isOwnUpload)
-                const PopupMenuItem(value: 'delete', child: Text('Убрать из моей галереи')),
+                const PopupMenuItem(
+                    value: 'delete', child: Text('Убрать из моей галереи')),
               if (_isOwnUpload)
-                const PopupMenuItem(value: 'delete', child: Text('Удалить фото')),
-              const PopupMenuItem(value: 'share', child: Text('Поделиться / скачать')),
+                const PopupMenuItem(
+                    value: 'delete', child: Text('Удалить фото')),
+              const PopupMenuItem(
+                  value: 'share', child: Text('Поделиться / скачать')),
             ],
           ),
         ],
@@ -237,7 +270,8 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
                 final p = _photos[i];
                 final tid = p['thread_id'];
                 if (tid is! int) {
-                  return const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48);
+                  return const Icon(Icons.broken_image_outlined,
+                      color: Colors.white54, size: 48);
                 }
                 return Center(
                   child: LayoutBuilder(
@@ -262,18 +296,66 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
             ),
           ),
           if (attachmentId != null)
-            Expanded(
-              flex: 2,
-              child: ColoredBox(
-                color: Colors.grey.shade900,
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                  child: MediaEngagementInline(
-                    key: ValueKey<int>(attachmentId),
-                    attachmentId: attachmentId,
-                    onDarkBackground: true,
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              color: Colors.grey.shade900,
+              height: _commentsExpanded
+                  ? MediaQuery.sizeOf(context).height * 0.34
+                  : 46,
+              child: Column(
+                children: [
+                  InkWell(
+                    onTap: () =>
+                        setState(() => _commentsExpanded = !_commentsExpanded),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _commentsExpanded
+                                ? Icons.keyboard_arrow_down
+                                : Icons.keyboard_arrow_up,
+                            size: 18,
+                            color: Colors.white70,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Комментарии ($_commentsCount)',
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Colors.white70,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            _commentsExpanded ? 'Свернуть' : 'Развернуть',
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Colors.white54,
+                                      fontSize: 11,
+                                    ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
+                  if (_commentsExpanded)
+                    const Divider(height: 1, color: Colors.white12),
+                  if (_commentsExpanded)
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                        child: MediaEngagementInline(
+                          key: ValueKey<int>(attachmentId),
+                          attachmentId: attachmentId,
+                          onDarkBackground: true,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           if (attachmentId != null)
@@ -282,6 +364,43 @@ class _GalleryPhotoViewerScreenState extends ConsumerState<GalleryPhotoViewerScr
               attachmentId: attachmentId,
               profileUserId: widget.profileUserId,
               threadId: threadId,
+            ),
+          if (_photoTags.isNotEmpty)
+            Container(
+              width: double.infinity,
+              color: Colors.black,
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    'Теги:',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                  ),
+                  for (final tag in _photoTags.take(12))
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        tag,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.white70,
+                              fontSize: 11,
+                            ),
+                      ),
+                    ),
+                ],
+              ),
             ),
         ],
       ),
