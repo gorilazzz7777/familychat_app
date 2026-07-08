@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../core/notifications/familychat_notifications.dart';
 import '../core/push/push_navigation.dart';
 import '../core/providers/app_providers.dart';
 import '../core/share/incoming_share_bus.dart';
@@ -70,6 +71,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       flushPendingChatPush();
+      IncomingCallCoordinator.instance.flushPendingIfAny();
+      unawaited(FamilyChatNotifications.consumeLaunchNotification());
       _openPendingShareIfAny();
       final userId = _currentUserId;
       if (userId != null) {
@@ -150,6 +153,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      IncomingCallCoordinator.instance.flushPendingIfAny();
+      unawaited(FamilyChatNotifications.consumeLaunchNotification());
       unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
       unawaited(_refreshTab(_index, silent: true));
       unawaited(_touchPresence());

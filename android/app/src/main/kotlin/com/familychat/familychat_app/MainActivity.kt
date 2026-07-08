@@ -39,6 +39,26 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
+            "com.familychat/lifecycle",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "bringToForeground" -> {
+                    val intent = Intent(this, MainActivity::class.java).apply {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                        )
+                    }
+                    startActivity(intent)
+                    result.success(null)
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
             "com.familychat/share_intent",
         ).setMethodCallHandler { call, result ->
             when (call.method) {

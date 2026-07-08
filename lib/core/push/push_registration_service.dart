@@ -20,6 +20,7 @@ import 'push_message_handler.dart';
 Future<void> familychatFirebaseBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
   await PushRegistrationService.ensureFirebaseInitialized();
+  await FamilyChatNotifications.handleBackgroundRemoteMessage(message);
 }
 
 enum WebPushRegistrationResult {
