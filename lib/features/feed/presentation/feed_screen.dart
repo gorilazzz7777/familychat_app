@@ -169,7 +169,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
               threadId: threadId,
               title: payload['thread_title']?.toString() ?? 'Чат',
               defaultTitle: payload['thread_title']?.toString() ?? 'Чат',
-              kind: 'family',
+              kind: payload['thread_kind']?.toString() ?? 'family',
             ),
           ),
         );
