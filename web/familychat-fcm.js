@@ -8,6 +8,7 @@
   };
 
   var swUrl = '/familychat/app/firebase-messaging-sw.js';
+  var foregroundWired = false;
 
   async function getMessagingServiceWorkerRegistration() {
     var registrations = await navigator.serviceWorker.getRegistrations();
@@ -24,6 +25,13 @@
     return navigator.serviceWorker.register(swUrl);
   }
 
+  function postCallToApp(data) {
+    window.postMessage(
+      Object.assign({ source: 'familychat-fcm' }, data),
+      window.location.origin,
+    );
+  }
+
   window.familyChatGetFcmToken = async function (vapidKey) {
     if (typeof firebase === 'undefined') {
       throw new Error('firebase JS SDK not loaded');
@@ -38,6 +46,29 @@
     return firebase.messaging().getToken({
       vapidKey: vapidKey,
       serviceWorkerRegistration: registration,
+    });
+  };
+
+  window.familyChatInitFcmForeground = function () {
+    if (foregroundWired) return;
+    if (typeof firebase === 'undefined') return;
+    if (!firebase.apps.length) {
+      firebase.initializeApp(config);
+    }
+    foregroundWired = true;
+    firebase.messaging().onMessage(function (payload) {
+      var data = Object.assign({}, payload.data || {});
+      if (payload.notification) {
+        if (!data.title && payload.notification.title) {
+          data.title = payload.notification.title;
+        }
+        if (!data.body && payload.notification.body) {
+          data.body = payload.notification.body;
+        }
+      }
+      if (data.type === 'familychat_call') {
+        postCallToApp(data);
+      }
     });
   };
 })();

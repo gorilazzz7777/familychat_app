@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/family_app_bar.dart';
+import '../../../core/widgets/family_public_image.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../chat/presentation/chat_call_screen.dart';
@@ -161,13 +161,13 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
               minScale: 1,
               maxScale: 4,
               child: Center(
-                child: CachedNetworkImage(
-                  imageUrl: avatarUrl,
+                child: FamilyPublicImage(
+                  url: avatarUrl,
                   fit: BoxFit.contain,
-                  placeholder: (_, __) => const Center(
+                  placeholder: const Center(
                     child: CircularProgressIndicator(),
                   ),
-                  errorWidget: (_, __, ___) => Container(
+                  error: Container(
                     padding: const EdgeInsets.all(24),
                     color: Colors.black54,
                     child: Text(

@@ -48,6 +48,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   void initState() {
     super.initState();
     if (kIsWeb) {
+      _webLoading = true;
       _loadWebBytes();
     } else {
       _loadHeaders();
@@ -79,16 +80,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   Future<void> _loadWebBytes() async {
     final attachmentId = chatAsInt(widget.attachment['id']);
     if (attachmentId == null) {
-      setState(() => _webFailed = true);
-      return;
-    }
-
-    final cacheKey = _webAttachmentCacheKey(widget.threadId, attachmentId);
-    final cached = _webAttachmentBytesCache[cacheKey];
-    if (cached != null) {
       setState(() {
-        _webBytes = cached;
-        _webFailed = false;
+        _webFailed = true;
         _webLoading = false;
       });
       return;
@@ -99,6 +92,17 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       _webFailed = false;
       _webBytes = null;
     });
+
+    final cacheKey = _webAttachmentCacheKey(widget.threadId, attachmentId);
+    final memoryCached = _webAttachmentBytesCache[cacheKey];
+    if (memoryCached != null) {
+      setState(() {
+        _webBytes = memoryCached;
+        _webFailed = false;
+        _webLoading = false;
+      });
+      return;
+    }
 
     try {
       final cached = await FamilyChatLocalCache.readAttachmentBytes(
@@ -136,6 +140,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       setState(() {
         _webFailed = true;
         _webLoading = false;
+        _webBytes = null;
       });
     }
   }
@@ -144,13 +149,33 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     return widget.attachment['file_url']?.toString() ?? '';
   }
 
-  Widget _errorBox() {
-    return SizedBox(
-      height: widget.height,
-      width: widget.width,
-      child: const ColoredBox(
-        color: Color(0x22000000),
-        child: Icon(Icons.broken_image_outlined),
+  Widget _errorBox({bool retryable = true}) {
+    return GestureDetector(
+      onTap: retryable && kIsWeb ? _loadWebBytes : null,
+      child: SizedBox(
+        height: widget.height,
+        width: widget.width,
+        child: ColoredBox(
+          color: const Color(0x11000000),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.image_outlined,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+              if (retryable && kIsWeb) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Повторить',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -159,11 +184,17 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     return SizedBox(
       height: widget.height,
       width: widget.width,
-      child: const Center(
-        child: SizedBox(
-          width: 24,
-          height: 24,
-          child: CircularProgressIndicator(strokeWidth: 2),
+      child: ColoredBox(
+        color: const Color(0x11000000),
+        child: Center(
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
         ),
       ),
     );
@@ -172,8 +203,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   @override
   Widget build(BuildContext context) {
     if (kIsWeb) {
-      if (_webLoading) return _loadingBox();
-      if (_webFailed || _webBytes == null) return _errorBox();
+      if (_webFailed) return _errorBox();
+      if (_webLoading || _webBytes == null) return _loadingBox();
       return Image.memory(
         _webBytes!,
         height: widget.height,

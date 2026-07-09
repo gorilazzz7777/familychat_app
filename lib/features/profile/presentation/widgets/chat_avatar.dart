@@ -1,5 +1,6 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+
+import '../../../../core/widgets/family_public_image.dart';
 
 /// Аватар с фото или инициалами.
 class ChatAvatar extends StatelessWidget {
@@ -35,13 +36,13 @@ class ChatAvatar extends StatelessWidget {
         radius: radius,
         backgroundColor: bg.withValues(alpha: 0.15),
         child: ClipOval(
-          child: CachedNetworkImage(
-            imageUrl: url,
+          child: FamilyPublicImage(
+            url: url,
             width: size,
             height: size,
             fit: BoxFit.cover,
-            placeholder: (_, __) => _initialsBox(bg, size),
-            errorWidget: (_, __, ___) => _initialsBox(bg, size),
+            placeholder: _loadingAvatar(bg, size, radius),
+            error: _initialsBox(bg, size, radius),
           ),
         ),
       );
@@ -54,13 +55,32 @@ class ChatAvatar extends StatelessWidget {
     );
   }
 
-  Widget _initialsBox(Color bg, double size) {
+  Widget _loadingAvatar(Color bg, double size, double r) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _initialsBox(bg, size, r),
+        Center(
+          child: SizedBox(
+            width: r * 0.9,
+            height: r * 0.9,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white.withValues(alpha: 0.9),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _initialsBox(Color bg, double size, double r) {
     return Container(
       width: size,
       height: size,
       color: bg,
       alignment: Alignment.center,
-      child: _initialsText(radius),
+      child: _initialsText(r),
     );
   }
 

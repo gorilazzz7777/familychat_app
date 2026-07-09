@@ -14,6 +14,8 @@ import '../core/session/auth_session_bus.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../core/push/push_registration_service.dart';
+import '../core/push/web_push_bridge.dart';
+import '../core/theme/theme_seed_controller.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import 'shell_screen.dart';
 import 'push_permission_prompt.dart';
@@ -42,6 +44,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   @override
   void initState() {
     super.initState();
+    if (kIsWeb) {
+      listenWebPushIncomingCalls();
+      unawaited(initWebFcmForeground());
+    }
     _accessSub = AuthSessionBus.instance.onAccessRefreshed.listen((access) {
       unawaited(FamilyChatRealtime.instance.connect(access));
     });
@@ -132,6 +138,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
     try {
       final st = await ref.read(familychatRepositoryProvider).status();
+      await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
       final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
       if (token != null && token.isNotEmpty) {
         unawaited(FamilyChatRealtime.instance.connect(token));
@@ -163,6 +170,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   Future<void> _refreshStatus() async {
     try {
       final st = await ref.read(familychatRepositoryProvider).status();
+      await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
       if (!mounted) return;
       setState(() => _status = st);
     } catch (_) {}
@@ -175,6 +183,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
     await FamilyChatRealtime.instance.disconnect();
     PushRegistrationService.resetSession();
+    await ref.read(themeSeedProvider.notifier).resetToDefault();
     await ref.read(authRepositoryProvider).logout();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('familychat_push_prompt_dismissed');

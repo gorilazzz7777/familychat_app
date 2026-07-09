@@ -14,6 +14,8 @@ import 'core/push/push_message_handler.dart';
 import 'core/push/push_navigation.dart';
 import 'core/push/push_registration_service.dart';
 import 'core/share/incoming_share_bus.dart';
+import 'core/theme/app_theme.dart';
+import 'core/theme/theme_seed_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -33,11 +35,13 @@ Future<void> main() async {
   runApp(const ProviderScope(child: FamilyChatApp()));
 }
 
-class FamilyChatApp extends StatelessWidget {
+class FamilyChatApp extends ConsumerWidget {
   const FamilyChatApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final seedColor = ref.watch(themeSeedProvider);
+
     return MaterialApp(
       title: 'Family Chat',
       navigatorKey: familyChatNavigatorKey,
@@ -50,10 +54,7 @@ class FamilyChatApp extends StatelessWidget {
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2E7D32)),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.lightTheme(seedColor),
       home: const BootstrapScreen(),
     );
   }

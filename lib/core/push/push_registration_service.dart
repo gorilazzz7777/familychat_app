@@ -14,6 +14,7 @@ import '../../features/familychat/data/familychat_repository.dart';
 import '../../firebase_options.dart';
 import 'web_fcm_service_worker.dart';
 import 'web_fcm_token.dart';
+import 'web_push_bridge.dart';
 import 'push_message_handler.dart';
 
 @pragma('vm:entry-point')
@@ -304,6 +305,9 @@ class PushRegistrationService {
       _failStep('registerFcm', e, st);
       return WebPushRegistrationResult.serverFailed;
     }
+
+    listenWebPushIncomingCalls();
+    await initWebFcmForeground();
 
     return WebPushRegistrationResult.success;
   }

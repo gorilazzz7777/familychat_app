@@ -4,6 +4,8 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/theme/theme_seed_controller.dart';
+import '../../../core/theme/widgets/theme_color_picker_section.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
@@ -437,6 +439,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           title: const Text('Предлагать указать, кто на фото'),
           subtitle: const Text('После отправки фото с нераспознанными лицами'),
           controlAffinity: ListTileControlAffinity.leading,
+        ),
+        const SizedBox(height: 24),
+        ThemeColorPickerSection(
+          currentSeedColor: ref.watch(themeSeedProvider),
+          onApply: (seed) async {
+            await ref.read(themeSeedProvider.notifier).applyAndSave(seed);
+            widget.onStatusChanged();
+          },
         ),
         const SizedBox(height: 16),
         FilledButton(

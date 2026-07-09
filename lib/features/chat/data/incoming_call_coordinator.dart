@@ -6,6 +6,7 @@ import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/notifications/familychat_notifications.dart';
 import '../../../core/push/push_message_handler.dart';
 import '../../../core/push/push_navigation.dart';
+import '../../../core/push/web_push_bridge.dart';
 import '../presentation/incoming_call_screen.dart';
 
 /// Единая точка показа входящего звонка (WebSocket + push), без дублей.
@@ -48,6 +49,7 @@ class IncomingCallCoordinator {
     _activeCallId = callId;
     familyChatScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
     unawaited(FamilyChatNotifications.cancelCallNotification(callId));
+    unawaited(stopServiceWorkerCallRing(callId));
     unawaited(_presentWhenReady(
       callId: callId,
       threadId: threadId,
@@ -127,5 +129,6 @@ class IncomingCallCoordinator {
     }
     familyChatScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
     unawaited(FamilyChatNotifications.cancelCallNotification(callId));
+    unawaited(stopServiceWorkerCallRing(callId));
   }
 }

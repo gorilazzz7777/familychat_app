@@ -53,7 +53,10 @@ void handleFamilyChatRemoteMessage(
   }
 
   if (type == 'familychat_call') {
-    if (isForeground) return;
+    if (openedFromTap) {
+      IncomingCallCoordinator.instance.presentFromPushData(data);
+      return;
+    }
     IncomingCallCoordinator.instance.presentFromPushData(data);
     return;
   }

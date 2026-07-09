@@ -9,6 +9,7 @@ import '../core/notifications/familychat_notifications.dart';
 import '../core/push/push_navigation.dart';
 import '../core/widgets/family_app_bar.dart';
 import '../core/providers/app_providers.dart';
+import '../core/theme/theme_seed_controller.dart';
 import '../core/share/incoming_share_bus.dart';
 import 'shell_refresh.dart';
 import '../features/calendar/data/calendar_photo_sync_service.dart';
@@ -283,6 +284,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   Future<void> _handleStatusChanged() async {
     try {
       final st = await ref.read(familychatRepositoryProvider).status();
+      await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
       if (!mounted) return;
       setState(() => _status = st);
       await widget.onStatusChanged();

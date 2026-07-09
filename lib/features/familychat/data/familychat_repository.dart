@@ -72,6 +72,7 @@ class FamilyChatRepository {
     String? birthDate,
     bool? birthdayShowYear,
     bool? suggestFaceTagging,
+    String? themeSeedColor,
   }) async {
     final data = <String, dynamic>{};
     if (firstName != null) data['first_name'] = firstName;
@@ -81,6 +82,7 @@ class FamilyChatRepository {
     if (birthdayShowYear != null) data['birthday_show_year'] = birthdayShowYear;
     if (suggestFaceTagging != null)
       data['suggest_face_tagging'] = suggestFaceTagging;
+    if (themeSeedColor != null) data['theme_seed_color'] = themeSeedColor;
     final res = await _dio.patch<Map<String, dynamic>>(
       'familychat/me/profile/',
       data: data,
