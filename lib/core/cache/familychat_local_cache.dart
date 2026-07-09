@@ -1,16 +1,20 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../features/chat/data/chat_realtime_utils.dart';
+
 /// Локальный JSON-кэш метаданных (сообщения, списки альбомов) для офлайн-доступа.
 abstract final class FamilyChatLocalCache {
   static const _cacheDirName = 'familychat_local_cache';
   static const messageRetentionDays = 20;
-  static const maxCachedMessagesPerThread = 20;
+  static const maxCachedMessagesPerThread = 30;
   static const maxCachedFeedEvents = 90;
+  static const maxCachedAttachmentBytes = 2 * 1024 * 1024;
 
   static String feedCacheKey({int? personUserId}) {
     if (personUserId == null) return 'feed/events_all';
@@ -94,17 +98,24 @@ abstract final class FamilyChatLocalCache {
     int threadId,
     List<Map<String, dynamic>> messages,
   ) async {
-    final real = messages
+    final kept = messages
         .where((m) {
           final id = m['id'];
-          if (id is int) return id > 0;
-          return int.tryParse('$id') != null && int.parse('$id') > 0;
+          final parsed = id is int ? id : int.tryParse('$id');
+          if (parsed == null) return false;
+          if (parsed > 0) return true;
+          return m['_pending'] == true || m['read_status'] == 'queued';
         })
         .toList();
-    final slice = real.length > maxCachedMessagesPerThread
-        ? real.sublist(real.length - maxCachedMessagesPerThread)
-        : real;
-    await writeJson('messages/thread_$threadId', {'messages': slice});
+    final slice = kept.length > maxCachedMessagesPerThread
+        ? kept.sublist(kept.length - maxCachedMessagesPerThread)
+        : kept;
+    await writeJson(
+      'messages/thread_$threadId',
+      {
+        'messages': sortChatMessages(slice).map(_sanitizeMessageForCache).toList(),
+      },
+    );
   }
 
   static Future<List<Map<String, dynamic>>?> readThreadMessages(int threadId) async {
@@ -112,7 +123,173 @@ abstract final class FamilyChatLocalCache {
     if (raw == null) return null;
     final list = raw['messages'];
     if (list is! List) return null;
+    final restored = list
+        .map((e) => _restoreMessageFromCache(Map<String, dynamic>.from(e as Map)))
+        .toList();
+    return sortChatMessages(restored);
+  }
+
+  static Map<String, dynamic> _sanitizeMessageForCache(Map<String, dynamic> message) {
+    final copy = Map<String, dynamic>.from(message);
+    final attachments = copy['attachments'];
+    if (attachments is List) {
+      copy['attachments'] = attachments.map((item) {
+        if (item is! Map) return item;
+        final att = Map<String, dynamic>.from(item);
+        final local = att.remove('local_bytes');
+        if (local is Uint8List && local.isNotEmpty) {
+          att['local_bytes_b64'] = base64Encode(local);
+        }
+        return att;
+      }).toList();
+    }
+    return copy;
+  }
+
+  static Map<String, dynamic> _restoreMessageFromCache(Map<String, dynamic> message) {
+    final copy = Map<String, dynamic>.from(message);
+    final attachments = copy['attachments'];
+    if (attachments is List) {
+      copy['attachments'] = attachments.map((item) {
+        if (item is! Map) return item;
+        final att = Map<String, dynamic>.from(item);
+        final encoded = att.remove('local_bytes_b64');
+        if (encoded is String && encoded.isNotEmpty) {
+          try {
+            att['local_bytes'] = base64Decode(encoded);
+          } catch (_) {}
+        }
+        return att;
+      }).toList();
+    }
+    return copy;
+  }
+
+  static Future<void> saveChatThreads(List<Map<String, dynamic>> threads) async {
+    await writeJson('chat/threads', {
+      'threads': threads,
+    });
+  }
+
+  static Future<List<Map<String, dynamic>>?> readChatThreads() async {
+    final raw = await readJson('chat/threads');
+    if (raw == null) return null;
+    final list = raw['threads'];
+    if (list is! List) return null;
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  static Future<void> saveChatMembers(List<Map<String, dynamic>> members) async {
+    await writeJson('chat/members', {
+      'members': members,
+    });
+  }
+
+  static Future<List<Map<String, dynamic>>?> readChatMembers() async {
+    final raw = await readJson('chat/members');
+    if (raw == null) return null;
+    final list = raw['members'];
+    if (list is! List) return null;
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  static String _attachmentBytesKey(int threadId, int attachmentId) =>
+      'attachments/${threadId}_$attachmentId';
+
+  static Future<void> saveAttachmentBytes(
+    int threadId,
+    int attachmentId,
+    Uint8List bytes,
+  ) async {
+    if (bytes.isEmpty || bytes.length > maxCachedAttachmentBytes) return;
+    final relative = _attachmentBytesKey(threadId, attachmentId);
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('fc_bin_$relative', base64Encode(bytes));
+      return;
+    }
+    final file = await _file('$relative.bin');
+    if (file == null) return;
+    await file.writeAsBytes(bytes, flush: true);
+  }
+
+  static Future<Uint8List?> readAttachmentBytes(int threadId, int attachmentId) async {
+    final relative = _attachmentBytesKey(threadId, attachmentId);
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = prefs.getString('fc_bin_$relative');
+      if (encoded == null || encoded.isEmpty) return null;
+      try {
+        return base64Decode(encoded);
+      } catch (_) {
+        return null;
+      }
+    }
+    final file = await _file('$relative.bin');
+    if (file == null || !file.existsSync()) return null;
+    try {
+      return await file.readAsBytes();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> saveOutboxBytes(String storageKey, Uint8List bytes) async {
+    if (bytes.isEmpty || bytes.length > maxCachedAttachmentBytes) return;
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('fc_outbox_$storageKey', base64Encode(bytes));
+      return;
+    }
+    final file = await _file('outbox/$storageKey.bin');
+    if (file == null) return;
+    await file.writeAsBytes(bytes, flush: true);
+  }
+
+  static Future<Uint8List?> readOutboxBytes(String storageKey) async {
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = prefs.getString('fc_outbox_$storageKey');
+      if (encoded == null || encoded.isEmpty) return null;
+      try {
+        return base64Decode(encoded);
+      } catch (_) {
+        return null;
+      }
+    }
+    final file = await _file('outbox/$storageKey.bin');
+    if (file == null || !file.existsSync()) return null;
+    try {
+      return await file.readAsBytes();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> deleteOutboxBytes(String storageKey) async {
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('fc_outbox_$storageKey');
+      return;
+    }
+    final file = await _file('outbox/$storageKey.bin');
+    if (file != null && file.existsSync()) {
+      try {
+        await file.delete();
+      } catch (_) {}
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> readOutboxItems() async {
+    final raw = await readJson('chat/outbox');
+    if (raw == null) return [];
+    final list = raw['items'];
+    if (list is! List) return [];
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  static Future<void> writeOutboxItems(List<Map<String, dynamic>> items) async {
+    await writeJson('chat/outbox', {'items': items});
   }
 
   static Future<void> saveMemberAlbums(int userId, Map<String, dynamic> data) async {

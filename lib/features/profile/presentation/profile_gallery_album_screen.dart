@@ -8,6 +8,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../core/network/offline_ui.dart';
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../calendar/data/calendar_photo_sync_service.dart';
 import '../../calendar/presentation/calendar_photo_pick_confirm_screen.dart';
@@ -410,7 +412,10 @@ class _ProfileGalleryAlbumScreenState
       setState(() {
         _loading = false;
         _loadingMore = false;
-        _error = e.toString();
+        _error = OfflineUi.loadErrorMessage(
+          e,
+          fallback: 'Не удалось загрузить фото',
+        );
       });
     }
   }
@@ -1256,7 +1261,7 @@ class _ProfileGalleryAlbumScreenState
     return Stack(
       children: [
         Scaffold(
-          appBar: AppBar(
+          appBar: FamilyAppBar.buildCustom(
             title: _searchMode
                 ? TextField(
                     controller: _searchController,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
 import 'calendar_event_edit_screen.dart';
 import 'calendar_events_tab.dart';
 import 'calendar_months_tab.dart';
@@ -44,8 +45,8 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Календарь'),
+      appBar: FamilyAppBar.build(
+        title: 'Календарь',
         bottom: TabBar(
           controller: _tabs,
           tabs: const [

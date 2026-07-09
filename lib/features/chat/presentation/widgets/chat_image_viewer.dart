@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../../core/widgets/family_app_bar.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
@@ -253,7 +254,8 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
+      appBar: FamilyAppBar.build(
+        title: 'Фото',
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         iconTheme: const IconThemeData(color: Colors.white),

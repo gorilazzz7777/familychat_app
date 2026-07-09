@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/widgets/chat_image_viewer.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
@@ -270,7 +271,8 @@ class _GalleryPhotoViewerScreenState
     final attachmentId = _attachmentId;
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
+      appBar: FamilyAppBar.build(
+        title: 'Фото',
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         actions: [

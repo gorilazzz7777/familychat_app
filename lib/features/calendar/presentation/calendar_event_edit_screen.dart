@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import 'widgets/album_access_fields.dart';
 
@@ -264,8 +265,8 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.isEditing ? 'Редактировать событие' : 'Новое событие'),
+      appBar: FamilyAppBar.build(
+        title: widget.isEditing ? 'Редактировать событие' : 'Новое событие',
         actions: [
           if (widget.isEditing)
             IconButton(

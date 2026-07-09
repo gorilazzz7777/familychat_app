@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
+
 import '../data/calendar_photo_sync_service.dart';
 
 class CalendarPhotoPickConfirmScreen extends StatefulWidget {
@@ -46,9 +48,7 @@ class _CalendarPhotoPickConfirmScreenState extends State<CalendarPhotoPickConfir
     final matching = widget.photos.where(_matchesEventDates).length;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Загрузка фото'),
-      ),
+      appBar: FamilyAppBar.build(title: 'Загрузка фото'),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

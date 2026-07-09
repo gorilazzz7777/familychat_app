@@ -4,6 +4,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
+
 /// Превью аватара с перемещением и масштабированием перед загрузкой.
 class AvatarCropScreen extends StatefulWidget {
   const AvatarCropScreen({super.key, required this.imageBytes});
@@ -194,12 +196,13 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
 
     return Scaffold(
       backgroundColor: cs.surface,
-      appBar: AppBar(
+      appBar: FamilyAppBar.build(
+        title: 'Фото профиля',
+        automaticallyImplyLeading: false,
         leading: IconButton(
           icon: const Icon(Icons.close),
           onPressed: _busy ? null : () => Navigator.of(context).pop(),
         ),
-        title: const Text('Фото профиля'),
         actions: [
           TextButton(
             onPressed: _busy || !_cropReady

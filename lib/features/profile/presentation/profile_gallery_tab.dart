@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import 'custom_album_dialog.dart';
@@ -64,7 +65,10 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
       if (cached == null) {
         setState(() {
           _loading = false;
-          _error = e.toString();
+          _error = OfflineUi.loadErrorMessage(
+            e,
+            fallback: 'Не удалось загрузить альбомы',
+          );
         });
       }
     }

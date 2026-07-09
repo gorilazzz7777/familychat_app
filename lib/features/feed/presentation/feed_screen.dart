@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/network/offline_ui.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
@@ -8,6 +11,7 @@ import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
 import '../../calendar/presentation/calendar_screen.dart';
+import '../../chat/data/chat_offline_sync.dart';
 import 'widgets/feed_event_card.dart';
 import 'widgets/feed_people_filter.dart';
 
@@ -49,13 +53,24 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
     _loadInitial();
   }
 
   @override
   void dispose() {
+    ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onOfflineStateChanged() {
+    if (!mounted) return;
+    if (ChatOfflineSync.instance.isOnline) {
+      unawaited(refresh(silent: true));
+    } else {
+      setState(() => _error = null);
+    }
   }
 
   /// Обновить ленту (вкладка, pull-to-refresh, возврат из деталей).
@@ -233,7 +248,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = _events.isEmpty
+            ? OfflineUi.loadErrorMessage(e, fallback: 'Не удалось загрузить ленту')
+            : null;
       });
     }
   }
@@ -273,7 +290,10 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       if (_events.isEmpty) {
         setState(() {
           _loading = false;
-          _error = e.toString();
+          _error = OfflineUi.loadErrorMessage(
+            e,
+            fallback: 'Не удалось загрузить ленту',
+          );
         });
       }
     }

@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import '../../../core/config/env.dart';
 import '../../../core/debug/upload_image_exif_log.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/notifications/familychat_foreground_bridge.dart';
 
 class ThreadMessagesPage {
   const ThreadMessagesPage({
@@ -24,8 +25,12 @@ class FamilyChatRepository {
   static final Map<String, Uint8List> _attachmentBytesCache =
       <String, Uint8List>{};
 
-  Future<Map<String, dynamic>> status() async {
-    final res = await _dio.get<Map<String, dynamic>>('familychat/status/');
+  Future<Map<String, dynamic>> status({bool? appForeground}) async {
+    final fg = appForeground ?? FamilyChatForegroundBridge.isAppInForeground();
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/status/',
+      queryParameters: {'app_foreground': fg ? '1' : '0'},
+    );
     return res.data!;
   }
 
@@ -173,6 +178,26 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> familyTree() async {
     final res =
         await _dio.get<Map<String, dynamic>>('familychat/members/tree/');
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> previewFamilyTreeKinshipChanges(
+    List<Map<String, dynamic>> changes,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/tree/preview/',
+      data: {'changes': changes},
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> saveFamilyTreeKinshipChanges(
+    List<Map<String, dynamic>> changes,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/members/tree/save/',
+      data: {'changes': changes},
+    );
     return res.data ?? {};
   }
 
@@ -967,10 +992,16 @@ class FamilyChatRepository {
     return res.data!;
   }
 
-  Future<Map<String, dynamic>> completeFeedPhotoBatch(String batchId) async {
+  Future<Map<String, dynamic>> completeFeedPhotoBatch(
+    String batchId, {
+    String? caption,
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/feed/photo-batch/complete/',
-      data: {'batch_id': batchId},
+      data: {
+        'batch_id': batchId,
+        if (caption != null && caption.trim().isNotEmpty) 'caption': caption.trim(),
+      },
     );
     return res.data ?? {};
   }

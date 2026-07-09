@@ -9,6 +9,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/network/offline_ui.dart';
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../members/presentation/member_profile_screen.dart';
@@ -16,6 +18,9 @@ import '../../profile/presentation/face_tagging_sheet.dart';
 import '../../profile/presentation/album_upload_file_bytes.dart';
 import '../../profile/presentation/read_picked_image_bytes.dart';
 import '../data/active_chat_context.dart';
+import '../data/chat_network_status.dart';
+import '../data/chat_offline_outbox.dart';
+import '../data/chat_offline_sync.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_forward_screen.dart';
@@ -111,13 +116,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _loading = true;
   bool _loadingOlder = false;
   bool _hasMoreOlder = false;
-  bool _offlineMode = false;
   String? _loadError;
   int? _currentUserId;
   int? _highlightMessageId;
   int? _lastMarkedReadId;
   _PendingFileDraft? _pendingFileDraft;
   int _tempIdCounter = -1;
+  int _loadGeneration = 0;
   bool _selectionMode = false;
   final Set<int> _selectedMessageIds = {};
   Map<String, dynamic>? _replyTo;
@@ -151,6 +156,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _inputFocus.addListener(_onInputFocusChanged);
     ActiveChatContext.instance.setOpenThread(widget.threadId);
     FamilyChatRealtime.instance.addListener(_onRealtime);
+    ChatOfflineSync.instance.addListener(_onOfflineSync);
     _scrollController.addListener(_onScroll);
     if (_hasLeft) {
       _loading = false;
@@ -165,6 +171,40 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _peerStatusTimer = Timer.periodic(const Duration(seconds: 45), (_) {
         unawaited(_loadPeerStatus(widget.peerUserId!));
       });
+    }
+  }
+
+  void _onOfflineSync() {
+    if (!mounted) return;
+    unawaited(_applyOfflineSyncResults());
+  }
+
+  Future<void> _applyOfflineSyncResults() async {
+    final deliveries = ChatOfflineSync.instance.consumeDeliveries();
+    var changed = false;
+    for (final delivery in deliveries) {
+      if (delivery.threadId != widget.threadId) continue;
+      if (delivery.tempMessageId != null && delivery.message != null) {
+        _replaceOptimisticMessage(delivery.tempMessageId!, delivery.message!);
+        changed = true;
+      }
+      if (delivery.messageId != null && delivery.reactions != null) {
+        _applyMessageReactions(
+          delivery.messageId!,
+          chatParseReactions(
+            delivery.reactions,
+            currentUserId: _currentUserId,
+          ),
+        );
+        changed = true;
+      }
+    }
+    if (changed) {
+      await _persistMessageCache();
+    }
+    if (!mounted) return;
+    if (ChatOfflineSync.instance.isOnline) {
+      await _load(silent: true);
     }
   }
 
@@ -190,9 +230,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       cached = await FamilyChatLocalCache.readThreadMessages(widget.threadId);
       if (cached != null && cached.isNotEmpty && mounted) {
         setState(() {
-          _messages = cached!;
+          _messages = sortChatMessages(cached!);
           _loading = false;
-          _offlineMode = true;
         });
       }
     }
@@ -254,15 +293,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _persistMessageCache() async {
     if (_messages.isEmpty) return;
-    final real = _messages.where((m) {
+    final kept = _messages.where((m) {
       final id = chatAsInt(m['id']);
-      return id != null && id > 0;
+      if (id == null) return false;
+      if (id > 0) return true;
+      return m['_pending'] == true || m['read_status'] == 'queued';
     }).toList();
-    if (real.isEmpty) return;
-    final slice = real.length > FamilyChatLocalCache.maxCachedMessagesPerThread
-        ? real.sublist(
-            real.length - FamilyChatLocalCache.maxCachedMessagesPerThread)
-        : real;
+    if (kept.isEmpty) return;
+    final slice = kept.length > FamilyChatLocalCache.maxCachedMessagesPerThread
+        ? kept.sublist(kept.length - FamilyChatLocalCache.maxCachedMessagesPerThread)
+        : kept;
     await FamilyChatLocalCache.saveThreadMessages(widget.threadId, slice);
   }
 
@@ -276,6 +316,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ActiveChatContext.instance.setOpenThread(null);
     }
     FamilyChatRealtime.instance.removeListener(_onRealtime);
+    ChatOfflineSync.instance.removeListener(_onOfflineSync);
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -370,20 +411,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final map = chatNormalizeMap(Map<dynamic, dynamic>.from(msg));
       if (chatAsInt(map['thread_id']) != widget.threadId) return;
       if (!mounted) return;
-      final msgId = chatAsInt(map['id']);
       setState(() {
+        var next = _messages;
         if (_currentUserId != null &&
             chatAsInt(map['sender_user_id']) == _currentUserId) {
-          final pendingIdx = _messages.indexWhere((m) => m['_pending'] == true);
-          if (pendingIdx >= 0) {
-            _messages = List<Map<String, dynamic>>.from(_messages)
-              ..removeAt(pendingIdx);
-          }
+          next = next.where((m) => m['_pending'] != true).toList();
         }
-        if (msgId == null ||
-            !_messages.any((m) => chatAsInt(m['id']) == msgId)) {
-          _messages = [..._messages, map];
-        }
+        _messages = chatUpsertMessage(next, map);
       });
       _scrollToBottom();
       unawaited(_markLatestRead());
@@ -469,6 +503,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _load({bool silent = false}) async {
+    final generation = ++_loadGeneration;
     if (!silent && _messages.isEmpty) {
       setState(() {
         _loading = true;
@@ -478,18 +513,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     try {
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
             widget.threadId,
-            limit: 20,
+            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
           );
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
-        if (silent && _messages.length > 20) {
+        if (silent && _messages.length > FamilyChatLocalCache.maxCachedMessagesPerThread) {
           _messages = _mergeLatestMessages(_messages, page.messages);
+        } else if (silent) {
+          _messages = chatMergeMessageLists(_messages, page.messages);
         } else {
-          _messages = page.messages;
+          _messages = sortChatMessages(page.messages);
         }
         _hasMoreOlder = page.hasMore;
         _loading = false;
-        _offlineMode = false;
         _loadError = null;
       });
       unawaited(_persistMessageCache());
@@ -497,12 +533,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (silent || widget.initialMessageId == null) {
         _scrollToBottom();
       }
-    } catch (_) {
-      if (!mounted) return;
-      if (_messages.isEmpty) {
+    } catch (e) {
+      if (!mounted || generation != _loadGeneration) return;
+      if (_messages.isNotEmpty) {
         setState(() {
           _loading = false;
-          _loadError = 'Не удалось загрузить сообщения';
+          _loadError = null;
+        });
+      } else {
+        setState(() {
+          _loading = false;
+          _loadError = OfflineUi.loadErrorMessage(
+            e,
+            fallback: 'Не удалось загрузить сообщения',
+          );
         });
       }
     }
@@ -512,9 +556,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     List<Map<String, dynamic>> current,
     List<Map<String, dynamic>> latest,
   ) {
-    if (latest.isEmpty) return current;
+    if (latest.isEmpty) return sortChatMessages(current);
     final oldestLatestId = chatAsInt(latest.first['id']);
-    if (oldestLatestId == null) return latest;
+    if (oldestLatestId == null) return sortChatMessages(latest);
     final olderKept = current.where((m) {
       final id = chatAsInt(m['id']);
       return id != null && id > 0 && id < oldestLatestId;
@@ -524,7 +568,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final mergedOlder = olderKept
         .where((m) => !latestIds.contains(chatAsInt(m['id'])))
         .toList();
-    return [...mergedOlder, ...latest];
+    return sortChatMessages([...mergedOlder, ...latest]);
   }
 
   Future<void> _loadOlder() async {
@@ -542,7 +586,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     try {
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
             widget.threadId,
-            limit: 20,
+            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
             beforeId: firstId,
           );
       if (!mounted) return;
@@ -553,7 +597,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         return id != null && !existingIds.contains(id);
       }).toList();
       setState(() {
-        _messages = [...older, ..._messages];
+        _messages = sortChatMessages([...older, ..._messages]);
         _hasMoreOlder = page.hasMore;
         _loadingOlder = false;
       });
@@ -576,7 +620,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     Map<String, dynamic>? replyTo,
   }) {
     setState(() {
-      _messages = [
+      _messages = sortChatMessages([
         ..._messages,
         {
           'id': tempId,
@@ -591,19 +635,67 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           'read_status': 'sending',
           if (replyTo != null) 'reply_to': replyTo,
         },
-      ];
+      ]);
     });
     _scrollToBottom();
   }
 
   void _replaceOptimisticMessage(int tempId, Map<String, dynamic> msg) {
     setState(() {
-      _messages = _messages.where((m) => m['id'] != tempId).toList();
+      final withoutTemp =
+          _messages.where((m) => m['id'] != tempId).toList();
       final msgId = chatAsInt(msg['id']);
-      if (msgId == null || !_messages.any((m) => chatAsInt(m['id']) == msgId)) {
-        _messages = [..._messages, msg];
+      if (msgId == null || !withoutTemp.any((m) => chatAsInt(m['id']) == msgId)) {
+        _messages = chatUpsertMessage(withoutTemp, msg);
+      } else {
+        _messages = sortChatMessages(withoutTemp);
       }
     });
+  }
+
+  void _markOptimisticQueued(int tempId) {
+    setState(() {
+      _messages = _messages.map((m) {
+        if (m['id'] == tempId) {
+          return {...m, 'read_status': 'queued'};
+        }
+        return m;
+      }).toList();
+    });
+  }
+
+  Future<bool> _enqueueOfflineMessage({
+    required int tempId,
+    required String caption,
+    required List<_OutgoingAttachment> attachments,
+    int? replyToMessageId,
+    List<int> mentionedUserIds = const [],
+  }) async {
+    await ChatOfflineOutbox.enqueueMessage(
+      threadId: widget.threadId,
+      tempMessageId: tempId,
+      body: caption.isEmpty ? null : caption,
+      replyToMessageId: replyToMessageId,
+      mentionedUserIds: mentionedUserIds,
+      attachments: attachments
+          .map(
+            (att) => ChatOutboxAttachment(
+              bytes: att.bytes,
+              filename: att.filename,
+              contentType: att.contentType,
+            ),
+          )
+          .toList(),
+    );
+    _markOptimisticQueued(tempId);
+    await _persistMessageCache();
+    if (!mounted) return true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Сообщение будет отправлено при появлении сети'),
+      ),
+    );
+    return true;
   }
 
   void _markOptimisticFailed(int tempId) {
@@ -624,8 +716,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
   }) async {
+    final repo = ref.read(familychatRepositoryProvider);
+    final online = await ChatOfflineSync.instance.refreshOnline(repo);
+    if (!online) {
+      await _enqueueOfflineMessage(
+        tempId: tempId,
+        caption: caption,
+        attachments: attachments,
+        replyToMessageId: replyToMessageId,
+        mentionedUserIds: mentionedUserIds,
+      );
+      return;
+    }
     try {
-      final repo = ref.read(familychatRepositoryProvider);
       final ids = <int>[];
       for (final att in attachments) {
         final uploaded = await repo.uploadChatAttachmentBytes(
@@ -648,6 +751,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (!mounted) return;
       _replaceOptimisticMessage(tempId, msg);
       _scrollToBottom();
+      await _persistMessageCache();
       for (var i = 0; i < attachments.length; i++) {
         if (i >= ids.length) break;
         final att = attachments[i];
@@ -658,8 +762,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           unawaited(_pollFaceTaggingPrompt(ids[i]));
         }
       }
-    } catch (_) {
+    } catch (error) {
       if (!mounted) return;
+      if (ChatNetworkStatus.looksOffline(error)) {
+        await _enqueueOfflineMessage(
+          tempId: tempId,
+          caption: caption,
+          attachments: attachments,
+          replyToMessageId: replyToMessageId,
+          mentionedUserIds: mentionedUserIds,
+        );
+        return;
+      }
       _markOptimisticFailed(tempId);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Не удалось отправить сообщение')),
@@ -1097,24 +1211,89 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _toggleReaction(int messageId, String emoji) async {
+    if (messageId <= 0) return;
+    _applyReactionToggleLocal(messageId, emoji);
+    final repo = ref.read(familychatRepositoryProvider);
+    final online = await ChatOfflineSync.instance.refreshOnline(repo);
+    if (!online) {
+      await ChatOfflineOutbox.enqueueReaction(
+        threadId: widget.threadId,
+        messageId: messageId,
+        emoji: emoji,
+      );
+      await _persistMessageCache();
+      return;
+    }
     try {
-      final raw =
-          await ref.read(familychatRepositoryProvider).toggleMessageReaction(
-                widget.threadId,
-                messageId,
-                emoji,
-              );
+      final raw = await repo.toggleMessageReaction(
+        widget.threadId,
+        messageId,
+        emoji,
+      );
       if (!mounted) return;
       _applyMessageReactions(
         messageId,
         chatParseReactions(raw, currentUserId: _currentUserId),
       );
-    } catch (_) {
+      await _persistMessageCache();
+    } catch (error) {
       if (!mounted) return;
+      if (ChatNetworkStatus.looksOffline(error)) {
+        await ChatOfflineOutbox.enqueueReaction(
+          threadId: widget.threadId,
+          messageId: messageId,
+          emoji: emoji,
+        );
+        await _persistMessageCache();
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Не удалось поставить реакцию')),
       );
     }
+  }
+
+  void _applyReactionToggleLocal(int messageId, String emoji) {
+    if (_currentUserId == null) return;
+    setState(() {
+      _messages = _messages.map((m) {
+        if (chatAsInt(m['id']) != messageId) return m;
+        final reactions = chatParseReactions(
+          m['reactions'],
+          currentUserId: _currentUserId,
+        ).map((r) => Map<String, dynamic>.from(r)).toList();
+        final idx = reactions.indexWhere((r) => r['emoji'] == emoji);
+        if (idx >= 0) {
+          final row = Map<String, dynamic>.from(reactions[idx]);
+          final userIds = List<int>.from(row['user_ids'] as List? ?? []);
+          if (userIds.contains(_currentUserId)) {
+            userIds.remove(_currentUserId);
+            if (userIds.isEmpty) {
+              reactions.removeAt(idx);
+            } else {
+              row['user_ids'] = userIds;
+              row['count'] = userIds.length;
+              row['reacted_by_me'] = false;
+              reactions[idx] = row;
+            }
+          } else {
+            userIds.add(_currentUserId!);
+            row['user_ids'] = userIds;
+            row['count'] = userIds.length;
+            row['reacted_by_me'] = true;
+            reactions[idx] = row;
+          }
+        } else {
+          reactions.add({
+            'emoji': emoji,
+            'count': 1,
+            'user_ids': [_currentUserId!],
+            'reacted_by_me': true,
+          });
+        }
+        return {...m, 'reactions': reactions};
+      }).toList();
+    });
   }
 
   Future<void> _copyMessages(List<Map<String, dynamic>> messages) async {
@@ -1420,13 +1599,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       child: Scaffold(
         resizeToAvoidBottomInset: true,
         appBar: _selectionMode
-            ? AppBar(
+            ? FamilyAppBar.build(
+                title: '${_selectedMessageIds.length} выбрано',
+                automaticallyImplyLeading: false,
                 leading: IconButton(
                   tooltip: 'Отменить выбор',
                   onPressed: _exitSelection,
                   icon: const Icon(Icons.close),
                 ),
-                title: Text('${_selectedMessageIds.length} выбрано'),
                 actions: [
                   TextButton(
                     onPressed: _selectableMessageIds.isEmpty
@@ -1449,7 +1629,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                   ),
                 ],
               )
-            : AppBar(
+            : FamilyAppBar.buildCustom(
                 title: InkWell(
                   onTap: _openInfo,
                   child: Column(
@@ -1548,14 +1728,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                 ),
               )
             else ...[
-              if (_offlineMode)
-                MaterialBanner(
-                  content: const Text(
-                      'Показаны сохранённые сообщения. Обновление при появлении сети.'),
-                  actions: [
-                    TextButton(onPressed: _load, child: const Text('Обновить')),
-                  ],
-                ),
               Expanded(
                 child: _loading
                     ? const Center(child: CircularProgressIndicator())

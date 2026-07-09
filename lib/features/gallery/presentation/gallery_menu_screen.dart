@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
+
 import '../../profile/presentation/profile_gallery_tab.dart';
 import 'family_gallery_tab.dart';
 
@@ -16,8 +18,8 @@ class GalleryMenuScreen extends StatelessWidget {
     return DefaultTabController(
       length: 2,
       child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Галерея'),
+        appBar: FamilyAppBar.build(
+          title: 'Галерея',
           bottom: const TabBar(
             tabs: [
               Tab(text: 'Мои'),

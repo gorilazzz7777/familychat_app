@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/network/offline_ui.dart';
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
 
@@ -63,7 +65,10 @@ class _BirthdayDetailScreenState extends ConsumerState<BirthdayDetailScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = OfflineUi.loadErrorMessage(
+          e,
+          fallback: 'Не удалось загрузить данные',
+        );
       });
     }
   }
@@ -120,9 +125,7 @@ class _BirthdayDetailScreenState extends ConsumerState<BirthdayDetailScreen> {
     final title = _data?['honoree_name']?.toString() ?? widget.initialTitle;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('День рождения'),
-      ),
+      appBar: FamilyAppBar.build(title: 'День рождения'),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null

@@ -19,6 +19,11 @@ class FamilyChatForegroundBridge {
         state == AppLifecycleState.detached;
   }
 
+  /// Приложение на экране и активно — не показываем push (realtime через WebSocket).
+  static bool isAppInForeground() {
+    return WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+  }
+
   static Future<void> bringToForegroundIfNeeded() async {
     if (!_shouldUseAndroidBridge || !isAppInBackground()) return;
     try {

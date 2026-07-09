@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../data/chat_unread_providers.dart';
 import '../data/familychat_realtime.dart';
@@ -46,14 +48,49 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
   void initState() {
     super.initState();
     FamilyChatRealtime.instance.addListener(_onRealtime);
+    ChatOfflineSync.instance.addListener(_onOfflineSync);
     _load();
   }
 
   @override
   void dispose() {
     FamilyChatRealtime.instance.removeListener(_onRealtime);
+    ChatOfflineSync.instance.removeListener(_onOfflineSync);
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _onOfflineSync() {
+    if (!mounted) return;
+    if (ChatOfflineSync.instance.isOnline) {
+      unawaited(_load(silent: true));
+    }
+  }
+
+  void _applyMembers(List<Map<String, dynamic>> members) {
+    final byUserId = <int, Map<String, dynamic>>{};
+    for (final m in members) {
+      final uid = m['user_id'];
+      final userId = uid is int ? uid : int.tryParse('$uid');
+      if (userId == null) continue;
+      byUserId[userId] = m;
+    }
+    _memberByUserId
+      ..clear()
+      ..addAll(byUserId);
+  }
+
+  Future<void> _hydrateFromCache() async {
+    final cachedThreads = await FamilyChatLocalCache.readChatThreads();
+    if (cachedThreads == null || cachedThreads.isEmpty || !mounted) return;
+    final cachedMembers = await FamilyChatLocalCache.readChatMembers();
+    setState(() {
+      _threads = _sortedThreads(cachedThreads);
+      if (cachedMembers != null) {
+        _applyMembers(cachedMembers);
+      }
+      _loading = false;
+    });
   }
 
   void _onRealtime(Map<String, dynamic> event) {
@@ -68,7 +105,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
   }
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent) setState(() => _loading = true);
+    if (!silent) {
+      await _hydrateFromCache();
+      if (_threads.isEmpty && mounted) {
+        setState(() => _loading = true);
+      }
+    }
     try {
       final repo = ref.read(familychatRepositoryProvider);
       final results = await Future.wait([
@@ -77,24 +119,24 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
       ]);
       final list = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
-      final byUserId = <int, Map<String, dynamic>>{};
-      for (final m in members) {
-        final uid = m['user_id'];
-        final userId = uid is int ? uid : int.tryParse('$uid');
-        if (userId == null) continue;
-        byUserId[userId] = m;
-      }
+      await FamilyChatLocalCache.saveChatThreads(list);
+      await FamilyChatLocalCache.saveChatMembers(members);
       if (!mounted) return;
       setState(() {
         _threads = _sortedThreads(list);
-        _memberByUserId
-          ..clear()
-          ..addAll(byUserId);
+        _applyMembers(members);
         _loading = false;
       });
       invalidateChatUnreadTotal(ref);
+      unawaited(ChatOfflineSync.instance.refreshOnline(repo));
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (!mounted) return;
+      if (_threads.isEmpty) {
+        await _hydrateFromCache();
+      }
+      setState(() {
+        _loading = false;
+      });
     }
   }
 

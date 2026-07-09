@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../app/shell_refresh.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/push/push_navigation.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
+import '../../feed/data/feed_post_uploader.dart';
 import '../../profile/data/album_upload_coordinator.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
@@ -32,6 +34,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
   final _selectedThreads = <int>{};
   final _selectedAlbumPks = <int>{};
+  bool _shareToFeed = false;
   int _tabIndex = 0;
   bool _loadingAttachments = true;
   bool _loadingThreads = true;
@@ -248,11 +251,53 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
 
   bool get _canSend {
     final caption = _captionController.text.trim();
-    if (_tabIndex == 0) {
-      return _selectedThreads.isNotEmpty && (caption.isNotEmpty || _attachments.isNotEmpty);
+    final images = _attachments.where((a) => a.isImage).toList();
+    if (_shareToFeed && images.isNotEmpty) return true;
+    if (_selectedThreads.isNotEmpty && (caption.isNotEmpty || _attachments.isNotEmpty)) {
+      return true;
     }
-    final imageCount = _attachments.where((a) => a.isImage).length;
-    return _selectedAlbumPks.isNotEmpty && imageCount > 0;
+    return _selectedAlbumPks.isNotEmpty && images.isNotEmpty;
+  }
+
+  String get _sendButtonLabel {
+    final parts = <String>[];
+    if (_shareToFeed) parts.add('лента');
+    if (_selectedThreads.isNotEmpty) parts.add('${_selectedThreads.length} ч');
+    if (_selectedAlbumPks.isNotEmpty) parts.add('${_selectedAlbumPks.length} альб');
+    if (parts.isEmpty) return 'Отправить';
+    return 'Отправить (${parts.join(', ')})';
+  }
+
+  List<ShareAttachmentData> get _imageAttachments =>
+      _attachments.where((a) => a.isImage).toList();
+
+  Future<void> _sendToFeed({
+    required List<ShareAttachmentData> images,
+    required String caption,
+  }) async {
+    final limited = images.take(FeedPostUploader.maxPhotos).toList();
+    if (limited.length < images.length && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'В ленту можно отправить не более ${FeedPostUploader.maxPhotos} фото',
+          ),
+        ),
+      );
+    }
+    await FeedPostUploader.publish(
+      repo: ref.read(familychatRepositoryProvider),
+      photos: limited
+          .map(
+            (att) => FeedPostPhoto(
+              bytes: Uint8List.fromList(att.bytes),
+              filename: att.filename,
+              contentType: att.contentType,
+            ),
+          )
+          .toList(),
+      caption: caption,
+    );
   }
 
   Map<String, dynamic>? _albumByPk(int pk) {
@@ -328,9 +373,17 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     final repo = ref.read(familychatRepositoryProvider);
     final threadIds = _selectedThreads.toList();
     final albumPks = _selectedAlbumPks.toList();
+    final images = _imageAttachments;
 
     try {
-      if (_tabIndex == 0) {
+      var sentAny = false;
+
+      if (_shareToFeed && images.isNotEmpty) {
+        await _sendToFeed(images: images, caption: caption);
+        sentAny = true;
+      }
+
+      if (threadIds.isNotEmpty) {
         for (final threadId in threadIds) {
           final attachmentIds = <int>[];
           for (final att in _attachments) {
@@ -349,16 +402,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
             attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
           );
         }
-        if (!mounted) return;
-        Navigator.of(context).pop(true);
-        final message = threadIds.length == 1
-            ? 'Отправлено в чат'
-            : 'Отправлено в ${threadIds.length} чата';
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(message)),
-        );
-      } else {
-        final images = _attachments.where((a) => a.isImage).toList();
+        sentAny = true;
+      }
+
+      if (albumPks.isNotEmpty && images.isNotEmpty) {
         final status = await repo.status();
         final myUserId = status['user_id'] is int
             ? status['user_id'] as int
@@ -372,6 +419,21 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
           images: images,
         );
         return;
+      }
+
+      if (!mounted) return;
+      if (sentAny) {
+        Navigator.of(context).pop(true);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              _shareToFeed && threadIds.isEmpty && albumPks.isEmpty
+                  ? 'Опубликовано в ленту'
+                  : 'Отправлено',
+            ),
+          ),
+        );
+        await ShellRefresh.instance.refreshMainTabs();
       }
     } catch (_) {
       if (!mounted) return;
@@ -441,6 +503,26 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
       return !_loadingThreads && _selectableThreadIds.isNotEmpty;
     }
     return !_loadingAlbums && _selectableAlbumPks.isNotEmpty;
+  }
+
+  Widget _buildFeedShareTile() {
+    final enabled = _imageAttachments.isNotEmpty;
+    return _buildSelectableTile(
+      selected: _shareToFeed,
+      onTap: () {
+        if (!enabled) return;
+        setState(() => _shareToFeed = !_shareToFeed);
+      },
+      leading: CircleAvatar(
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        child: Icon(
+          Icons.home_outlined,
+          color: Theme.of(context).colorScheme.onPrimaryContainer,
+        ),
+      ),
+      title: 'Семье — в ленту',
+      subtitle: 'Все увидят на главной, фото попадёт в «Все фото»',
+    );
   }
 
   Widget _buildLoadingTargets(String label) {
@@ -619,8 +701,8 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     final hasPayload = caption.isNotEmpty || _attachments.isNotEmpty;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Поделиться'),
+      appBar: FamilyAppBar.build(
+        title: 'Поделиться',
         actions: [
           TextButton(
             onPressed: _hasSelectableTargets ? _toggleSelectAllTargets : null,
@@ -634,11 +716,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Text(
-                    _tabIndex == 0
-                        ? 'Отправить (${_selectedThreads.length})'
-                        : 'Добавить (${_selectedAlbumPks.length})',
-                  ),
+                : Text(_sendButtonLabel),
           ),
         ],
       ),
@@ -707,15 +785,24 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                                 controller: _captionController,
                                 minLines: 1,
                                 maxLines: 4,
-                                decoration: const InputDecoration(
-                                  labelText: 'Подпись',
-                                  border: OutlineInputBorder(),
+                                maxLength: _shareToFeed
+                                    ? FeedPostUploader.maxCaptionLength
+                                    : null,
+                                decoration: InputDecoration(
+                                  labelText: _shareToFeed
+                                      ? 'Описание для ленты'
+                                      : 'Подпись',
+                                  border: const OutlineInputBorder(),
                                 ),
                                 onChanged: (_) => setState(() {}),
                               ),
                             ],
                           ),
                         ),
+                        if (_imageAttachments.isNotEmpty) ...[
+                          const Divider(height: 1),
+                          _buildFeedShareTile(),
+                        ],
                         const Divider(height: 1),
                         Padding(
                           padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),

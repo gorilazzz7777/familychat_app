@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../chat/data/chat_offline_sync.dart';
 import 'calendar_event_edit_screen.dart';
 import 'birthday_detail_screen.dart';
 import 'widgets/album_access_fields.dart';
@@ -44,6 +46,18 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
   }
 
   Future<void> _load() async {
+    final repo = ref.read(familychatRepositoryProvider);
+    final online = await ChatOfflineSync.instance.refreshOnline(repo);
+    if (!online) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _events = [];
+          _error = null;
+        });
+      }
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -62,7 +76,10 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = OfflineUi.loadErrorMessage(
+          e,
+          fallback: 'Не удалось загрузить события',
+        );
       });
     }
   }

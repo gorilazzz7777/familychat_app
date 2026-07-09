@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
+import '../../../core/network/offline_ui.dart';
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../chat/presentation/chat_call_screen.dart';
@@ -72,7 +74,10 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = e.toString();
+        _error = OfflineUi.loadErrorMessage(
+          e,
+          fallback: 'Не удалось загрузить профиль',
+        );
       });
     }
   }
@@ -206,9 +211,9 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Профиль участника'),
-        bottom: _loading || _error != null
+      appBar: FamilyAppBar.build(
+        title: 'Профиль участника',
+        bottom: _loading || _error != null || _profile == null
             ? null
             : TabBar(
                 controller: _tabs,
@@ -222,7 +227,9 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? Center(child: Text(_error!))
-              : TabBarView(
+              : _profile == null
+                  ? const SizedBox.shrink()
+                  : TabBarView(
                   controller: _tabs,
                   children: [
                     _buildMainTab(Theme.of(context)),

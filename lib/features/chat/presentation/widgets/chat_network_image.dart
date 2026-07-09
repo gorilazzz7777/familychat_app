@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/cache/familychat_local_cache.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../familychat/data/familychat_repository.dart';
@@ -100,11 +101,31 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     });
 
     try {
+      final cached = await FamilyChatLocalCache.readAttachmentBytes(
+        widget.threadId,
+        attachmentId,
+      );
+      if (cached != null && cached.isNotEmpty) {
+        _webAttachmentBytesCache[cacheKey] = cached;
+        if (!mounted) return;
+        setState(() {
+          _webBytes = cached;
+          _webFailed = false;
+          _webLoading = false;
+        });
+        return;
+      }
+
       final bytes = await ref.read(familychatRepositoryProvider).fetchChatAttachmentBytes(
             widget.threadId,
             attachmentId,
           );
       _webAttachmentBytesCache[cacheKey] = bytes;
+      await FamilyChatLocalCache.saveAttachmentBytes(
+        widget.threadId,
+        attachmentId,
+        bytes,
+      );
       if (!mounted) return;
       setState(() {
         _webBytes = bytes;
@@ -209,23 +230,32 @@ Future<Map<String, String>?> chatImageAuthHeaders(WidgetRef ref) async {
   return {'Authorization': 'Bearer $token'};
 }
 
-Future<Uint8List?> chatAttachmentBytesForViewer({
-  required WidgetRef ref,
-  required int? threadId,
-  required int? attachmentId,
-}) async {
-  if (!kIsWeb || threadId == null || attachmentId == null) return null;
-  final cacheKey = _webAttachmentCacheKey(threadId, attachmentId);
-  final cached = _webAttachmentBytesCache[cacheKey];
-  if (cached != null) return cached;
-  try {
-    final bytes = await ref.read(familychatRepositoryProvider).fetchChatAttachmentBytes(
-          threadId,
-          attachmentId,
-        );
-    _webAttachmentBytesCache[cacheKey] = bytes;
-    return bytes;
-  } catch (_) {
-    return null;
+  Future<Uint8List?> chatAttachmentBytesForViewer({
+    required WidgetRef ref,
+    required int? threadId,
+    required int? attachmentId,
+  }) async {
+    if (!kIsWeb || threadId == null || attachmentId == null) return null;
+    final cacheKey = _webAttachmentCacheKey(threadId, attachmentId);
+    final cached = _webAttachmentBytesCache[cacheKey];
+    if (cached != null) return cached;
+    final stored = await FamilyChatLocalCache.readAttachmentBytes(
+      threadId,
+      attachmentId,
+    );
+    if (stored != null && stored.isNotEmpty) {
+      _webAttachmentBytesCache[cacheKey] = stored;
+      return stored;
+    }
+    try {
+      final bytes = await ref.read(familychatRepositoryProvider).fetchChatAttachmentBytes(
+            threadId,
+            attachmentId,
+          );
+      _webAttachmentBytesCache[cacheKey] = bytes;
+      await FamilyChatLocalCache.saveAttachmentBytes(threadId, attachmentId, bytes);
+      return bytes;
+    } catch (_) {
+      return null;
+    }
   }
-}

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../data/chat_realtime_utils.dart';
 
@@ -85,8 +86,8 @@ class _ChatForwardScreenState extends ConsumerState<ChatForwardScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Переслать'),
+      appBar: FamilyAppBar.build(
+        title: 'Переслать',
         actions: [
           TextButton(
             onPressed: _selectableThreadIds.isEmpty ? null : _toggleSelectAllThreads,

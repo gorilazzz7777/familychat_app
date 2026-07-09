@@ -82,6 +82,11 @@ class _FeedEventCardState extends State<FeedEventCard> {
   }
 
   String _bodyPreview() {
+    final caption = _payload['caption']?.toString().trim() ?? '';
+    if (caption.isNotEmpty &&
+        (_kind == 'photo_uploaded' || _kind == 'photo_batch_uploaded')) {
+      return caption;
+    }
     if (_kind == 'message_sent') {
       return _payload['body_preview']?.toString() ?? '';
     }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 
 class CreateGroupScreen extends ConsumerStatefulWidget {
@@ -92,8 +93,8 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Новая группа'),
+      appBar: FamilyAppBar.build(
+        title: 'Новая группа',
         actions: [
           if (!_loading && _members.isNotEmpty)
             TextButton(

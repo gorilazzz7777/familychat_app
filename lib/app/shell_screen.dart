@@ -7,6 +7,7 @@ import 'package:share_handler/share_handler.dart';
 
 import '../core/notifications/familychat_notifications.dart';
 import '../core/push/push_navigation.dart';
+import '../core/widgets/family_app_bar.dart';
 import '../core/providers/app_providers.dart';
 import '../core/share/incoming_share_bus.dart';
 import 'shell_refresh.dart';
@@ -15,9 +16,11 @@ import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/data/chat_unread_providers.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
+import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/incoming_call_coordinator.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../features/feed/presentation/feed_screen.dart';
+import '../features/feed/presentation/feed_post_compose_screen.dart';
 import '../features/gallery/presentation/gallery_menu_screen.dart';
 import '../features/members/presentation/family_invite_flow.dart';
 import '../features/members/presentation/members_screen.dart';
@@ -83,8 +86,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           ),
         );
       }
+      unawaited(
+        ChatOfflineSync.instance.run(ref.read(familychatRepositoryProvider)),
+      );
     });
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
+    ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
     ShellRefresh.instance.register(_refreshMainTabs);
     _startPresenceHeartbeat();
   }
@@ -98,9 +105,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   }
 
   Future<void> _touchPresence() async {
-    try {
-      await ref.read(familychatRepositoryProvider).status();
-    } catch (_) {}
+    await ChatOfflineSync.instance.refreshOnline(
+      ref.read(familychatRepositoryProvider),
+    );
   }
 
   Future<void> _refreshMainTabs({bool silent = true}) async {
@@ -139,6 +146,14 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     }
   }
 
+  void _onOfflineStateChanged() {
+    if (!mounted) return;
+    setState(() {});
+    if (ChatOfflineSync.instance.isOnline) {
+      unawaited(_refreshTab(_index, silent: true));
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -146,6 +161,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     _presenceTimer?.cancel();
     IncomingShareBus.instance.removeListener(_onIncomingShare);
     FamilyChatRealtime.instance.removeListener(_onChatRealtime);
+    ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
     ShellRefresh.instance.unregister();
     super.dispose();
   }
@@ -158,6 +174,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
       unawaited(_refreshTab(_index, silent: true));
       unawaited(_touchPresence());
+      unawaited(
+        ChatOfflineSync.instance.run(ref.read(familychatRepositoryProvider)),
+      );
       final userId = _currentUserId;
       if (userId != null) {
         unawaited(
@@ -167,7 +186,18 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           ),
         );
       }
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_reportAppBackground());
     }
+  }
+
+  Future<void> _reportAppBackground() async {
+    try {
+      await ref
+          .read(familychatRepositoryProvider)
+          .status(appForeground: false);
+    } catch (_) {}
   }
 
   void _onIncomingShare() {
@@ -275,6 +305,16 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     });
   }
 
+  Future<void> _openFeedPost() async {
+    final posted = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => const FeedPostComposeScreen(),
+      ),
+    );
+    if (!mounted || posted != true) return;
+    await _refreshTab(0, silent: true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final userId = _currentUserId;
@@ -286,8 +326,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     return Scaffold(
       appBar: showingNestedScreen
           ? null
-          : AppBar(
-              title: Text(_title),
+          : FamilyAppBar.build(
+              title: _title,
               actions: [
                 if (_index == 1) ...[
                   IconButton(
@@ -312,6 +352,13 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                   ),
               ],
             ),
+      floatingActionButton: _index == 0 && !showingNestedScreen
+          ? FloatingActionButton(
+              onPressed: _openFeedPost,
+              tooltip: 'В ленту',
+              child: const Icon(Icons.add),
+            )
+          : null,
       body: Stack(
         children: [
           IndexedStack(

@@ -4,6 +4,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 
 import '../notifications/familychat_notifications.dart';
+import '../notifications/familychat_foreground_bridge.dart';
 import '../../features/chat/data/active_chat_context.dart';
 import '../../features/chat/data/familychat_realtime.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
@@ -18,6 +19,7 @@ void handleFamilyChatRemoteMessage(
 }) {
   final data = message.data;
   final type = data['type']?.toString() ?? '';
+  final isForeground = FamilyChatForegroundBridge.isAppInForeground();
 
   if (type == 'familychat_chat') {
     final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
@@ -38,6 +40,8 @@ void handleFamilyChatRemoteMessage(
       openChatFromPushData(data);
       return;
     }
+
+    if (isForeground) return;
   }
 
   if (type == 'familychat_calendar_reminder') {
@@ -45,14 +49,17 @@ void handleFamilyChatRemoteMessage(
       openCalendarFromPushData(data);
       return;
     }
+    if (isForeground) return;
   }
 
   if (type == 'familychat_call') {
+    if (isForeground) return;
     IncomingCallCoordinator.instance.presentFromPushData(data);
     return;
   }
 
   if (openedFromTap) return;
+  if (isForeground) return;
 
   final notification = message.notification;
   if (notification == null) {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
@@ -286,8 +287,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   Widget build(BuildContext context) {
     final userId = widget.status['user_id'];
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Профиль'),
+      appBar: FamilyAppBar.build(
+        title: 'Профиль',
         bottom: TabBar(
           controller: _tabs,
           tabs: const [

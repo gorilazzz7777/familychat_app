@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'family_tree_tab.dart';
 import 'member_profile_screen.dart';
@@ -34,16 +37,31 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
   void initState() {
     super.initState();
     _tabs = TabController(length: 2, vsync: this);
+    ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
     _load();
   }
 
   @override
   void dispose() {
+    ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
     _tabs.dispose();
     super.dispose();
   }
 
+  void _onOfflineStateChanged() {
+    if (!mounted) return;
+    if (ChatOfflineSync.instance.isOnline) {
+      unawaited(_load());
+    }
+  }
+
   Future<void> _load() async {
+    final repo = ref.read(familychatRepositoryProvider);
+    final online = await ChatOfflineSync.instance.refreshOnline(repo);
+    if (!online) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
     setState(() => _loading = true);
     try {
       final list = await ref.read(familychatRepositoryProvider).members();

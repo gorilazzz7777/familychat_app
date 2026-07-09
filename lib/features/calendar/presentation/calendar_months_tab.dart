@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../chat/data/chat_offline_sync.dart';
 import '../data/calendar_agenda_utils.dart';
 import 'calendar_event_edit_screen.dart';
 import 'birthday_detail_screen.dart';
@@ -54,6 +56,18 @@ class _CalendarMonthsTabState extends ConsumerState<CalendarMonthsTab> {
       AgendaUtils.groupByDisplayDate(_items);
 
   Future<void> _loadAgendaForYear({required int year, bool silent = false}) async {
+    final repo = ref.read(familychatRepositoryProvider);
+    final online = await ChatOfflineSync.instance.refreshOnline(repo);
+    if (!online) {
+      if (mounted && !silent) {
+        setState(() {
+          _loading = false;
+          _items = [];
+          _error = null;
+        });
+      }
+      return;
+    }
     if (!silent) {
       setState(() {
         _loading = true;
@@ -70,7 +84,12 @@ class _CalendarMonthsTabState extends ConsumerState<CalendarMonthsTab> {
       });
     } catch (e) {
       if (mounted && !silent) {
-        setState(() => _error = e.toString());
+        setState(() {
+          _error = OfflineUi.loadErrorMessage(
+            e,
+            fallback: 'Не удалось загрузить календарь',
+          );
+        });
       }
     } finally {
       if (mounted && !silent) setState(() => _loading = false);

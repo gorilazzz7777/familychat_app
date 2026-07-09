@@ -8,6 +8,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/call/call_proximity_controller.dart';
+import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../data/familychat_realtime.dart';
 
@@ -509,7 +510,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
         if (!didPop) unawaited(_hangup());
       },
       child: Scaffold(
-        appBar: AppBar(title: Text('Звонок: ${widget.title}')),
+        appBar: FamilyAppBar.build(title: 'Звонок: ${widget.title}'),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
