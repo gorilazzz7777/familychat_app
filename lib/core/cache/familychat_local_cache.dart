@@ -10,6 +10,12 @@ abstract final class FamilyChatLocalCache {
   static const _cacheDirName = 'familychat_local_cache';
   static const messageRetentionDays = 20;
   static const maxCachedMessagesPerThread = 20;
+  static const maxCachedFeedEvents = 90;
+
+  static String feedCacheKey({int? personUserId}) {
+    if (personUserId == null) return 'feed/events_all';
+    return 'feed/events_person_$personUserId';
+  }
 
   static Future<Directory?> _cacheRoot() async {
     if (kIsWeb) return null;
@@ -127,6 +133,21 @@ abstract final class FamilyChatLocalCache {
 
   static Future<Map<String, dynamic>?> readFamilyAlbums() async {
     final raw = await readJson('gallery/family_albums');
+    final data = raw?['data'];
+    if (data is Map<String, dynamic>) return data;
+    if (data is Map) return Map<String, dynamic>.from(data);
+    return null;
+  }
+
+  static Future<void> saveFeedSnapshot({
+    int? personUserId,
+    required Map<String, dynamic> data,
+  }) async {
+    await writeJson(feedCacheKey(personUserId: personUserId), {'data': data});
+  }
+
+  static Future<Map<String, dynamic>?> readFeedSnapshot({int? personUserId}) async {
+    final raw = await readJson(feedCacheKey(personUserId: personUserId));
     final data = raw?['data'];
     if (data is Map<String, dynamic>) return data;
     if (data is Map) return Map<String, dynamic>.from(data);

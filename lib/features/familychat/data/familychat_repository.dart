@@ -891,9 +891,11 @@ class FamilyChatRepository {
     int offset = 0,
     int limit = 30,
     int? personUserId,
+    int? afterId,
   }) async {
     final params = <String, dynamic>{'offset': offset, 'limit': limit};
     if (personUserId != null) params['person_user_id'] = personUserId;
+    if (afterId != null) params['after_id'] = afterId;
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/feed/',
       queryParameters: params,
