@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import '../../app/shell_refresh.dart';
 import '../../features/familychat/data/familychat_repository.dart';
 
 String createFeedPhotoBatchId() {
@@ -21,6 +22,7 @@ class FeedPhotoBatchSession {
 
   final String batchId;
   int _remaining;
+  bool _completed = false;
 
   void addTasks(int count) {
     if (count > 0) _remaining += count;
@@ -28,8 +30,23 @@ class FeedPhotoBatchSession {
 
   Future<void> markAttemptFinished(FamilyChatRepository repo) async {
     if (_remaining > 0) _remaining--;
-    if (_remaining <= 0) {
-      await repo.completeFeedPhotoBatch(batchId);
+    if (_remaining > 0 || _completed) return;
+
+    for (var attempt = 0; attempt < 4; attempt++) {
+      try {
+        final result = await repo.completeFeedPhotoBatch(batchId);
+        final created = result['created'] == true;
+        if (created || attempt == 3) {
+          _completed = true;
+          if (created) {
+            await ShellRefresh.instance.refreshMainTabs();
+          }
+          return;
+        }
+      } catch (_) {
+        if (attempt == 3) return;
+      }
+      await Future<void>.delayed(Duration(milliseconds: 350 * (attempt + 1)));
     }
   }
 }

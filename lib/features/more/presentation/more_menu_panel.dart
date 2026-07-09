@@ -5,13 +5,11 @@ class MoreMenuPanel extends StatelessWidget {
   const MoreMenuPanel({
     super.key,
     required this.onClose,
-    required this.onOpenGallery,
     required this.onOpenCalendar,
     required this.onOpenProfile,
   });
 
   final VoidCallback onClose;
-  final VoidCallback onOpenGallery;
   final VoidCallback onOpenCalendar;
   final VoidCallback onOpenProfile;
 
@@ -41,12 +39,6 @@ class MoreMenuPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          ListTile(
-            leading: Icon(Icons.photo_library_outlined,
-                color: theme.colorScheme.primary),
-            title: const Text('Галерея'),
-            onTap: () => _pick(context, onOpenGallery),
-          ),
           ListTile(
             leading: Icon(Icons.calendar_month_outlined,
                 color: theme.colorScheme.primary),

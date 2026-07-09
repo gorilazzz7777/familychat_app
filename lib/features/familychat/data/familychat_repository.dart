@@ -392,6 +392,7 @@ class FamilyChatRepository {
     String? body,
     List<int>? attachmentIds,
     int? replyToMessageId,
+    List<int>? mentionedUserIds,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/',
@@ -400,6 +401,8 @@ class FamilyChatRepository {
         if (attachmentIds != null && attachmentIds.isNotEmpty)
           'attachment_ids': attachmentIds,
         if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
+        if (mentionedUserIds != null && mentionedUserIds.isNotEmpty)
+          'mentioned_user_ids': mentionedUserIds,
       },
     );
     return res.data!;

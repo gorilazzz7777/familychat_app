@@ -85,9 +85,18 @@ class AlbumUploadCoordinator extends ChangeNotifier {
   }) {
     if (photos.isEmpty) return;
 
-    final batch = batchSession ?? FeedPhotoBatchSession(totalTasks: photos.length);
-    final session = _sessions[albumPk];
-    if (session == null) {
+    final existing = _sessions[albumPk];
+    late final FeedPhotoBatchSession batch;
+    if (batchSession != null) {
+      batch = batchSession;
+    } else if (existing != null && existing.active) {
+      batch = existing.batchSession;
+      batch.addTasks(photos.length);
+    } else {
+      batch = FeedPhotoBatchSession(totalTasks: photos.length);
+    }
+
+    if (existing == null || !existing.active) {
       _sessions[albumPk] = AlbumUploadSession(
         userId: userId,
         albumPk: albumPk,
@@ -95,9 +104,12 @@ class AlbumUploadCoordinator extends ChangeNotifier {
         title: title,
         batchSession: batch,
       );
+      _sessions[albumPk]!.total = photos.length;
+    } else {
+      existing.total += photos.length;
     }
+
     final activeSession = _sessions[albumPk]!;
-    activeSession.total += photos.length;
     activeSession.active = true;
     (_queues[albumPk] ??= []).addAll(photos);
     notifyListeners();

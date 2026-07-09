@@ -10,6 +10,8 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/push/push_navigation.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../profile/data/album_upload_coordinator.dart';
+import '../../profile/presentation/custom_album_dialog.dart';
+import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/share_attachment_loader.dart';
@@ -27,75 +29,220 @@ class ChatShareTargetScreen extends ConsumerStatefulWidget {
 class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
   List<Map<String, dynamic>> _threads = [];
   List<Map<String, dynamic>> _albums = [];
+  final Map<int, Map<String, dynamic>> _memberByUserId = {};
   final _selectedThreads = <int>{};
   final _selectedAlbumPks = <int>{};
   int _tabIndex = 0;
-  bool _loading = true;
+  bool _loadingAttachments = true;
+  bool _loadingThreads = true;
+  bool _loadingAlbums = true;
+  bool _creatingAlbum = false;
   bool _sending = false;
   String? _loadError;
+  int? _myUserId;
   late final TextEditingController _captionController;
+  late final TextEditingController _albumSearchController;
+  String _albumSearchQuery = '';
   List<ShareAttachmentData> _attachments = const [];
 
   @override
   void initState() {
     super.initState();
     _captionController = TextEditingController(text: widget.media.content ?? '');
+    _albumSearchController = TextEditingController();
     _load();
   }
 
   @override
   void dispose() {
     _captionController.dispose();
+    _albumSearchController.dispose();
     super.dispose();
+  }
+
+  List<Map<String, dynamic>> _parseCustomAlbums(Map<String, dynamic> data) {
+    return (data['albums'] as List<dynamic>? ?? [])
+        .cast<Map<String, dynamic>>()
+        .where((a) => a['kind']?.toString() == 'custom')
+        .toList();
+  }
+
+  int? _albumPk(Map<String, dynamic> album) {
+    final idStr = album['id']?.toString() ?? '';
+    if (!idStr.startsWith('custom:')) return null;
+    return int.tryParse(idStr.substring(7));
+  }
+
+  Future<void> _loadThreads(dynamic repo) async {
+    try {
+      final results = await Future.wait<dynamic>([
+        repo.chatThreads(),
+        repo.members(),
+      ]);
+      final list = (results[0] as List).cast<Map<String, dynamic>>();
+      final members = (results[1] as List).cast<Map<String, dynamic>>();
+      final byUserId = <int, Map<String, dynamic>>{};
+      for (final member in members) {
+        final uid = member['user_id'];
+        final userId = uid is int ? uid : int.tryParse('$uid');
+        if (userId == null) continue;
+        byUserId[userId] = member;
+      }
+      if (!mounted) return;
+      setState(() {
+        _threads = list;
+        _memberByUserId
+          ..clear()
+          ..addAll(byUserId);
+        _loadingThreads = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingThreads = false);
+    }
+  }
+
+  int? _dmPeerUserId(Map<String, dynamic> thread) {
+    if (thread['kind']?.toString() != 'dm') return null;
+    final raw = thread['peer_user_id'];
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
+  }
+
+  String _threadTitle(Map<String, dynamic> thread) {
+    final peerId = _dmPeerUserId(thread);
+    if (peerId != null) {
+      final display = _memberByUserId[peerId]?['display_name']?.toString().trim();
+      if (display != null && display.isNotEmpty) return display;
+    }
+    return thread['title']?.toString() ?? 'Чат';
+  }
+
+  String? _threadSubtitle(Map<String, dynamic> thread) {
+    final kind = thread['kind']?.toString() ?? '';
+    if (kind == 'dm') {
+      final peerId = _dmPeerUserId(thread);
+      if (peerId == null) return null;
+      final label = _memberByUserId[peerId]?['kinship_label']?.toString().trim();
+      return label == null || label.isEmpty ? null : label;
+    }
+    if (kind == 'group') {
+      return 'Группа';
+    }
+    if (kind == 'family') {
+      return 'Общий чат семьи';
+    }
+    return null;
+  }
+
+  String? _threadAvatarUrl(Map<String, dynamic> thread) {
+    final peerId = _dmPeerUserId(thread);
+    if (peerId == null) return null;
+    final url = _memberByUserId[peerId]?['avatar_url']?.toString().trim();
+    if (url == null || url.isEmpty) return null;
+    return url;
+  }
+
+  Future<void> _loadAlbums(
+    dynamic repo,
+    int myUserId, {
+    bool selectNewest = false,
+    bool forceRefresh = false,
+  }) async {
+    var albums = <Map<String, dynamic>>[];
+    try {
+      if (!forceRefresh) {
+        final cached = await FamilyChatLocalCache.readMemberAlbums(myUserId);
+        if (cached != null) {
+          albums = _parseCustomAlbums(cached);
+          if (mounted) {
+            setState(() => _albums = albums);
+          }
+        }
+      }
+      final albumsData = await repo.memberGalleryAlbums(myUserId);
+      await FamilyChatLocalCache.saveMemberAlbums(myUserId, albumsData);
+      albums = _parseCustomAlbums(albumsData);
+      if (!mounted) return;
+      setState(() {
+        _albums = albums;
+        _loadingAlbums = false;
+        if (selectNewest && albums.isNotEmpty) {
+          int? newestPk;
+          for (final album in albums) {
+            final pk = _albumPk(album);
+            if (pk == null) continue;
+            if (newestPk == null || pk > newestPk) {
+              newestPk = pk;
+            }
+          }
+          if (newestPk != null) _selectedAlbumPks.add(newestPk);
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingAlbums = false);
+      if (albums.isEmpty) rethrow;
+    }
   }
 
   Future<void> _load() async {
     try {
       final attachments = await readShareAttachments(widget.media);
-      final repo = ref.read(familychatRepositoryProvider);
-      final status = await repo.status();
-      final myUserId = status['user_id'] is int ? status['user_id'] as int : null;
-      List<Map<String, dynamic>> albums = const [];
-      if (myUserId != null) {
-        final cached = await FamilyChatLocalCache.readMemberAlbums(myUserId);
-        if (cached != null) {
-          albums = (cached['albums'] as List<dynamic>? ?? [])
-              .cast<Map<String, dynamic>>()
-              .where((a) => a['kind']?.toString() == 'custom')
-              .toList();
-          if (mounted) {
-            setState(() {
-              _attachments = attachments;
-              _albums = albums;
-              _loading = false;
-            });
-          }
-        }
-        try {
-          final albumsData = await repo.memberGalleryAlbums(myUserId);
-          await FamilyChatLocalCache.saveMemberAlbums(myUserId, albumsData);
-          albums = (albumsData['albums'] as List<dynamic>? ?? [])
-              .cast<Map<String, dynamic>>()
-              .where((a) => a['kind']?.toString() == 'custom')
-              .toList();
-        } catch (_) {
-          if (albums.isEmpty) rethrow;
-        }
-      }
-      final list = await repo.chatThreads();
       if (!mounted) return;
       setState(() {
         _attachments = attachments;
-        _threads = list;
-        _albums = albums;
-        _loading = false;
+        _loadingAttachments = false;
       });
+
+      final repo = ref.read(familychatRepositoryProvider);
+      final status = await repo.status();
+      final myUserId = status['user_id'] is int
+          ? status['user_id'] as int
+          : int.tryParse('${status['user_id']}');
+      if (mounted) setState(() => _myUserId = myUserId);
+
+      await Future.wait<void>([
+        _loadThreads(repo),
+        if (myUserId != null) _loadAlbums(repo, myUserId) else Future<void>.value(),
+      ]);
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _loadError = 'Не удалось подготовить отправку';
-        _loading = false;
+        _loadingAttachments = false;
+        _loadingThreads = false;
+        _loadingAlbums = false;
       });
+    }
+  }
+
+  Future<void> _createAlbum() async {
+    final userId = _myUserId;
+    if (userId == null || _creatingAlbum) return;
+    final created = await CustomAlbumDialog.show(context, userId: userId);
+    if (created != true || !mounted) return;
+    setState(() {
+      _creatingAlbum = true;
+      _loadingAlbums = true;
+    });
+    try {
+      final repo = ref.read(familychatRepositoryProvider);
+      await _loadAlbums(
+        repo,
+        userId,
+        selectNewest: true,
+        forceRefresh: true,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось обновить список альбомов')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _creatingAlbum = false);
+      }
     }
   }
 
@@ -280,12 +427,128 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
 
   bool get _allTargetsSelected => _tabIndex == 0 ? _allThreadsSelected : _allAlbumsSelected;
 
-  bool get _hasSelectableTargets =>
-      _tabIndex == 0 ? _selectableThreadIds.isNotEmpty : _selectableAlbumPks.isNotEmpty;
+  List<Map<String, dynamic>> get _filteredAlbums {
+    if (_albumSearchQuery.isEmpty) return _albums;
+    return _albums
+        .where((a) =>
+            (a['title']?.toString().toLowerCase() ?? '').contains(_albumSearchQuery))
+        .toList();
+  }
+
+  bool get _hasSelectableTargets {
+    if (_creatingAlbum) return false;
+    if (_tabIndex == 0) {
+      return !_loadingThreads && _selectableThreadIds.isNotEmpty;
+    }
+    return !_loadingAlbums && _selectableAlbumPks.isNotEmpty;
+  }
+
+  Widget _buildLoadingTargets(String label) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 12),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSelectableTile({
+    required bool selected,
+    required VoidCallback onTap,
+    required String title,
+    String? subtitle,
+    Widget? leading,
+  }) {
+    final theme = Theme.of(context);
+    final bg = selected ? theme.colorScheme.primaryContainer : Colors.transparent;
+    final fg = selected
+        ? theme.colorScheme.onPrimaryContainer
+        : theme.colorScheme.onSurface;
+    final subFg = selected
+        ? theme.colorScheme.onPrimaryContainer.withValues(alpha: 0.8)
+        : theme.colorScheme.onSurfaceVariant;
+
+    return Material(
+      color: bg,
+      child: ListTile(
+        leading: leading,
+        title: Text(
+          title,
+          style: TextStyle(
+            color: fg,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
+        subtitle: subtitle == null
+            ? null
+            : Text(
+                subtitle,
+                style: TextStyle(color: subFg),
+              ),
+        onTap: onTap,
+      ),
+    );
+  }
+
+  Widget _buildGalleryToolbar() {
+    final busy = _creatingAlbum;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: SizedBox(
+              height: 40,
+              child: TextField(
+                controller: _albumSearchController,
+                enabled: !busy,
+                textInputAction: TextInputAction.search,
+                style: Theme.of(context).textTheme.bodyMedium,
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: 'Поиск альбома',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                onChanged: (value) =>
+                    setState(() => _albumSearchQuery = value.trim().toLowerCase()),
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Новый альбом',
+            onPressed: _myUserId == null || _sending || busy ? null : _createAlbum,
+            icon: busy
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.create_new_folder_outlined),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildTargetsList() {
     if (_tabIndex == 0) {
-      if (_threads.isEmpty) return const Center(child: Text('Нет доступных чатов'));
+      if (_loadingThreads) return _buildLoadingTargets('Загрузка чатов...');
+      if (_threads.isEmpty) {
+        return const Center(child: Text('Нет доступных чатов'));
+      }
       return ListView.builder(
         itemCount: _threads.length,
         itemBuilder: (_, i) {
@@ -293,47 +556,58 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
           final id = chatAsInt(t['id']);
           if (id == null) return const SizedBox.shrink();
           final selected = _selectedThreads.contains(id);
-          return CheckboxListTile(
-            value: selected,
-            onChanged: (v) {
+          return _buildSelectableTile(
+            selected: selected,
+            onTap: () {
               setState(() {
-                if (v == true) {
-                  _selectedThreads.add(id);
-                } else {
+                if (selected) {
                   _selectedThreads.remove(id);
+                } else {
+                  _selectedThreads.add(id);
                 }
               });
             },
-            title: Text(t['title']?.toString() ?? 'Чат'),
-            subtitle: Text(_preview(t)),
+            leading: ChatAvatar(
+              name: _threadTitle(t),
+              avatarUrl: _threadAvatarUrl(t),
+              radius: 24,
+            ),
+            title: _threadTitle(t),
+            subtitle: _threadSubtitle(t),
           );
         },
       );
     }
-    if (_albums.isEmpty) {
-      return const Center(child: Text('Нет доступных альбомов'));
+    if (_loadingAlbums && _albums.isEmpty) {
+      return _buildLoadingTargets('Загрузка альбомов...');
+    }
+    final albums = _filteredAlbums;
+    if (albums.isEmpty) {
+      final message = _albumSearchQuery.isNotEmpty
+          ? 'Ничего не найдено'
+          : 'Нет доступных альбомов';
+      return Center(child: Text(message));
     }
     return ListView.builder(
-      itemCount: _albums.length,
+      itemCount: albums.length,
       itemBuilder: (_, i) {
-        final a = _albums[i];
-        final idStr = a['id']?.toString() ?? '';
-        final pk = idStr.startsWith('custom:') ? int.tryParse(idStr.substring(7)) : null;
+        final a = albums[i];
+        final pk = _albumPk(a);
         if (pk == null) return const SizedBox.shrink();
         final selected = _selectedAlbumPks.contains(pk);
-        return CheckboxListTile(
-          value: selected,
-          onChanged: (v) {
+        return _buildSelectableTile(
+          selected: selected,
+          onTap: () {
             setState(() {
-              if (v == true) {
-                _selectedAlbumPks.add(pk);
-              } else {
+              if (selected) {
                 _selectedAlbumPks.remove(pk);
+              } else {
+                _selectedAlbumPks.add(pk);
               }
             });
           },
-          title: Text(a['title']?.toString() ?? 'Альбом'),
-          subtitle: Text('${a['count'] ?? 0} фото'),
+          title: a['title']?.toString() ?? 'Альбом',
+          subtitle: '${a['count'] ?? 0} фото',
         );
       },
     );
@@ -353,7 +627,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
             child: Text(_allTargetsSelected ? 'Снять все' : 'Выбрать все'),
           ),
           TextButton(
-            onPressed: !_canSend || _sending ? null : _send,
+            onPressed: !_canSend || _sending || _creatingAlbum ? null : _send,
             child: _sending
                 ? const SizedBox(
                     width: 20,
@@ -368,7 +642,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
           ),
         ],
       ),
-      body: _loading
+      body: _loadingAttachments
           ? const Center(child: CircularProgressIndicator())
           : _loadError != null
               ? Center(child: Text(_loadError!))
@@ -446,6 +720,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                         Padding(
                           padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                           child: SegmentedButton<int>(
+                            showSelectedIcon: false,
                             segments: const [
                               ButtonSegment(value: 0, label: Text('Чаты')),
                               ButtonSegment(value: 1, label: Text('Галерея')),
@@ -456,19 +731,14 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                             },
                           ),
                         ),
+                        if (_tabIndex == 1) _buildGalleryToolbar(),
                         Expanded(
-                          child: _buildTargetsList(),
+                          child: _tabIndex == 1 && _creatingAlbum
+                              ? _buildLoadingTargets('Создание альбома...')
+                              : _buildTargetsList(),
                         ),
                       ],
                     ),
     );
-  }
-
-  String _preview(Map<String, dynamic> thread) {
-    final last = thread['last_message'] as Map<String, dynamic>?;
-    if (last == null) return 'Нет сообщений';
-    final body = last['body']?.toString() ?? '';
-    if (body.isNotEmpty) return body;
-    return 'Вложение';
   }
 }

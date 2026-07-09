@@ -22,6 +22,7 @@ import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
 import 'chat_call_screen.dart';
 import 'widgets/chat_compose_input.dart';
+import 'widgets/chat_mention_compose_input.dart';
 import 'widgets/chat_image_viewer.dart';
 import 'widgets/chat_media_compose_sheet.dart';
 import 'widgets/chat_message_actions_sheet.dart';
@@ -127,6 +128,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _canRejoin = false;
   bool _canLeave = false;
   List<int> _participantUserIds = [];
+  List<ChatMentionParticipant> _mentionParticipants = [];
   double _lastKeyboardInset = 0;
 
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
@@ -224,6 +226,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             .map((p) => p['user_id'])
             .map((id) => id is int ? id : int.tryParse('$id'))
             .whereType<int>()
+            .toList();
+        _mentionParticipants = list
+            .map((p) {
+              final userId = p['user_id'];
+              final parsedId = userId is int ? userId : int.tryParse('$userId');
+              if (parsedId == null) return null;
+              return ChatMentionParticipant(
+                userId: parsedId,
+                displayName: p['display_name']?.toString() ?? 'Участник',
+                avatarUrl: p['avatar_url']?.toString() ?? '',
+              );
+            })
+            .whereType<ChatMentionParticipant>()
             .toList();
       });
     } catch (_) {}
@@ -607,6 +622,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     required String caption,
     required List<_OutgoingAttachment> attachments,
     int? replyToMessageId,
+    List<int> mentionedUserIds = const [],
   }) async {
     try {
       final repo = ref.read(familychatRepositoryProvider);
@@ -626,6 +642,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         body: caption.isEmpty ? null : caption,
         attachmentIds: ids.isEmpty ? null : ids,
         replyToMessageId: replyToMessageId,
+        mentionedUserIds:
+            mentionedUserIds.isEmpty ? null : mentionedUserIds,
       );
       if (!mounted) return;
       _replaceOptimisticMessage(tempId, msg);
@@ -848,7 +866,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
-  Future<void> _send() async {
+  Future<void> _send({List<int> mentionedUserIds = const []}) async {
     final body = _controller.text.trim();
     final fileDraft = _pendingFileDraft;
     if (body.isEmpty && fileDraft == null) return;
@@ -919,6 +937,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         caption: body,
         attachments: const [],
         replyToMessageId: replyId,
+        mentionedUserIds: mentionedUserIds,
       );
       return;
     }
@@ -934,6 +953,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         ),
       ],
       replyToMessageId: replyId,
+      mentionedUserIds: mentionedUserIds,
     );
   }
 
@@ -1599,6 +1619,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                   m['reactions'],
                                   currentUserId: _currentUserId,
                                 );
+                                final mentions = (m['mentions'] as List?)
+                                        ?.map((e) =>
+                                            Map<String, dynamic>.from(e as Map))
+                                        .toList() ??
+                                    const <Map<String, dynamic>>[];
                                 final replyMessageId =
                                     chatAsInt(replyTo?['message_id']);
                                 final isSystem = m['is_system'] == true;
@@ -1623,6 +1648,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     replyTo: replyTo,
                                     forward: forward,
                                     reactions: reactions,
+                                    mentions: mentions,
                                     isGroupLike: _isGroupLike,
                                     readStatus: isMine
                                         ? m['read_status']?.toString() ??
@@ -1749,12 +1775,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                         ),
                       Padding(
                         padding: const EdgeInsets.all(8),
-                        child: ChatComposeInput(
-                          controller: _controller,
-                          focusNode: _inputFocus,
-                          onAttach: _pickAttachment,
-                          onSend: _send,
-                        ),
+                        child: _isGroupLike
+                            ? ChatMentionComposeInput(
+                                controller: _controller,
+                                focusNode: _inputFocus,
+                                onAttach: _pickAttachment,
+                                onSend: (mentionedUserIds) => unawaited(
+                                  _send(mentionedUserIds: mentionedUserIds),
+                                ),
+                                participants: _mentionParticipants,
+                                currentUserId: _currentUserId,
+                              )
+                            : ChatComposeInput(
+                                controller: _controller,
+                                focusNode: _inputFocus,
+                                onAttach: _pickAttachment,
+                                onSend: () => unawaited(_send()),
+                              ),
                       ),
                     ],
                   ),

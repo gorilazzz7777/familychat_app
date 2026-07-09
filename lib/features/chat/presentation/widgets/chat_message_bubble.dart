@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
+import 'chat_mention_text.dart';
 import 'chat_network_image.dart';
 
 class ChatMessageBubble extends StatelessWidget {
@@ -36,6 +37,7 @@ class ChatMessageBubble extends StatelessWidget {
     this.onReplyTap,
     this.onReactionTap,
     this.isGroupLike = false,
+    this.mentions = const [],
   });
 
   final int threadId;
@@ -62,6 +64,7 @@ class ChatMessageBubble extends StatelessWidget {
   final VoidCallback? onReplyTap;
   final void Function(String emoji)? onReactionTap;
   final bool isGroupLike;
+  final List<Map<String, dynamic>> mentions;
 
   static const double _avatarSize = 32;
 
@@ -124,9 +127,17 @@ class ChatMessageBubble extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (_showBody(body, forward))
-                      Text(
-                        body,
-                        style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                      ChatMentionText(
+                        body: body,
+                        mentions: mentions,
+                        style: theme.textTheme.bodyMedium?.copyWith(color: textColor) ??
+                            TextStyle(color: textColor),
+                        mentionStyle: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+                          color: isMine
+                              ? const Color(0xFF8FD3FF)
+                              : theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     for (final a in attachments) ...[
                       if (body.isNotEmpty) const SizedBox(height: 8),
