@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../../core/push/push_message_handler.dart';
 import '../../familychat/data/familychat_repository.dart';
 
@@ -24,12 +25,14 @@ class AlbumUploadSession {
     required this.albumPk,
     required this.albumId,
     required this.title,
+    required this.batchSession,
   });
 
   final int userId;
   final int albumPk;
   final String albumId;
   final String title;
+  final FeedPhotoBatchSession batchSession;
   int total = 0;
   int done = 0;
   int failed = 0;
@@ -78,9 +81,11 @@ class AlbumUploadCoordinator extends ChangeNotifier {
     required String albumId,
     required String title,
     required List<AlbumUploadPhoto> photos,
+    FeedPhotoBatchSession? batchSession,
   }) {
     if (photos.isEmpty) return;
 
+    final batch = batchSession ?? FeedPhotoBatchSession(totalTasks: photos.length);
     final session = _sessions[albumPk];
     if (session == null) {
       _sessions[albumPk] = AlbumUploadSession(
@@ -88,6 +93,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
         albumPk: albumPk,
         albumId: albumId,
         title: title,
+        batchSession: batch,
       );
     }
     final activeSession = _sessions[albumPk]!;
@@ -121,11 +127,14 @@ class AlbumUploadCoordinator extends ChangeNotifier {
             bytes: photo.bytes,
             filename: photo.filename,
             contentType: photo.contentType ?? 'image/jpeg',
+            batchId: session.batchSession.batchId,
           );
           session.pendingPhotos.add(uploaded);
           session.done++;
         } catch (_) {
           session.failed++;
+        } finally {
+          await session.batchSession.markAttemptFinished(repo);
         }
         notifyListeners();
       }

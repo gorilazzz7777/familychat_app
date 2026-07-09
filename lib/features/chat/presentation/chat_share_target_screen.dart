@@ -8,6 +8,7 @@ import '../../../app/shell_refresh.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/push/push_navigation.dart';
+import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../profile/data/album_upload_coordinator.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
 import '../data/chat_realtime_utils.dart';
@@ -134,6 +135,9 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
 
     int? navigatePk;
     var navigateTitle = 'Альбом';
+    final batch = FeedPhotoBatchSession(
+      totalTasks: albumPks.length * photos.length,
+    );
 
     for (final albumPk in albumPks) {
       final album = _albumByPk(albumPk);
@@ -147,6 +151,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
         albumId: 'custom:$albumPk',
         title: title,
         photos: photos,
+        batchSession: batch,
       );
     }
 

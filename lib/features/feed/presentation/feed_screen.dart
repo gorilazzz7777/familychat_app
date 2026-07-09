@@ -150,6 +150,45 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     }
   }
 
+  Future<void> _openPhotoBatch(
+    Map<String, dynamic> event, {
+    int initialIndex = 0,
+  }) async {
+    final payload = (event['payload'] as Map<String, dynamic>?) ?? {};
+    final status = await ref.read(familychatRepositoryProvider).status();
+    final currentUserId = status['user_id'] is int ? status['user_id'] as int : null;
+    if (currentUserId == null || !mounted) return;
+
+    final photos = (payload['attachments'] as List<dynamic>? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .map((att) {
+          final rawId = att['id'] ?? att['attachment_id'];
+          final id = rawId is int ? rawId : int.tryParse('$rawId');
+          final threadId = att['thread_id'] is int
+              ? att['thread_id'] as int
+              : int.tryParse('${att['thread_id']}');
+          if (id == null || threadId == null) return null;
+          return {
+            ...att,
+            'id': id,
+            'thread_id': threadId,
+          };
+        })
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    if (photos.isEmpty) return;
+
+    await GalleryPhotoViewerScreen.open(
+      context,
+      profileUserId: currentUserId,
+      photo: photos[initialIndex.clamp(0, photos.length - 1)],
+      currentUserId: currentUserId,
+      photos: photos,
+      initialIndex: initialIndex,
+    );
+    if (mounted) await refresh(silent: true);
+  }
+
   Future<void> _openSource(Map<String, dynamic> event) async {
     final kind = event['kind']?.toString() ?? '';
     final payload = (event['payload'] as Map<String, dynamic>?) ?? {};
@@ -159,6 +198,8 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     if (currentUserId == null) return;
 
     switch (kind) {
+      case 'photo_batch_uploaded':
+        await _openPhotoBatch(event);
       case 'message_sent':
         final threadId = payload['thread_id'];
         if (threadId is! int) return;
@@ -267,6 +308,8 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           child: FeedEventCard(
             event: event,
             onOpenSource: () => _openSource(event),
+            onOpenPhotoBatch: (batchEvent, {initialIndex = 0}) =>
+                _openPhotoBatch(batchEvent, initialIndex: initialIndex),
             onOpenMedia: (photo) async {
               final status = await ref.read(familychatRepositoryProvider).status();
               final currentUserId = status['user_id'] is int ? status['user_id'] as int : null;

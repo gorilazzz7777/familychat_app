@@ -835,6 +835,7 @@ class FamilyChatRepository {
     required Uint8List bytes,
     required String filename,
     String? contentType,
+    String? batchId,
   }) async {
     await logUploadImageExifDiagnostics(
       bytes: bytes,
@@ -848,6 +849,7 @@ class FamilyChatRepository {
         contentType:
             contentType != null ? DioMediaType.parse(contentType) : null,
       ),
+      if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
     });
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/custom-albums/$albumPk/photos/upload/',
@@ -936,6 +938,7 @@ class FamilyChatRepository {
     String? contentType,
     required String destination,
     int? albumPk,
+    String? batchId,
   }) async {
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
@@ -946,6 +949,7 @@ class FamilyChatRepository {
       ),
       'destination': destination,
       if (albumPk != null) 'album_pk': albumPk,
+      if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
     });
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/gallery/upload/',
@@ -956,6 +960,14 @@ class FamilyChatRepository {
       ),
     );
     return res.data!;
+  }
+
+  Future<Map<String, dynamic>> completeFeedPhotoBatch(String batchId) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/feed/photo-batch/complete/',
+      data: {'batch_id': batchId},
+    );
+    return res.data ?? {};
   }
 
   Future<Map<String, dynamic>> mediaEngagement(int attachmentId) async {

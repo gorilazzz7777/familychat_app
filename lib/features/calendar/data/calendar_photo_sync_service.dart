@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../../../core/debug/upload_image_exif_log.dart';
+import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../familychat/data/familychat_repository.dart';
 
 class CalendarPhotoSyncInfo {
@@ -148,13 +149,20 @@ class CalendarPhotoSyncService {
 
     var uploaded = 0;
     final registered = <String>[];
+    final batch = FeedPhotoBatchSession(totalTasks: candidates.length);
     for (var i = 0; i < candidates.length; i++) {
       onProgress?.call(i, candidates.length);
       final asset = candidates[i];
       final file = await asset.originFile ?? await asset.file;
-      if (file == null) continue;
+      if (file == null) {
+        await batch.markAttemptFinished(_repo);
+        continue;
+      }
       final bytes = await file.readAsBytes();
-      if (bytes.isEmpty) continue;
+      if (bytes.isEmpty) {
+        await batch.markAttemptFinished(_repo);
+        continue;
+      }
       final title = await asset.titleAsync;
       final filename = (title.isNotEmpty) ? title : 'photo_${asset.id}.jpg';
       await logUploadImageExifDiagnostics(
@@ -169,11 +177,14 @@ class CalendarPhotoSyncService {
           info.galleryAlbumId,
           bytes: bytes,
           filename: filename,
+          batchId: batch.batchId,
         );
         registered.add(asset.id);
         uploaded++;
       } catch (_) {
         // continue with next photo
+      } finally {
+        await batch.markAttemptFinished(_repo);
       }
     }
 
@@ -223,10 +234,14 @@ class CalendarPhotoSyncService {
     if (photos.isEmpty) return 0;
     var uploaded = 0;
     final registered = <String>[];
+    final batch = FeedPhotoBatchSession(totalTasks: photos.length);
     for (var i = 0; i < photos.length; i++) {
       onProgress?.call(i, photos.length);
       final photo = photos[i];
-      if (alreadySynced.contains(photo.deviceAssetId)) continue;
+      if (alreadySynced.contains(photo.deviceAssetId)) {
+        await batch.markAttemptFinished(_repo);
+        continue;
+      }
       try {
         await _repo.uploadPhotoToCustomAlbum(
           userId,
@@ -234,11 +249,14 @@ class CalendarPhotoSyncService {
           bytes: photo.bytes,
           filename: photo.filename,
           contentType: photo.contentType,
+          batchId: batch.batchId,
         );
         registered.add(photo.deviceAssetId);
         uploaded++;
       } catch (_) {
         // skip failed
+      } finally {
+        await batch.markAttemptFinished(_repo);
       }
     }
     if (registered.isNotEmpty) {
