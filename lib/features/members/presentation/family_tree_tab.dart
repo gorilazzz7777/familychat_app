@@ -133,6 +133,31 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
     return _savedLinks[personId];
   }
 
+  bool _viewerHasDirectLink(int personId) {
+    final code = _effectiveLinkCode(personId);
+    return code != null && code.isNotEmpty;
+  }
+
+  Map<String, dynamic> _payloadForDisplay(int centerPersonId) {
+    final payload = Map<String, dynamic>.from(_payload!);
+    final rawEdges = payload['edges'];
+    if (rawEdges is! List) return payload;
+
+    final edges = rawEdges.cast<Map<String, dynamic>>().where((edge) {
+      final fromRaw = edge['from_person_id'];
+      final toRaw = edge['to_person_id'];
+      final from = fromRaw is int ? fromRaw : int.tryParse('$fromRaw');
+      final to = toRaw is int ? toRaw : int.tryParse('$toRaw');
+      if (from == null || to == null) return false;
+      if (from != centerPersonId && to != centerPersonId) return true;
+      final other = from == centerPersonId ? to : from;
+      return _viewerHasDirectLink(other);
+    }).toList();
+
+    payload['edges'] = edges;
+    return payload;
+  }
+
   List<Map<String, dynamic>> _changesPayload() {
     return _draftChanges.entries
         .map(
@@ -315,6 +340,10 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
         _draftChanges[person.personId] = normalized;
       }
     });
+    if (_draftChanges.isEmpty) {
+      await _load(resetDraft: true);
+      return;
+    }
     await _previewDraft();
   }
 
@@ -426,7 +455,10 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
       return const Center(child: Text('Нет данных для дерева'));
     }
 
-    final graph = FamilyTreeGraph.fromPayload(payload, centerPersonId: centerPersonId);
+    final graph = FamilyTreeGraph.fromPayload(
+      _payloadForDisplay(centerPersonId),
+      centerPersonId: centerPersonId,
+    );
     final visibleIds = graph.visiblePersonIds();
     final centerPerson = graph.personsById[centerPersonId];
     final stats = graph.stats();

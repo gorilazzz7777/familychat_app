@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/family_public_image.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import 'chat_call_screen.dart';
 import 'widgets/chat_network_image.dart';
 
 String chatParticipantCountLabel(int count) {
@@ -37,6 +40,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
     this.canRejoin = false,
     this.canLeave = false,
     this.participantUserIds = const [],
+    this.peerUserId,
     this.onTitleChanged,
     this.onMembershipChanged,
     this.onGoToMessage,
@@ -52,6 +56,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
   final bool canRejoin;
   final bool canLeave;
   final List<int> participantUserIds;
+  final int? peerUserId;
   final ChatTitleChanged? onTitleChanged;
   final VoidCallback? onMembershipChanged;
   final ChatGoToMessage? onGoToMessage;
@@ -63,6 +68,8 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
 
 class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     with SingleTickerProviderStateMixin {
+  static const _expandedHeaderHeight = 300.0;
+
   late final TabController _tabs;
   late String _title;
   late String _customTitle;
@@ -71,9 +78,14 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   List<Map<String, dynamic>> _links = [];
   List<Map<String, dynamic>> _participants = [];
   bool _loading = true;
+  String? _headerAvatarUrl;
+  String? _headerSubtitle;
+  bool _notificationsEnabled = true;
 
   bool get _showParticipants =>
       (widget.kind == 'group' || widget.kind == 'family') && !widget.hasLeft;
+
+  bool get _isDm => widget.kind == 'dm' && widget.peerUserId != null;
 
   int get _tabCount => _showParticipants ? 4 : 3;
 
@@ -99,24 +111,62 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         repo.threadMedia(widget.threadId),
         repo.threadFiles(widget.threadId),
         repo.threadLinks(widget.threadId),
+        repo.threadNotifications(widget.threadId),
       ];
       if (_showParticipants) {
         futures.add(repo.threadParticipants(widget.threadId));
       }
+      if (widget.peerUserId != null) {
+        futures.add(repo.memberProfile(widget.peerUserId!));
+      }
       final results = await Future.wait(futures);
       if (!mounted) return;
+      var idx = 0;
+      final media = results[idx++];
+      final files = results[idx++];
+      final links = results[idx++];
+      final notif = results[idx++] as Map<String, dynamic>;
+      var participants = <Map<String, dynamic>>[];
+      if (_showParticipants) {
+        participants = (results[idx++] as List).cast<Map<String, dynamic>>();
+      }
+      Map<String, dynamic>? peerProfile;
+      if (widget.peerUserId != null) {
+        peerProfile = results[idx] as Map<String, dynamic>;
+      }
       setState(() {
-        _media = (results[0] as List).cast<Map<String, dynamic>>();
-        _files = (results[1] as List).cast<Map<String, dynamic>>();
-        _links = (results[2] as List).cast<Map<String, dynamic>>();
+        _media = (media as List).cast<Map<String, dynamic>>();
+        _files = (files as List).cast<Map<String, dynamic>>();
+        _links = (links as List).cast<Map<String, dynamic>>();
+        _notificationsEnabled = notif['notifications_enabled'] == true;
         if (_showParticipants) {
-          _participants = (results[3] as List).cast<Map<String, dynamic>>();
+          _participants = participants;
+        }
+        if (peerProfile != null) {
+          _headerAvatarUrl = peerProfile['avatar_url']?.toString();
+          _headerSubtitle = userPresenceFromProfile(peerProfile).label;
+        } else if (_customTitle.isNotEmpty) {
+          _headerSubtitle = widget.defaultTitle;
+        } else if (_showParticipants && participants.isNotEmpty) {
+          _headerSubtitle = chatParticipantCountLabel(participants.length);
         }
         _loading = false;
       });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _refreshNotifications() async {
+    try {
+      final data = await ref
+          .read(familychatRepositoryProvider)
+          .threadNotifications(widget.threadId);
+      if (!mounted) return;
+      setState(() {
+        _notificationsEnabled = data['notifications_enabled'] == true;
+      });
+    } catch (_) {}
   }
 
   Future<void> _reloadParticipants() async {
@@ -143,6 +193,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 ? 'Уведомления включены'
                 : 'Уведомления отключены')),
       );
+      await _refreshNotifications();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -301,6 +352,210 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     );
   }
 
+  void _startCall() {
+    Navigator.of(context).pop();
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatCallScreen(
+          threadId: widget.threadId,
+          title: _title,
+          isCaller: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showMoreMenu() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.canRejoin)
+              ListTile(
+                leading: const Icon(Icons.login),
+                title: const Text('Вернуться в чат'),
+                onTap: () => Navigator.pop(ctx, 'rejoin'),
+              ),
+            if (widget.canLeave && !widget.hasLeft)
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('Покинуть чат'),
+                onTap: () => Navigator.pop(ctx, 'leave'),
+              ),
+            if (widget.kind == 'group' && !widget.hasLeft)
+              ListTile(
+                leading: const Icon(Icons.person_add_outlined),
+                title: const Text('Добавить участников'),
+                onTap: () => Navigator.pop(ctx, 'add'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'rejoin':
+        await _rejoinChat();
+      case 'leave':
+        await _leaveChat();
+      case 'add':
+        await _addMembers();
+    }
+  }
+
+  bool get _hasMoreActions =>
+      widget.canRejoin ||
+      (widget.canLeave && !widget.hasLeft) ||
+      (widget.kind == 'group' && !widget.hasLeft);
+
+  List<Widget> _tabBodies(BuildContext context) {
+    final handle = NestedScrollView.sliverOverlapAbsorberHandleFor(context);
+    return [
+      if (_showParticipants) _participantsTab(handle),
+      _galleryTab(handle),
+      _linksTab(handle),
+      _filesTab(handle),
+    ];
+  }
+
+  Widget _galleryTab(SliverOverlapAbsorberHandle handle) {
+    if (_media.isEmpty) {
+      return CustomScrollView(
+        slivers: [
+          SliverOverlapInjector(handle: handle),
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: Text('Нет изображений')),
+          ),
+        ],
+      );
+    }
+    return CustomScrollView(
+      slivers: [
+        SliverOverlapInjector(handle: handle),
+        SliverPadding(
+          padding: const EdgeInsets.all(8),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 4,
+              mainAxisSpacing: 4,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, i) {
+                final item = _media[i];
+                return GestureDetector(
+                  onTap: () => _openGalleryItem(item),
+                  onLongPress: () {
+                    final messageId = _messageIdOf(item);
+                    if (messageId != null) {
+                      _showItemActions(
+                        title: 'Открыть фото',
+                        onOpen: () => _openGalleryItem(item),
+                        messageId: messageId,
+                      );
+                    }
+                  },
+                  child: ChatNetworkImage(
+                    threadId: widget.threadId,
+                    attachment: item,
+                    fit: BoxFit.cover,
+                  ),
+                );
+              },
+              childCount: _media.length,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _linksTab(SliverOverlapAbsorberHandle handle) {
+    if (_links.isEmpty) {
+      return CustomScrollView(
+        slivers: [
+          SliverOverlapInjector(handle: handle),
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: Text('Нет ссылок')),
+          ),
+        ],
+      );
+    }
+    return CustomScrollView(
+      slivers: [
+        SliverOverlapInjector(handle: handle),
+        SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, i) {
+              final item = _links[i];
+              final url = item['url']?.toString() ?? '';
+              final messageId = _messageIdOf(item);
+              return ListTile(
+                title: Text(url, maxLines: 2, overflow: TextOverflow.ellipsis),
+                onTap: () => _showItemActions(
+                  title: 'Открыть ссылку',
+                  onOpen: () => launchUrl(
+                    Uri.parse(url),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                  messageId: messageId,
+                ),
+              );
+            },
+            childCount: _links.length,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _filesTab(SliverOverlapAbsorberHandle handle) {
+    if (_files.isEmpty) {
+      return CustomScrollView(
+        slivers: [
+          SliverOverlapInjector(handle: handle),
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: Text('Нет файлов')),
+          ),
+        ],
+      );
+    }
+    return CustomScrollView(
+      slivers: [
+        SliverOverlapInjector(handle: handle),
+        SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, i) {
+              final f = _files[i];
+              final url = f['file_url']?.toString();
+              final messageId = _messageIdOf(f);
+              return ListTile(
+                leading: const Icon(Icons.insert_drive_file_outlined),
+                title: Text(f['filename']?.toString() ?? 'Файл'),
+                onTap: () => _showItemActions(
+                  title: 'Открыть файл',
+                  onOpen: url != null
+                      ? () => launchUrl(
+                            Uri.parse(url),
+                            mode: LaunchMode.externalApplication,
+                          )
+                      : null,
+                  messageId: messageId,
+                ),
+              );
+            },
+            childCount: _files.length,
+          ),
+        ),
+      ],
+    );
+  }
+
   Future<void> _showMuteOptions() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -415,243 +670,348 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
-      child: SizedBox(
-        height: MediaQuery.sizeOf(context).height * 0.75,
-        child: Column(
+  Widget _buildNameRow(BuildContext context, {required bool onDark}) {
+    final theme = Theme.of(context);
+    final titleStyle = theme.textTheme.titleLarge?.copyWith(
+      fontWeight: FontWeight.w600,
+      color: onDark ? Colors.white : theme.colorScheme.onSurface,
+    );
+    final subtitleStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: onDark
+          ? Colors.white.withValues(alpha: 0.85)
+          : theme.colorScheme.onSurfaceVariant,
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade400,
-                borderRadius: BorderRadius.circular(2),
+            Flexible(
+              child: Text(
+                _title,
+                style: titleStyle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(16),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              icon: Icon(
+                Icons.edit_outlined,
+                size: 18,
+                color: onDark
+                    ? Colors.white.withValues(alpha: 0.9)
+                    : theme.colorScheme.primary,
+              ),
+              tooltip: 'Переименовать',
+              onPressed: _renameChat,
+            ),
+          ],
+        ),
+        if (_headerSubtitle != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              _headerSubtitle!,
+              style: subtitleStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+            ),
+          ),
+        if (_customTitle.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              widget.defaultTitle,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: onDark
+                    ? Colors.white.withValues(alpha: 0.75)
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _flexibleHeader(BuildContext context) {
+    final theme = Theme.of(context);
+    final hasPhoto =
+        _headerAvatarUrl != null && _headerAvatarUrl!.trim().isNotEmpty;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final settings =
+            context.dependOnInheritedWidgetOfExactType<FlexibleSpaceBarSettings>();
+        final maxExtent = settings?.maxExtent ?? _expandedHeaderHeight;
+        final minExtent = settings?.minExtent ?? kToolbarHeight;
+        final current = settings?.currentExtent ?? maxExtent;
+        final range = (maxExtent - minExtent).clamp(1.0, double.infinity);
+        final t = ((maxExtent - current) / range).clamp(0.0, 1.0);
+
+        const expandedAvatarSize = 120.0;
+        const collapsedAvatarSize = 44.0;
+        final avatarSize =
+            expandedAvatarSize + (collapsedAvatarSize - expandedAvatarSize) * t;
+        final photoOpacity = (1 - t * 1.35).clamp(0.0, 1.0);
+        final onDark = hasPhoto && photoOpacity > 0.25 && t < 0.55;
+        final expandedTop = maxExtent * 0.22;
+        const collapsedTop = 28.0;
+        final avatarTop = expandedTop + (collapsedTop - expandedTop) * t;
+
+        return Stack(
+          fit: StackFit.expand,
+          clipBehavior: Clip.hardEdge,
+          children: [
+            if (hasPhoto)
+              Opacity(
+                opacity: photoOpacity,
+                child: FamilyPublicImage(
+                  url: _headerAvatarUrl!,
+                  fit: BoxFit.cover,
+                  error: ColoredBox(
+                    color: theme.colorScheme.surfaceContainerLow,
+                  ),
+                ),
+              )
+            else
+              ColoredBox(color: theme.colorScheme.surfaceContainerLow),
+            if (hasPhoto && photoOpacity > 0.05)
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.08 * (1 - t)),
+                      Colors.black.withValues(alpha: 0.5 * (1 - t * 0.85)),
+                    ],
+                  ),
+                ),
+              ),
+            Positioned(
+              top: avatarTop,
+              left: 0,
+              right: 0,
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(_title, style: Theme.of(context).textTheme.titleLarge),
-                  if (_showParticipants && _participants.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        chatParticipantCountLabel(_participants.length),
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                      ),
-                    ),
-                  if (_customTitle.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        widget.defaultTitle,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                      ),
-                    ),
-                  const SizedBox(height: 10),
-                  SizedBox(
-                    height: 40,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      shrinkWrap: true,
-                      children: [
-                        _InfoCompactAction(
-                          icon: Icons.drive_file_rename_outline,
-                          label: 'Переименовать',
-                          onTap: _renameChat,
-                        ),
-                        const SizedBox(width: 8),
-                        _InfoCompactAction(
-                          icon: Icons.notifications_off_outlined,
-                          label: 'Уведомления',
-                          onTap: _showMuteOptions,
-                        ),
-                        if (widget.canRejoin) ...[
-                          const SizedBox(width: 8),
-                          _InfoCompactAction(
-                            icon: Icons.login,
-                            label: 'Вернуться в чат',
-                            onTap: _rejoinChat,
-                          ),
-                        ],
-                        if (widget.canLeave && !widget.hasLeft) ...[
-                          const SizedBox(width: 8),
-                          _InfoCompactAction(
-                            icon: Icons.logout,
-                            label: 'Покинуть чат',
-                            onTap: _leaveChat,
-                          ),
-                        ],
-                        if (widget.kind == 'group' && !widget.hasLeft) ...[
-                          const SizedBox(width: 8),
-                          _InfoCompactAction(
-                            icon: Icons.person_add_outlined,
-                            label: 'Добавить участников',
-                            onTap: _addMembers,
-                          ),
-                        ],
-                      ],
+                  ChatAvatar(
+                    name: _title,
+                    avatarUrl: _headerAvatarUrl,
+                    radius: avatarSize / 2,
+                  ),
+                  SizedBox(height: 10 * (1 - t * 0.6)),
+                  Opacity(
+                    opacity: (1 - t * 0.15).clamp(0.0, 1.0),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: _buildNameRow(context, onDark: onDark),
                     ),
                   ),
                 ],
               ),
             ),
-            TabBar(
-              controller: _tabs,
-              isScrollable: _showParticipants,
-              tabs: [
-                if (_showParticipants) const Tab(text: 'Участники'),
-                const Tab(text: 'Галерея'),
-                const Tab(text: 'Ссылки'),
-                const Tab(text: 'Файлы'),
-              ],
-            ),
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : TabBarView(
-                      controller: _tabs,
-                      children: [
-                        if (_showParticipants) _participantsTab(),
-                        _media.isEmpty
-                            ? const Center(child: Text('Нет изображений'))
-                            : GridView.builder(
-                                padding: const EdgeInsets.all(8),
-                                gridDelegate:
-                                    const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 3,
-                                  crossAxisSpacing: 4,
-                                  mainAxisSpacing: 4,
-                                ),
-                                itemCount: _media.length,
-                                itemBuilder: (_, i) {
-                                  final item = _media[i];
-                                  return GestureDetector(
-                                    onTap: () => _openGalleryItem(item),
-                                    onLongPress: () {
-                                      final messageId = _messageIdOf(item);
-                                      if (messageId != null) {
-                                        _showItemActions(
-                                          title: 'Открыть фото',
-                                          onOpen: () => _openGalleryItem(item),
-                                          messageId: messageId,
-                                        );
-                                      }
-                                    },
-                                    child: ChatNetworkImage(
-                                      threadId: widget.threadId,
-                                      attachment: item,
-                                      fit: BoxFit.cover,
-                                    ),
-                                  );
-                                },
-                              ),
-                        _links.isEmpty
-                            ? const Center(child: Text('Нет ссылок'))
-                            : ListView.builder(
-                                itemCount: _links.length,
-                                itemBuilder: (_, i) {
-                                  final item = _links[i];
-                                  final url = item['url']?.toString() ?? '';
-                                  final messageId = _messageIdOf(item);
-                                  return ListTile(
-                                    title: Text(
-                                      url,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    onTap: () => _showItemActions(
-                                      title: 'Открыть ссылку',
-                                      onOpen: () => launchUrl(
-                                        Uri.parse(url),
-                                        mode: LaunchMode.externalApplication,
-                                      ),
-                                      messageId: messageId,
-                                    ),
-                                  );
-                                },
-                              ),
-                        _files.isEmpty
-                            ? const Center(child: Text('Нет файлов'))
-                            : ListView.builder(
-                                itemCount: _files.length,
-                                itemBuilder: (_, i) {
-                                  final f = _files[i];
-                                  final url = f['file_url']?.toString();
-                                  final messageId = _messageIdOf(f);
-                                  return ListTile(
-                                    leading: const Icon(
-                                        Icons.insert_drive_file_outlined),
-                                    title: Text(
-                                        f['filename']?.toString() ?? 'Файл'),
-                                    onTap: () => _showItemActions(
-                                      title: 'Открыть файл',
-                                      onOpen: url != null
-                                          ? () => launchUrl(
-                                                Uri.parse(url),
-                                                mode: LaunchMode
-                                                    .externalApplication,
-                                              )
-                                          : null,
-                                      messageId: messageId,
-                                    ),
-                                  );
-                                },
-                              ),
-                      ],
-                    ),
-            ),
           ],
-        ),
+        );
+      },
+    );
+  }
+
+  Widget _actionButtonsRow(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _TgProfileAction(
+            icon: Icons.chat_bubble_outline,
+            label: 'Чат',
+            onTap: () => Navigator.of(context).pop(),
+          ),
+          _TgProfileAction(
+            icon: _notificationsEnabled
+                ? Icons.notifications_outlined
+                : Icons.notifications_off_outlined,
+            label: 'Звук',
+            onTap: _notificationsEnabled ? _showMuteOptions : () => _mute('off'),
+          ),
+          if (_isDm)
+            _TgProfileAction(
+              icon: Icons.call_outlined,
+              label: 'Звонок',
+              onTap: _startCall,
+            ),
+        ],
       ),
     );
   }
 
-  Widget _participantsTab() {
-    if (_participants.isEmpty) {
-      return const Center(child: Text('Нет участников'));
-    }
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      itemCount: _participants.length,
-      separatorBuilder: (_, __) => Divider(
-        height: 1,
-        indent: 72,
-        color:
-            Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.4),
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.92,
+        minChildSize: 0.55,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (context, scrollController) {
+          return ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            child: Material(
+              color: theme.colorScheme.surface,
+              child: Stack(
+                children: [
+                  NestedScrollView(
+                    controller: scrollController,
+                    headerSliverBuilder: (context, innerBoxIsScrolled) {
+                      final handle =
+                          NestedScrollView.sliverOverlapAbsorberHandleFor(
+                        context,
+                      );
+                      return [
+                        SliverOverlapAbsorber(
+                          handle: handle,
+                          sliver: SliverAppBar(
+                            automaticallyImplyLeading: false,
+                            expandedHeight: _expandedHeaderHeight,
+                            pinned: true,
+                            stretch: true,
+                            elevation: innerBoxIsScrolled ? 0.5 : 0,
+                            scrolledUnderElevation: 0.5,
+                            backgroundColor: theme.colorScheme.surface,
+                            surfaceTintColor: Colors.transparent,
+                            actions: [
+                              if (_hasMoreActions)
+                                IconButton(
+                                  icon: const Icon(Icons.more_vert),
+                                  onPressed: _showMoreMenu,
+                                ),
+                            ],
+                            flexibleSpace: FlexibleSpaceBar(
+                              collapseMode: CollapseMode.parallax,
+                              background: _flexibleHeader(context),
+                            ),
+                            bottom: PreferredSize(
+                              preferredSize: const Size.fromHeight(116),
+                              child: Column(
+                                children: [
+                                  _actionButtonsRow(context),
+                                  TabBar(
+                                    controller: _tabs,
+                                    isScrollable: _showParticipants,
+                                    tabs: [
+                                      if (_showParticipants)
+                                        const Tab(text: 'Участники'),
+                                      const Tab(text: 'Галерея'),
+                                      const Tab(text: 'Ссылки'),
+                                      const Tab(text: 'Файлы'),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ];
+                    },
+                    body: _loading
+                        ? const Center(child: CircularProgressIndicator())
+                        : Builder(
+                            builder: (nestedContext) => TabBarView(
+                              controller: _tabs,
+                              children: _tabBodies(nestedContext),
+                            ),
+                          ),
+                  ),
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade400,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
-      itemBuilder: (context, index) {
-        final participant = _participants[index];
-        final name = participant['display_name']?.toString() ?? 'Участник';
-        final uid = participant['user_id'];
-        final userId = uid is int ? uid : int.tryParse('$uid');
-        if (userId == null) return const SizedBox.shrink();
-        return ListTile(
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-          leading: ChatAvatar(
-            name: name,
-            avatarUrl: participant['avatar_url']?.toString(),
-            radius: 24,
+    );
+  }
+
+  Widget _participantsTab(SliverOverlapAbsorberHandle handle) {
+    if (_participants.isEmpty) {
+      return CustomScrollView(
+        slivers: [
+          SliverOverlapInjector(handle: handle),
+          const SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: Text('Нет участников')),
           ),
-          title: Text(name),
-          trailing: const Icon(Icons.chevron_right, size: 20),
-          onTap: () => _openParticipantProfile(userId),
-        );
-      },
+        ],
+      );
+    }
+    return CustomScrollView(
+      slivers: [
+        SliverOverlapInjector(handle: handle),
+        SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, index) {
+              if (index.isOdd) {
+                return Divider(
+                  height: 1,
+                  indent: 72,
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outlineVariant
+                      .withValues(alpha: 0.4),
+                );
+              }
+              final participant = _participants[index ~/ 2];
+              final name =
+                  participant['display_name']?.toString() ?? 'Участник';
+              final uid = participant['user_id'];
+              final userId = uid is int ? uid : int.tryParse('$uid');
+              if (userId == null) return const SizedBox.shrink();
+              return ListTile(
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                leading: ChatAvatar(
+                  name: name,
+                  avatarUrl: participant['avatar_url']?.toString(),
+                  radius: 24,
+                ),
+                title: Text(name),
+                trailing: const Icon(Icons.chevron_right, size: 20),
+                onTap: () => _openParticipantProfile(userId),
+              );
+            },
+            childCount: _participants.length * 2 - 1,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -787,8 +1147,8 @@ class _RenameChatDialogState extends State<_RenameChatDialog> {
   }
 }
 
-class _InfoCompactAction extends StatelessWidget {
-  const _InfoCompactAction({
+class _TgProfileAction extends StatelessWidget {
+  const _TgProfileAction({
     required this.icon,
     required this.label,
     required this.onTap,
@@ -801,32 +1161,38 @@ class _InfoCompactAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Tooltip(
-      message: label,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(999),
-        onTap: onTap,
-        child: Container(
-          height: 36,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest
-                .withValues(alpha: 0.45),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 18, color: theme.colorScheme.primary),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: theme.textTheme.labelMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: SizedBox(
+        width: 72,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest
+                    .withValues(alpha: 0.65),
+                borderRadius: BorderRadius.circular(14),
               ),
-            ],
-          ),
+              child: Icon(
+                icon,
+                size: 24,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
         ),
       ),
     );

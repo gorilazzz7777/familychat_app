@@ -305,6 +305,16 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                     ? DateTime.tryParse(last['created_at']?.toString() ?? '')
                     : null;
                 final isBirthday = _isBirthdayCelebration(t);
+                final theme = Theme.of(context);
+                final scheme = theme.colorScheme;
+                final previewStyle = theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                );
+                final timeStyle = theme.textTheme.bodySmall?.copyWith(
+                  fontSize: 11,
+                  color: scheme.onSurfaceVariant.withValues(alpha: 0.72),
+                );
+
                 return ListTile(
                   leading: ChatAvatar(
                     name: _avatarName(t),
@@ -319,50 +329,58 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                           title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight:
+                                unread > 0 ? FontWeight.w600 : FontWeight.w500,
+                          ),
                         ),
                       ),
                       if (isBirthday) ...[
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 4),
                         Icon(
                           Icons.cake_outlined,
-                          size: 18,
-                          color: Theme.of(context).colorScheme.primary,
+                          size: 16,
+                          color: scheme.primary,
                         ),
                       ],
                     ],
                   ),
-                  subtitle: Text(
-                    _preview(t),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      if (created != null)
-                        Text(
-                          timeFmt.format(created.toLocal()),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      if (unread > 0)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: CircleAvatar(
-                            radius: 10,
-                            backgroundColor:
-                                Theme.of(context).colorScheme.primary,
-                            child: Text(
-                              '$unread',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                              ),
-                            ),
+                  subtitle: Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _preview(t),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: previewStyle,
                           ),
                         ),
-                    ],
+                        if (created != null) ...[
+                          const SizedBox(width: 8),
+                          Text(
+                            timeFmt.format(created.toLocal()),
+                            style: timeStyle,
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
+                  trailing: unread > 0
+                      ? CircleAvatar(
+                          radius: 10,
+                          backgroundColor: scheme.primary,
+                          child: Text(
+                            '$unread',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                            ),
+                          ),
+                        )
+                      : null,
                   onTap: () => _openThread(t),
                 );
               },

@@ -269,6 +269,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           _messages = sortChatMessages(cached!);
           _loading = false;
         });
+        _scrollToBottom(jump: true, settle: true);
       }
     }
     await _load(silent: !skipCache && cached != null && cached.isNotEmpty);
@@ -277,6 +278,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (targetId != null) {
       await _ensureMessageLoaded(targetId);
       await _scrollToMessage(targetId);
+    } else {
+      _scrollToBottom(jump: true, settle: true);
     }
   }
 
@@ -377,16 +380,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final bottom = MediaQuery.viewInsetsOf(context).bottom;
       if ((bottom - _lastKeyboardInset).abs() < 1) return;
       _lastKeyboardInset = bottom;
-      _scrollToBottom();
-      Future<void>.delayed(const Duration(milliseconds: 120), () {
-        if (!mounted) return;
-        _scrollToBottom(jump: true);
-      });
+      _scrollToBottom(jump: true, settle: true);
     });
   }
 
-  void _scrollToBottom({bool jump = false}) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+  void _scrollToBottom({bool jump = false, bool settle = false}) {
+    void apply() {
       if (!_scrollController.hasClients) return;
       final target = _scrollController.position.maxScrollExtent;
       if (jump) {
@@ -398,7 +397,38 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           curve: Curves.easeOut,
         );
       }
-    });
+    }
+
+    void scheduleSettle(int framesLeft, double? previousExtent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scrollController.hasClients) return;
+        final extent = _scrollController.position.maxScrollExtent;
+        apply();
+        if (framesLeft <= 0) return;
+        if (previousExtent != null && (extent - previousExtent).abs() < 1) {
+          if (framesLeft > 1) {
+            scheduleSettle(1, extent);
+          }
+          return;
+        }
+        scheduleSettle(framesLeft - 1, extent);
+      });
+    }
+
+    if (settle) {
+      scheduleSettle(8, null);
+      Future<void>.delayed(const Duration(milliseconds: 120), () {
+        if (!mounted) return;
+        apply();
+      });
+      Future<void>.delayed(const Duration(milliseconds: 320), () {
+        if (!mounted) return;
+        apply();
+      });
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => apply());
   }
 
   Future<void> _scrollToMessage(int messageId) async {
@@ -569,7 +599,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       unawaited(_persistMessageCache());
       unawaited(_markLatestRead());
       if (silent || widget.initialMessageId == null) {
-        _scrollToBottom();
+        _scrollToBottom(jump: true, settle: true);
       }
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
@@ -667,7 +697,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
     if (!changed || !mounted) return;
     setState(() => _messages = sortChatMessages(merged));
-    _scrollToBottom();
+    _scrollToBottom(jump: true, settle: true);
   }
 
   Map<String, dynamic> _scheduledItemToMessage(Map<String, dynamic> item) {
@@ -1574,6 +1604,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         canRejoin: _canRejoin,
         canLeave: _canLeave,
         participantUserIds: _participantUserIds,
+        peerUserId: widget.peerUserId,
         onTitleChanged: (title, customTitle) {
           if (!mounted) return;
           setState(() {
