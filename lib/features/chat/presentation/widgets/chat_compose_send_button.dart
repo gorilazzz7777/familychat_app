@@ -15,20 +15,23 @@ class ChatComposeSendButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return GestureDetector(
-      onLongPress: () async {
-        final options = await ChatSendOptionsSheet.show(context);
-        if (options == null) return;
-        onSend(options);
-      },
-      child: IconButton(
-        tooltip: 'Отправить (удерживайте для режимов)',
-        onPressed: () => onSend(ChatSendOptions.normal),
-        icon: Icon(
-          Icons.send_rounded,
-          color: theme.colorScheme.primary,
+    return Material(
+      type: MaterialType.transparency,
+      child: InkWell(
+        onTap: () => onSend(ChatSendOptions.normal),
+        onLongPress: () async {
+          final options = await ChatSendOptionsSheet.show(context);
+          if (options == null) return;
+          onSend(options);
+        },
+        customBorder: const CircleBorder(),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(
+            Icons.send_rounded,
+            color: theme.colorScheme.primary,
+          ),
         ),
-        visualDensity: VisualDensity.compact,
       ),
     );
   }

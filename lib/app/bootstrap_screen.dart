@@ -85,9 +85,20 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   Future<void> _consumePendingInvite() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString(_pendingInviteKey);
-    if (token != null && token.isNotEmpty) {
-      setState(() => _pendingInvite = token);
+    if (token == null || token.isEmpty) return;
+    try {
+      await ref.read(familychatRepositoryProvider).fetchInviteInfo(token);
+      if (mounted) setState(() => _pendingInvite = token);
+    } catch (_) {
+      await prefs.remove(_pendingInviteKey);
+      if (mounted) setState(() => _pendingInvite = null);
     }
+  }
+
+  Future<void> _clearPendingInvite() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingInviteKey);
+    if (mounted) setState(() => _pendingInvite = null);
   }
 
   OAuthCallbackResult? _readOAuthCallback() {
@@ -203,12 +214,14 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('familychat_push_prompt_dismissed');
     await prefs.remove('familychat_web_push_registered');
+    await prefs.remove(_pendingInviteKey);
     if (!mounted) return;
     setState(() {
       _loggedIn = false;
       _ready = false;
       _status = null;
       _checking = false;
+      _pendingInvite = null;
     });
   }
 
@@ -240,6 +253,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
               onComplete: _boot,
               onLogout: _logout,
               pendingInviteToken: _pendingInvite,
+              onPendingInviteCleared: _clearPendingInvite,
             )
           : ShellScreen(
               status: _status!,

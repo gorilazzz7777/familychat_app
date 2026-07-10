@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
@@ -21,11 +22,13 @@ class OnboardingScreen extends ConsumerStatefulWidget {
     required this.onComplete,
     required this.onLogout,
     this.pendingInviteToken,
+    this.onPendingInviteCleared,
   });
 
   final VoidCallback onComplete;
   final VoidCallback onLogout;
   final String? pendingInviteToken;
+  final VoidCallback? onPendingInviteCleared;
 
   @override
   ConsumerState<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -48,15 +51,28 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   List<Map<String, dynamic>> _questions = [];
   final Map<String, String> _answers = {};
   int _questionRound = 1;
+  String? _inviteToken;
+  bool _joinByInvite = false;
 
   @override
   void initState() {
     super.initState();
-    if (widget.pendingInviteToken != null) {
-      _step = _OnboardingStep.profile;
-    }
+    _inviteToken = widget.pendingInviteToken;
     _loadKinship();
     _loadPrefill();
+  }
+
+  Future<void> _clearInviteIntent() async {
+    _inviteToken = null;
+    _joinByInvite = false;
+    widget.onPendingInviteCleared?.call();
+  }
+
+  bool _isInviteNotFound(Object error) {
+    if (error is! DioException) return false;
+    if (error.response?.statusCode != 404) return false;
+    final path = error.requestOptions.path;
+    return path.contains('/invite/') && path.contains('/accept');
   }
 
   Future<void> _loadPrefill() async {
@@ -122,7 +138,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             birthdayShowYear: _birthdayShowYear,
           );
       if (!mounted) return;
-      if (widget.pendingInviteToken != null) {
+      if (_joinByInvite && _inviteToken != null) {
         await _continueInviteFlow();
       } else {
         setState(() {
@@ -140,7 +156,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   Future<void> _continueInviteFlow() async {
-    final token = widget.pendingInviteToken!;
+    final token = _inviteToken!;
     try {
       final accept = await ref.read(familychatRepositoryProvider).acceptInvite(token);
       if (accept['needs_profile'] == true) {
@@ -162,6 +178,17 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       }
     } catch (e) {
       if (!mounted) return;
+      if (_isInviteNotFound(e)) {
+        await _clearInviteIntent();
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error =
+              'Приглашение не найдено или истекло. Продолжите создание своей семьи.';
+          _step = _OnboardingStep.createFamily;
+        });
+        return;
+      }
       setState(() {
         _loading = false;
         _error = userFacingErrorMessage(e);
@@ -256,8 +283,15 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Добро пожаловать')),
+      appBar: AppBar(
+        title: const Text('Добро пожаловать'),
+        leading: BackButton(
+          onPressed: _loading ? null : widget.onLogout,
+        ),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
@@ -267,27 +301,50 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             const SizedBox(height: 16),
           ],
           if (_step == _OnboardingStep.choose) ...[
-            const Text('У вас есть ссылка-приглашение в семью?'),
-            const SizedBox(height: 16),
-            FilledButton(
-              onPressed: () {
-                setState(() => _step = _OnboardingStep.profile);
-                _loadPrefill();
-              },
-              child: Text(widget.pendingInviteToken != null
-                  ? 'Да, перейти к регистрации'
-                  : 'Нет, создать свою семью'),
-            ),
-            if (widget.pendingInviteToken == null) ...[
+            const Text('Как вы хотите начать?'),
+            if (_inviteToken != null) ...[
               const SizedBox(height: 8),
-              OutlinedButton(
-                onPressed: () {
-                  setState(() => _step = _OnboardingStep.profile);
-                  _loadPrefill();
-                },
-                child: const Text('Да, у меня есть приглашение'),
+              Text(
+                'Найдено приглашение в семью — можно присоединиться или создать свою.',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ],
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: () async {
+                await _clearInviteIntent();
+                if (!mounted) return;
+                setState(() {
+                  _error = null;
+                  _step = _OnboardingStep.profile;
+                });
+                _loadPrefill();
+              },
+              child: const Text('Создать свою семью'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: () {
+                if (_inviteToken == null || _inviteToken!.isEmpty) {
+                  setState(() => _error =
+                      'Откройте приложение по ссылке-приглашению, затем войдите в аккаунт.');
+                  return;
+                }
+                setState(() {
+                  _error = null;
+                  _joinByInvite = true;
+                  _step = _OnboardingStep.profile;
+                });
+                _loadPrefill();
+              },
+              child: Text(
+                _inviteToken != null
+                    ? 'Присоединиться по приглашению'
+                    : 'У меня есть приглашение',
+              ),
+            ),
           ],
           if (_step == _OnboardingStep.profile) ...[
             TextField(

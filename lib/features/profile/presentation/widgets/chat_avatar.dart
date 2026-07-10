@@ -8,11 +8,13 @@ class ChatAvatar extends StatelessWidget {
     super.key,
     required this.name,
     this.avatarUrl,
+    this.assetPath,
     this.radius = 24,
   });
 
   final String name;
   final String? avatarUrl;
+  final String? assetPath;
   final double radius;
 
   static String initials(String name) {
@@ -29,7 +31,23 @@ class ChatAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final bg = Theme.of(context).colorScheme.primary;
     final url = avatarUrl?.trim();
+    final asset = assetPath?.trim();
     final size = radius * 2;
+
+    if (asset != null && asset.isNotEmpty) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: bg.withValues(alpha: 0.15),
+        child: ClipOval(
+          child: Image.asset(
+            asset,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+          ),
+        ),
+      );
+    }
 
     if (url != null && url.isNotEmpty) {
       return CircleAvatar(

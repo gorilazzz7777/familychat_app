@@ -114,15 +114,18 @@ class FamilyChatRepository {
     required String birthDate,
     required bool birthdayShowYear,
   }) async {
-    final res = await _dio.post<Map<String, dynamic>>(
-      'familychat/onboarding/profile/',
-      data: {
-        'first_name': firstName,
-        'last_name': lastName,
-        'gender': gender,
-        'birth_date': birthDate,
-        'birthday_show_year': birthdayShowYear,
-      },
+    return updateProfile(
+      firstName: firstName,
+      lastName: lastName,
+      gender: gender,
+      birthDate: birthDate,
+      birthdayShowYear: birthdayShowYear,
+    );
+  }
+
+  Future<Map<String, dynamic>> fetchInviteInfo(String token) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/invite/$token/',
     );
     return res.data!;
   }

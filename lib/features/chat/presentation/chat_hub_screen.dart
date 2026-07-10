@@ -15,6 +15,8 @@ import 'create_group_screen.dart';
 
 enum _ChatFilter { all, family, dm, group }
 
+const _birthdayChatAvatarAsset = 'assets/chat/birthday_celebration_avatar.jpg';
+
 class ChatHubScreen extends ConsumerStatefulWidget {
   const ChatHubScreen({super.key});
 
@@ -306,7 +308,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 return ListTile(
                   leading: ChatAvatar(
                     name: _avatarName(t),
-                    avatarUrl: _dmAvatarUrl(t),
+                    avatarUrl: isBirthday ? null : _dmAvatarUrl(t),
+                    assetPath: isBirthday ? _birthdayChatAvatarAsset : null,
                     radius: 24,
                   ),
                   title: Row(
