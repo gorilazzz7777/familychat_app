@@ -16,6 +16,16 @@ abstract final class Env {
     defaultValue: 'https://familychat-app.ru',
   );
 
+  static const String legalPrivacyUrl = String.fromEnvironment(
+    'FAMILYCHAT_LEGAL_PRIVACY_URL',
+    defaultValue: 'https://familychat-app.ru/legal/familychat/privacy-policy/',
+  );
+
+  static const String legalAgreementUrl = String.fromEnvironment(
+    'FAMILYCHAT_LEGAL_AGREEMENT_URL',
+    defaultValue: 'https://familychat-app.ru/legal/familychat/user-agreement/',
+  );
+
   static const String rustoreAppUrl = String.fromEnvironment(
     'FAMILYCHAT_RUSTORE_APP_URL',
     defaultValue: '',

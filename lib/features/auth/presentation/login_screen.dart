@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/api_error_messages.dart';
+import '../../../core/legal/legal_page_launcher.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/routing/app_uri_parser.dart';
 import '../data/oauth_login_service.dart';
@@ -252,6 +253,63 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 28),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 4,
+                    runSpacing: 4,
+                    children: [
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: _loading
+                            ? null
+                            : () => openFamilyChatPrivacyPolicy(context),
+                        child: Text(
+                          'Политика конфиденциальности',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: const Color(0xFF4A9FD4),
+                            decoration: TextDecoration.underline,
+                            decorationColor: const Color(0xFF4A9FD4),
+                          ),
+                        ),
+                      ),
+                      Text(
+                        '·',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: const Color(0xFF7A8498),
+                        ),
+                      ),
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: _loading
+                            ? null
+                            : () => openFamilyChatUserAgreement(context),
+                        child: Text(
+                          'Пользовательское соглашение',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: const Color(0xFF4A9FD4),
+                            decoration: TextDecoration.underline,
+                            decorationColor: const Color(0xFF4A9FD4),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
                 ],
               ),
             ),
