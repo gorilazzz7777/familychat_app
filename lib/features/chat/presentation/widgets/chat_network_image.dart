@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/cache/familychat_local_cache.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/providers/app_providers.dart';
+import '../../../../core/widgets/web_image_cache_registry.dart';
 import '../../../familychat/data/familychat_repository.dart';
 import '../../data/chat_realtime_utils.dart';
 
@@ -40,16 +41,22 @@ class ChatNetworkImage extends ConsumerStatefulWidget {
 
 class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   Map<String, String>? _headers;
-  Uint8List? _webBytes;
-  bool _webLoading = false;
   bool _webFailed = false;
+  bool _loadStarted = false;
+
+  int? get _attachmentId => chatAsInt(widget.attachment['id']);
+
+  String? get _registryKey {
+    final attachmentId = _attachmentId;
+    if (attachmentId == null) return null;
+    return WebImageCacheRegistry.attachmentKey(widget.threadId, attachmentId);
+  }
 
   @override
   void initState() {
     super.initState();
     if (kIsWeb) {
-      _webLoading = true;
-      _loadWebBytes();
+      _ensureWebLoadStarted();
     } else {
       _loadHeaders();
     }
@@ -60,9 +67,11 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     super.didUpdateWidget(oldWidget);
     if (kIsWeb) {
       final oldId = chatAsInt(oldWidget.attachment['id']);
-      final newId = chatAsInt(widget.attachment['id']);
+      final newId = _attachmentId;
       if (oldId != newId || oldWidget.threadId != widget.threadId) {
-        _loadWebBytes();
+        _webFailed = false;
+        _loadStarted = false;
+        _ensureWebLoadStarted();
       }
       return;
     }
@@ -77,45 +86,59 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     setState(() => _headers = {'Authorization': 'Bearer $token'});
   }
 
-  Future<void> _loadWebBytes({int attempt = 0}) async {
-    final attachmentId = chatAsInt(widget.attachment['id']);
-    if (attachmentId == null) {
-      setState(() {
-        _webFailed = true;
-        _webLoading = false;
-      });
-      return;
+  void _ensureWebLoadStarted() {
+    if (_loadStarted) return;
+    _loadStarted = true;
+    unawaited(_loadWebBytes());
+  }
+
+  void _notifyCacheUpdated() {
+    final key = _registryKey;
+    if (key != null) {
+      WebImageCacheRegistry.notifyUpdated(key);
     }
+  }
+
+  Uint8List? _cachedWebBytes() {
+    final attachmentId = _attachmentId;
+    if (attachmentId == null) return null;
 
     final cacheKey = _webAttachmentCacheKey(widget.threadId, attachmentId);
     final memoryCached = _webAttachmentBytesCache[cacheKey];
     if (memoryCached != null && memoryCached.isNotEmpty) {
-      setState(() {
-        _webBytes = memoryCached;
-        _webFailed = false;
-        _webLoading = false;
-      });
+      return memoryCached;
+    }
+    return FamilyChatRepository.peekChatAttachmentBytes(
+      widget.threadId,
+      attachmentId,
+    );
+  }
+
+  Future<void> _loadWebBytes({int attempt = 0}) async {
+    final attachmentId = _attachmentId;
+    if (attachmentId == null) {
+      if (mounted) setState(() => _webFailed = true);
       return;
     }
 
-    setState(() {
-      _webLoading = true;
-      _webFailed = false;
-    });
+    final cacheKey = _webAttachmentCacheKey(widget.threadId, attachmentId);
+    final cached = _cachedWebBytes();
+    if (cached != null) {
+      _webAttachmentBytesCache[cacheKey] = cached;
+      _notifyCacheUpdated();
+      if (mounted) setState(() => _webFailed = false);
+      return;
+    }
 
     try {
-      final cached = await FamilyChatLocalCache.readAttachmentBytes(
+      final stored = await FamilyChatLocalCache.readAttachmentBytes(
         widget.threadId,
         attachmentId,
       );
-      if (cached != null && cached.isNotEmpty) {
-        _webAttachmentBytesCache[cacheKey] = cached;
-        if (!mounted) return;
-        setState(() {
-          _webBytes = cached;
-          _webFailed = false;
-          _webLoading = false;
-        });
+      if (stored != null && stored.isNotEmpty) {
+        _webAttachmentBytesCache[cacheKey] = stored;
+        _notifyCacheUpdated();
+        if (mounted) setState(() => _webFailed = false);
         return;
       }
 
@@ -131,21 +154,14 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
           bytes,
         ).catchError((_) {}),
       );
-      if (!mounted) return;
-      setState(() {
-        _webBytes = bytes;
-        _webLoading = false;
-        _webFailed = false;
-      });
+      _notifyCacheUpdated();
+      if (mounted) setState(() => _webFailed = false);
     } catch (_) {
-      final recovered = _webAttachmentBytesCache[cacheKey];
-      if (recovered != null && recovered.isNotEmpty) {
-        if (!mounted) return;
-        setState(() {
-          _webBytes = recovered;
-          _webFailed = false;
-          _webLoading = false;
-        });
+      final recovered = _cachedWebBytes();
+      if (recovered != null) {
+        _webAttachmentBytesCache[cacheKey] = recovered;
+        _notifyCacheUpdated();
+        if (mounted) setState(() => _webFailed = false);
         return;
       }
       if (attempt < 2) {
@@ -155,11 +171,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         return;
       }
       if (!mounted) return;
-      setState(() {
-        _webFailed = true;
-        _webLoading = false;
-        _webBytes = null;
-      });
+      setState(() => _webFailed = true);
     }
   }
 
@@ -169,7 +181,12 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
 
   Widget _errorBox({bool retryable = true}) {
     return GestureDetector(
-      onTap: retryable && kIsWeb ? () => _loadWebBytes() : null,
+      onTap: retryable && kIsWeb
+          ? () {
+              setState(() => _webFailed = false);
+              unawaited(_loadWebBytes());
+            }
+          : null,
       child: SizedBox(
         height: widget.height,
         width: widget.width,
@@ -218,21 +235,35 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     );
   }
 
+  Widget _buildWebImage() {
+    final registryKey = _registryKey;
+    if (registryKey == null) return _errorBox();
+
+    return ValueListenableBuilder<int>(
+      valueListenable: WebImageCacheRegistry.listenable(registryKey),
+      builder: (context, _, __) {
+        if (_webFailed) return _errorBox();
+
+        final bytes = _cachedWebBytes();
+        if (bytes == null) return _loadingBox();
+
+        return Image.memory(
+          bytes,
+          key: ValueKey('${widget.threadId}:${widget.attachment['id']}'),
+          height: widget.height,
+          width: widget.width,
+          fit: widget.fit,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => _errorBox(),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (kIsWeb) {
-      if (_webFailed) return _errorBox();
-      if (_webLoading && _webBytes == null) return _loadingBox();
-      if (_webBytes == null) return _loadingBox();
-      return Image.memory(
-        _webBytes!,
-        key: ValueKey('${widget.threadId}:${widget.attachment['id']}'),
-        height: widget.height,
-        width: widget.width,
-        fit: widget.fit,
-        gaplessPlayback: true,
-        errorBuilder: (_, __, ___) => _errorBox(),
-      );
+      return _buildWebImage();
     }
 
     final url = _imageUrl(ref.read(familychatRepositoryProvider));
@@ -281,32 +312,38 @@ Future<Map<String, String>?> chatImageAuthHeaders(WidgetRef ref) async {
   return {'Authorization': 'Bearer $token'};
 }
 
-  Future<Uint8List?> chatAttachmentBytesForViewer({
-    required WidgetRef ref,
-    required int? threadId,
-    required int? attachmentId,
-  }) async {
-    if (!kIsWeb || threadId == null || attachmentId == null) return null;
-    final cacheKey = _webAttachmentCacheKey(threadId, attachmentId);
-    final cached = _webAttachmentBytesCache[cacheKey];
-    if (cached != null) return cached;
-    final stored = await FamilyChatLocalCache.readAttachmentBytes(
-      threadId,
-      attachmentId,
+Future<Uint8List?> chatAttachmentBytesForViewer({
+  required WidgetRef ref,
+  required int? threadId,
+  required int? attachmentId,
+}) async {
+  if (!kIsWeb || threadId == null || attachmentId == null) return null;
+  final cacheKey = _webAttachmentCacheKey(threadId, attachmentId);
+  final cached = _webAttachmentBytesCache[cacheKey];
+  if (cached != null) return cached;
+  final stored = await FamilyChatLocalCache.readAttachmentBytes(
+    threadId,
+    attachmentId,
+  );
+  if (stored != null && stored.isNotEmpty) {
+    _webAttachmentBytesCache[cacheKey] = stored;
+    WebImageCacheRegistry.notifyUpdated(
+      WebImageCacheRegistry.attachmentKey(threadId, attachmentId),
     );
-    if (stored != null && stored.isNotEmpty) {
-      _webAttachmentBytesCache[cacheKey] = stored;
-      return stored;
-    }
-    try {
-      final bytes = await ref.read(familychatRepositoryProvider).fetchChatAttachmentBytes(
-            threadId,
-            attachmentId,
-          );
-      _webAttachmentBytesCache[cacheKey] = bytes;
-      await FamilyChatLocalCache.saveAttachmentBytes(threadId, attachmentId, bytes);
-      return bytes;
-    } catch (_) {
-      return null;
-    }
+    return stored;
   }
+  try {
+    final bytes = await ref.read(familychatRepositoryProvider).fetchChatAttachmentBytes(
+          threadId,
+          attachmentId,
+        );
+    _webAttachmentBytesCache[cacheKey] = bytes;
+    WebImageCacheRegistry.notifyUpdated(
+      WebImageCacheRegistry.attachmentKey(threadId, attachmentId),
+    );
+    await FamilyChatLocalCache.saveAttachmentBytes(threadId, attachmentId, bytes);
+    return bytes;
+  } catch (_) {
+    return null;
+  }
+}

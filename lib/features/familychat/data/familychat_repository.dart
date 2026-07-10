@@ -30,6 +30,18 @@ class FamilyChatRepository {
   static final Map<int, Future<Uint8List>> _avatarBytesInFlight =
       <int, Future<Uint8List>>{};
 
+  static Uint8List? peekMemberAvatarBytes(int userId) {
+    final cached = _avatarBytesCache[userId];
+    if (cached != null && cached.isNotEmpty) return cached;
+    return null;
+  }
+
+  static Uint8List? peekChatAttachmentBytes(int threadId, int attachmentId) {
+    final cached = _attachmentBytesCache['$threadId:$attachmentId'];
+    if (cached != null && cached.isNotEmpty) return cached;
+    return null;
+  }
+
   Future<Map<String, dynamic>> status({bool? appForeground}) async {
     final fg = appForeground ?? FamilyChatForegroundBridge.isAppInForeground();
     final res = await _dio.get<Map<String, dynamic>>(

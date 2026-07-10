@@ -4,8 +4,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../features/familychat/data/familychat_repository.dart';
 import '../providers/app_providers.dart';
 import 'family_public_image_url.dart';
+import 'web_image_cache_registry.dart';
 
 /// На web аватары из S3 грузятся через API (JWT), иначе CORS блокирует XHR.
 class FamilyPublicWebImage extends ConsumerStatefulWidget {
@@ -35,25 +37,28 @@ class FamilyPublicWebImage extends ConsumerStatefulWidget {
 
 class _FamilyPublicWebImageState extends ConsumerState<FamilyPublicWebImage> {
   static const _maxAttempts = 3;
-  static final Map<int, Uint8List> _memoryCache = <int, Uint8List>{};
 
   int _attempt = 0;
   bool _autoRetryScheduled = false;
-  bool _loading = false;
   bool _failed = false;
-  Uint8List? _bytes;
+  bool _loadStarted = false;
 
   int? get _resolvedUserId =>
       widget.userId ?? userIdFromFamilychatProfileAvatarUrl(widget.url);
 
   bool get _useApiProxy => _resolvedUserId != null;
 
+  String? get _cacheKey {
+    final userId = _resolvedUserId;
+    if (userId == null) return null;
+    return WebImageCacheRegistry.avatarKey(userId);
+  }
+
   @override
   void initState() {
     super.initState();
     if (_useApiProxy) {
-      _loading = true;
-      unawaited(_loadAvatarBytes());
+      _ensureLoadStarted();
     }
   }
 
@@ -67,54 +72,54 @@ class _FamilyPublicWebImageState extends ConsumerState<FamilyPublicWebImage> {
     if (oldUserId != newUserId || oldWidget.url != widget.url) {
       _attempt = 0;
       _failed = false;
-      _bytes = null;
-      _loading = true;
-      unawaited(_loadAvatarBytes());
+      _loadStarted = false;
+      _ensureLoadStarted();
     }
+  }
+
+  void _ensureLoadStarted() {
+    if (_loadStarted) return;
+    _loadStarted = true;
+    unawaited(_loadAvatarBytes());
+  }
+
+  void _notifyCacheUpdated() {
+    final key = _cacheKey;
+    if (key != null) {
+      WebImageCacheRegistry.notifyUpdated(key);
+    }
+  }
+
+  Uint8List? _cachedBytes() {
+    final userId = _resolvedUserId;
+    if (userId == null) return null;
+    return FamilyChatRepository.peekMemberAvatarBytes(userId);
   }
 
   Future<void> _loadAvatarBytes({int attempt = 0}) async {
     final userId = _resolvedUserId;
     if (userId == null) return;
 
-    final memoryCached = _memoryCache[userId];
-    if (memoryCached != null && memoryCached.isNotEmpty) {
-      if (!mounted) return;
-      setState(() {
-        _bytes = memoryCached;
-        _failed = false;
-        _loading = false;
-      });
+    final cached = _cachedBytes();
+    if (cached != null) {
+      _notifyCacheUpdated();
+      if (mounted) setState(() => _failed = false);
       return;
     }
 
-    if (!mounted) return;
-    setState(() {
-      _loading = true;
-      _failed = false;
-    });
-
     try {
-      final bytes =
-          await ref.read(familychatRepositoryProvider).fetchMemberAvatarBytes(
-                userId,
-              );
-      _memoryCache[userId] = bytes;
-      if (!mounted) return;
-      setState(() {
-        _bytes = bytes;
-        _failed = false;
-        _loading = false;
-      });
+      await ref.read(familychatRepositoryProvider).fetchMemberAvatarBytes(
+            userId,
+          );
+      _notifyCacheUpdated();
+      if (mounted) {
+        setState(() => _failed = false);
+      }
     } catch (_) {
-      final recovered = _memoryCache[userId];
-      if (recovered != null && recovered.isNotEmpty) {
-        if (!mounted) return;
-        setState(() {
-          _bytes = recovered;
-          _failed = false;
-          _loading = false;
-        });
+      final recovered = _cachedBytes();
+      if (recovered != null) {
+        _notifyCacheUpdated();
+        if (mounted) setState(() => _failed = false);
         return;
       }
       if (attempt < 2) {
@@ -124,11 +129,7 @@ class _FamilyPublicWebImageState extends ConsumerState<FamilyPublicWebImage> {
         return;
       }
       if (!mounted) return;
-      setState(() {
-        _failed = true;
-        _loading = false;
-        _bytes = null;
-      });
+      setState(() => _failed = true);
     }
   }
 
@@ -151,8 +152,6 @@ class _FamilyPublicWebImageState extends ConsumerState<FamilyPublicWebImage> {
       setState(() {
         _attempt += 1;
         _failed = false;
-        _loading = true;
-        _bytes = null;
       });
       unawaited(_loadAvatarBytes());
       return;
@@ -160,35 +159,51 @@ class _FamilyPublicWebImageState extends ConsumerState<FamilyPublicWebImage> {
     setState(() => _attempt += 1);
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildApiProxy(BuildContext context) {
     final placeholder = widget.placeholder ?? _defaultPlaceholder(context);
     final errorWidget = widget.error ?? _defaultError(context);
+    final cacheKey = _cacheKey;
+    if (cacheKey == null) return placeholder;
 
-    if (_useApiProxy) {
-      if (_failed) {
-        return GestureDetector(
-          onTap: _retry,
-          behavior: HitTestBehavior.opaque,
-          child: errorWidget,
+    return ValueListenableBuilder<int>(
+      valueListenable: WebImageCacheRegistry.listenable(cacheKey),
+      builder: (context, _, __) {
+        if (_failed) {
+          return GestureDetector(
+            onTap: _retry,
+            behavior: HitTestBehavior.opaque,
+            child: errorWidget,
+          );
+        }
+
+        final bytes = _cachedBytes();
+        if (bytes == null) return placeholder;
+
+        return Image.memory(
+          bytes,
+          key: ValueKey('avatar:${_resolvedUserId!}#$_attempt'),
+          width: widget.width,
+          height: widget.height,
+          fit: widget.fit,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => GestureDetector(
+            onTap: _retry,
+            behavior: HitTestBehavior.opaque,
+            child: errorWidget,
+          ),
         );
-      }
-      if (_loading && _bytes == null) return placeholder;
-      if (_bytes == null) return placeholder;
-      return Image.memory(
-        _bytes!,
-        key: ValueKey('avatar:${_resolvedUserId!}#$_attempt'),
-        width: widget.width,
-        height: widget.height,
-        fit: widget.fit,
-        gaplessPlayback: true,
-        errorBuilder: (_, __, ___) => GestureDetector(
-          onTap: _retry,
-          behavior: HitTestBehavior.opaque,
-          child: errorWidget,
-        ),
-      );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_useApiProxy) {
+      return _buildApiProxy(context);
     }
+
+    final placeholder = widget.placeholder ?? _defaultPlaceholder(context);
+    final errorWidget = widget.error ?? _defaultError(context);
 
     return Image.network(
       widget.url,
