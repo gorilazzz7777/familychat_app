@@ -133,9 +133,16 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
     return _savedLinks[personId];
   }
 
-  bool _viewerHasDirectLink(int personId) {
-    final code = _effectiveLinkCode(personId);
-    return code != null && code.isNotEmpty;
+  bool _viewerDirectLinkBlocked(int personId) {
+    if (_draftChanges.containsKey(personId)) {
+      final code = _draftChanges[personId];
+      return code == null || code.isEmpty;
+    }
+    if (_savedLinks.containsKey(personId)) {
+      final code = _savedLinks[personId];
+      return code == null || code.isEmpty;
+    }
+    return false;
   }
 
   Map<String, dynamic> _payloadForDisplay(int centerPersonId) {
@@ -151,7 +158,7 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
       if (from == null || to == null) return false;
       if (from != centerPersonId && to != centerPersonId) return true;
       final other = from == centerPersonId ? to : from;
-      return _viewerHasDirectLink(other);
+      return !_viewerDirectLinkBlocked(other);
     }).toList();
 
     payload['edges'] = edges;

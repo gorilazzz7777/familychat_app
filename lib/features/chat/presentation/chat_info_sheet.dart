@@ -8,6 +8,7 @@ import '../../../core/widgets/family_public_image.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'chat_call_screen.dart';
+import 'widgets/chat_image_viewer.dart';
 import 'widgets/chat_network_image.dart';
 
 String chatParticipantCountLabel(int count) {
@@ -68,7 +69,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
 
 class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     with SingleTickerProviderStateMixin {
-  static const _expandedHeaderHeight = 300.0;
+  static const _expandedPhotoHeight = 288.0;
 
   late final TabController _tabs;
   late String _title;
@@ -95,11 +96,17 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     _title = widget.title;
     _customTitle = widget.customTitle;
     _tabs = TabController(length: _tabCount, vsync: this);
+    _tabs.addListener(_onTabChanged);
     _load();
+  }
+
+  void _onTabChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _tabs.removeListener(_onTabChanged);
     _tabs.dispose();
     super.dispose();
   }
@@ -410,150 +417,188 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       (widget.canLeave && !widget.hasLeft) ||
       (widget.kind == 'group' && !widget.hasLeft);
 
-  List<Widget> _tabBodies(BuildContext context) {
-    final handle = NestedScrollView.sliverOverlapAbsorberHandleFor(context);
+  List<Widget> _tabContentSlivers() {
+    final index = _tabs.index;
+    if (_showParticipants) {
+      return switch (index) {
+        0 => _participantsSlivers(),
+        1 => _gallerySlivers(),
+        2 => _linksSlivers(),
+        3 => _filesSlivers(),
+        _ => const [SliverToBoxAdapter(child: SizedBox.shrink())],
+      };
+    }
+    return switch (index) {
+      0 => _gallerySlivers(),
+      1 => _linksSlivers(),
+      2 => _filesSlivers(),
+      _ => const [SliverToBoxAdapter(child: SizedBox.shrink())],
+    };
+  }
+
+  List<Widget> _gallerySlivers() {
+    if (_media.isEmpty) {
+      return const [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: Text('Нет изображений')),
+        ),
+      ];
+    }
     return [
-      if (_showParticipants) _participantsTab(handle),
-      _galleryTab(handle),
-      _linksTab(handle),
-      _filesTab(handle),
+      SliverPadding(
+        padding: const EdgeInsets.all(8),
+        sliver: SliverGrid(
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            crossAxisSpacing: 4,
+            mainAxisSpacing: 4,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (context, i) {
+              final item = _media[i];
+              return GestureDetector(
+                onTap: () => _openGalleryItem(item),
+                onLongPress: () {
+                  final messageId = _messageIdOf(item);
+                  if (messageId != null) {
+                    _showItemActions(
+                      title: 'Открыть фото',
+                      onOpen: () => _openGalleryItem(item),
+                      messageId: messageId,
+                    );
+                  }
+                },
+                child: ChatNetworkImage(
+                  threadId: widget.threadId,
+                  attachment: item,
+                  fit: BoxFit.cover,
+                ),
+              );
+            },
+            childCount: _media.length,
+          ),
+        ),
+      ),
     ];
   }
 
-  Widget _galleryTab(SliverOverlapAbsorberHandle handle) {
-    if (_media.isEmpty) {
-      return CustomScrollView(
-        slivers: [
-          SliverOverlapInjector(handle: handle),
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: Center(child: Text('Нет изображений')),
-          ),
-        ],
-      );
-    }
-    return CustomScrollView(
-      slivers: [
-        SliverOverlapInjector(handle: handle),
-        SliverPadding(
-          padding: const EdgeInsets.all(8),
-          sliver: SliverGrid(
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 4,
-              mainAxisSpacing: 4,
-            ),
-            delegate: SliverChildBuilderDelegate(
-              (context, i) {
-                final item = _media[i];
-                return GestureDetector(
-                  onTap: () => _openGalleryItem(item),
-                  onLongPress: () {
-                    final messageId = _messageIdOf(item);
-                    if (messageId != null) {
-                      _showItemActions(
-                        title: 'Открыть фото',
-                        onOpen: () => _openGalleryItem(item),
-                        messageId: messageId,
-                      );
-                    }
-                  },
-                  child: ChatNetworkImage(
-                    threadId: widget.threadId,
-                    attachment: item,
-                    fit: BoxFit.cover,
-                  ),
-                );
-              },
-              childCount: _media.length,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _linksTab(SliverOverlapAbsorberHandle handle) {
+  List<Widget> _linksSlivers() {
     if (_links.isEmpty) {
-      return CustomScrollView(
-        slivers: [
-          SliverOverlapInjector(handle: handle),
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: Center(child: Text('Нет ссылок')),
-          ),
-        ],
-      );
-    }
-    return CustomScrollView(
-      slivers: [
-        SliverOverlapInjector(handle: handle),
-        SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, i) {
-              final item = _links[i];
-              final url = item['url']?.toString() ?? '';
-              final messageId = _messageIdOf(item);
-              return ListTile(
-                title: Text(url, maxLines: 2, overflow: TextOverflow.ellipsis),
-                onTap: () => _showItemActions(
-                  title: 'Открыть ссылку',
-                  onOpen: () => launchUrl(
-                    Uri.parse(url),
-                    mode: LaunchMode.externalApplication,
-                  ),
-                  messageId: messageId,
-                ),
-              );
-            },
-            childCount: _links.length,
-          ),
+      return const [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: Text('Нет ссылок')),
         ),
-      ],
-    );
+      ];
+    }
+    return [
+      SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, i) {
+            final item = _links[i];
+            final url = item['url']?.toString() ?? '';
+            final messageId = _messageIdOf(item);
+            return ListTile(
+              title: Text(url, maxLines: 2, overflow: TextOverflow.ellipsis),
+              onTap: () => _showItemActions(
+                title: 'Открыть ссылку',
+                onOpen: () => launchUrl(
+                  Uri.parse(url),
+                  mode: LaunchMode.externalApplication,
+                ),
+                messageId: messageId,
+              ),
+            );
+          },
+          childCount: _links.length,
+        ),
+      ),
+    ];
   }
 
-  Widget _filesTab(SliverOverlapAbsorberHandle handle) {
+  List<Widget> _filesSlivers() {
     if (_files.isEmpty) {
-      return CustomScrollView(
-        slivers: [
-          SliverOverlapInjector(handle: handle),
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: Center(child: Text('Нет файлов')),
-          ),
-        ],
-      );
-    }
-    return CustomScrollView(
-      slivers: [
-        SliverOverlapInjector(handle: handle),
-        SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, i) {
-              final f = _files[i];
-              final url = f['file_url']?.toString();
-              final messageId = _messageIdOf(f);
-              return ListTile(
-                leading: const Icon(Icons.insert_drive_file_outlined),
-                title: Text(f['filename']?.toString() ?? 'Файл'),
-                onTap: () => _showItemActions(
-                  title: 'Открыть файл',
-                  onOpen: url != null
-                      ? () => launchUrl(
-                            Uri.parse(url),
-                            mode: LaunchMode.externalApplication,
-                          )
-                      : null,
-                  messageId: messageId,
-                ),
-              );
-            },
-            childCount: _files.length,
-          ),
+      return const [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: Text('Нет файлов')),
         ),
-      ],
-    );
+      ];
+    }
+    return [
+      SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, i) {
+            final f = _files[i];
+            final url = f['file_url']?.toString();
+            final messageId = _messageIdOf(f);
+            return ListTile(
+              leading: const Icon(Icons.insert_drive_file_outlined),
+              title: Text(f['filename']?.toString() ?? 'Файл'),
+              onTap: () => _showItemActions(
+                title: 'Открыть файл',
+                onOpen: url != null
+                    ? () => launchUrl(
+                          Uri.parse(url),
+                          mode: LaunchMode.externalApplication,
+                        )
+                    : null,
+                messageId: messageId,
+              ),
+            );
+          },
+          childCount: _files.length,
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _participantsSlivers() {
+    if (_participants.isEmpty) {
+      return const [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: Text('Нет участников')),
+        ),
+      ];
+    }
+    return [
+      SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) {
+            if (index.isOdd) {
+              return Divider(
+                height: 1,
+                indent: 72,
+                color: Theme.of(context)
+                    .colorScheme
+                    .outlineVariant
+                    .withValues(alpha: 0.4),
+              );
+            }
+            final participant = _participants[index ~/ 2];
+            final name = participant['display_name']?.toString() ?? 'Участник';
+            final uid = participant['user_id'];
+            final userId = uid is int ? uid : int.tryParse('$uid');
+            if (userId == null) return const SizedBox.shrink();
+            return ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              leading: ChatAvatar(
+                name: name,
+                avatarUrl: participant['avatar_url']?.toString(),
+                radius: 24,
+              ),
+              title: Text(name),
+              trailing: const Icon(Icons.chevron_right, size: 20),
+              onTap: () => _openParticipantProfile(userId),
+            );
+          },
+          childCount: _participants.length * 2 - 1,
+        ),
+      ),
+    ];
   }
 
   Future<void> _showMuteOptions() async {
@@ -670,16 +715,52 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     );
   }
 
-  Widget _buildNameRow(BuildContext context, {required bool onDark}) {
-    final theme = Theme.of(context);
-    final titleStyle = theme.textTheme.titleLarge?.copyWith(
-      fontWeight: FontWeight.w600,
-      color: onDark ? Colors.white : theme.colorScheme.onSurface,
+  Future<void> _openProfilePhoto() async {
+    final url = _headerAvatarUrl?.trim();
+    if (url == null || url.isEmpty || !mounted) return;
+    await ChatImageViewer.open(
+      context,
+      imageUrl: url,
+      filename: _title.isNotEmpty ? '$_title.jpg' : 'avatar.jpg',
     );
-    final subtitleStyle = theme.textTheme.bodyMedium?.copyWith(
-      color: onDark
-          ? Colors.white.withValues(alpha: 0.85)
-          : theme.colorScheme.onSurfaceVariant,
+  }
+
+  Widget _profileInfoSection(BuildContext context) {
+    final hasPhoto =
+        _headerAvatarUrl != null && _headerAvatarUrl!.trim().isNotEmpty;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 2),
+      child: Column(
+        children: [
+          if (!hasPhoto) ...[
+            GestureDetector(
+              onTap: _headerAvatarUrl?.trim().isNotEmpty == true
+                  ? _openProfilePhoto
+                  : null,
+              child: ChatAvatar(
+                name: _title,
+                avatarUrl: _headerAvatarUrl,
+                radius: 44,
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          _buildNameRow(context),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNameRow(BuildContext context) {
+    final theme = Theme.of(context);
+    final titleStyle = theme.textTheme.headlineSmall?.copyWith(
+      fontWeight: FontWeight.w700,
+      fontSize: 26,
+      height: 1.15,
+    );
+    final statusStyle = theme.textTheme.titleSmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+      fontWeight: FontWeight.w500,
     );
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -703,10 +784,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
               constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
               icon: Icon(
                 Icons.edit_outlined,
-                size: 18,
-                color: onDark
-                    ? Colors.white.withValues(alpha: 0.9)
-                    : theme.colorScheme.primary,
+                size: 20,
+                color: theme.colorScheme.primary,
               ),
               tooltip: 'Переименовать',
               onPressed: _renameChat,
@@ -715,10 +794,10 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         ),
         if (_headerSubtitle != null)
           Padding(
-            padding: const EdgeInsets.only(top: 2),
+            padding: const EdgeInsets.only(top: 4),
             child: Text(
               _headerSubtitle!,
-              style: subtitleStyle,
+              style: statusStyle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
@@ -726,13 +805,11 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           ),
         if (_customTitle.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.only(top: 2),
+            padding: const EdgeInsets.only(top: 4),
             child: Text(
               widget.defaultTitle,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: onDark
-                    ? Colors.white.withValues(alpha: 0.75)
-                    : theme.colorScheme.onSurfaceVariant,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -743,7 +820,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     );
   }
 
-  Widget _flexibleHeader(BuildContext context) {
+  Widget _flexiblePhotoHeader(BuildContext context) {
     final theme = Theme.of(context);
     final hasPhoto =
         _headerAvatarUrl != null && _headerAvatarUrl!.trim().isNotEmpty;
@@ -752,105 +829,145 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       builder: (context, constraints) {
         final settings =
             context.dependOnInheritedWidgetOfExactType<FlexibleSpaceBarSettings>();
-        final maxExtent = settings?.maxExtent ?? _expandedHeaderHeight;
+        final maxExtent = settings?.maxExtent ?? _expandedPhotoHeight;
         final minExtent = settings?.minExtent ?? kToolbarHeight;
         final current = settings?.currentExtent ?? maxExtent;
         final range = (maxExtent - minExtent).clamp(1.0, double.infinity);
         final t = ((maxExtent - current) / range).clamp(0.0, 1.0);
 
-        const expandedAvatarSize = 120.0;
         const collapsedAvatarSize = 44.0;
-        final avatarSize =
-            expandedAvatarSize + (collapsedAvatarSize - expandedAvatarSize) * t;
-        final photoOpacity = (1 - t * 1.35).clamp(0.0, 1.0);
-        final onDark = hasPhoto && photoOpacity > 0.25 && t < 0.55;
-        final expandedTop = maxExtent * 0.22;
-        const collapsedTop = 28.0;
-        final avatarTop = expandedTop + (collapsedTop - expandedTop) * t;
+        final showCollapsedAvatar = t > 0.62;
+        final avatarOpacity = showCollapsedAvatar
+            ? ((t - 0.62) / 0.38).clamp(0.0, 1.0)
+            : 0.0;
 
-        return Stack(
-          fit: StackFit.expand,
-          clipBehavior: Clip.hardEdge,
-          children: [
-            if (hasPhoto)
-              Opacity(
-                opacity: photoOpacity,
-                child: FamilyPublicImage(
-                  url: _headerAvatarUrl!,
-                  fit: BoxFit.cover,
-                  error: ColoredBox(
-                    color: theme.colorScheme.surfaceContainerLow,
-                  ),
-                ),
-              )
-            else
-              ColoredBox(color: theme.colorScheme.surfaceContainerLow),
-            if (hasPhoto && photoOpacity > 0.05)
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.08 * (1 - t)),
-                      Colors.black.withValues(alpha: 0.5 * (1 - t * 0.85)),
-                    ],
-                  ),
-                ),
-              ),
-            Positioned(
-              top: avatarTop,
-              left: 0,
-              right: 0,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ChatAvatar(
-                    name: _title,
-                    avatarUrl: _headerAvatarUrl,
-                    radius: avatarSize / 2,
-                  ),
-                  SizedBox(height: 10 * (1 - t * 0.6)),
-                  Opacity(
-                    opacity: (1 - t * 0.15).clamp(0.0, 1.0),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: _buildNameRow(context, onDark: onDark),
+        return ColoredBox(
+          color: theme.colorScheme.surface,
+          child: Stack(
+            fit: StackFit.expand,
+            clipBehavior: Clip.hardEdge,
+            children: [
+              if (hasPhoto)
+                Positioned.fill(
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: _openProfilePhoto,
+                      child: Opacity(
+                        opacity: (1 - t * 0.9).clamp(0.0, 1.0),
+                        child: FamilyPublicImage(
+                          url: _headerAvatarUrl!,
+                          fit: BoxFit.cover,
+                          error: ColoredBox(
+                            color: theme.colorScheme.surfaceContainerLow,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                ],
-              ),
-            ),
-          ],
+                )
+              else
+                ColoredBox(color: theme.colorScheme.surfaceContainerLow),
+              if (showCollapsedAvatar && avatarOpacity > 0.12)
+                Opacity(
+                  opacity: avatarOpacity,
+                  child: Center(
+                    child: Material(
+                      color: Colors.transparent,
+                      shape: const CircleBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: _openProfilePhoto,
+                        customBorder: const CircleBorder(),
+                        child: ChatAvatar(
+                          name: _title,
+                          avatarUrl: _headerAvatarUrl,
+                          radius: collapsedAvatarSize / 2,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              if (_hasMoreActions)
+                Positioned(
+                  top: 2,
+                  right: 0,
+                  child: IconButton(
+                    icon: Icon(
+                      Icons.more_vert,
+                      color: hasPhoto && t < 0.45
+                          ? Colors.white
+                          : theme.colorScheme.onSurface,
+                    ),
+                    onPressed: _showMoreMenu,
+                  ),
+                ),
+            ],
+          ),
         );
       },
     );
   }
 
+  Widget _pinnedTabBar(BuildContext context) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surface,
+      elevation: 0,
+      child: TabBar(
+        controller: _tabs,
+        isScrollable: _showParticipants,
+        tabs: [
+          if (_showParticipants) const Tab(text: 'Участники'),
+          const Tab(text: 'Галерея'),
+          const Tab(text: 'Ссылки'),
+          const Tab(text: 'Файлы'),
+        ],
+      ),
+    );
+  }
+
   Widget _actionButtonsRow(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           _TgProfileAction(
             icon: Icons.chat_bubble_outline,
-            label: 'Чат',
+            tooltip: 'Чат',
             onTap: () => Navigator.of(context).pop(),
           ),
+          const SizedBox(width: 10),
           _TgProfileAction(
             icon: _notificationsEnabled
                 ? Icons.notifications_outlined
                 : Icons.notifications_off_outlined,
-            label: 'Звук',
+            tooltip: 'Звук',
             onTap: _notificationsEnabled ? _showMuteOptions : () => _mute('off'),
           ),
-          if (_isDm)
+          if (_isDm) ...[
+            const SizedBox(width: 10),
             _TgProfileAction(
               icon: Icons.call_outlined,
-              label: 'Звонок',
+              tooltip: 'Звонок',
               onTap: _startCall,
             ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _profileDetailsSection(BuildContext context) {
+    final theme = Theme.of(context);
+    return ColoredBox(
+      color: theme.colorScheme.surface,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _profileInfoSection(context),
+          _actionButtonsRow(context),
         ],
       ),
     );
@@ -865,9 +982,10 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       padding: EdgeInsets.only(bottom: bottomInset),
       child: DraggableScrollableSheet(
         initialChildSize: 0.92,
-        minChildSize: 0.55,
+        minChildSize: 0.15,
         maxChildSize: 0.95,
         expand: false,
+        shouldCloseOnMinExtent: true,
         builder: (context, scrollController) {
           return ClipRRect(
             borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
@@ -875,79 +993,57 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
               color: theme.colorScheme.surface,
               child: Stack(
                 children: [
-                  NestedScrollView(
+                  CustomScrollView(
                     controller: scrollController,
-                    headerSliverBuilder: (context, innerBoxIsScrolled) {
-                      final handle =
-                          NestedScrollView.sliverOverlapAbsorberHandleFor(
-                        context,
-                      );
-                      return [
-                        SliverOverlapAbsorber(
-                          handle: handle,
-                          sliver: SliverAppBar(
-                            automaticallyImplyLeading: false,
-                            expandedHeight: _expandedHeaderHeight,
-                            pinned: true,
-                            stretch: true,
-                            elevation: innerBoxIsScrolled ? 0.5 : 0,
-                            scrolledUnderElevation: 0.5,
-                            backgroundColor: theme.colorScheme.surface,
-                            surfaceTintColor: Colors.transparent,
-                            actions: [
-                              if (_hasMoreActions)
-                                IconButton(
-                                  icon: const Icon(Icons.more_vert),
-                                  onPressed: _showMoreMenu,
-                                ),
-                            ],
-                            flexibleSpace: FlexibleSpaceBar(
-                              collapseMode: CollapseMode.parallax,
-                              background: _flexibleHeader(context),
-                            ),
-                            bottom: PreferredSize(
-                              preferredSize: const Size.fromHeight(116),
-                              child: Column(
-                                children: [
-                                  _actionButtonsRow(context),
-                                  TabBar(
-                                    controller: _tabs,
-                                    isScrollable: _showParticipants,
-                                    tabs: [
-                                      if (_showParticipants)
-                                        const Tab(text: 'Участники'),
-                                      const Tab(text: 'Галерея'),
-                                      const Tab(text: 'Ссылки'),
-                                      const Tab(text: 'Файлы'),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    slivers: [
+                      SliverAppBar(
+                        automaticallyImplyLeading: false,
+                        expandedHeight: _expandedPhotoHeight,
+                        collapsedHeight: 72,
+                        toolbarHeight: 0,
+                        pinned: true,
+                        stretch: false,
+                        elevation: 0,
+                        scrolledUnderElevation: 0,
+                        shadowColor: Colors.transparent,
+                        backgroundColor: theme.colorScheme.surface,
+                        surfaceTintColor: Colors.transparent,
+                        flexibleSpace: FlexibleSpaceBar(
+                          collapseMode: CollapseMode.pin,
+                          background: _flexiblePhotoHeader(context),
                         ),
-                      ];
-                    },
-                    body: _loading
-                        ? const Center(child: CircularProgressIndicator())
-                        : Builder(
-                            builder: (nestedContext) => TabBarView(
-                              controller: _tabs,
-                              children: _tabBodies(nestedContext),
-                            ),
-                          ),
+                      ),
+                      SliverToBoxAdapter(
+                        child: _profileDetailsSection(context),
+                      ),
+                      SliverPersistentHeader(
+                        pinned: true,
+                        delegate: _ChatInfoTabBarDelegate(
+                          child: _pinnedTabBar(context),
+                        ),
+                      ),
+                      if (_loading)
+                        const SliverFillRemaining(
+                          child: Center(child: CircularProgressIndicator()),
+                        )
+                      else
+                        ..._tabContentSlivers(),
+                    ],
                   ),
                   Positioned(
                     top: 8,
                     left: 0,
                     right: 0,
-                    child: Center(
-                      child: Container(
-                        width: 40,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade400,
-                          borderRadius: BorderRadius.circular(2),
+                    child: IgnorePointer(
+                      child: Center(
+                        child: Container(
+                          width: 40,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade400,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
                         ),
                       ),
                     ),
@@ -958,60 +1054,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           );
         },
       ),
-    );
-  }
-
-  Widget _participantsTab(SliverOverlapAbsorberHandle handle) {
-    if (_participants.isEmpty) {
-      return CustomScrollView(
-        slivers: [
-          SliverOverlapInjector(handle: handle),
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: Center(child: Text('Нет участников')),
-          ),
-        ],
-      );
-    }
-    return CustomScrollView(
-      slivers: [
-        SliverOverlapInjector(handle: handle),
-        SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, index) {
-              if (index.isOdd) {
-                return Divider(
-                  height: 1,
-                  indent: 72,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .outlineVariant
-                      .withValues(alpha: 0.4),
-                );
-              }
-              final participant = _participants[index ~/ 2];
-              final name =
-                  participant['display_name']?.toString() ?? 'Участник';
-              final uid = participant['user_id'];
-              final userId = uid is int ? uid : int.tryParse('$uid');
-              if (userId == null) return const SizedBox.shrink();
-              return ListTile(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                leading: ChatAvatar(
-                  name: name,
-                  avatarUrl: participant['avatar_url']?.toString(),
-                  radius: 24,
-                ),
-                title: Text(name),
-                trailing: const Icon(Icons.chevron_right, size: 20),
-                onTap: () => _openParticipantProfile(userId),
-              );
-            },
-            childCount: _participants.length * 2 - 1,
-          ),
-        ),
-      ],
     );
   }
 }
@@ -1147,52 +1189,61 @@ class _RenameChatDialogState extends State<_RenameChatDialog> {
   }
 }
 
+class _ChatInfoTabBarDelegate extends SliverPersistentHeaderDelegate {
+  _ChatInfoTabBarDelegate({required this.child});
+
+  final Widget child;
+
+  @override
+  double get minExtent => 48;
+
+  @override
+  double get maxExtent => 48;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    return child;
+  }
+
+  @override
+  bool shouldRebuild(covariant _ChatInfoTabBarDelegate oldDelegate) {
+    return oldDelegate.child != child;
+  }
+}
+
 class _TgProfileAction extends StatelessWidget {
   const _TgProfileAction({
     required this.icon,
-    required this.label,
+    required this.tooltip,
     required this.onTap,
   });
 
   final IconData icon;
-  final String label;
+  final String tooltip;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: SizedBox(
-        width: 72,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 52,
-              height: 52,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest
-                    .withValues(alpha: 0.65),
-                borderRadius: BorderRadius.circular(14),
-              ),
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: theme.colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Center(
               child: Icon(
                 icon,
-                size: 24,
+                size: 22,
                 color: theme.colorScheme.primary,
               ),
             ),
-            const SizedBox(height: 6),
-            Text(
-              label,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
+          ),
         ),
       ),
     );

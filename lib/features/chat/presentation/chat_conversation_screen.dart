@@ -1594,6 +1594,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
+      enableDrag: true,
       builder: (_) => ChatInfoSheet(
         threadId: widget.threadId,
         title: _title,
