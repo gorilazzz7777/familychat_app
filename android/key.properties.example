@@ -1,0 +1,7 @@
+# Скопируйте в key.properties (файл в .gitignore).
+# storeFile — путь относительно папки android/app/
+
+storePassword=YOUR_STORE_PASSWORD
+keyPassword=YOUR_STORE_PASSWORD
+keyAlias=upload
+storeFile=../familychat-release.keystore

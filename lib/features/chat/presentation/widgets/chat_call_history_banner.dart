@@ -37,6 +37,11 @@ class ChatCallHistoryBanner extends StatelessWidget {
   }
 
   String _title() {
+    if (_result == 'missed' &&
+        _isOutgoing &&
+        _actorUserId == currentUserId) {
+      return 'Исходящий отменён';
+    }
     switch (_result) {
       case 'completed':
         return _isOutgoing ? 'Исходящий звонок' : 'Входящий звонок';

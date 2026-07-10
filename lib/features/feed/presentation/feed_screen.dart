@@ -16,7 +16,8 @@ import 'widgets/feed_event_card.dart';
 import 'widgets/feed_people_filter.dart';
 
 bool _isVisibleFeedEvent(Map<String, dynamic> event) {
-  return event['kind']?.toString() != 'profile_updated';
+  final kind = event['kind']?.toString();
+  return kind != 'profile_updated' && kind != 'message_sent';
 }
 
 List<Map<String, dynamic>> _visibleFeedEvents(
