@@ -47,6 +47,10 @@ class PushRegistrationService {
   static String? lastWebPushError;
   static Future<void>? _firebaseInitFuture;
   static Future<WebPushRegistrationResult>? _registerWebPushFuture;
+  static StreamSubscription<RemoteMessage>? _onMessageSub;
+  static StreamSubscription<RemoteMessage>? _onMessageOpenedSub;
+  static StreamSubscription<String>? _onTokenRefreshSub;
+  static Future<void>? _wireLock;
 
   static void _failStep(String step, Object error, [StackTrace? st]) {
     lastWebPushError = '$step: $error';
@@ -99,13 +103,25 @@ class PushRegistrationService {
   }) async {
     final status = await getPushPermissionStatus();
     if (status != PushPermissionStatus.granted) return false;
-    return _registerGranted(repository);
+    try {
+      return await _registerGranted(repository);
+    } catch (e, st) {
+      _failStep('registerIfPossible', e, st);
+      return false;
+    }
   }
 
   /// Сброс состояния при выходе (повторная регистрация после нового входа).
   static void resetSession() {
     _wired = false;
     lastWebPushError = null;
+    _wireLock = null;
+    unawaited(_onMessageSub?.cancel());
+    unawaited(_onMessageOpenedSub?.cancel());
+    unawaited(_onTokenRefreshSub?.cancel());
+    _onMessageSub = null;
+    _onMessageOpenedSub = null;
+    _onTokenRefreshSub = null;
   }
 
   static Future<bool> isPushSupported() async {
@@ -237,10 +253,11 @@ class PushRegistrationService {
       final token = await messaging.getToken();
       if (token == null || token.isEmpty) return false;
       await repository.registerFcm(token: token, platform: 'android');
-      _wireHandlers(messaging, repository, platform: 'android');
+      await _wireHandlers(messaging, repository, platform: 'android');
       return true;
     } catch (e, st) {
       _failStep('registerFcm', e, st);
+      _wired = false;
       return false;
     }
   }
@@ -312,29 +329,45 @@ class PushRegistrationService {
     return WebPushRegistrationResult.success;
   }
 
-  static void _wireHandlers(
+  static Future<void> _wireHandlers(
     FirebaseMessaging messaging,
     FamilyChatRepository repository, {
     required String platform,
-  }) {
+  }) async {
     if (_wired) return;
-    _wired = true;
 
-    FirebaseMessaging.onMessage.listen(
-      (message) => handleFamilyChatRemoteMessage(message),
-    );
-    FirebaseMessaging.onMessageOpenedApp.listen(
-      (message) => handleFamilyChatRemoteMessage(message, openedFromTap: true),
-    );
-    messaging.getInitialMessage().then((message) {
-      if (message != null) {
-        handleFamilyChatRemoteMessage(message, openedFromTap: true);
+    if (_wireLock != null) {
+      await _wireLock;
+      return;
+    }
+
+    final completer = Completer<void>();
+    _wireLock = completer.future;
+    try {
+      _onMessageSub ??= FirebaseMessaging.onMessage.listen(
+        (message) => handleFamilyChatRemoteMessage(message),
+      );
+      _onMessageOpenedSub ??= FirebaseMessaging.onMessageOpenedApp.listen(
+        (message) =>
+            handleFamilyChatRemoteMessage(message, openedFromTap: true),
+      );
+      final initial = await messaging.getInitialMessage();
+      if (initial != null) {
+        handleFamilyChatRemoteMessage(initial, openedFromTap: true);
       }
-    });
-    messaging.onTokenRefresh.listen((t) async {
-      if (t.isNotEmpty) {
-        await repository.registerFcm(token: t, platform: platform);
-      }
-    });
+      _onTokenRefreshSub ??= messaging.onTokenRefresh.listen((t) async {
+        if (t.isNotEmpty) {
+          await repository.registerFcm(token: t, platform: platform);
+        }
+      });
+      _wired = true;
+    } catch (e, st) {
+      _wired = false;
+      _failStep('wireHandlers', e, st);
+      rethrow;
+    } finally {
+      if (!completer.isCompleted) completer.complete();
+      _wireLock = null;
+    }
   }
 }

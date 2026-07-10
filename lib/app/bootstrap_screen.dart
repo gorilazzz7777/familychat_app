@@ -136,35 +136,50 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       });
       return;
     }
+
+    Map<String, dynamic>? st;
+    Object? statusError;
     try {
-      final st = await ref.read(familychatRepositoryProvider).status();
-      await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
-      final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
-      if (token != null && token.isNotEmpty) {
-        unawaited(FamilyChatRealtime.instance.connect(token));
-      }
-      unawaited(PushRegistrationService.registerIfPossible(
-        client: ref.read(apiClientProvider),
-        repository: ref.read(familychatRepositoryProvider),
-      ));
-      if (!mounted) return;
-      setState(() {
-        _checking = false;
-        _loggedIn = true;
-        _status = st;
-        _ready = st['onboarding_complete'] == true && st['has_family'] == true;
-      });
+      st = await ref.read(familychatRepositoryProvider).status();
+      try {
+        await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
+      } catch (_) {}
     } catch (e) {
+      statusError = e;
+    }
+
+    final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
+    if (token != null && token.isNotEmpty) {
+      unawaited(FamilyChatRealtime.instance.connect(token));
+    }
+    unawaited(PushRegistrationService.registerIfPossible(
+      client: ref.read(apiClientProvider),
+      repository: ref.read(familychatRepositoryProvider),
+    ));
+
+    if (!mounted) return;
+    if (st == null) {
       final stillLoggedIn = await _hasSession();
       if (!mounted) return;
       setState(() {
         _checking = false;
         _loggedIn = stillLoggedIn;
-        _bootError = e is DioException
-            ? 'Ошибка загрузки (${e.response?.statusCode ?? 'сеть'})'
+        _bootError = statusError is DioException
+            ? 'Ошибка загрузки (${statusError.response?.statusCode ?? 'сеть'})'
             : 'Не удалось загрузить данные';
       });
+      return;
     }
+
+    final status = st;
+    setState(() {
+      _checking = false;
+      _loggedIn = true;
+      _status = status;
+      _ready = status['onboarding_complete'] == true &&
+          status['has_family'] == true;
+      _bootError = null;
+    });
   }
 
   Future<void> _refreshStatus() async {

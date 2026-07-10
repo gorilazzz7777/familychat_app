@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'chat_compose_send_button.dart';
+import '../../data/chat_send_options.dart';
+
 /// Поле ввода сообщения с кнопками вложения и отправки внутри блока.
 class ChatComposeInput extends StatelessWidget {
   const ChatComposeInput({
@@ -14,7 +17,7 @@ class ChatComposeInput extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
   final VoidCallback onAttach;
-  final VoidCallback onSend;
+  final void Function(ChatSendOptions options) onSend;
   final String hintText;
 
   @override
@@ -50,7 +53,7 @@ class ChatComposeInput extends StatelessWidget {
               minLines: 1,
               maxLines: 5,
               textInputAction: TextInputAction.send,
-              onSubmitted: (_) => onSend(),
+              onSubmitted: (_) => onSend(ChatSendOptions.normal),
               decoration: InputDecoration(
                 hintText: hintText,
                 border: InputBorder.none,
@@ -61,15 +64,7 @@ class ChatComposeInput extends StatelessWidget {
               ),
             ),
           ),
-          IconButton(
-            tooltip: 'Отправить',
-            onPressed: onSend,
-            icon: Icon(
-              Icons.send_rounded,
-              color: theme.colorScheme.primary,
-            ),
-            visualDensity: VisualDensity.compact,
-          ),
+          ChatComposeSendButton(onSend: onSend),
         ],
       ),
     );

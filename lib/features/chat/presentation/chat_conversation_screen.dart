@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/network/offline_ui.dart';
@@ -22,6 +23,8 @@ import '../data/chat_network_status.dart';
 import '../data/chat_offline_outbox.dart';
 import '../data/chat_offline_sync.dart';
 import '../data/chat_realtime_utils.dart';
+import '../data/chat_scheduled_send_service.dart';
+import '../data/chat_send_options.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
@@ -172,6 +175,39 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         unawaited(_loadPeerStatus(widget.peerUserId!));
       });
     }
+    ChatScheduledSendService.instance.bind(_dispatchScheduledItem);
+  }
+
+  Future<void> _dispatchScheduledItem(int threadId, String scheduleId) async {
+    if (threadId != widget.threadId || !mounted) return;
+    final items = await ChatScheduledSendService.itemsForThread(threadId);
+    Map<String, dynamic>? item;
+    for (final candidate in items) {
+      if (candidate['id']?.toString() == scheduleId) {
+        item = candidate;
+        break;
+      }
+    }
+    if (item == null) return;
+
+    setState(() {
+      _messages = _messages
+          .where((m) => m['schedule_id']?.toString() != scheduleId)
+          .toList();
+    });
+
+    try {
+      final repo = ref.read(familychatRepositoryProvider);
+      await ChatScheduledSendService.sendScheduledItem(repo: repo, item: item);
+      if (!mounted) return;
+      await _load(silent: true);
+    } catch (_) {
+      if (!mounted) return;
+      await _injectScheduledMessages();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось отправить отложенное сообщение')),
+      );
+    }
   }
 
   void _onOfflineSync() {
@@ -236,6 +272,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
     }
     await _load(silent: !skipCache && cached != null && cached.isNotEmpty);
+    await _injectScheduledMessages();
     final targetId = widget.initialMessageId;
     if (targetId != null) {
       await _ensureMessageLoaded(targetId);
@@ -317,6 +354,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
     FamilyChatRealtime.instance.removeListener(_onRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
+    ChatScheduledSendService.instance.unbind(_dispatchScheduledItem);
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -613,6 +651,60 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   int _nextTempId() => _tempIdCounter--;
 
+  Future<void> _injectScheduledMessages() async {
+    final items = await ChatScheduledSendService.itemsForThread(widget.threadId);
+    if (!mounted || items.isEmpty) return;
+    var changed = false;
+    final merged = [..._messages];
+    for (final item in items) {
+      final scheduleId = item['id']?.toString();
+      if (scheduleId == null || scheduleId.isEmpty) continue;
+      if (merged.any((m) => m['schedule_id']?.toString() == scheduleId)) {
+        continue;
+      }
+      merged.add(_scheduledItemToMessage(item));
+      changed = true;
+    }
+    if (!changed || !mounted) return;
+    setState(() => _messages = sortChatMessages(merged));
+    _scrollToBottom();
+  }
+
+  Map<String, dynamic> _scheduledItemToMessage(Map<String, dynamic> item) {
+    final attachments = <Map<String, dynamic>>[];
+    final rawAttachments = item['attachments'];
+    if (rawAttachments is List) {
+      for (final raw in rawAttachments) {
+        if (raw is! Map) continue;
+        attachments.add({
+          'kind': 'file',
+          'filename': raw['filename']?.toString() ?? 'Файл',
+        });
+      }
+    }
+    return {
+      'id': _nextTempId(),
+      'schedule_id': item['id']?.toString(),
+      '_scheduled': true,
+      '_pending': true,
+      'thread_id': widget.threadId,
+      'body': item['body']?.toString() ?? '',
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+      'scheduled_at': item['send_at']?.toString(),
+      'sender_user_id': _currentUserId,
+      'sender_name': '',
+      'sender_avatar_url': '',
+      'attachments': attachments,
+      'read_status': 'scheduled',
+      if (item['reply_to_message_id'] != null)
+        'reply_to': {
+          'message_id': item['reply_to_message_id'],
+          'sender_name': '',
+          'body': '',
+        },
+    };
+  }
+
   void _addOptimisticMessage(
     int tempId, {
     required String body,
@@ -715,6 +807,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     required List<_OutgoingAttachment> attachments,
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
+    bool notifySilent = false,
   }) async {
     final repo = ref.read(familychatRepositoryProvider);
     final online = await ChatOfflineSync.instance.refreshOnline(repo);
@@ -747,6 +840,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         replyToMessageId: replyToMessageId,
         mentionedUserIds:
             mentionedUserIds.isEmpty ? null : mentionedUserIds,
+        notifySilent: notifySilent,
       );
       if (!mounted) return;
       _replaceOptimisticMessage(tempId, msg);
@@ -980,7 +1074,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
-  Future<void> _send({List<int> mentionedUserIds = const []}) async {
+  Future<void> _send({
+    List<int> mentionedUserIds = const [],
+    ChatSendOptions options = ChatSendOptions.normal,
+  }) async {
     final body = _controller.text.trim();
     final fileDraft = _pendingFileDraft;
     if (body.isEmpty && fileDraft == null) return;
@@ -1028,6 +1125,35 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _editingMessageId = null;
     });
 
+    if (options.isScheduled) {
+      final outboxAttachments = fileDraft == null
+          ? const <ChatOutboxAttachment>[]
+          : [
+              ChatOutboxAttachment(
+                bytes: fileDraft.bytes,
+                filename: fileDraft.filename,
+                contentType: fileDraft.contentType,
+              ),
+            ];
+      await ChatScheduledSendService.enqueue(
+        threadId: widget.threadId,
+        sendAt: options.scheduledAt!,
+        body: body.isEmpty ? null : body,
+        replyToMessageId: replyId,
+        mentionedUserIds: mentionedUserIds,
+        silent: options.silent,
+        attachments: outboxAttachments,
+      );
+      await _injectScheduledMessages();
+      if (!mounted) return;
+      final when = DateFormat('d MMM, HH:mm', 'ru')
+          .format(options.scheduledAt!.toLocal());
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Сообщение будет отправлено $when')),
+      );
+      return;
+    }
+
     final tempId = _nextTempId();
     final attachments = fileDraft == null
         ? <Map<String, dynamic>>[]
@@ -1052,6 +1178,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         attachments: const [],
         replyToMessageId: replyId,
         mentionedUserIds: mentionedUserIds,
+        notifySilent: options.silent,
       );
       return;
     }
@@ -1068,6 +1195,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ],
       replyToMessageId: replyId,
       mentionedUserIds: mentionedUserIds,
+      notifySilent: options.silent,
     );
   }
 
@@ -1824,9 +1952,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     isGroupLike: _isGroupLike,
                                     readStatus: isMine
                                         ? m['read_status']?.toString() ??
-                                            (m['_pending'] == true
-                                                ? 'sending'
-                                                : 'sent')
+                                            (m['_scheduled'] == true
+                                                ? 'scheduled'
+                                                : m['_pending'] == true
+                                                    ? 'sending'
+                                                    : 'sent')
+                                        : null,
+                                    scheduledAt: m['scheduled_at'] != null
+                                        ? DateTime.tryParse(
+                                            m['scheduled_at']?.toString() ?? '',
+                                          )
                                         : null,
                                     showGroupAvatarColumn:
                                         _showGroupAvatarColumn(i),
@@ -1844,7 +1979,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         _selectedMessageIds.contains(msgId),
                                     onTap: _selectionMode
                                         ? () => _toggleSelection(msgId)
-                                        : () => _openMessageMenu(m),
+                                        : m['_scheduled'] == true
+                                            ? null
+                                            : () => _openMessageMenu(m),
                                     onLongPress: m['_pending'] == true
                                         ? null
                                         : () => _enterSelection(msgId),
@@ -1952,8 +2089,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 controller: _controller,
                                 focusNode: _inputFocus,
                                 onAttach: _pickAttachment,
-                                onSend: (mentionedUserIds) => unawaited(
-                                  _send(mentionedUserIds: mentionedUserIds),
+                                onSend: (options, mentionedUserIds) => unawaited(
+                                  _send(
+                                    mentionedUserIds: mentionedUserIds,
+                                    options: options,
+                                  ),
                                 ),
                                 participants: _mentionParticipants,
                                 currentUserId: _currentUserId,
@@ -1962,7 +2102,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 controller: _controller,
                                 focusNode: _inputFocus,
                                 onAttach: _pickAttachment,
-                                onSend: () => unawaited(_send()),
+                                onSend: (options) =>
+                                    unawaited(_send(options: options)),
                               ),
                       ),
                     ],

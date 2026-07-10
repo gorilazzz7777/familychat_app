@@ -62,4 +62,4 @@ flutter_launcher_icons:
     generate: true
     image_path: assets/logo/logo.png
     background_color: "#FFFFFF"
-    theme_color: "#2E7D32"
+    theme_color: "#7EC8F0"

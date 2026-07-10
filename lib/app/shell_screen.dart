@@ -7,6 +7,7 @@ import 'package:share_handler/share_handler.dart';
 
 import '../core/notifications/familychat_notifications.dart';
 import '../core/push/push_navigation.dart';
+import '../core/push/push_registration_service.dart';
 import '../core/widgets/family_app_bar.dart';
 import '../core/providers/app_providers.dart';
 import '../core/theme/theme_seed_controller.dart';
@@ -176,6 +177,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       unawaited(_refreshTab(_index, silent: true));
       unawaited(_touchPresence());
       unawaited(
+        PushRegistrationService.registerIfPossible(
+          client: ref.read(apiClientProvider),
+          repository: ref.read(familychatRepositoryProvider),
+        ),
+      );
+      unawaited(
         ChatOfflineSync.instance.run(ref.read(familychatRepositoryProvider)),
       );
       final userId = _currentUserId;
@@ -187,7 +194,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           ),
         );
       }
-    } else if (state == AppLifecycleState.paused ||
+    } else if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       unawaited(_reportAppBackground());
     }

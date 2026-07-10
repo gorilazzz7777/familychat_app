@@ -22,8 +22,16 @@ class ChatHubScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatHubScreen> createState() => ChatHubScreenState();
 }
 
-class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
-  _ChatFilter _filter = _ChatFilter.all;
+class ChatHubScreenState extends ConsumerState<ChatHubScreen>
+    with SingleTickerProviderStateMixin {
+  static const _filters = <_ChatFilter>[
+    _ChatFilter.all,
+    _ChatFilter.family,
+    _ChatFilter.dm,
+    _ChatFilter.group,
+  ];
+
+  late final TabController _tabController;
   List<Map<String, dynamic>> _threads = [];
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
   bool _loading = true;
@@ -47,6 +55,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: _filters.length, vsync: this);
     FamilyChatRealtime.instance.addListener(_onRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineSync);
     _load();
@@ -54,6 +63,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
 
   @override
   void dispose() {
+    _tabController.dispose();
     FamilyChatRealtime.instance.removeListener(_onRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
     _searchController.dispose();
@@ -178,17 +188,24 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
         DateTime.fromMillisecondsSinceEpoch(0);
   }
 
-  List<Map<String, dynamic>> get _filtered {
+  bool _isBirthdayCelebration(Map<String, dynamic> thread) {
+    return thread['is_birthday_celebration'] == true;
+  }
+
+  bool _matchesFilter(Map<String, dynamic> thread, _ChatFilter filter) {
+    final kind = thread['kind']?.toString() ?? '';
+    return switch (filter) {
+      _ChatFilter.all => true,
+      _ChatFilter.family => kind == 'family' || _isBirthdayCelebration(thread),
+      _ChatFilter.dm => kind == 'dm',
+      _ChatFilter.group => kind == 'group' && !_isBirthdayCelebration(thread),
+    };
+  }
+
+  List<Map<String, dynamic>> _filteredBy(_ChatFilter filter) {
     final q = _searchQuery.trim().toLowerCase();
     return _threads.where((t) {
-      final kind = t['kind']?.toString() ?? '';
-      final kindOk = switch (_filter) {
-        _ChatFilter.all => true,
-        _ChatFilter.family => kind == 'family',
-        _ChatFilter.dm => kind == 'dm',
-        _ChatFilter.group => kind == 'group',
-      };
-      if (!kindOk) return false;
+      if (!_matchesFilter(t, filter)) return false;
       if (q.isEmpty) return true;
       final title = t['title']?.toString().toLowerCase() ?? '';
       final defaultTitle = t['default_title']?.toString().toLowerCase() ?? '';
@@ -220,7 +237,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
         builder: (_) => ChatConversationScreen(
           threadId: thread['id'] as int,
           title: thread['title']?.toString() ?? 'Чат',
-          defaultTitle: thread['default_title']?.toString() ?? thread['title']?.toString() ?? 'Чат',
+          defaultTitle: thread['default_title']?.toString() ??
+              thread['title']?.toString() ??
+              'Чат',
           customTitle: thread['custom_title']?.toString() ?? '',
           kind: thread['kind']?.toString() ?? 'family',
           peerUserId: thread['peer_user_id'] as int?,
@@ -244,9 +263,114 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
     await _load();
   }
 
+  String _emptyLabel(_ChatFilter filter) {
+    if (_searchQuery.trim().isNotEmpty) return 'Чаты не найдены';
+    return switch (filter) {
+      _ChatFilter.all => 'Нет чатов',
+      _ChatFilter.family => 'Нет семейных чатов',
+      _ChatFilter.dm => 'Нет личных чатов',
+      _ChatFilter.group => 'Нет групповых чатов',
+    };
+  }
+
+  Widget _buildThreadList(_ChatFilter filter) {
+    final timeFmt = DateFormat('dd.MM HH:mm');
+    final filtered = _filteredBy(filter);
+
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: filtered.isEmpty
+          ? ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                const SizedBox(height: 120),
+                Center(child: Text(_emptyLabel(filter))),
+              ],
+            )
+          : ListView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
+              itemCount: filtered.length,
+              itemBuilder: (context, i) {
+                final t = filtered[i];
+                final title = t['title']?.toString() ?? 'Чат';
+                final unread = t['unread_count'] as int? ?? 0;
+                final last = t['last_message'] as Map<String, dynamic>?;
+                final created = last != null
+                    ? DateTime.tryParse(last['created_at']?.toString() ?? '')
+                    : null;
+                final isBirthday = _isBirthdayCelebration(t);
+                return ListTile(
+                  leading: ChatAvatar(
+                    name: _avatarName(t),
+                    avatarUrl: _dmAvatarUrl(t),
+                    radius: 24,
+                  ),
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (isBirthday) ...[
+                        const SizedBox(width: 6),
+                        Icon(
+                          Icons.cake_outlined,
+                          size: 18,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ],
+                    ],
+                  ),
+                  subtitle: Text(
+                    _preview(t),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (created != null)
+                        Text(
+                          timeFmt.format(created.toLocal()),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      if (unread > 0)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: CircleAvatar(
+                            radius: 10,
+                            backgroundColor:
+                                Theme.of(context).colorScheme.primary,
+                            child: Text(
+                              '$unread',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  onTap: () => _openThread(t),
+                );
+              },
+            ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final timeFmt = DateFormat('dd.MM HH:mm');
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
 
     return Column(
       children: [
@@ -274,109 +398,31 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen> {
               onChanged: (v) => setState(() => _searchQuery = v),
             ),
           ),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: Row(
-            children: [
-              FilterChip(
-                label: const Text('Все'),
-                selected: _filter == _ChatFilter.all,
-                onSelected: (_) => setState(() => _filter = _ChatFilter.all),
-              ),
-              const SizedBox(width: 8),
-              FilterChip(
-                label: const Text('Семья'),
-                selected: _filter == _ChatFilter.family,
-                onSelected: (_) => setState(() => _filter = _ChatFilter.family),
-              ),
-              const SizedBox(width: 8),
-              FilterChip(
-                label: const Text('Личные'),
-                selected: _filter == _ChatFilter.dm,
-                onSelected: (_) => setState(() => _filter = _ChatFilter.dm),
-              ),
-              const SizedBox(width: 8),
-              FilterChip(
-                label: const Text('Группы'),
-                selected: _filter == _ChatFilter.group,
-                onSelected: (_) => setState(() => _filter = _ChatFilter.group),
-              ),
+        Material(
+          color: scheme.surface,
+          child: TabBar(
+            controller: _tabController,
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            labelStyle: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+            unselectedLabelStyle: theme.textTheme.titleSmall,
+            indicatorSize: TabBarIndicatorSize.label,
+            dividerColor: scheme.outlineVariant.withValues(alpha: 0.45),
+            tabs: const [
+              Tab(text: 'Все'),
+              Tab(text: 'Семья'),
+              Tab(text: 'Личные'),
+              Tab(text: 'Группы'),
             ],
           ),
         ),
         Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  child: _filtered.isEmpty
-                      ? ListView(
-                          children: [
-                            const SizedBox(height: 120),
-                            Center(
-                              child: Text(
-                                _searchQuery.trim().isNotEmpty
-                                    ? 'Чаты не найдены'
-                                    : 'Нет чатов',
-                              ),
-                            ),
-                          ],
-                        )
-                      : ListView.builder(
-                          itemCount: _filtered.length,
-                          itemBuilder: (context, i) {
-                            final t = _filtered[i];
-                            final title = t['title']?.toString() ?? 'Чат';
-                            final unread = t['unread_count'] as int? ?? 0;
-                            final last = t['last_message'] as Map<String, dynamic>?;
-                            final created = last != null
-                                ? DateTime.tryParse(last['created_at']?.toString() ?? '')
-                                : null;
-                            return ListTile(
-                              leading: ChatAvatar(
-                                name: _avatarName(t),
-                                avatarUrl: _dmAvatarUrl(t),
-                                radius: 24,
-                              ),
-                              title: Text(title),
-                              subtitle: Text(
-                                _preview(t),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              trailing: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  if (created != null)
-                                    Text(
-                                      timeFmt.format(created.toLocal()),
-                                      style: Theme.of(context).textTheme.bodySmall,
-                                    ),
-                                  if (unread > 0)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 4),
-                                      child: CircleAvatar(
-                                        radius: 10,
-                                        backgroundColor:
-                                            Theme.of(context).colorScheme.primary,
-                                        child: Text(
-                                          '$unread',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                              onTap: () => _openThread(t),
-                            );
-                          },
-                        ),
-                ),
+          child: TabBarView(
+            controller: _tabController,
+            children: _filters.map(_buildThreadList).toList(),
+          ),
         ),
       ],
     );

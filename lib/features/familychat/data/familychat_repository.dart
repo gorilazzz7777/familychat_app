@@ -420,6 +420,7 @@ class FamilyChatRepository {
     List<int>? attachmentIds,
     int? replyToMessageId,
     List<int>? mentionedUserIds,
+    bool notifySilent = false,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/',
@@ -430,6 +431,7 @@ class FamilyChatRepository {
         if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
         if (mentionedUserIds != null && mentionedUserIds.isNotEmpty)
           'mentioned_user_ids': mentionedUserIds,
+        if (notifySilent) 'notify_silent': true,
       },
     );
     return res.data!;

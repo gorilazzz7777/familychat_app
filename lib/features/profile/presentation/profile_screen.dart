@@ -5,7 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/theme/theme_seed_controller.dart';
-import '../../../core/theme/widgets/theme_color_picker_section.dart';
+import 'theme_appearance_screen.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
@@ -36,7 +36,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   String _gender = 'male';
   DateTime? _birthDate;
   bool _birthdayShowYear = true;
-  bool _suggestFaceTagging = true;
   String? _avatarUrl;
   bool _avatarBusy = false;
   bool _saving = false;
@@ -71,7 +70,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     if (g == 'male' || g == 'female') _gender = g;
     _birthDate = parseBirthDate(status['birth_date']?.toString());
     _birthdayShowYear = status['birthday_show_year'] != false;
-    _suggestFaceTagging = status['suggest_face_tagging'] != false;
     final url = status['avatar_url']?.toString() ?? '';
     _avatarUrl = url.isEmpty ? null : url;
   }
@@ -105,7 +103,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             gender: _gender,
             birthDate: formatBirthDateForApi(_birthDate!),
             birthdayShowYear: _birthdayShowYear,
-            suggestFaceTagging: _suggestFaceTagging,
           );
       if (!mounted) return;
       widget.onStatusChanged();
@@ -432,20 +429,36 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           subtitle: const Text('Если выключено, другим участникам виден только день и месяц'),
           controlAffinity: ListTileControlAffinity.leading,
         ),
-        CheckboxListTile(
-          contentPadding: EdgeInsets.zero,
-          value: _suggestFaceTagging,
-          onChanged: (v) => setState(() => _suggestFaceTagging = v ?? true),
-          title: const Text('Предлагать указать, кто на фото'),
-          subtitle: const Text('После отправки фото с нераспознанными лицами'),
-          controlAffinity: ListTileControlAffinity.leading,
-        ),
         const SizedBox(height: 24),
-        ThemeColorPickerSection(
-          currentSeedColor: ref.watch(themeSeedProvider),
-          onApply: (seed) async {
-            await ref.read(themeSeedProvider.notifier).applyAndSave(seed);
-            widget.onStatusChanged();
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.palette_outlined, color: theme.colorScheme.primary),
+          title: const Text('Оформление'),
+          subtitle: const Text('Цвет темы приложения'),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                  color: ref.watch(themeSeedProvider),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: theme.colorScheme.outlineVariant),
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ThemeAppearanceScreen(
+                  onApplied: widget.onStatusChanged,
+                ),
+              ),
+            );
           },
         ),
         const SizedBox(height: 16),

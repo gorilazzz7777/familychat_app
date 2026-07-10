@@ -38,6 +38,7 @@ class ChatMessageBubble extends StatelessWidget {
     this.onReactionTap,
     this.isGroupLike = false,
     this.mentions = const [],
+    this.scheduledAt,
   });
 
   final int threadId;
@@ -65,6 +66,7 @@ class ChatMessageBubble extends StatelessWidget {
   final void Function(String emoji)? onReactionTap;
   final bool isGroupLike;
   final List<Map<String, dynamic>> mentions;
+  final DateTime? scheduledAt;
 
   static const double _avatarSize = 32;
 
@@ -106,8 +108,9 @@ class ChatMessageBubble extends StatelessWidget {
           bottomRight: Radius.circular(isMine ? 4 : 16),
         ),
         child: GestureDetector(
+          onTap: onTap,
           onLongPress: onLongPress,
-          behavior: HitTestBehavior.translucent,
+          behavior: HitTestBehavior.opaque,
           child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
           child: Column(
@@ -120,75 +123,85 @@ class ChatMessageBubble extends StatelessWidget {
                   onTap: onReplyTap,
                   child: _buildReplyQuote(replyTo!, quoteAccent, textColor),
                 ),
-              GestureDetector(
-                onTap: onTap,
-                behavior: HitTestBehavior.deferToChild,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (_showBody(body, forward))
-                      ChatMentionText(
-                        body: body,
-                        mentions: mentions,
-                        style: theme.textTheme.bodyMedium?.copyWith(color: textColor) ??
-                            TextStyle(color: textColor),
-                        mentionStyle: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-                          color: isMine
-                              ? const Color(0xFF8FD3FF)
-                              : theme.colorScheme.primary,
-                          fontWeight: FontWeight.w600,
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_showBody(body, forward))
+                    ChatMentionText(
+                      body: body,
+                      mentions: mentions,
+                      style: theme.textTheme.bodyMedium?.copyWith(color: textColor) ??
+                          TextStyle(color: textColor),
+                      mentionStyle: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+                        color: isMine
+                            ? const Color(0xFF8FD3FF)
+                            : theme.colorScheme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      linkStyle: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+                        color: isMine
+                            ? const Color(0xFF8FD3FF)
+                            : theme.colorScheme.primary,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  for (final a in attachments) ...[
+                    if (body.isNotEmpty) const SizedBox(height: 8),
+                    if (a['kind'] == 'image')
+                      GestureDetector(
+                        onTap: onImageTap != null && a['local_bytes'] == null
+                            ? () => onImageTap!(a)
+                            : null,
+                        behavior: HitTestBehavior.opaque,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: _attachmentImage(a, maxBubbleWidth - 24),
+                        ),
+                      )
+                    else
+                      InkWell(
+                        onTap: () {
+                          final url = a['file_url']?.toString();
+                          if (url != null) launchUrl(Uri.parse(url));
+                        },
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.insert_drive_file_outlined, color: textColor),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
+                                a['filename']?.toString() ?? 'Файл',
+                                style: TextStyle(color: textColor),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    for (final a in attachments) ...[
-                      if (body.isNotEmpty) const SizedBox(height: 8),
-                      if (a['kind'] == 'image')
-                        GestureDetector(
-                          onTap: onImageTap != null && a['local_bytes'] == null
-                              ? () => onImageTap!(a)
-                              : null,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: _attachmentImage(a, maxBubbleWidth - 24),
-                          ),
-                        )
-                      else
-                        InkWell(
-                          onTap: () {
-                            final url = a['file_url']?.toString();
-                            if (url != null) launchUrl(Uri.parse(url));
-                          },
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.insert_drive_file_outlined, color: textColor),
-                              const SizedBox(width: 8),
-                              Flexible(
-                                child: Text(
-                                  a['filename']?.toString() ?? 'Файл',
-                                  style: TextStyle(color: textColor),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                    const SizedBox(height: 4),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (createdAt != null)
-                          Text(
-                            timeFmt.format(createdAt!.toLocal()),
-                            style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
-                          ),
-                        if (isMine && readStatus != null) ...[
-                          const SizedBox(width: 4),
-                          _ReadStatusIcon(status: readStatus!, color: metaColor),
-                        ],
-                      ],
-                    ),
                   ],
-                ),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (scheduledAt != null) ...[
+                        Icon(Icons.schedule, size: 13, color: metaColor),
+                        const SizedBox(width: 4),
+                        Text(
+                          timeFmt.format(scheduledAt!.toLocal()),
+                          style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
+                        ),
+                      ] else if (createdAt != null)
+                        Text(
+                          timeFmt.format(createdAt!.toLocal()),
+                          style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
+                        ),
+                      if (isMine && readStatus != null) ...[
+                        const SizedBox(width: 4),
+                        _ReadStatusIcon(status: readStatus!, color: metaColor),
+                      ],
+                    ],
+                  ),
+                ],
               ),
             ],
           ),
@@ -352,6 +365,16 @@ class _ReadStatusIcon extends StatelessWidget {
               color: color,
             ),
           ),
+        ),
+      );
+    }
+
+    if (status == 'scheduled') {
+      return Semantics(
+        label: 'Отложенная отправка',
+        child: Tooltip(
+          message: 'Отложенная отправка',
+          child: Icon(Icons.schedule_send, size: 16, color: color),
         ),
       );
     }

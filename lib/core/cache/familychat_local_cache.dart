@@ -292,6 +292,18 @@ abstract final class FamilyChatLocalCache {
     await writeJson('chat/outbox', {'items': items});
   }
 
+  static Future<List<Map<String, dynamic>>> readScheduledItems() async {
+    final raw = await readJson('chat/scheduled');
+    if (raw == null) return [];
+    final list = raw['items'];
+    if (list is! List) return [];
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  static Future<void> writeScheduledItems(List<Map<String, dynamic>> items) async {
+    await writeJson('chat/scheduled', {'items': items});
+  }
+
   static Future<void> saveMemberAlbums(int userId, Map<String, dynamic> data) async {
     await writeJson('gallery/member_albums_$userId', {'data': data});
   }

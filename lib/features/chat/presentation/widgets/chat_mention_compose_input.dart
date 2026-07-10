@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'chat_compose_send_button.dart';
+import '../../data/chat_send_options.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 
 /// Участник чата для автодополнения @упоминаний.
@@ -31,7 +33,7 @@ class ChatMentionComposeInput extends StatefulWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
   final VoidCallback onAttach;
-  final void Function(List<int> mentionedUserIds) onSend;
+  final void Function(ChatSendOptions options, List<int> mentionedUserIds) onSend;
   final List<ChatMentionParticipant> participants;
   final int? currentUserId;
   final String hintText;
@@ -139,9 +141,9 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
     _clearMentionQuery();
   }
 
-  void _handleSend() {
+  void _handleSend(ChatSendOptions options) {
     _syncMentionedIds();
-    widget.onSend(_mentionedUserIds.toList());
+    widget.onSend(options, _mentionedUserIds.toList());
     _mentionedUserIds.clear();
     _clearMentionQuery();
   }
@@ -220,7 +222,7 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                   minLines: 1,
                   maxLines: 5,
                   textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _handleSend(),
+                  onSubmitted: (_) => _handleSend(ChatSendOptions.normal),
                   decoration: InputDecoration(
                     hintText: widget.hintText,
                     border: InputBorder.none,
@@ -231,14 +233,8 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                   ),
                 ),
               ),
-              IconButton(
-                tooltip: 'Отправить',
-                onPressed: _handleSend,
-                icon: Icon(
-                  Icons.send_rounded,
-                  color: theme.colorScheme.primary,
-                ),
-                visualDensity: VisualDensity.compact,
+              ChatComposeSendButton(
+                onSend: (options) => _handleSend(options),
               ),
             ],
           ),
