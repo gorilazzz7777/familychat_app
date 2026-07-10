@@ -1,10 +1,12 @@
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/api_error_messages.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/routing/app_uri_parser.dart';
 import '../data/oauth_login_service.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -20,13 +22,40 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   static const _brandBlue = Color(0xFF7EC8F0);
   static const _brandPink = Color(0xFFF2A6C4);
   static const _brandViolet = Color(0xFFB8A6F0);
+  static const _googleRegistrationRestrictedRu =
+      'google_registration_restricted_ru';
 
   String? _error;
   bool _loading = false;
+  bool _googleRegistrationBlocked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _readOAuthErrorFromUrl());
+  }
+
+  void _readOAuthErrorFromUrl() {
+    if (!kIsWeb) return;
+    final oauth = parseOAuthCallback(Uri.base);
+    if (oauth == null || oauth.isOk) return;
+    if (!mounted) return;
+    if (oauth.errorCode == _googleRegistrationRestrictedRu) {
+      setState(() {
+        _googleRegistrationBlocked = true;
+        _error = null;
+      });
+      return;
+    }
+    if (oauth.error != null && oauth.error!.isNotEmpty) {
+      setState(() => _error = oauth.error);
+    }
+  }
 
   Future<void> _login(String provider) async {
     setState(() {
       _error = null;
+      _googleRegistrationBlocked = false;
       _loading = true;
     });
     final auth = ref.read(authRepositoryProvider);
@@ -36,6 +65,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       final result = await oauth.run(provider: provider, startUri: startUri);
       if (result['status'] != 'ok') {
         if (!mounted) return;
+        final errorCode = result['error_code'] ?? '';
+        if (errorCode == _googleRegistrationRestrictedRu) {
+          setState(() {
+            _loading = false;
+            _googleRegistrationBlocked = true;
+            _error = null;
+          });
+          return;
+        }
         setState(() {
           _loading = false;
           _error = result['error'] ?? 'Вход отменён';
@@ -167,6 +205,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               ),
                             ),
                             const SizedBox(height: 18),
+                            if (_googleRegistrationBlocked) ...[
+                              const _GoogleRegistrationWarning(),
+                              const SizedBox(height: 14),
+                            ],
                             if (_error != null) ...[
                               Container(
                                 padding: const EdgeInsets.symmetric(
@@ -188,37 +230,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               ),
                               const SizedBox(height: 14),
                             ],
-                            _LoginProviderButton(
-                              label: 'Войти через Google',
-                              icon: Icons.g_mobiledata_rounded,
-                              gradient: const [
-                                Color(0xFF5BA8E8),
-                                Color(0xFF4A8FD4),
-                              ],
-                              onPressed: _loading ? null : () => _login('google'),
-                            ),
-                            const SizedBox(height: 10),
-                            _LoginProviderButton(
-                              label: 'Войти через VK',
-                              icon: Icons.chat_bubble_outline_rounded,
-                              gradient: const [
-                                Color(0xFF6FA8E8),
-                                Color(0xFF5B8FD8),
-                              ],
-                              outlined: true,
-                              onPressed: _loading ? null : () => _login('vk'),
-                            ),
-                            const SizedBox(height: 10),
-                            _LoginProviderButton(
-                              label: 'Войти через Яндекс',
-                              icon: Icons.language_rounded,
-                              gradient: const [
-                                Color(0xFFE88A6A),
-                                Color(0xFFD46A4A),
-                              ],
-                              outlined: true,
-                              onPressed:
-                                  _loading ? null : () => _login('yandex'),
+                            _SocialLoginPanel(
+                              loading: _loading,
+                              onGoogle: () => _login('google'),
+                              onVk: () => _login('vk'),
+                              onYandex: () => _login('yandex'),
                             ),
                             if (_loading) ...[
                               const SizedBox(height: 18),
@@ -238,6 +254,60 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   const SizedBox(height: 28),
                 ],
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GoogleRegistrationWarning extends StatelessWidget {
+  const _GoogleRegistrationWarning();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8E1),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFFB300), width: 1.2),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(
+                Icons.warning_amber_rounded,
+                color: Color(0xFFE65100),
+                size: 22,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Регистрация через Google недоступна',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF5D4037),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Согласно российскому законодательству, регистрация новых '
+            'пользователей через иностранные сервисы (Google, Apple ID) '
+            'ограничена. Пожалуйста, выберите другой способ входа.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF6D4C41),
+              height: 1.45,
             ),
           ),
         ],
@@ -307,101 +377,83 @@ class _GlowOrb extends StatelessWidget {
   }
 }
 
-class _LoginProviderButton extends StatelessWidget {
-  const _LoginProviderButton({
-    required this.label,
-    required this.icon,
-    required this.gradient,
-    required this.onPressed,
-    this.outlined = false,
+class _SocialLoginPanel extends StatelessWidget {
+  const _SocialLoginPanel({
+    required this.loading,
+    required this.onGoogle,
+    required this.onVk,
+    required this.onYandex,
   });
 
-  final String label;
-  final IconData icon;
-  final List<Color> gradient;
-  final VoidCallback? onPressed;
-  final bool outlined;
+  final bool loading;
+  final VoidCallback onGoogle;
+  final VoidCallback onVk;
+  final VoidCallback onYandex;
 
   @override
   Widget build(BuildContext context) {
-    final child = Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(icon, size: 22),
-        const SizedBox(width: 8),
-        Flexible(
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontWeight: FontWeight.w600,
-              fontSize: 15,
-            ),
-          ),
-        ),
-      ],
-    );
+    final theme = Theme.of(context);
 
-    if (outlined) {
-      return DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          gradient: LinearGradient(colors: gradient),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(1.5),
-          child: Material(
-            color: Colors.white.withValues(alpha: 0.92),
-            borderRadius: BorderRadius.circular(14.5),
-            child: InkWell(
-              onTap: onPressed,
-              borderRadius: BorderRadius.circular(14.5),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                child: ShaderMask(
-                  shaderCallback: (bounds) =>
-                      LinearGradient(colors: gradient).createShader(bounds),
-                  child: DefaultTextStyle(
-                    style: const TextStyle(color: Colors.white),
-                    child: IconTheme(
-                      data: const IconThemeData(color: Colors.white),
-                      child: child,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    return DecoratedBox(
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 16, 12, 14),
       decoration: BoxDecoration(
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.75),
+        ),
         borderRadius: BorderRadius.circular(16),
-        gradient: LinearGradient(colors: gradient),
-        boxShadow: [
-          BoxShadow(
-            color: gradient.last.withValues(alpha: 0.35),
-            blurRadius: 14,
-            offset: const Offset(0, 6),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _SocialLoginIcon(
+            assetPath: 'assets/logo/vk.png',
+            semanticLabel: 'Вход через ВК',
+            onTap: loading ? null : onVk,
+          ),
+          _SocialLoginIcon(
+            assetPath: 'assets/logo/ya.png',
+            semanticLabel: 'Вход через Яндекс',
+            onTap: loading ? null : onYandex,
+          ),
+          _SocialLoginIcon(
+            assetPath: 'assets/logo/google.png',
+            semanticLabel: 'Вход через Google',
+            onTap: loading ? null : onGoogle,
           ),
         ],
       ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(16),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-            child: DefaultTextStyle(
-              style: const TextStyle(color: Colors.white),
-              child: IconTheme(
-                data: const IconThemeData(color: Colors.white),
-                child: child,
-              ),
+    );
+  }
+}
+
+class _SocialLoginIcon extends StatelessWidget {
+  const _SocialLoginIcon({
+    required this.assetPath,
+    required this.semanticLabel,
+    required this.onTap,
+  });
+
+  final String assetPath;
+  final String semanticLabel;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: SizedBox(
+          width: 68,
+          height: 68,
+          child: Center(
+            child: Image.asset(
+              assetPath,
+              width: 52,
+              height: 52,
+              fit: BoxFit.contain,
+              semanticLabel: semanticLabel,
             ),
           ),
         ),

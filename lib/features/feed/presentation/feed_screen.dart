@@ -15,6 +15,16 @@ import '../../chat/data/chat_offline_sync.dart';
 import 'widgets/feed_event_card.dart';
 import 'widgets/feed_people_filter.dart';
 
+bool _isVisibleFeedEvent(Map<String, dynamic> event) {
+  return event['kind']?.toString() != 'profile_updated';
+}
+
+List<Map<String, dynamic>> _visibleFeedEvents(
+  Iterable<Map<String, dynamic>> events,
+) {
+  return events.where(_isVisibleFeedEvent).toList();
+}
+
 enum _FeedEntryKind { newDivider, seenDivider, event, loading }
 
 class _FeedEntry {
@@ -149,7 +159,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     _events
       ..clear()
       ..addAll(
-        (cached['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
+        _visibleFeedEvents(
+          (cached['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
+        ),
       );
     _hasMore = cached['has_more'] == true;
     _lastReadAt = cached['last_read_at']?.toString();
@@ -175,10 +187,10 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   void _prependUnique(List<Map<String, dynamic>> incoming) {
     if (incoming.isEmpty) return;
     final ids = _events.map(_eventId).whereType<int>().toSet();
-    final fresh = incoming.where((event) {
+    final fresh = _visibleFeedEvents(incoming.where((event) {
       final id = _eventId(event);
       return id != null && !ids.contains(id);
-    }).toList();
+    }));
     if (fresh.isEmpty) return;
     _events.insertAll(0, fresh);
   }
@@ -233,8 +245,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             personUserId: _personUserId,
           );
       if (!mounted) return;
-      final batch =
-          (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final batch = _visibleFeedEvents(
+        (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
+      );
       setState(() {
         _events
           ..clear()
@@ -264,8 +277,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             personUserId: _personUserId,
           );
       if (!mounted) return;
-      final batch =
-          (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final batch = _visibleFeedEvents(
+        (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
+      );
       setState(() {
         if (afterId == null) {
           if (batch.isNotEmpty) {
@@ -309,8 +323,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             personUserId: _personUserId,
           );
       if (!mounted) return;
-      final batch =
-          (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final batch = _visibleFeedEvents(
+        (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
+      );
       setState(() {
         _events.addAll(batch);
         _hasMore = _parseHasMore(data, batchLength: batch.length);

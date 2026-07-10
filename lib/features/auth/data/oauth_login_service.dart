@@ -41,6 +41,7 @@ class OAuthLoginService {
           completer.complete({
             'status': status,
             'error': uri.queryParameters['error_description'] ?? status,
+            'error_code': uri.queryParameters['error_code'] ?? '',
           });
         }
         return true;

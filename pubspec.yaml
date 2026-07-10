@@ -50,6 +50,9 @@ flutter:
   uses-material-design: true
   assets:
     - assets/logo/logo.png
+    - assets/logo/google.png
+    - assets/logo/vk.png
+    - assets/logo/ya.png
 
 # Генерация иконок: dart run flutter_launcher_icons
 flutter_launcher_icons:

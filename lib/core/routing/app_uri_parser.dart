@@ -3,12 +3,14 @@ class OAuthCallbackResult {
     required this.provider,
     this.sessionCode,
     this.error,
+    this.errorCode,
     this.status,
   });
 
   final String provider;
   final String? sessionCode;
   final String? error;
+  final String? errorCode;
   final String? status;
 
   bool get isOk => status == null || status == 'ok';
@@ -42,6 +44,7 @@ OAuthCallbackResult? parseOAuthCallback(Uri uri) {
         provider: provider,
         status: status,
         error: uri.queryParameters['error_description'] ?? status,
+        errorCode: uri.queryParameters['error_code'],
       );
     }
 
@@ -68,6 +71,7 @@ OAuthCallbackResult? parseOAuthCallback(Uri uri) {
       provider: provider,
       status: status,
       error: uri.queryParameters['error_description'] ?? status,
+      errorCode: uri.queryParameters['error_code'],
     );
   }
 
