@@ -5,7 +5,7 @@ Future<void> ensureFcmServiceWorkerRegistered() async {
   final swContainer = html.window.navigator.serviceWorker;
   if (swContainer == null) return;
 
-  const swUrl = '/familychat/app/firebase-messaging-sw.js';
+  const swUrl = '/app/firebase-messaging-sw.js';
 
   html.ServiceWorkerRegistration? registration;
   try {

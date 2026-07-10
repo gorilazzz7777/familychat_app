@@ -16,7 +16,7 @@
   <script src="familychat-fcm.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/familychat/app/firebase-messaging-sw.js').catch(function (err) {
+      navigator.serviceWorker.register('/app/firebase-messaging-sw.js').catch(function (err) {
         console.warn('[FCM] service worker register failed:', err);
       });
     }

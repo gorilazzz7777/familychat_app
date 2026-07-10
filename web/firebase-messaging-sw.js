@@ -28,8 +28,8 @@ function callNotificationOptions(data, notification) {
     title: title,
     options: {
       body: body,
-      icon: '/familychat/app/icons/Icon-192.png',
-      badge: '/familychat/app/icons/Icon-192.png',
+      icon: '/app/icons/Icon-192.png',
+      badge: '/app/icons/Icon-192.png',
       tag: callTag(data.session_id),
       renotify: true,
       requireInteraction: true,
@@ -89,7 +89,7 @@ function focusClientWithCallData(data) {
           return client.focus();
         }
       }
-      return clients.openWindow('/familychat/app/');
+      return clients.openWindow('/app/');
     });
 }
 

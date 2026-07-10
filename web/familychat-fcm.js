@@ -7,7 +7,7 @@
     projectId: 'REPLACE_FIREBASE_PROJECT_ID',
   };
 
-  var swUrl = '/familychat/app/firebase-messaging-sw.js';
+  var swUrl = '/app/firebase-messaging-sw.js';
   var foregroundWired = false;
 
   async function getMessagingServiceWorkerRegistration() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сборка Flutter Web Family Chat (прод: /familychat/app/).
+# Сборка Flutter Web Family Chat (прод: /app/ на familychat-app.ru).
 set -euo pipefail
 
 _trim_secret() {
@@ -32,9 +32,9 @@ cd "$APP_DIR"
 DEFINES_FILE="$(mktemp)"
 trap 'rm -f "$DEFINES_FILE"' EXIT
 export DEFINES_FILE
-export FAMILYCHAT_API_BASE_URL="${FAMILYCHAT_API_BASE_URL:-https://remont-tracker.ru/api/v1/}"
-export FAMILYCHAT_WEB_APP_URL="${FAMILYCHAT_WEB_APP_URL:-https://remont-tracker.ru/familychat/app}"
-export FAMILYCHAT_INVITE_BASE_URL="${FAMILYCHAT_INVITE_BASE_URL:-https://remont-tracker.ru}"
+export FAMILYCHAT_API_BASE_URL="${FAMILYCHAT_API_BASE_URL:-https://familychat-app.ru/api/v1/}"
+export FAMILYCHAT_WEB_APP_URL="${FAMILYCHAT_WEB_APP_URL:-https://familychat-app.ru/app}"
+export FAMILYCHAT_INVITE_BASE_URL="${FAMILYCHAT_INVITE_BASE_URL:-https://familychat-app.ru}"
 
 python3 - <<'PY'
 import json
@@ -45,9 +45,9 @@ def env(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 defines = {
-    "FAMILYCHAT_API_BASE_URL": env("FAMILYCHAT_API_BASE_URL") or "https://remont-tracker.ru/api/v1/",
-    "FAMILYCHAT_WEB_APP_URL": env("FAMILYCHAT_WEB_APP_URL") or "https://remont-tracker.ru/familychat/app",
-    "FAMILYCHAT_INVITE_BASE_URL": env("FAMILYCHAT_INVITE_BASE_URL") or "https://remont-tracker.ru",
+    "FAMILYCHAT_API_BASE_URL": env("FAMILYCHAT_API_BASE_URL") or "https://familychat-app.ru/api/v1/",
+    "FAMILYCHAT_WEB_APP_URL": env("FAMILYCHAT_WEB_APP_URL") or "https://familychat-app.ru/app",
+    "FAMILYCHAT_INVITE_BASE_URL": env("FAMILYCHAT_INVITE_BASE_URL") or "https://familychat-app.ru",
 }
 
 api_key = env("FIREBASE_WEB_API_KEY")
@@ -81,7 +81,7 @@ PY
 flutter pub get
 flutter build web \
   --release \
-  --base-href=/familychat/app/ \
+  --base-href=/app/ \
   --no-wasm-dry-run \
   --dart-define-from-file="$DEFINES_FILE"
 

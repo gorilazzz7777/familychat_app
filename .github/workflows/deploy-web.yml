@@ -20,9 +20,9 @@ jobs:
 
       - name: Build Flutter web
         env:
-          FAMILYCHAT_API_BASE_URL: https://remont-tracker.ru/api/v1/
-          FAMILYCHAT_WEB_APP_URL: https://remont-tracker.ru/familychat/app
-          FAMILYCHAT_INVITE_BASE_URL: https://remont-tracker.ru
+          FAMILYCHAT_API_BASE_URL: https://familychat-app.ru/api/v1/
+          FAMILYCHAT_WEB_APP_URL: https://familychat-app.ru/app
+          FAMILYCHAT_INVITE_BASE_URL: https://familychat-app.ru
           FIREBASE_WEB_API_KEY: ${{ secrets.FAMILYCHAT_FIREBASE_WEB_API_KEY }}
           FIREBASE_WEB_APP_ID: ${{ secrets.FAMILYCHAT_FIREBASE_WEB_APP_ID }}
           FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.FAMILYCHAT_FIREBASE_MESSAGING_SENDER_ID }}

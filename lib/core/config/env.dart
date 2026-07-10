@@ -3,17 +3,17 @@ import 'package:flutter/foundation.dart';
 abstract final class Env {
   static const String apiBaseUrl = String.fromEnvironment(
     'FAMILYCHAT_API_BASE_URL',
-    defaultValue: 'https://remont-tracker.ru/api/v1/',
+    defaultValue: 'https://familychat-app.ru/api/v1/',
   );
 
   static const String webAppBaseUrl = String.fromEnvironment(
     'FAMILYCHAT_WEB_APP_URL',
-    defaultValue: 'https://remont-tracker.ru/familychat/app',
+    defaultValue: 'https://familychat-app.ru/app',
   );
 
   static const String inviteBaseUrl = String.fromEnvironment(
     'FAMILYCHAT_INVITE_BASE_URL',
-    defaultValue: 'https://remont-tracker.ru',
+    defaultValue: 'https://familychat-app.ru',
   );
 
   static const String rustoreAppUrl = String.fromEnvironment(
