@@ -26,6 +26,9 @@ class FamilyChatRepository {
       <String, Uint8List>{};
   static final Map<String, Future<Uint8List>> _attachmentBytesInFlight =
       <String, Future<Uint8List>>{};
+  static final Map<int, Uint8List> _avatarBytesCache = <int, Uint8List>{};
+  static final Map<int, Future<Uint8List>> _avatarBytesInFlight =
+      <int, Future<Uint8List>>{};
 
   Future<Map<String, dynamic>> status({bool? appForeground}) async {
     final fg = appForeground ?? FamilyChatForegroundBridge.isAppInForeground();
@@ -399,6 +402,40 @@ class FamilyChatRepository {
     final base =
         Env.apiBaseUrl.endsWith('/') ? Env.apiBaseUrl : '${Env.apiBaseUrl}/';
     return '${base}familychat/chat/threads/$threadId/attachments/$attachmentId/content/';
+  }
+
+  String memberAvatarContentUrl(int userId) {
+    final base =
+        Env.apiBaseUrl.endsWith('/') ? Env.apiBaseUrl : '${Env.apiBaseUrl}/';
+    return '${base}familychat/members/$userId/avatar/content/';
+  }
+
+  Future<Uint8List> fetchMemberAvatarBytes(int userId) async {
+    final cached = _avatarBytesCache[userId];
+    if (cached != null && cached.isNotEmpty) return cached;
+
+    final inFlight = _avatarBytesInFlight[userId];
+    if (inFlight != null) return inFlight;
+
+    final future = _fetchMemberAvatarBytesUncached(userId).then((bytes) {
+      _avatarBytesCache[userId] = bytes;
+      return bytes;
+    }).whenComplete(() => _avatarBytesInFlight.remove(userId));
+
+    _avatarBytesInFlight[userId] = future;
+    return future;
+  }
+
+  Future<Uint8List> _fetchMemberAvatarBytesUncached(int userId) async {
+    final res = await _dio.get<List<int>>(
+      'familychat/members/$userId/avatar/content/',
+      options: Options(responseType: ResponseType.bytes),
+    );
+    final data = res.data;
+    if (data == null || data.isEmpty) {
+      throw StateError('Пустой аватар');
+    }
+    return data is Uint8List ? data : Uint8List.fromList(data);
   }
 
   Future<Uint8List> fetchChatAttachmentBytes(

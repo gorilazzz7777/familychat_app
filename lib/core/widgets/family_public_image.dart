@@ -8,11 +8,12 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'family_public_web_image.dart';
 import '../cache/familychat_media_cache.dart';
 
-/// Публичные URL (аватары в S3). На web — [Image.network], без cache_manager (ему нужен CORS).
+/// Публичные URL (аватары в S3). На web — через API-прокси (CORS на S3 не нужен).
 class FamilyPublicImage extends StatelessWidget {
   const FamilyPublicImage({
     super.key,
     required this.url,
+    this.userId,
     this.width,
     this.height,
     this.fit = BoxFit.cover,
@@ -23,6 +24,7 @@ class FamilyPublicImage extends StatelessWidget {
   });
 
   final String url;
+  final int? userId;
   final double? width;
   final double? height;
   final BoxFit fit;
@@ -41,6 +43,7 @@ class FamilyPublicImage extends StatelessWidget {
     if (kIsWeb) {
       return FamilyPublicWebImage(
         url: trimmed,
+        userId: userId,
         width: width,
         height: height,
         fit: fit,
