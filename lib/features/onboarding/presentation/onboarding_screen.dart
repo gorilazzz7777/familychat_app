@@ -102,7 +102,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       context,
       initial: _birthDate,
     );
-    if (picked != null) setState(() => _birthDate = picked);
+    if (picked != null) {
+      setState(() => _birthDate = picked.date);
+    }
   }
 
   @override

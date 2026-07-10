@@ -4,6 +4,7 @@ import '../../familychat/data/familychat_repository.dart';
 import 'chat_network_status.dart';
 import 'chat_offline_outbox.dart';
 import 'chat_offline_prefetch.dart';
+import 'chat_scheduled_send_service.dart';
 
 /// Координатор офлайн-кэша чатов и синхронизации очереди.
 class ChatOfflineSync extends ChangeNotifier {
@@ -50,6 +51,7 @@ class ChatOfflineSync extends ChangeNotifier {
       }
 
       await ChatOfflinePrefetch.run(repo);
+      await ChatScheduledSendService.instance.dispatchDue();
       notifyListeners();
     } finally {
       _syncing = false;

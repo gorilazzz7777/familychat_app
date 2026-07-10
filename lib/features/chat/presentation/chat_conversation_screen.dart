@@ -90,6 +90,7 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
     this.initialCanRejoin = false,
     this.initialCanLeave = false,
     this.initialParticipantUserIds = const [],
+    this.initialIsBirthdayCelebration = false,
   });
 
   final int threadId;
@@ -103,6 +104,7 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
   final bool initialCanRejoin;
   final bool initialCanLeave;
   final List<int> initialParticipantUserIds;
+  final bool initialIsBirthdayCelebration;
 
   @override
   ConsumerState<ChatConversationScreen> createState() =>
@@ -136,6 +138,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _canRejoin = false;
   bool _canLeave = false;
   List<int> _participantUserIds = [];
+  bool _isBirthdayCelebration = false;
   List<ChatMentionParticipant> _mentionParticipants = [];
   double _lastKeyboardInset = 0;
 
@@ -155,6 +158,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _canRejoin = widget.initialCanRejoin;
     _canLeave = widget.initialCanLeave;
     _participantUserIds = List<int>.from(widget.initialParticipantUserIds);
+    _isBirthdayCelebration = widget.initialIsBirthdayCelebration;
     WidgetsBinding.instance.addObserver(this);
     _inputFocus.addListener(_onInputFocusChanged);
     ActiveChatContext.instance.setOpenThread(widget.threadId);
@@ -175,38 +179,33 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         unawaited(_loadPeerStatus(widget.peerUserId!));
       });
     }
-    ChatScheduledSendService.instance.bind(_dispatchScheduledItem);
+    ChatScheduledSendService.instance.addListener(_onScheduledSend);
   }
 
-  Future<void> _dispatchScheduledItem(int threadId, String scheduleId) async {
-    if (threadId != widget.threadId || !mounted) return;
-    final items = await ChatScheduledSendService.itemsForThread(threadId);
-    Map<String, dynamic>? item;
-    for (final candidate in items) {
-      if (candidate['id']?.toString() == scheduleId) {
-        item = candidate;
-        break;
-      }
-    }
-    if (item == null) return;
+  void _onScheduledSend() {
+    if (!mounted) return;
+    unawaited(_applyScheduledSendResults());
+  }
 
-    setState(() {
+  Future<void> _applyScheduledSendResults() async {
+    final deliveries = ChatScheduledSendService.instance.consumeDeliveries();
+    if (deliveries.isEmpty) return;
+
+    var changed = false;
+    for (final delivery in deliveries) {
+      if (delivery.threadId != widget.threadId) continue;
       _messages = _messages
-          .where((m) => m['schedule_id']?.toString() != scheduleId)
+          .where((m) => m['schedule_id']?.toString() != delivery.scheduleId)
           .toList();
-    });
-
-    try {
-      final repo = ref.read(familychatRepositoryProvider);
-      await ChatScheduledSendService.sendScheduledItem(repo: repo, item: item);
-      if (!mounted) return;
+      changed = true;
+    }
+    if (changed && mounted) {
+      setState(() {});
+      await _persistMessageCache();
+    }
+    if (!mounted) return;
+    if (deliveries.any((d) => d.threadId == widget.threadId)) {
       await _load(silent: true);
-    } catch (_) {
-      if (!mounted) return;
-      await _injectScheduledMessages();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось отправить отложенное сообщение')),
-      );
     }
   }
 
@@ -357,7 +356,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
     FamilyChatRealtime.instance.removeListener(_onRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
-    ChatScheduledSendService.instance.unbind(_dispatchScheduledItem);
+    ChatScheduledSendService.instance.removeListener(_onScheduledSend);
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -1570,6 +1569,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               .whereType<int>()
               .toList() ??
           _participantUserIds;
+      _isBirthdayCelebration = thread['is_birthday_celebration'] == true;
     });
   }
 
@@ -1607,6 +1607,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         canLeave: _canLeave,
         participantUserIds: _participantUserIds,
         peerUserId: widget.peerUserId,
+        isBirthdayCelebration: _isBirthdayCelebration,
         onTitleChanged: (title, customTitle) {
           if (!mounted) return;
           setState(() {

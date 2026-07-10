@@ -10,6 +10,7 @@ import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
 import 'profile_gallery_tab.dart';
+import '../../chat/presentation/widgets/chat_image_viewer.dart';
 import 'widgets/chat_avatar.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
@@ -84,8 +85,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     final picked = await showBirthDatePicker(
       context,
       initial: _birthDate,
+      initialShowYear: _birthdayShowYear,
     );
-    if (picked != null) setState(() => _birthDate = picked);
+    if (picked == null) return;
+    setState(() {
+      _birthDate = picked.date;
+      _birthdayShowYear = picked.showYear;
+    });
   }
 
   Future<void> _saveProfile() async {
@@ -128,6 +134,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (hasPhoto)
+              ListTile(
+                leading: const Icon(Icons.visibility_outlined),
+                title: const Text('Просмотр'),
+                onTap: () => Navigator.pop(ctx, 'view'),
+              ),
             ListTile(
               leading: const Icon(Icons.photo_library_outlined),
               title: const Text('Выбрать из галереи'),
@@ -153,6 +165,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     );
     if (!mounted || action == null) return;
     switch (action) {
+      case 'view':
+        await _viewAvatar();
       case 'gallery':
         await _uploadAvatar(ImageSource.gallery);
       case 'camera':
@@ -160,6 +174,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
       case 'delete':
         await _deleteAvatar();
     }
+  }
+
+  Future<void> _viewAvatar() async {
+    final url = _avatarUrl?.trim();
+    if (url == null || url.isEmpty || !mounted) return;
+    await ChatImageViewer.open(
+      context,
+      imageUrl: url,
+      filename: 'avatar.jpg',
+    );
   }
 
   Future<void> _uploadAvatar(ImageSource source) async {
@@ -318,67 +342,41 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     return ListView(
       padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
       children: [
-        GestureDetector(
-          onTap: _avatarBusy ? null : _showAvatarOptions,
-          child: SizedBox(
-            width: 72,
-            height: 72,
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                ChatAvatar(
-                  name: _displayName,
-                  avatarUrl: _avatarUrl,
-                  radius: 36,
-                ),
-                if (_avatarBusy)
-                  const Positioned.fill(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.black38,
-                      ),
-                      child: Center(
-                        child: SizedBox(
-                          width: 28,
-                          height: 28,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
+        Center(
+          child: GestureDetector(
+            onTap: _avatarBusy ? null : _showAvatarOptions,
+            child: SizedBox(
+              width: 112,
+              height: 112,
+              child: Stack(
+                children: [
+                  ChatAvatar(
+                    name: _displayName,
+                    avatarUrl: _avatarUrl,
+                    radius: 56,
+                  ),
+                  if (_avatarBusy)
+                    const Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.black38,
+                        ),
+                        child: Center(
+                          child: SizedBox(
+                            width: 28,
+                            height: 28,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                Positioned(
-                  right: -2,
-                  bottom: -2,
-                  child: CircleAvatar(
-                    radius: 16,
-                    backgroundColor: theme.colorScheme.primary,
-                    child: const Icon(
-                      Icons.camera_alt,
-                      size: 18,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Нажмите на фото, чтобы изменить',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          'Для альбомов по лицу используйте чёткое фото, где хорошо видно лицо.',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
         const SizedBox(height: 24),
@@ -420,14 +418,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           subtitle: Text(birthLabel),
           trailing: const Icon(Icons.chevron_right),
           onTap: _pickBirthDate,
-        ),
-        CheckboxListTile(
-          contentPadding: EdgeInsets.zero,
-          value: _birthdayShowYear,
-          onChanged: (v) => setState(() => _birthdayShowYear = v ?? true),
-          title: const Text('Показывать год'),
-          subtitle: const Text('Если выключено, другим участникам виден только день и месяц'),
-          controlAffinity: ListTileControlAffinity.leading,
         ),
         const SizedBox(height: 24),
         ListTile(

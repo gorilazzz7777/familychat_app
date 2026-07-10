@@ -29,6 +29,8 @@ typedef ChatOpenImage = void Function({
 });
 typedef ChatTitleChanged = void Function(String title, String customTitle);
 
+const _birthdayChatAvatarAsset = 'assets/chat/birthday_celebration_avatar.jpg';
+
 class ChatInfoSheet extends ConsumerStatefulWidget {
   const ChatInfoSheet({
     super.key,
@@ -42,6 +44,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
     this.canLeave = false,
     this.participantUserIds = const [],
     this.peerUserId,
+    this.isBirthdayCelebration = false,
     this.onTitleChanged,
     this.onMembershipChanged,
     this.onGoToMessage,
@@ -58,6 +61,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
   final bool canLeave;
   final List<int> participantUserIds;
   final int? peerUserId;
+  final bool isBirthdayCelebration;
   final ChatTitleChanged? onTitleChanged;
   final VoidCallback? onMembershipChanged;
   final ChatGoToMessage? onGoToMessage;
@@ -75,7 +79,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   late String _title;
   late String _customTitle;
   List<Map<String, dynamic>> _media = [];
-  List<Map<String, dynamic>> _files = [];
   List<Map<String, dynamic>> _links = [];
   List<Map<String, dynamic>> _participants = [];
   bool _loading = true;
@@ -88,7 +91,20 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
 
   bool get _isDm => widget.kind == 'dm' && widget.peerUserId != null;
 
-  int get _tabCount => _showParticipants ? 4 : 3;
+  bool get _hasHeaderNetworkPhoto {
+    final url = _headerAvatarUrl?.trim();
+    return url != null && url.isNotEmpty;
+  }
+
+  bool get _hasHeaderAssetPhoto => widget.isBirthdayCelebration;
+
+  bool get _hasExpandedHeaderPhoto =>
+      _hasHeaderNetworkPhoto || _hasHeaderAssetPhoto;
+
+  String? get _headerAvatarAsset =>
+      _hasHeaderAssetPhoto ? _birthdayChatAvatarAsset : null;
+
+  int get _tabCount => _showParticipants ? 3 : 2;
 
   @override
   void initState() {
@@ -116,7 +132,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     try {
       final futures = <Future<dynamic>>[
         repo.threadMedia(widget.threadId),
-        repo.threadFiles(widget.threadId),
         repo.threadLinks(widget.threadId),
         repo.threadNotifications(widget.threadId),
       ];
@@ -130,7 +145,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       if (!mounted) return;
       var idx = 0;
       final media = results[idx++];
-      final files = results[idx++];
       final links = results[idx++];
       final notif = results[idx++] as Map<String, dynamic>;
       var participants = <Map<String, dynamic>>[];
@@ -143,7 +157,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       }
       setState(() {
         _media = (media as List).cast<Map<String, dynamic>>();
-        _files = (files as List).cast<Map<String, dynamic>>();
         _links = (links as List).cast<Map<String, dynamic>>();
         _notificationsEnabled = notif['notifications_enabled'] == true;
         if (_showParticipants) {
@@ -152,8 +165,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         if (peerProfile != null) {
           _headerAvatarUrl = peerProfile['avatar_url']?.toString();
           _headerSubtitle = userPresenceFromProfile(peerProfile).label;
-        } else if (_customTitle.isNotEmpty) {
-          _headerSubtitle = widget.defaultTitle;
         } else if (_showParticipants && participants.isNotEmpty) {
           _headerSubtitle = chatParticipantCountLabel(participants.length);
         }
@@ -424,14 +435,12 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         0 => _participantsSlivers(),
         1 => _gallerySlivers(),
         2 => _linksSlivers(),
-        3 => _filesSlivers(),
         _ => const [SliverToBoxAdapter(child: SizedBox.shrink())],
       };
     }
     return switch (index) {
       0 => _gallerySlivers(),
       1 => _linksSlivers(),
-      2 => _filesSlivers(),
       _ => const [SliverToBoxAdapter(child: SizedBox.shrink())],
     };
   }
@@ -512,43 +521,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
             );
           },
           childCount: _links.length,
-        ),
-      ),
-    ];
-  }
-
-  List<Widget> _filesSlivers() {
-    if (_files.isEmpty) {
-      return const [
-        SliverFillRemaining(
-          hasScrollBody: false,
-          child: Center(child: Text('Нет файлов')),
-        ),
-      ];
-    }
-    return [
-      SliverList(
-        delegate: SliverChildBuilderDelegate(
-          (context, i) {
-            final f = _files[i];
-            final url = f['file_url']?.toString();
-            final messageId = _messageIdOf(f);
-            return ListTile(
-              leading: const Icon(Icons.insert_drive_file_outlined),
-              title: Text(f['filename']?.toString() ?? 'Файл'),
-              onTap: () => _showItemActions(
-                title: 'Открыть файл',
-                onOpen: url != null
-                    ? () => launchUrl(
-                          Uri.parse(url),
-                          mode: LaunchMode.externalApplication,
-                        )
-                    : null,
-                messageId: messageId,
-              ),
-            );
-          },
-          childCount: _files.length,
         ),
       ),
     ];
@@ -716,36 +688,87 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   }
 
   Future<void> _openProfilePhoto() async {
-    final url = _headerAvatarUrl?.trim();
-    if (url == null || url.isEmpty || !mounted) return;
-    await ChatImageViewer.open(
-      context,
-      imageUrl: url,
-      filename: _title.isNotEmpty ? '$_title.jpg' : 'avatar.jpg',
+    if (!mounted) return;
+    if (_hasHeaderNetworkPhoto) {
+      await ChatImageViewer.open(
+        context,
+        imageUrl: _headerAvatarUrl!.trim(),
+        filename: _title.isNotEmpty ? '$_title.jpg' : 'avatar.jpg',
+      );
+      return;
+    }
+    if (!_hasHeaderAssetPhoto) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            foregroundColor: Colors.white,
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              child: Image.asset(
+                _birthdayChatAvatarAsset,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
+  String get _profileDisplayName {
+    final custom = _customTitle.trim();
+    final defaultName = widget.defaultTitle.trim();
+    if (custom.isNotEmpty &&
+        defaultName.isNotEmpty &&
+        custom != defaultName) {
+      return '${_title.trim()} ($defaultName)';
+    }
+    return _title;
+  }
+
   Widget _profileInfoSection(BuildContext context) {
-    final hasPhoto =
-        _headerAvatarUrl != null && _headerAvatarUrl!.trim().isNotEmpty;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 2),
-      child: Column(
+      padding: EdgeInsets.fromLTRB(
+        16,
+        _hasExpandedHeaderPhoto ? 12 : 8,
+        16,
+        2,
+      ),
+      child: Stack(
+        clipBehavior: Clip.none,
         children: [
-          if (!hasPhoto) ...[
-            GestureDetector(
-              onTap: _headerAvatarUrl?.trim().isNotEmpty == true
-                  ? _openProfilePhoto
-                  : null,
-              child: ChatAvatar(
-                name: _title,
-                avatarUrl: _headerAvatarUrl,
-                radius: 44,
+          SizedBox(
+            width: double.infinity,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                if (!_hasExpandedHeaderPhoto) ...[
+                  ChatAvatar(
+                    name: _title,
+                    avatarUrl: _headerAvatarUrl,
+                    assetPath: _headerAvatarAsset,
+                    radius: 44,
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                _buildNameRow(context),
+              ],
+            ),
+          ),
+          if (_hasMoreActions && !_hasExpandedHeaderPhoto)
+            Positioned(
+              top: 0,
+              right: 0,
+              child: IconButton(
+                icon: const Icon(Icons.more_vert),
+                onPressed: _showMoreMenu,
               ),
             ),
-            const SizedBox(height: 10),
-          ],
-          _buildNameRow(context),
         ],
       ),
     );
@@ -764,6 +787,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     );
     return Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Row(
           mainAxisSize: MainAxisSize.min,
@@ -771,9 +795,9 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           children: [
             Flexible(
               child: Text(
-                _title,
+                _profileDisplayName,
                 style: titleStyle,
-                maxLines: 1,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
               ),
@@ -803,27 +827,12 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
               textAlign: TextAlign.center,
             ),
           ),
-        if (_customTitle.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              widget.defaultTitle,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-            ),
-          ),
       ],
     );
   }
 
   Widget _flexiblePhotoHeader(BuildContext context) {
     final theme = Theme.of(context);
-    final hasPhoto =
-        _headerAvatarUrl != null && _headerAvatarUrl!.trim().isNotEmpty;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -847,7 +856,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
             fit: StackFit.expand,
             clipBehavior: Clip.hardEdge,
             children: [
-              if (hasPhoto)
+              if (_hasHeaderNetworkPhoto)
                 Positioned.fill(
                   child: Material(
                     color: Colors.transparent,
@@ -866,8 +875,22 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                     ),
                   ),
                 )
-              else
-                ColoredBox(color: theme.colorScheme.surfaceContainerLow),
+              else if (_hasHeaderAssetPhoto)
+                Positioned.fill(
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: _openProfilePhoto,
+                      child: Opacity(
+                        opacity: (1 - t * 0.9).clamp(0.0, 1.0),
+                        child: Image.asset(
+                          _birthdayChatAvatarAsset,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               if (showCollapsedAvatar && avatarOpacity > 0.12)
                 Opacity(
                   opacity: avatarOpacity,
@@ -882,6 +905,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                         child: ChatAvatar(
                           name: _title,
                           avatarUrl: _headerAvatarUrl,
+                          assetPath: _headerAvatarAsset,
                           radius: collapsedAvatarSize / 2,
                         ),
                       ),
@@ -895,7 +919,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                   child: IconButton(
                     icon: Icon(
                       Icons.more_vert,
-                      color: hasPhoto && t < 0.45
+                      color: _hasExpandedHeaderPhoto && t < 0.45
                           ? Colors.white
                           : theme.colorScheme.onSurface,
                     ),
@@ -921,7 +945,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           if (_showParticipants) const Tab(text: 'Участники'),
           const Tab(text: 'Галерея'),
           const Tab(text: 'Ссылки'),
-          const Tab(text: 'Файлы'),
         ],
       ),
     );
@@ -997,23 +1020,24 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                     controller: scrollController,
                     physics: const AlwaysScrollableScrollPhysics(),
                     slivers: [
-                      SliverAppBar(
-                        automaticallyImplyLeading: false,
-                        expandedHeight: _expandedPhotoHeight,
-                        collapsedHeight: 72,
-                        toolbarHeight: 0,
-                        pinned: true,
-                        stretch: false,
-                        elevation: 0,
-                        scrolledUnderElevation: 0,
-                        shadowColor: Colors.transparent,
-                        backgroundColor: theme.colorScheme.surface,
-                        surfaceTintColor: Colors.transparent,
-                        flexibleSpace: FlexibleSpaceBar(
-                          collapseMode: CollapseMode.pin,
-                          background: _flexiblePhotoHeader(context),
+                      if (_hasExpandedHeaderPhoto)
+                        SliverAppBar(
+                          automaticallyImplyLeading: false,
+                          expandedHeight: _expandedPhotoHeight,
+                          collapsedHeight: 72,
+                          toolbarHeight: 0,
+                          pinned: true,
+                          stretch: false,
+                          elevation: 0,
+                          scrolledUnderElevation: 0,
+                          shadowColor: Colors.transparent,
+                          backgroundColor: theme.colorScheme.surface,
+                          surfaceTintColor: Colors.transparent,
+                          flexibleSpace: FlexibleSpaceBar(
+                            collapseMode: CollapseMode.pin,
+                            background: _flexiblePhotoHeader(context),
+                          ),
                         ),
-                      ),
                       SliverToBoxAdapter(
                         child: _profileDetailsSection(context),
                       ),
@@ -1170,19 +1194,41 @@ class _RenameChatDialogState extends State<_RenameChatDialog> {
           helperText: 'Видно только вам',
         ),
       ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       actions: [
-        if (widget.canReset)
-          TextButton(
-            onPressed: () => Navigator.pop(context, ''),
-            child: const Text('Сбросить'),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerRight,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+            if (widget.canReset)
+              TextButton(
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                ),
+                onPressed: () => Navigator.pop(context, ''),
+                child: const Text('Сбросить'),
+              ),
+            TextButton(
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Отмена'),
+            ),
+            TextButton(
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+              onPressed: () => Navigator.pop(context, _controller.text.trim()),
+              child: const Text('Сохранить'),
+            ),
+          ],
           ),
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Отмена'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(context, _controller.text.trim()),
-          child: const Text('Сохранить'),
         ),
       ],
     );

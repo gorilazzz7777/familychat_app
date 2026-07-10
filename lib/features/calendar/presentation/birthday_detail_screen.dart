@@ -114,6 +114,7 @@ class _BirthdayDetailScreenState extends ConsumerState<BirthdayDetailScreen> {
           title: title,
           defaultTitle: title,
           kind: 'group',
+          initialIsBirthdayCelebration: true,
         ),
       ),
     );

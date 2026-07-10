@@ -26,21 +26,39 @@ class DdMmYyyyTextInputFormatter extends TextInputFormatter {
   }
 }
 
+class BirthDatePickerResult {
+  const BirthDatePickerResult({
+    required this.date,
+    required this.showYear,
+  });
+
+  final DateTime date;
+  final bool showYear;
+}
+
 /// Диалог ввода даты рождения с авторазделителями и опциональным календарём.
-Future<DateTime?> showBirthDatePicker(
+Future<BirthDatePickerResult?> showBirthDatePicker(
   BuildContext context, {
   DateTime? initial,
+  bool? initialShowYear,
 }) {
-  return showDialog<DateTime>(
+  return showDialog<BirthDatePickerResult>(
     context: context,
-    builder: (ctx) => _BirthDatePickerDialog(initial: initial),
+    builder: (ctx) => _BirthDatePickerDialog(
+      initial: initial,
+      initialShowYear: initialShowYear,
+    ),
   );
 }
 
 class _BirthDatePickerDialog extends StatefulWidget {
-  const _BirthDatePickerDialog({this.initial});
+  const _BirthDatePickerDialog({
+    this.initial,
+    this.initialShowYear,
+  });
 
   final DateTime? initial;
+  final bool? initialShowYear;
 
   @override
   State<_BirthDatePickerDialog> createState() => _BirthDatePickerDialogState();
@@ -49,13 +67,17 @@ class _BirthDatePickerDialog extends StatefulWidget {
 class _BirthDatePickerDialogState extends State<_BirthDatePickerDialog> {
   late final TextEditingController _controller;
   late final DateTime _initialDate;
+  late bool _showYear;
   String? _errorText;
+
+  bool get _showYearToggle => widget.initialShowYear != null;
 
   @override
   void initState() {
     super.initState();
     final now = DateTime.now();
     _initialDate = widget.initial ?? DateTime(now.year - 25, now.month, now.day);
+    _showYear = widget.initialShowYear ?? true;
     _controller = TextEditingController(
       text: formatBirthDateDisplay(_initialDate, showYear: true),
     );
@@ -82,7 +104,10 @@ class _BirthDatePickerDialogState extends State<_BirthDatePickerDialog> {
       setState(() => _errorText = 'Укажите год не ранее 1900');
       return;
     }
-    Navigator.pop(context, parsed);
+    Navigator.pop(
+      context,
+      BirthDatePickerResult(date: parsed, showYear: _showYear),
+    );
   }
 
   Future<void> _pickFromCalendar() async {
@@ -96,7 +121,10 @@ class _BirthDatePickerDialogState extends State<_BirthDatePickerDialog> {
       locale: const Locale('ru'),
     );
     if (!mounted || cal == null) return;
-    Navigator.pop(context, cal);
+    Navigator.pop(
+      context,
+      BirthDatePickerResult(date: cal, showYear: _showYear),
+    );
   }
 
   @override
@@ -134,6 +162,19 @@ class _BirthDatePickerDialogState extends State<_BirthDatePickerDialog> {
               label: const Text('Выбрать в календаре'),
             ),
           ),
+          if (_showYearToggle) ...[
+            const SizedBox(height: 4),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _showYear,
+              onChanged: (v) => setState(() => _showYear = v ?? true),
+              title: const Text('Показывать год'),
+              subtitle: const Text(
+                'Если выключено, другим участникам виден только день и месяц',
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+          ],
         ],
       ),
       actions: [

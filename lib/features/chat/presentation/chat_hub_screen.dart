@@ -249,6 +249,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           initialCanRejoin: thread['can_rejoin'] == true,
           initialCanLeave: thread['can_leave'] == true,
           initialParticipantUserIds: _participantIdsOf(thread),
+          initialIsBirthdayCelebration: thread['is_birthday_celebration'] == true,
         ),
       ),
     );

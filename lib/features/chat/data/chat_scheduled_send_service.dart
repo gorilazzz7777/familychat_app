@@ -1,37 +1,60 @@
 import 'dart:async';
-import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../familychat/data/familychat_repository.dart';
+import 'chat_network_status.dart';
 import 'chat_offline_outbox.dart';
+import 'familychat_realtime.dart';
 
-typedef ScheduledSendHandler = Future<void> Function(
-  int threadId,
-  String scheduleId,
-);
+class ScheduledSendDelivery {
+  const ScheduledSendDelivery({
+    required this.threadId,
+    required this.scheduleId,
+  });
 
-/// Локальная очередь отложенных сообщений.
-class ChatScheduledSendService {
+  final int threadId;
+  final String scheduleId;
+}
+
+/// Локальная очередь отложенных сообщений (работает вне экрана чата).
+class ChatScheduledSendService extends ChangeNotifier {
   ChatScheduledSendService._();
 
   static final ChatScheduledSendService instance = ChatScheduledSendService._();
 
-  Timer? _timer;
-  ScheduledSendHandler? _handler;
+  static const _maxOneShotDelay = Duration(hours: 24);
 
-  void bind(ScheduledSendHandler handler) {
-    _handler = handler;
-    _timer ??= Timer.periodic(const Duration(seconds: 20), (_) {
-      unawaited(dispatchDue());
-    });
+  FamilyChatRepository? _repo;
+  Timer? _pollTimer;
+  final _oneShotTimers = <String, Timer>{};
+  List<ScheduledSendDelivery> _recentDeliveries = const [];
+  bool _dispatching = false;
+
+  List<ScheduledSendDelivery> consumeDeliveries() {
+    final items = _recentDeliveries;
+    _recentDeliveries = const [];
+    return items;
   }
 
-  void unbind(ScheduledSendHandler handler) {
-    if (_handler == handler) {
-      _handler = null;
-      _timer?.cancel();
-      _timer = null;
+  void start(FamilyChatRepository repo) {
+    _repo = repo;
+    _pollTimer ??= Timer.periodic(const Duration(seconds: 15), (_) {
+      unawaited(dispatchDue());
+    });
+    unawaited(_rescheduleAll());
+    unawaited(dispatchDue());
+  }
+
+  void stop() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    for (final timer in _oneShotTimers.values) {
+      timer.cancel();
     }
+    _oneShotTimers.clear();
+    _repo = null;
   }
 
   static int _idCounter = 0;
@@ -70,7 +93,7 @@ class ChatScheduledSendService {
         if (att.contentType != null) 'content_type': att.contentType,
       });
     }
-    items.add({
+    final item = <String, dynamic>{
       'id': _nextId(),
       'thread_id': threadId,
       'send_at': sendAt.toUtc().toIso8601String(),
@@ -79,11 +102,15 @@ class ChatScheduledSendService {
       if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
       if (mentionedUserIds.isNotEmpty) 'mentioned_user_ids': mentionedUserIds,
       if (attachmentMeta.isNotEmpty) 'attachments': attachmentMeta,
-    });
+    };
+    items.add(item);
     await FamilyChatLocalCache.writeScheduledItems(items);
+    instance._scheduleOneShot(item);
+    unawaited(instance.dispatchDue());
   }
 
   static Future<void> remove(String scheduleId) async {
+    instance._cancelOneShot(scheduleId);
     final items = await FamilyChatLocalCache.readScheduledItems();
     final remaining = <Map<String, dynamic>>[];
     for (final item in items) {
@@ -106,18 +133,82 @@ class ChatScheduledSendService {
     await FamilyChatLocalCache.writeScheduledItems(remaining);
   }
 
-  Future<void> dispatchDue() async {
-    final handler = _handler;
-    if (handler == null) return;
-    final now = DateTime.now().toUtc();
+  Future<void> _rescheduleAll() async {
     final items = await FamilyChatLocalCache.readScheduledItems();
     for (final item in items) {
-      final sendAt = DateTime.tryParse(item['send_at']?.toString() ?? '');
-      if (sendAt == null || sendAt.isAfter(now)) continue;
-      final threadId = item['thread_id'];
-      final scheduleId = item['id']?.toString();
-      if (threadId is! int || scheduleId == null || scheduleId.isEmpty) continue;
-      await handler(threadId, scheduleId);
+      _scheduleOneShot(item);
+    }
+  }
+
+  void _scheduleOneShot(Map<String, dynamic> item) {
+    final scheduleId = item['id']?.toString();
+    final sendAt = DateTime.tryParse(item['send_at']?.toString() ?? '');
+    if (scheduleId == null || scheduleId.isEmpty || sendAt == null) return;
+
+    _cancelOneShot(scheduleId);
+    final delay = sendAt.toUtc().difference(DateTime.now().toUtc());
+    if (delay > _maxOneShotDelay) return;
+
+    _oneShotTimers[scheduleId] = Timer(
+      delay.isNegative ? Duration.zero : delay,
+      () {
+        _oneShotTimers.remove(scheduleId);
+        unawaited(dispatchDue());
+      },
+    );
+  }
+
+  void _cancelOneShot(String scheduleId) {
+    _oneShotTimers.remove(scheduleId)?.cancel();
+  }
+
+  Future<void> dispatchDue() async {
+    if (_dispatching) return;
+    final repo = _repo;
+    if (repo == null) return;
+
+    final online = await ChatNetworkStatus.isOnline(() async {
+      await repo.status();
+    });
+    if (!online) return;
+
+    _dispatching = true;
+    try {
+      final now = DateTime.now().toUtc();
+      final items = await FamilyChatLocalCache.readScheduledItems();
+      final delivered = <ScheduledSendDelivery>[];
+
+      for (final item in items) {
+        final sendAt = DateTime.tryParse(item['send_at']?.toString() ?? '');
+        if (sendAt == null || sendAt.isAfter(now)) continue;
+
+        final threadId = item['thread_id'];
+        final scheduleId = item['id']?.toString();
+        if (threadId is! int || scheduleId == null || scheduleId.isEmpty) {
+          continue;
+        }
+
+        try {
+          await sendScheduledItem(repo: repo, item: item);
+          _cancelOneShot(scheduleId);
+          delivered.add(
+            ScheduledSendDelivery(threadId: threadId, scheduleId: scheduleId),
+          );
+          FamilyChatRealtime.instance.emitSyntheticEvent({
+            'event': 'chat_refresh',
+            'thread_id': threadId,
+          });
+        } catch (_) {
+          // Оставляем в очереди — повторим при следующем тике.
+        }
+      }
+
+      if (delivered.isNotEmpty) {
+        _recentDeliveries = [..._recentDeliveries, ...delivered];
+        notifyListeners();
+      }
+    } finally {
+      _dispatching = false;
     }
   }
 

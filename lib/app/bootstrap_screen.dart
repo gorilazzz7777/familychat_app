@@ -12,6 +12,7 @@ import '../core/routing/app_uri_parser.dart';
 import '../core/push/push_navigation.dart';
 import '../core/session/auth_session_bus.dart';
 import '../features/auth/presentation/login_screen.dart';
+import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
@@ -208,6 +209,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       nav.popUntil((route) => route.isFirst);
     }
     await FamilyChatRealtime.instance.disconnect();
+    ChatScheduledSendService.instance.stop();
     PushRegistrationService.resetSession();
     await ref.read(themeSeedProvider.notifier).resetToDefault();
     await ref.read(authRepositoryProvider).logout();
