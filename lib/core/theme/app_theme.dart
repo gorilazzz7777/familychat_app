@@ -20,6 +20,10 @@ class AppTheme {
         brightness: Brightness.light,
       ),
       useMaterial3: true,
+      tabBarTheme: const TabBarThemeData(
+        indicatorSize: TabBarIndicatorSize.tab,
+        tabAlignment: TabAlignment.fill,
+      ),
     );
   }
 

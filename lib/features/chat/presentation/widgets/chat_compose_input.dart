@@ -50,10 +50,10 @@ class ChatComposeInput extends StatelessWidget {
             child: TextField(
               controller: controller,
               focusNode: focusNode,
+              keyboardType: TextInputType.multiline,
               minLines: 1,
               maxLines: 5,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => onSend(ChatSendOptions.normal),
+              textInputAction: TextInputAction.newline,
               decoration: InputDecoration(
                 hintText: hintText,
                 border: InputBorder.none,

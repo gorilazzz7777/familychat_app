@@ -219,10 +219,10 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                 child: TextField(
                   controller: widget.controller,
                   focusNode: widget.focusNode,
+                  keyboardType: TextInputType.multiline,
                   minLines: 1,
                   maxLines: 5,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _handleSend(ChatSendOptions.normal),
+                  textInputAction: TextInputAction.newline,
                   decoration: InputDecoration(
                     hintText: widget.hintText,
                     border: InputBorder.none,

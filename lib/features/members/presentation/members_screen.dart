@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/family_tab_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'family_tree_tab.dart';
@@ -193,7 +194,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
 
   @override
   Widget build(BuildContext context) {
-    final tabBar = TabBar(
+    final tabBar = FamilyTabBar.build(
       controller: _tabs,
       tabs: const [
         Tab(text: 'Участники'),

@@ -18,6 +18,7 @@ import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/face_tagging_sheet.dart';
 import '../../profile/presentation/album_upload_file_bytes.dart';
 import '../../profile/presentation/read_picked_image_bytes.dart';
+import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../data/active_chat_context.dart';
 import '../data/chat_network_status.dart';
 import '../data/chat_offline_outbox.dart';
@@ -26,6 +27,7 @@ import '../data/chat_realtime_utils.dart';
 import '../data/chat_scheduled_send_service.dart';
 import '../data/chat_send_options.dart';
 import '../data/familychat_realtime.dart';
+import 'chat_thread_avatars.dart';
 import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
 import 'chat_call_screen.dart';
@@ -91,6 +93,7 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
     this.initialCanLeave = false,
     this.initialParticipantUserIds = const [],
     this.initialIsBirthdayCelebration = false,
+    this.initialPeerAvatarUrl,
   });
 
   final int threadId;
@@ -105,6 +108,7 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
   final bool initialCanLeave;
   final List<int> initialParticipantUserIds;
   final bool initialIsBirthdayCelebration;
+  final String? initialPeerAvatarUrl;
 
   @override
   ConsumerState<ChatConversationScreen> createState() =>
@@ -139,6 +143,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _canLeave = false;
   List<int> _participantUserIds = [];
   bool _isBirthdayCelebration = false;
+  String? _headerAvatarUrl;
   List<ChatMentionParticipant> _mentionParticipants = [];
   double _lastKeyboardInset = 0;
 
@@ -159,6 +164,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _canLeave = widget.initialCanLeave;
     _participantUserIds = List<int>.from(widget.initialParticipantUserIds);
     _isBirthdayCelebration = widget.initialIsBirthdayCelebration;
+    _headerAvatarUrl = widget.initialPeerAvatarUrl;
     WidgetsBinding.instance.addObserver(this);
     _inputFocus.addListener(_onInputFocusChanged);
     ActiveChatContext.instance.setOpenThread(widget.threadId);
@@ -250,6 +256,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (!mounted) return;
       setState(() {
         _peerStatusLabel = userPresenceFromProfile(profile).label;
+        final url = profile['avatar_url']?.toString().trim();
+        _headerAvatarUrl = url != null && url.isNotEmpty ? url : _headerAvatarUrl;
       });
     } catch (_) {}
   }
@@ -1608,6 +1616,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         participantUserIds: _participantUserIds,
         peerUserId: widget.peerUserId,
         isBirthdayCelebration: _isBirthdayCelebration,
+        initialHeaderAvatarUrl: _headerAvatarUrl,
         onTitleChanged: (title, customTitle) {
           if (!mounted) return;
           setState(() {
@@ -1794,41 +1803,62 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             : FamilyAppBar.buildCustom(
                 title: InkWell(
                   onTap: _openInfo,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
+                  child: Row(
                     children: [
-                      Text(
-                        _title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      ChatAvatar(
+                        name: _title,
+                        avatarUrl: _headerAvatarUrl,
+                        assetPath: chatThreadAvatarAsset(
+                          kind: widget.kind,
+                          isBirthdayCelebration: _isBirthdayCelebration,
+                        ),
+                        radius: 20,
                       ),
-                      if (_isGroupLike &&
-                          !_hasLeft &&
-                          _participantUserIds.isNotEmpty)
-                        Text(
-                          chatParticipantCountLabel(_participantUserIds.length),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style:
-                              Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (_isGroupLike &&
+                                !_hasLeft &&
+                                _participantUserIds.isNotEmpty)
+                              Text(
+                                chatParticipantCountLabel(
+                                    _participantUserIds.length),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                              ),
+                            if (_isDm && _peerStatusLabel != null)
+                              Text(
+                                _peerStatusLabel!,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                              ),
+                          ],
                         ),
-                      if (_isDm && _peerStatusLabel != null)
-                        Text(
-                          _peerStatusLabel!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style:
-                              Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                        ),
+                      ),
                     ],
                   ),
                 ),

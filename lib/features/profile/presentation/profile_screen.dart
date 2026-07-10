@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/theme/theme_seed_controller.dart';
@@ -312,7 +313,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     return Scaffold(
       appBar: FamilyAppBar.build(
         title: 'Профиль',
-        bottom: TabBar(
+        bottom: FamilyTabBar.build(
           controller: _tabs,
           tabs: const [
             Tab(text: 'Основное'),

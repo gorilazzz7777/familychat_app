@@ -77,7 +77,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     setState(() => _headers = {'Authorization': 'Bearer $token'});
   }
 
-  Future<void> _loadWebBytes() async {
+  Future<void> _loadWebBytes({int attempt = 0}) async {
     final attachmentId = chatAsInt(widget.attachment['id']);
     if (attachmentId == null) {
       setState(() {
@@ -87,15 +87,9 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       return;
     }
 
-    setState(() {
-      _webLoading = true;
-      _webFailed = false;
-      _webBytes = null;
-    });
-
     final cacheKey = _webAttachmentCacheKey(widget.threadId, attachmentId);
     final memoryCached = _webAttachmentBytesCache[cacheKey];
-    if (memoryCached != null) {
+    if (memoryCached != null && memoryCached.isNotEmpty) {
       setState(() {
         _webBytes = memoryCached;
         _webFailed = false;
@@ -103,6 +97,11 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       });
       return;
     }
+
+    setState(() {
+      _webLoading = true;
+      _webFailed = false;
+    });
 
     try {
       final cached = await FamilyChatLocalCache.readAttachmentBytes(
@@ -125,17 +124,36 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
             attachmentId,
           );
       _webAttachmentBytesCache[cacheKey] = bytes;
-      await FamilyChatLocalCache.saveAttachmentBytes(
-        widget.threadId,
-        attachmentId,
-        bytes,
+      unawaited(
+        FamilyChatLocalCache.saveAttachmentBytes(
+          widget.threadId,
+          attachmentId,
+          bytes,
+        ).catchError((_) {}),
       );
       if (!mounted) return;
       setState(() {
         _webBytes = bytes;
         _webLoading = false;
+        _webFailed = false;
       });
     } catch (_) {
+      final recovered = _webAttachmentBytesCache[cacheKey];
+      if (recovered != null && recovered.isNotEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _webBytes = recovered;
+          _webFailed = false;
+          _webLoading = false;
+        });
+        return;
+      }
+      if (attempt < 2) {
+        await Future<void>.delayed(Duration(milliseconds: 350 * (attempt + 1)));
+        if (!mounted) return;
+        await _loadWebBytes(attempt: attempt + 1);
+        return;
+      }
       if (!mounted) return;
       setState(() {
         _webFailed = true;
@@ -151,7 +169,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
 
   Widget _errorBox({bool retryable = true}) {
     return GestureDetector(
-      onTap: retryable && kIsWeb ? _loadWebBytes : null,
+      onTap: retryable && kIsWeb ? () => _loadWebBytes() : null,
       child: SizedBox(
         height: widget.height,
         width: widget.width,
@@ -204,9 +222,11 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   Widget build(BuildContext context) {
     if (kIsWeb) {
       if (_webFailed) return _errorBox();
-      if (_webLoading || _webBytes == null) return _loadingBox();
+      if (_webLoading && _webBytes == null) return _loadingBox();
+      if (_webBytes == null) return _loadingBox();
       return Image.memory(
         _webBytes!,
+        key: ValueKey('${widget.threadId}:${widget.attachment['id']}'),
         height: widget.height,
         width: widget.width,
         fit: widget.fit,

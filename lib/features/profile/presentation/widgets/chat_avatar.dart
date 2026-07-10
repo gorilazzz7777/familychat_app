@@ -74,21 +74,18 @@ class ChatAvatar extends StatelessWidget {
   }
 
   Widget _loadingAvatar(Color bg, double size, double r) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        _initialsBox(bg, size, r),
-        Center(
-          child: SizedBox(
-            width: r * 0.9,
-            height: r * 0.9,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: Colors.white.withValues(alpha: 0.9),
-            ),
+    return ColoredBox(
+      color: bg.withValues(alpha: 0.15),
+      child: Center(
+        child: SizedBox(
+          width: r * 0.9,
+          height: r * 0.9,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: Colors.white.withValues(alpha: 0.9),
           ),
         ),
-      ],
+      ),
     );
   }
 

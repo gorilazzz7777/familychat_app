@@ -24,6 +24,8 @@ class FamilyChatRepository {
   Dio get _dio => _client.dio;
   static final Map<String, Uint8List> _attachmentBytesCache =
       <String, Uint8List>{};
+  static final Map<String, Future<Uint8List>> _attachmentBytesInFlight =
+      <String, Future<Uint8List>>{};
 
   Future<Map<String, dynamic>> status({bool? appForeground}) async {
     final fg = appForeground ?? FamilyChatForegroundBridge.isAppInForeground();
@@ -404,6 +406,24 @@ class FamilyChatRepository {
     final cacheKey = '$threadId:$attachmentId';
     final cached = _attachmentBytesCache[cacheKey];
     if (cached != null && cached.isNotEmpty) return cached;
+
+    final inFlight = _attachmentBytesInFlight[cacheKey];
+    if (inFlight != null) return inFlight;
+
+    final future = _fetchChatAttachmentBytesUncached(threadId, attachmentId)
+        .then((bytes) {
+      _attachmentBytesCache[cacheKey] = bytes;
+      return bytes;
+    }).whenComplete(() => _attachmentBytesInFlight.remove(cacheKey));
+
+    _attachmentBytesInFlight[cacheKey] = future;
+    return future;
+  }
+
+  Future<Uint8List> _fetchChatAttachmentBytesUncached(
+    int threadId,
+    int attachmentId,
+  ) async {
     final res = await _dio.get<List<int>>(
       'familychat/chat/threads/$threadId/attachments/$attachmentId/content/',
       options: Options(responseType: ResponseType.bytes),
@@ -412,9 +432,7 @@ class FamilyChatRepository {
     if (data == null || data.isEmpty) {
       throw StateError('Пустой файл');
     }
-    final bytes = data is Uint8List ? data : Uint8List.fromList(data);
-    _attachmentBytesCache[cacheKey] = bytes;
-    return bytes;
+    return data is Uint8List ? data : Uint8List.fromList(data);
   }
 
   Future<Map<String, dynamic>> sendThreadMessage(

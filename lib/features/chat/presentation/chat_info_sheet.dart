@@ -1,12 +1,18 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/cache/familychat_media_cache.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../../../core/widgets/family_tab_bar.dart';
+import 'chat_thread_avatars.dart';
 import 'chat_call_screen.dart';
 import 'widgets/chat_image_viewer.dart';
 import 'widgets/chat_network_image.dart';
@@ -29,8 +35,6 @@ typedef ChatOpenImage = void Function({
 });
 typedef ChatTitleChanged = void Function(String title, String customTitle);
 
-const _birthdayChatAvatarAsset = 'assets/chat/birthday_celebration_avatar.jpg';
-
 class ChatInfoSheet extends ConsumerStatefulWidget {
   const ChatInfoSheet({
     super.key,
@@ -45,6 +49,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
     this.participantUserIds = const [],
     this.peerUserId,
     this.isBirthdayCelebration = false,
+    this.initialHeaderAvatarUrl,
     this.onTitleChanged,
     this.onMembershipChanged,
     this.onGoToMessage,
@@ -62,6 +67,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
   final List<int> participantUserIds;
   final int? peerUserId;
   final bool isBirthdayCelebration;
+  final String? initialHeaderAvatarUrl;
   final ChatTitleChanged? onTitleChanged;
   final VoidCallback? onMembershipChanged;
   final ChatGoToMessage? onGoToMessage;
@@ -96,13 +102,18 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     return url != null && url.isNotEmpty;
   }
 
-  bool get _hasHeaderAssetPhoto => widget.isBirthdayCelebration;
+  bool get _hasHeaderAssetPhoto => chatThreadHasAssetAvatar(
+        kind: widget.kind,
+        isBirthdayCelebration: widget.isBirthdayCelebration,
+      );
 
   bool get _hasExpandedHeaderPhoto =>
       _hasHeaderNetworkPhoto || _hasHeaderAssetPhoto;
 
-  String? get _headerAvatarAsset =>
-      _hasHeaderAssetPhoto ? _birthdayChatAvatarAsset : null;
+  String? get _headerAvatarAsset => chatThreadAvatarAsset(
+        kind: widget.kind,
+        isBirthdayCelebration: widget.isBirthdayCelebration,
+      );
 
   int get _tabCount => _showParticipants ? 3 : 2;
 
@@ -111,9 +122,85 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     super.initState();
     _title = widget.title;
     _customTitle = widget.customTitle;
+    final initialAvatar = widget.initialHeaderAvatarUrl?.trim();
+    _headerAvatarUrl =
+        initialAvatar != null && initialAvatar.isNotEmpty ? initialAvatar : null;
     _tabs = TabController(length: _tabCount, vsync: this);
     _tabs.addListener(_onTabChanged);
+    _prefetchHeaderPhoto();
     _load();
+  }
+
+  void _prefetchHeaderPhoto() {
+    if (kIsWeb || !_hasHeaderNetworkPhoto) return;
+    unawaited(FamilyChatMediaCache.preview.getSingleFile(_headerAvatarUrl!));
+  }
+
+  Widget _headerPhotoPlaceholder(BuildContext context) {
+    return ColoredBox(
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: const Center(
+        child: SizedBox(
+          width: 28,
+          height: 28,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    );
+  }
+
+  Widget _headerPhotoError(BuildContext context) {
+    return ColoredBox(
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: Icon(
+        Icons.image_not_supported_outlined,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+
+  Widget _buildHeaderNetworkPhoto(
+    BuildContext context, {
+    double? width,
+    double? height,
+    BoxFit fit = BoxFit.cover,
+  }) {
+    return FamilyPublicImage(
+      url: _headerAvatarUrl!,
+      width: width,
+      height: height,
+      fit: fit,
+      placeholder: _headerPhotoPlaceholder(context),
+      error: _headerPhotoError(context),
+    );
+  }
+
+  Widget _buildCollapsedHeaderPhoto(BuildContext context, double size) {
+    return Material(
+      color: Colors.transparent,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _openProfilePhoto,
+        customBorder: const CircleBorder(),
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: _hasHeaderNetworkPhoto
+              ? _buildHeaderNetworkPhoto(
+                  context,
+                  width: size,
+                  height: size,
+                )
+              : Image.asset(
+                  _headerAvatarAsset!,
+                  width: size,
+                  height: size,
+                  fit: BoxFit.cover,
+                ),
+        ),
+      ),
+    );
   }
 
   void _onTabChanged() {
@@ -710,7 +797,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           body: Center(
             child: InteractiveViewer(
               child: Image.asset(
-                _birthdayChatAvatarAsset,
+                _headerAvatarAsset!,
                 fit: BoxFit.contain,
               ),
             ),
@@ -864,13 +951,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                       onTap: _openProfilePhoto,
                       child: Opacity(
                         opacity: (1 - t * 0.9).clamp(0.0, 1.0),
-                        child: FamilyPublicImage(
-                          url: _headerAvatarUrl!,
-                          fit: BoxFit.cover,
-                          error: ColoredBox(
-                            color: theme.colorScheme.surfaceContainerLow,
-                          ),
-                        ),
+                        child: _buildHeaderNetworkPhoto(context),
                       ),
                     ),
                   ),
@@ -884,7 +965,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                       child: Opacity(
                         opacity: (1 - t * 0.9).clamp(0.0, 1.0),
                         child: Image.asset(
-                          _birthdayChatAvatarAsset,
+                          _headerAvatarAsset!,
                           fit: BoxFit.cover,
                         ),
                       ),
@@ -895,20 +976,9 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 Opacity(
                   opacity: avatarOpacity,
                   child: Center(
-                    child: Material(
-                      color: Colors.transparent,
-                      shape: const CircleBorder(),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: _openProfilePhoto,
-                        customBorder: const CircleBorder(),
-                        child: ChatAvatar(
-                          name: _title,
-                          avatarUrl: _headerAvatarUrl,
-                          assetPath: _headerAvatarAsset,
-                          radius: collapsedAvatarSize / 2,
-                        ),
-                      ),
+                    child: _buildCollapsedHeaderPhoto(
+                      context,
+                      collapsedAvatarSize,
                     ),
                   ),
                 ),
@@ -938,9 +1008,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     return Material(
       color: theme.colorScheme.surface,
       elevation: 0,
-      child: TabBar(
+      child: FamilyTabBar.build(
         controller: _tabs,
-        isScrollable: _showParticipants,
         tabs: [
           if (_showParticipants) const Tab(text: 'Участники'),
           const Tab(text: 'Галерея'),

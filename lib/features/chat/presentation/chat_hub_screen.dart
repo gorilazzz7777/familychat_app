@@ -5,17 +5,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../data/chat_unread_providers.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_conversation_screen.dart';
+import 'chat_thread_avatars.dart';
 import 'create_group_screen.dart';
 
 enum _ChatFilter { all, family, dm, group }
-
-const _birthdayChatAvatarAsset = 'assets/chat/birthday_celebration_avatar.jpg';
 
 class ChatHubScreen extends ConsumerStatefulWidget {
   const ChatHubScreen({super.key});
@@ -250,6 +250,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           initialCanLeave: thread['can_leave'] == true,
           initialParticipantUserIds: _participantIdsOf(thread),
           initialIsBirthdayCelebration: thread['is_birthday_celebration'] == true,
+          initialPeerAvatarUrl: _dmAvatarUrl(thread),
         ),
       ),
     );
@@ -306,6 +307,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                     ? DateTime.tryParse(last['created_at']?.toString() ?? '')
                     : null;
                 final isBirthday = _isBirthdayCelebration(t);
+                final avatarAsset = chatThreadAvatarAsset(
+                  kind: t['kind']?.toString() ?? '',
+                  isBirthdayCelebration: isBirthday,
+                );
                 final theme = Theme.of(context);
                 final scheme = theme.colorScheme;
                 final previewStyle = theme.textTheme.bodyMedium?.copyWith(
@@ -319,8 +324,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 return ListTile(
                   leading: ChatAvatar(
                     name: _avatarName(t),
-                    avatarUrl: isBirthday ? null : _dmAvatarUrl(t),
-                    assetPath: isBirthday ? _birthdayChatAvatarAsset : null,
+                    avatarUrl: avatarAsset != null ? null : _dmAvatarUrl(t),
+                    assetPath: avatarAsset,
                     radius: 24,
                   ),
                   title: Row(
@@ -422,15 +427,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           ),
         Material(
           color: scheme.surface,
-          child: TabBar(
+          child: FamilyTabBar.build(
             controller: _tabController,
-            isScrollable: true,
-            tabAlignment: TabAlignment.start,
             labelStyle: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w700,
             ),
             unselectedLabelStyle: theme.textTheme.titleSmall,
-            indicatorSize: TabBarIndicatorSize.label,
             dividerColor: scheme.outlineVariant.withValues(alpha: 0.45),
             tabs: const [
               Tab(text: 'Все'),

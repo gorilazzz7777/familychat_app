@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/family_app_bar.dart';
+import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/presence/user_presence.dart';
@@ -105,6 +106,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
             customTitle: thread['custom_title']?.toString() ?? '',
             kind: 'dm',
             peerUserId: widget.userId,
+            initialPeerAvatarUrl: p?['avatar_url']?.toString().trim(),
           ),
         ),
       );
@@ -215,7 +217,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
         title: 'Профиль участника',
         bottom: _loading || _error != null || _profile == null
             ? null
-            : TabBar(
+            : FamilyTabBar.build(
                 controller: _tabs,
                 tabs: const [
                   Tab(text: 'Основное'),

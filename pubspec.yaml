@@ -54,6 +54,7 @@ flutter:
     - assets/logo/vk.png
     - assets/logo/ya.png
     - assets/chat/birthday_celebration_avatar.jpg
+    - assets/chat/family_chat_avatar.jpg
 
 # Генерация иконок: dart run flutter_launcher_icons
 flutter_launcher_icons:
