@@ -123,6 +123,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       await prefs.setString(_pendingInviteKey, inviteToken);
       _pendingInvite = inviteToken;
     }
+    final pendingCall = readWebPendingCallLaunch();
+    if (pendingCall != null) {
+      pendingCallPushData = pendingCall;
+    }
   }
 
   Future<bool> _hasSession() async {

@@ -1,10 +1,27 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:js' as js;
 
 import '../../features/chat/data/incoming_call_coordinator.dart';
+import '../routing/app_uri_parser.dart';
 
 bool _listening = false;
+
+Map<String, dynamic>? readWebPendingCallLaunch() {
+  try {
+    final fromUri = parseIncomingCallPushFromUri(Uri.base);
+    if (fromUri != null) return fromUri;
+    final raw = html.window.sessionStorage['familychat_pending_call'];
+    if (raw == null || raw.isEmpty) return null;
+    html.window.sessionStorage.remove('familychat_pending_call');
+    final decoded = jsonDecode(raw);
+    if (decoded is Map) {
+      return Map<String, dynamic>.from(decoded);
+    }
+  } catch (_) {}
+  return null;
+}
 
 void listenWebPushIncomingCalls() {
   if (_listening) return;

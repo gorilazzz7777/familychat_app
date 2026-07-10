@@ -8,6 +8,7 @@ import 'package:share_handler/share_handler.dart';
 import '../core/notifications/familychat_notifications.dart';
 import '../core/push/push_navigation.dart';
 import '../core/push/push_registration_service.dart';
+import '../core/push/web_push_bridge.dart';
 import '../core/widgets/family_app_bar.dart';
 import '../core/providers/app_providers.dart';
 import '../core/theme/theme_seed_controller.dart';
@@ -149,6 +150,16 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         callerUserId: callerUserId,
         callerName: callerName,
       );
+      return;
+    }
+    if (ev == 'chat_call_state') {
+      final status = event['status']?.toString() ?? '';
+      final callId = event['session_id'] is int
+          ? event['session_id'] as int
+          : int.tryParse('${event['session_id']}');
+      if (callId != null && status.isNotEmpty && status != 'ringing') {
+        unawaited(stopServiceWorkerCallRing(callId));
+      }
     }
   }
 

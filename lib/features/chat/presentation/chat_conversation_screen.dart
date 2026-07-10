@@ -42,6 +42,7 @@ import 'widgets/chat_message_search_sheet.dart';
 import 'widgets/chat_network_image.dart';
 import 'widgets/chat_pending_file_chip.dart';
 import 'widgets/chat_reply_compose_bar.dart';
+import 'widgets/chat_call_history_banner.dart';
 import 'widgets/chat_system_message_banner.dart';
 
 class _PendingFileDraft {
@@ -150,6 +151,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
 
   bool get _isDm => widget.kind == 'dm';
+
+  void _startOutgoingCall() {
+    unawaited(
+      Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChatCallScreen(
+            threadId: widget.threadId,
+            title: _title,
+            isCaller: true,
+          ),
+        ),
+      ),
+    );
+  }
 
   String? _peerStatusLabel;
   Timer? _peerStatusTimer;
@@ -1866,19 +1881,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                   if (_isDm && !_loading)
                     IconButton(
                       tooltip: 'Аудиозвонок',
-                      onPressed: () {
-                        unawaited(
-                          Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (_) => ChatCallScreen(
-                                threadId: widget.threadId,
-                                title: _title,
-                                isCaller: true,
-                              ),
-                            ),
-                          ),
-                        );
-                      },
+                      onPressed: _startOutgoingCall,
                       icon: const Icon(Icons.call_outlined),
                     ),
                   IconButton(
@@ -1992,6 +1995,26 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     chatAsInt(replyTo?['message_id']);
                                 final isSystem = m['is_system'] == true;
                                 if (isSystem) {
+                                  final metadata = (m['metadata'] as Map?)
+                                          ?.map(
+                                            (key, value) => MapEntry(
+                                              key.toString(),
+                                              value,
+                                            ),
+                                          ) ??
+                                      const <String, dynamic>{};
+                                  if (metadata['kind']?.toString() == 'call' &&
+                                      _currentUserId != null) {
+                                    return KeyedSubtree(
+                                      key: _messageKeys[msgId],
+                                      child: ChatCallHistoryBanner(
+                                        metadata: metadata,
+                                        currentUserId: _currentUserId!,
+                                        createdAt: created,
+                                        onRedial: _isDm ? _startOutgoingCall : null,
+                                      ),
+                                    );
+                                  }
                                   return KeyedSubtree(
                                     key: _messageKeys[msgId],
                                     child: ChatSystemMessageBanner(

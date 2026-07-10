@@ -84,3 +84,22 @@ OAuthCallbackResult? parseOAuthCallback(Uri uri) {
     sessionCode: code.replaceAll(RegExp(r'\\+$'), ''),
   );
 }
+
+Map<String, dynamic>? parseIncomingCallPushFromUri(Uri uri) {
+  if (uri.queryParameters['fc_call'] != '1') return null;
+  final sessionId = uri.queryParameters['session_id']?.trim();
+  final threadId = uri.queryParameters['thread_id']?.trim();
+  if (sessionId == null ||
+      sessionId.isEmpty ||
+      threadId == null ||
+      threadId.isEmpty) {
+    return null;
+  }
+  return {
+    'type': 'familychat_call',
+    'session_id': sessionId,
+    'thread_id': threadId,
+    'caller_user_id': uri.queryParameters['caller_user_id'] ?? '0',
+    'caller_name': uri.queryParameters['caller_name'] ?? 'Family Chat',
+  };
+}
