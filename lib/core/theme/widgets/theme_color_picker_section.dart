@@ -606,8 +606,8 @@ class _PreviewBottomNav extends StatelessWidget {
             theme: theme,
           ),
           _PreviewNavItem(
-            icon: Icons.more_horiz,
-            label: 'Ещё',
+            icon: Icons.calendar_month_outlined,
+            label: 'Календарь',
             scheme: scheme,
             theme: theme,
           ),

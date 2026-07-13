@@ -719,28 +719,29 @@ class _FeedScrollToTopButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
+    final cs = Theme.of(context).colorScheme;
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
+    return Semantics(
+      button: true,
+      label: 'Наверх',
+      child: GestureDetector(
         onTap: onPressed,
-        customBorder: const CircleBorder(),
-        child: Ink(
+        behavior: HitTestBehavior.opaque,
+        child: Container(
           width: 48,
           height: 48,
+          alignment: Alignment.center,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: cs.surface.withValues(alpha: 0.88),
             border: Border.all(
-              color: cs.outline.withValues(alpha: 0.35),
+              color: cs.outline.withValues(alpha: 0.45),
+              width: 1.2,
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.14),
-                blurRadius: 14,
-                offset: const Offset(0, 3),
+                color: Colors.black.withValues(alpha: 0.1),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
               ),
             ],
           ),

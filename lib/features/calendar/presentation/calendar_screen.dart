@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../app/app_actions_scope.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import 'calendar_event_edit_screen.dart';
@@ -48,6 +49,10 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen>
     return Scaffold(
       appBar: FamilyAppBar.build(
         title: 'Календарь',
+        automaticallyImplyLeading: false,
+        profileName: AppActions.displayName,
+        profileAvatarUrl: AppActions.avatarUrl,
+        onProfileTap: () => AppActions.openProfile(context),
         bottom: FamilyTabBar.build(
           controller: _tabs,
           tabs: const [

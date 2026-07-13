@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../features/chat/data/chat_offline_sync.dart';
+import '../../features/profile/presentation/widgets/chat_avatar.dart';
 
 /// Заголовок AppBar с индикатором «Ожидание соединения» при офлайне.
 class FamilyAppBarTitle extends StatelessWidget {
@@ -78,14 +79,49 @@ abstract final class FamilyAppBar {
     Color? backgroundColor,
     Color? foregroundColor,
     IconThemeData? iconTheme,
+    String? profileName,
+    String? profileAvatarUrl,
+    VoidCallback? onProfileTap,
   }) {
+    final titleWidget = onProfileTap != null
+        ? FamilyAppBarTitle(
+            child: Row(
+              children: [
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: onProfileTap,
+                    customBorder: const CircleBorder(),
+                    child: Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: ChatAvatar(
+                        name: profileName ?? '',
+                        avatarUrl: profileAvatarUrl,
+                        radius: 18,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          )
+        : FamilyAppBarTitle(text: title);
+
     return AppBar(
       leading: leading,
       automaticallyImplyLeading: automaticallyImplyLeading,
       backgroundColor: backgroundColor,
       foregroundColor: foregroundColor,
       iconTheme: iconTheme,
-      title: FamilyAppBarTitle(text: title),
+      title: titleWidget,
       actions: actions,
       bottom: bottom,
     );

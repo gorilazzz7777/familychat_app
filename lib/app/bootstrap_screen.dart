@@ -20,6 +20,7 @@ import '../core/theme/theme_seed_controller.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import 'shell_screen.dart';
 import 'push_permission_prompt.dart';
+import 'app_actions_scope.dart';
 
 class BootstrapScreen extends ConsumerStatefulWidget {
   const BootstrapScreen({super.key});
@@ -196,6 +197,17 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
           status['has_family'] == true;
       _bootError = null;
     });
+    _syncAppActions();
+  }
+
+  void _syncAppActions() {
+    final status = _status;
+    if (!_loggedIn || !_ready || status == null) return;
+    AppActions.bind(
+      status: status,
+      onLogout: _logout,
+      onStatusChanged: _refreshStatus,
+    );
   }
 
   Future<void> _refreshStatus() async {
@@ -204,6 +216,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
       if (!mounted) return;
       setState(() => _status = st);
+      _syncAppActions();
     } catch (_) {}
   }
 

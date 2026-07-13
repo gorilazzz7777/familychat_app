@@ -141,96 +141,163 @@ Future<void> showBirthdayScheduledCongratulationDialog({
   required String initialText,
   required Future<void> Function(String body) onSave,
   Future<void> Function()? onDelete,
-}) async {
-  final controller = TextEditingController(text: initialText);
-  final formKey = GlobalKey<FormState>();
-  var saving = false;
-
-  await showDialog<void>(
+}) {
+  return showDialog<void>(
     context: context,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setLocalState) {
-        Future<void> submit({required bool delete}) async {
-          if (saving) return;
-          if (delete) {
-            if (onDelete == null) return;
-            setLocalState(() => saving = true);
-            try {
-              await onDelete();
-              if (ctx.mounted) Navigator.pop(ctx);
-            } catch (e) {
-              if (ctx.mounted) {
-                ScaffoldMessenger.of(ctx).showSnackBar(
-                  SnackBar(content: Text('Не удалось удалить: $e')),
-                );
-              }
-            } finally {
-              if (ctx.mounted) setLocalState(() => saving = false);
-            }
-            return;
-          }
-          if (!(formKey.currentState?.validate() ?? false)) return;
-          setLocalState(() => saving = true);
-          try {
-            await onSave(controller.text.trim());
-            if (ctx.mounted) Navigator.pop(ctx);
-          } catch (e) {
-            if (ctx.mounted) {
-              ScaffoldMessenger.of(ctx).showSnackBar(
-                SnackBar(content: Text('Не удалось сохранить: $e')),
-              );
-            }
-          } finally {
-            if (ctx.mounted) setLocalState(() => saving = false);
-          }
-        }
-
-        return AlertDialog(
-          title: const Text('Поздравление имениннику'),
-          content: Form(
-            key: formKey,
-            child: TextFormField(
-              controller: controller,
-              autofocus: true,
-              minLines: 3,
-              maxLines: 8,
-              maxLength: 2000,
-              decoration: const InputDecoration(
-                hintText: 'Напишите тёплые слова…',
-                alignLabelWithHint: true,
-              ),
-              validator: (value) {
-                if ((value ?? '').trim().isEmpty) {
-                  return 'Введите текст поздравления';
-                }
-                return null;
-              },
-            ),
-          ),
-          actions: [
-            if (onDelete != null && initialText.trim().isNotEmpty)
-              TextButton(
-                onPressed: saving ? null : () => submit(delete: true),
-                child: const Text('Удалить'),
-              ),
-            TextButton(
-              onPressed: saving ? null : () => Navigator.pop(ctx),
-              child: const Text('Отмена'),
-            ),
-            FilledButton(
-              onPressed: saving ? null : () => submit(delete: false),
-              child: saving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Сохранить'),
-            ),
-          ],
-        );
-      },
+    builder: (ctx) => _BirthdayScheduledCongratulationDialog(
+      initialText: initialText,
+      onSave: onSave,
+      onDelete: onDelete,
     ),
   );
-  controller.dispose();
+}
+
+class _BirthdayScheduledCongratulationDialog extends StatefulWidget {
+  const _BirthdayScheduledCongratulationDialog({
+    required this.initialText,
+    required this.onSave,
+    this.onDelete,
+  });
+
+  final String initialText;
+  final Future<void> Function(String body) onSave;
+  final Future<void> Function()? onDelete;
+
+  @override
+  State<_BirthdayScheduledCongratulationDialog> createState() =>
+      _BirthdayScheduledCongratulationDialogState();
+}
+
+class _BirthdayScheduledCongratulationDialogState
+    extends State<_BirthdayScheduledCongratulationDialog> {
+  late final TextEditingController _controller;
+  final _formKey = GlobalKey<FormState>();
+  bool _saving = false;
+
+  static final _compactTextButton = TextButton.styleFrom(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    minimumSize: Size.zero,
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  );
+
+  static final _compactFilledButton = FilledButton.styleFrom(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    minimumSize: Size.zero,
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialText);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit({required bool delete}) async {
+    if (_saving) return;
+    if (delete) {
+      final onDelete = widget.onDelete;
+      if (onDelete == null) return;
+      setState(() => _saving = true);
+      try {
+        await onDelete();
+        if (!mounted) return;
+        Navigator.of(context).pop();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось удалить: $e')),
+        );
+      } finally {
+        if (mounted) setState(() => _saving = false);
+      }
+      return;
+    }
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    setState(() => _saving = true);
+    try {
+      await widget.onSave(_controller.text.trim());
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось сохранить: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      scrollable: true,
+      title: const Text('Поздравление имениннику'),
+      actionsAlignment: MainAxisAlignment.end,
+      actionsPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      content: Form(
+        key: _formKey,
+        child: TextFormField(
+          controller: _controller,
+          autofocus: true,
+          minLines: 3,
+          maxLines: 8,
+          maxLength: 2000,
+          decoration: const InputDecoration(
+            hintText: 'Напишите тёплые слова…',
+            alignLabelWithHint: true,
+          ),
+          validator: (value) {
+            if ((value ?? '').trim().isEmpty) {
+              return 'Введите текст поздравления';
+            }
+            return null;
+          },
+        ),
+      ),
+      actions: [
+        SizedBox(
+          width: double.infinity,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerRight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.onDelete != null &&
+                    widget.initialText.trim().isNotEmpty)
+                  TextButton(
+                    style: _compactTextButton,
+                    onPressed: _saving ? null : () => _submit(delete: true),
+                    child: const Text('Удалить'),
+                  ),
+                TextButton(
+                  style: _compactTextButton,
+                  onPressed: _saving ? null : () => Navigator.of(context).pop(),
+                  child: const Text('Отмена'),
+                ),
+                FilledButton(
+                  style: _compactFilledButton,
+                  onPressed: _saving ? null : () => _submit(delete: false),
+                  child: _saving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Сохранить'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
