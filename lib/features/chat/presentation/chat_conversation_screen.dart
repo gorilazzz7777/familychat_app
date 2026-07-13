@@ -19,6 +19,7 @@ import '../../profile/presentation/face_tagging_sheet.dart';
 import '../../profile/presentation/album_upload_file_bytes.dart';
 import '../../profile/presentation/read_picked_image_bytes.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../data/chat_location_utils.dart';
 import '../data/active_chat_context.dart';
 import '../data/chat_network_status.dart';
 import '../data/chat_offline_outbox.dart';
@@ -26,6 +27,7 @@ import '../data/chat_offline_sync.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/chat_scheduled_send_service.dart';
 import '../data/chat_send_options.dart';
+import '../data/chat_voice_utils.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_thread_avatars.dart';
 import 'chat_forward_screen.dart';
@@ -34,6 +36,7 @@ import 'chat_call_screen.dart';
 import 'widgets/chat_compose_input.dart';
 import 'widgets/chat_mention_compose_input.dart';
 import 'widgets/chat_image_viewer.dart';
+import 'widgets/chat_location_compose_sheet.dart';
 import 'widgets/chat_media_compose_sheet.dart';
 import 'widgets/chat_message_actions_sheet.dart';
 import 'widgets/chat_message_bubble.dart';
@@ -42,6 +45,7 @@ import 'widgets/chat_message_search_sheet.dart';
 import 'widgets/chat_network_image.dart';
 import 'widgets/chat_pending_file_chip.dart';
 import 'widgets/chat_reply_compose_bar.dart';
+import 'widgets/chat_voice_recording_banner.dart';
 import 'widgets/chat_call_history_banner.dart';
 import 'widgets/chat_birthday_welcome_banner.dart';
 import 'widgets/chat_system_message_banner.dart';
@@ -150,6 +154,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   String? _headerAvatarUrl;
   List<ChatMentionParticipant> _mentionParticipants = [];
   double _lastKeyboardInset = 0;
+  bool _voiceRecording = false;
+  int _voiceRecordingMs = 0;
 
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
 
@@ -806,6 +812,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     required String body,
     required List<Map<String, dynamic>> attachments,
     Map<String, dynamic>? replyTo,
+    Map<String, dynamic>? metadata,
   }) {
     setState(() {
       _messages = sortChatMessages([
@@ -822,6 +829,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           'attachments': attachments,
           'read_status': 'sending',
           if (replyTo != null) 'reply_to': replyTo,
+          if (metadata != null) 'metadata': metadata,
         },
       ]);
     });
@@ -904,6 +912,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
+    int? voiceDurationMs,
   }) async {
     final repo = ref.read(familychatRepositoryProvider);
     final online = await ChatOfflineSync.instance.refreshOnline(repo);
@@ -937,6 +946,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         mentionedUserIds:
             mentionedUserIds.isEmpty ? null : mentionedUserIds,
         notifySilent: notifySilent,
+        voiceDurationMs: voiceDurationMs,
       );
       if (!mounted) return;
       _replaceOptimisticMessage(tempId, msg);
@@ -967,6 +977,110 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _markOptimisticFailed(tempId);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Не удалось отправить сообщение')),
+      );
+    }
+  }
+
+  void _onVoiceRecordingChanged(bool isRecording, int durationMs) {
+    if (!mounted) return;
+    setState(() {
+      _voiceRecording = isRecording;
+      _voiceRecordingMs = durationMs;
+    });
+  }
+
+  Future<void> _sendVoiceMessage(Uint8List bytes, int durationMs) async {
+    if (durationMs < 500) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Удерживайте кнопку чуть дольше для записи')),
+      );
+      return;
+    }
+
+    final tempId = _nextTempId();
+    final replySnapshot = _replyTo;
+    final replyId = chatAsInt(replySnapshot?['message_id']);
+    final filename = voiceMessageFilename(durationMs);
+    final metadata = {'voice': {'duration_ms': durationMs}};
+
+    _addOptimisticMessage(
+      tempId,
+      body: '',
+      attachments: [
+        {
+          'kind': 'file',
+          'filename': filename,
+          'content_type': 'audio/mp4',
+          'local_bytes': bytes,
+        },
+      ],
+      replyTo: replySnapshot,
+      metadata: metadata,
+    );
+    if (_replyTo != null) {
+      setState(() => _replyTo = null);
+    }
+
+    await _uploadAndSend(
+      tempId,
+      caption: '',
+      attachments: [
+        _OutgoingAttachment(
+          bytes: bytes,
+          filename: filename,
+          contentType: 'audio/mp4',
+        ),
+      ],
+      replyToMessageId: replyId,
+      voiceDurationMs: durationMs,
+    );
+  }
+
+  Future<void> _sendLocationMessage(ChatLocationPoint point) async {
+    final tempId = _nextTempId();
+    final replySnapshot = _replyTo;
+    final replyMessageId = chatAsInt(replySnapshot?['message_id']);
+    final location = point.toJson();
+    _addOptimisticMessage(
+      tempId,
+      body: '',
+      attachments: const [],
+      replyTo: replySnapshot,
+      metadata: {'location': location},
+    );
+    if (_replyTo != null) {
+      setState(() => _replyTo = null);
+    }
+
+    final repo = ref.read(familychatRepositoryProvider);
+    final online = await ChatOfflineSync.instance.refreshOnline(repo);
+    if (!online) {
+      _markOptimisticFailed(tempId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Геолокацию можно отправить только при наличии сети'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final msg = await repo.sendThreadMessage(
+        widget.threadId,
+        location: location,
+        replyToMessageId: replyMessageId,
+      );
+      if (!mounted) return;
+      _replaceOptimisticMessage(tempId, msg);
+      _scrollToBottom();
+      await _persistMessageCache();
+    } catch (_) {
+      if (!mounted) return;
+      _markOptimisticFailed(tempId);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось отправить геолокацию')),
       );
     }
   }
@@ -1060,6 +1174,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               title: const Text('Файл'),
               onTap: () => Navigator.pop(ctx, 'file'),
             ),
+            ListTile(
+              leading: const Icon(Icons.location_on_outlined),
+              title: const Text('Геолокация'),
+              onTap: () => Navigator.pop(ctx, 'location'),
+            ),
           ],
         ),
       ),
@@ -1067,7 +1186,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (!mounted || action == null) return;
 
     try {
-      if (action == 'file') {
+      if (action == 'location') {
+        final point = await ChatLocationComposeSheet.show(context);
+        if (point == null || !mounted) return;
+        await _sendLocationMessage(point);
+      } else if (action == 'file') {
         final picked = await FilePicker.platform.pickFiles(
           withData: kIsWeb,
           allowMultiple: true,
@@ -1298,6 +1421,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   String _messagePreviewText(Map<String, dynamic> message) {
     final body = message['body']?.toString().trim() ?? '';
     if (body.isNotEmpty) return body;
+    final metadata = (message['metadata'] as Map?)
+            ?.map((key, value) => MapEntry(key.toString(), value)) ??
+        const <String, dynamic>{};
+    if (metadata['voice'] is Map) return 'Голосовое сообщение';
+    if (metadata['location'] is Map) return 'Геолокация';
     final atts = chatAttachmentsOf(message);
     if (atts.any((a) => a['kind'] == 'image')) return 'Фото';
     if (atts.isNotEmpty) return 'Файл';
@@ -2037,16 +2165,21 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     const <Map<String, dynamic>>[];
                                 final replyMessageId =
                                     chatAsInt(replyTo?['message_id']);
+                                final messageMetadata =
+                                    (m['metadata'] as Map?)
+                                            ?.map(
+                                              (key, value) => MapEntry(
+                                                key.toString(),
+                                                value,
+                                              ),
+                                            ) ??
+                                        const <String, dynamic>{};
+                                final location = ChatLocationPoint.fromMetadata(
+                                  messageMetadata,
+                                );
                                 final isSystem = m['is_system'] == true;
                                 if (isSystem) {
-                                  final metadata = (m['metadata'] as Map?)
-                                          ?.map(
-                                            (key, value) => MapEntry(
-                                              key.toString(),
-                                              value,
-                                            ),
-                                          ) ??
-                                      const <String, dynamic>{};
+                                  final metadata = messageMetadata;
                                   if (metadata['kind']?.toString() == 'call' &&
                                       _currentUserId != null) {
                                     return KeyedSubtree(
@@ -2096,6 +2229,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     forward: forward,
                                     reactions: reactions,
                                     mentions: mentions,
+                                    location: location,
+                                    messageMetadata: messageMetadata,
                                     isGroupLike: _isGroupLike,
                                     readStatus: isMine
                                         ? m['read_status']?.toString() ??
@@ -2229,6 +2364,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 setState(() => _pendingFileDraft = null),
                           ),
                         ),
+                      if (_voiceRecording)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                          child: Align(
+                            alignment: Alignment.center,
+                            child: ChatVoiceRecordingBanner(
+                              durationMs: _voiceRecordingMs,
+                            ),
+                          ),
+                        ),
                       Padding(
                         padding: const EdgeInsets.all(8),
                         child: _isGroupLike
@@ -2242,6 +2387,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     options: options,
                                   ),
                                 ),
+                                onVoiceComplete: _sendVoiceMessage,
+                                forceSendButton: _pendingFileDraft != null ||
+                                    _editingMessageId != null,
+                                onRecordingChanged: _onVoiceRecordingChanged,
                                 participants: _mentionParticipants,
                                 currentUserId: _currentUserId,
                               )
@@ -2251,6 +2400,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 onAttach: _pickAttachment,
                                 onSend: (options) =>
                                     unawaited(_send(options: options)),
+                                onVoiceComplete: _sendVoiceMessage,
+                                forceSendButton: _pendingFileDraft != null ||
+                                    _editingMessageId != null,
+                                onRecordingChanged: _onVoiceRecordingChanged,
                               ),
                       ),
                     ],

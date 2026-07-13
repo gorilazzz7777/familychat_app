@@ -586,6 +586,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
               final payload = (event['payload'] as Map<String, dynamic>?) ?? {};
               final isBirthday = event['kind']?.toString() == 'calendar_event' &&
                   payload['event_kind']?.toString() == 'birthday';
+              final isHoliday = event['kind']?.toString() == 'calendar_event' &&
+                  payload['event_kind']?.toString() == 'holiday';
+              if (isHoliday) return;
               final actor = (event['actor'] as Map<String, dynamic>?) ?? {};
               final rawId = isBirthday
                   ? (payload['person_user_id'] ?? actor['user_id'])

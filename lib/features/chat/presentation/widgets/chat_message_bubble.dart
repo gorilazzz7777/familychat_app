@@ -5,10 +5,14 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../profile/presentation/widgets/chat_avatar.dart';
+import '../../data/chat_location_utils.dart';
+import '../../data/chat_voice_utils.dart';
+import 'chat_location_preview.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
 import 'chat_mention_text.dart';
 import 'chat_network_image.dart';
+import 'chat_voice_message_player.dart';
 
 class ChatMessageBubble extends StatelessWidget {
   const ChatMessageBubble({
@@ -39,6 +43,8 @@ class ChatMessageBubble extends StatelessWidget {
     this.isGroupLike = false,
     this.mentions = const [],
     this.scheduledAt,
+    this.location,
+    this.messageMetadata = const {},
   });
 
   final int threadId;
@@ -67,6 +73,8 @@ class ChatMessageBubble extends StatelessWidget {
   final bool isGroupLike;
   final List<Map<String, dynamic>> mentions;
   final DateTime? scheduledAt;
+  final ChatLocationPoint? location;
+  final Map<String, dynamic> messageMetadata;
 
   static const double _avatarSize = 32;
 
@@ -145,8 +153,16 @@ class ChatMessageBubble extends StatelessWidget {
                         decoration: TextDecoration.underline,
                       ),
                     ),
+                  if (location != null) ...[
+                    if (_showBody(body, forward)) const SizedBox(height: 8),
+                    ChatLocationPreview(
+                      location: location!,
+                      isMine: isMine,
+                      maxWidth: maxBubbleWidth - 24,
+                    ),
+                  ],
                   for (final a in attachments) ...[
-                    if (body.isNotEmpty) const SizedBox(height: 8),
+                    if (body.isNotEmpty || location != null) const SizedBox(height: 8),
                     if (a['kind'] == 'image')
                       GestureDetector(
                         onTap: onImageTap != null && a['local_bytes'] == null
@@ -157,6 +173,18 @@ class ChatMessageBubble extends StatelessWidget {
                           borderRadius: BorderRadius.circular(8),
                           child: _attachmentImage(a, maxBubbleWidth - 24),
                         ),
+                      )
+                    else if (isVoiceAttachment(a, messageMetadata: messageMetadata))
+                      ChatVoiceMessagePlayer(
+                        threadId: threadId,
+                        attachment: a,
+                        isMine: isMine,
+                        durationMs: voiceDurationMsForAttachment(
+                          a,
+                          messageMetadata: messageMetadata,
+                        ),
+                        textColor: textColor,
+                        metaColor: metaColor,
                       )
                     else
                       InkWell(

@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import 'feed_birthday_event_card.dart';
+import 'feed_holiday_event_card.dart';
 import 'feed_event_action_bar.dart';
+import 'feed_expandable_caption.dart';
 import 'feed_event_media_block.dart';
 
 class FeedEventCard extends StatefulWidget {
@@ -35,6 +37,9 @@ class _FeedEventCardState extends State<FeedEventCard> {
 
   bool get _isBirthdayEvent =>
       _kind == 'calendar_event' && _payload['event_kind']?.toString() == 'birthday';
+
+  bool get _isHolidayEvent =>
+      _kind == 'calendar_event' && _payload['event_kind']?.toString() == 'holiday';
 
   String _honoreeName() {
     final fromPayload = _payload['person_name']?.toString().trim();
@@ -213,6 +218,20 @@ class _FeedEventCardState extends State<FeedEventCard> {
       );
     }
 
+    if (_isHolidayEvent) {
+      final description = _payload['description']?.toString().trim() ?? '';
+      return FeedHolidayEventCard(
+        title: _payload['title']?.toString() ?? 'Праздник',
+        description: description.isNotEmpty
+            ? description
+            : 'Сегодня в семейном календаре отмечен праздник.',
+        holidayCode: _payload['code']?.toString() ?? '',
+        eventDate: _payload['date']?.toString(),
+        createdAt: createdAt,
+        onOpenCalendar: widget.onOpenSource,
+      );
+    }
+
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final preview = _bodyPreview();
@@ -277,16 +296,7 @@ class _FeedEventCardState extends State<FeedEventCard> {
                   ? (index) => setState(() => _batchIndex = index)
                   : null,
             ),
-          if (caption != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              child: Text(
-                caption,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodyMedium,
-              ),
-            ),
+          if (caption != null) FeedExpandableCaption(text: caption),
           FeedEventActionBar(
             key: ValueKey<int?>(engagementAttachmentId),
             attachmentId: engagementAttachmentId,

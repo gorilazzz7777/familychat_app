@@ -1,7 +1,9 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../../../core/widgets/family_input_styles.dart';
-import 'chat_compose_send_button.dart';
+import 'chat_compose_action_button.dart';
 import '../../data/chat_send_options.dart';
 
 /// Поле ввода сообщения с кнопками вложения и отправки внутри блока.
@@ -12,6 +14,9 @@ class ChatComposeInput extends StatelessWidget {
     required this.focusNode,
     required this.onAttach,
     required this.onSend,
+    required this.onVoiceComplete,
+    this.forceSendButton = false,
+    this.onRecordingChanged,
     this.hintText = 'Сообщение...',
   });
 
@@ -19,6 +24,9 @@ class ChatComposeInput extends StatelessWidget {
   final FocusNode focusNode;
   final VoidCallback onAttach;
   final void Function(ChatSendOptions options) onSend;
+  final Future<void> Function(Uint8List bytes, int durationMs) onVoiceComplete;
+  final bool forceSendButton;
+  final void Function(bool isRecording, int durationMs)? onRecordingChanged;
   final String hintText;
 
   @override
@@ -57,7 +65,13 @@ class ChatComposeInput extends StatelessWidget {
               ),
             ),
           ),
-          ChatComposeSendButton(onSend: onSend),
+          ChatComposeActionButton(
+            controller: controller,
+            onSend: onSend,
+            onVoiceComplete: onVoiceComplete,
+            forceSendButton: forceSendButton,
+            onRecordingChanged: onRecordingChanged,
+          ),
         ],
       ),
     );

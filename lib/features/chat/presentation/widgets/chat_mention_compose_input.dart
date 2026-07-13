@@ -1,7 +1,9 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../../../core/widgets/family_input_styles.dart';
-import 'chat_compose_send_button.dart';
+import 'chat_compose_action_button.dart';
 import '../../data/chat_send_options.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 
@@ -26,6 +28,9 @@ class ChatMentionComposeInput extends StatefulWidget {
     required this.focusNode,
     required this.onAttach,
     required this.onSend,
+    required this.onVoiceComplete,
+    this.forceSendButton = false,
+    this.onRecordingChanged,
     required this.participants,
     this.currentUserId,
     this.hintText = 'Сообщение...',
@@ -35,6 +40,9 @@ class ChatMentionComposeInput extends StatefulWidget {
   final FocusNode focusNode;
   final VoidCallback onAttach;
   final void Function(ChatSendOptions options, List<int> mentionedUserIds) onSend;
+  final Future<void> Function(Uint8List bytes, int durationMs) onVoiceComplete;
+  final bool forceSendButton;
+  final void Function(bool isRecording, int durationMs)? onRecordingChanged;
   final List<ChatMentionParticipant> participants;
   final int? currentUserId;
   final String hintText;
@@ -226,8 +234,12 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                   ),
                 ),
               ),
-              ChatComposeSendButton(
+              ChatComposeActionButton(
+                controller: widget.controller,
                 onSend: (options) => _handleSend(options),
+                onVoiceComplete: widget.onVoiceComplete,
+                forceSendButton: widget.forceSendButton,
+                onRecordingChanged: widget.onRecordingChanged,
               ),
             ],
           ),
