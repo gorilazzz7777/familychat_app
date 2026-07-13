@@ -150,12 +150,14 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
     final rawEdges = payload['edges'];
     if (rawEdges is! List) return payload;
 
+    final applyViewerBlocks = centerPersonId == _defaultCenterPersonId;
     final edges = rawEdges.cast<Map<String, dynamic>>().where((edge) {
       final fromRaw = edge['from_person_id'];
       final toRaw = edge['to_person_id'];
       final from = fromRaw is int ? fromRaw : int.tryParse('$fromRaw');
       final to = toRaw is int ? toRaw : int.tryParse('$toRaw');
       if (from == null || to == null) return false;
+      if (!applyViewerBlocks) return true;
       if (from != centerPersonId && to != centerPersonId) return true;
       final other = from == centerPersonId ? to : from;
       return !_viewerDirectLinkBlocked(other);

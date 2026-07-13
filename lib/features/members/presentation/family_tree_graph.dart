@@ -114,10 +114,15 @@ class FamilyTreeGraph {
   }
 
   Set<int> visiblePersonIds() {
-    final ring1 = neighbors(centerPersonId);
-    final visible = <int>{centerPersonId, ...ring1};
-    for (final personId in ring1) {
-      visible.addAll(neighbors(personId));
+    final visible = <int>{centerPersonId};
+    final queue = <int>[centerPersonId];
+    while (queue.isNotEmpty) {
+      final personId = queue.removeAt(0);
+      for (final neighborId in neighbors(personId)) {
+        if (visible.add(neighborId)) {
+          queue.add(neighborId);
+        }
+      }
     }
     return visible.where(personsById.containsKey).toSet();
   }
