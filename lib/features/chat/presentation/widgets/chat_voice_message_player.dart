@@ -139,7 +139,7 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
               ClipRRect(
                 borderRadius: BorderRadius.circular(2),
                 child: LinearProgressIndicator(
-                  value: progress > 0 ? progress : null,
+                  value: progress,
                   minHeight: 3,
                   backgroundColor: metaColor.withValues(alpha: 0.25),
                   color: textColor,

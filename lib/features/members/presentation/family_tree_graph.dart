@@ -368,7 +368,17 @@ class FamilyTreeGraph {
               : 'Брат/сестра супруга';
     }
     if (path.length == 2 && path[0] == 'spouse' && path[1] == 'child') {
-      return g == 'male' ? 'Сын' : g == 'female' ? 'Дочь' : 'Ребёнок';
+      if (g == 'male') {
+        if (vg == 'male') return 'Сын жены';
+        if (vg == 'female') return 'Сын мужа';
+        return 'Сын супруга';
+      }
+      if (g == 'female') {
+        if (vg == 'male') return 'Дочь жены';
+        if (vg == 'female') return 'Дочь мужа';
+        return 'Дочь супруга';
+      }
+      return 'Ребёнок супруга';
     }
     if (path.length == 2 && path[0] == 'parent' && path[1] == 'spouse') {
       return g == 'male' ? 'Отец' : g == 'female' ? 'Мать' : 'Родитель';
