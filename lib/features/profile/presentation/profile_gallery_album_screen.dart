@@ -779,7 +779,6 @@ class _ProfileGalleryAlbumScreenState
           autofocus: true,
           decoration: const InputDecoration(
             labelText: 'Тег',
-            border: OutlineInputBorder(),
           ),
         ),
         actions: [
@@ -1107,10 +1106,6 @@ class _ProfileGalleryAlbumScreenState
   Future<void> _uploadFromDevice(ImageSource source) async {
     final pk = widget.customAlbumPk;
     if (pk == null) return;
-    if (source == ImageSource.gallery) {
-      await _uploadFromPhoneGallery();
-      return;
-    }
     _beginPreparingUpload();
     await Future<void>.delayed(Duration.zero);
     try {
@@ -1121,32 +1116,6 @@ class _ProfileGalleryAlbumScreenState
       );
       if (!mounted || picked == null) return;
       await _uploadDeviceImages(albumPk: pk, pickedItems: [picked]);
-    } finally {
-      _endPreparingIfIdle();
-    }
-  }
-
-  Future<void> _uploadFromPhoneGallery() async {
-    final pk = widget.customAlbumPk;
-    if (pk == null) return;
-    _beginPreparingUpload();
-    await Future<void>.delayed(Duration.zero);
-    try {
-      final picker = ImagePicker();
-      final pickedMany = await picker.pickMultiImage(
-        requestFullMetadata: true,
-      );
-      if (!mounted) return;
-      if (pickedMany.isNotEmpty) {
-        await _uploadDeviceImages(albumPk: pk, pickedItems: pickedMany);
-        return;
-      }
-      final pickedOne = await picker.pickImage(
-        source: ImageSource.gallery,
-        requestFullMetadata: true,
-      );
-      if (!mounted || pickedOne == null) return;
-      await _uploadDeviceImages(albumPk: pk, pickedItems: [pickedOne]);
     } finally {
       _endPreparingIfIdle();
     }
@@ -1184,14 +1153,9 @@ class _ProfileGalleryAlbumScreenState
               onTap: () => Navigator.pop(ctx, 'gallery'),
             ),
             ListTile(
-              leading: const Icon(Icons.photo_outlined),
+              leading: const Icon(Icons.photo_library_outlined),
               title: const Text('Галерея телефона'),
               onTap: () => Navigator.pop(ctx, 'phone'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: const Text('Файлы с телефона'),
-              onTap: () => Navigator.pop(ctx, 'files'),
             ),
             ListTile(
               leading: const Icon(Icons.camera_alt_outlined),
@@ -1207,8 +1171,6 @@ class _ProfileGalleryAlbumScreenState
       case 'gallery':
         await _pickFromGallery();
       case 'phone':
-        await _uploadFromDevice(ImageSource.gallery);
-      case 'files':
         await _uploadFromPhoneFiles();
       case 'camera':
         await _uploadFromDevice(ImageSource.camera);

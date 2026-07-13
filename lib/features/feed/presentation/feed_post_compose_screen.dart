@@ -4,12 +4,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../profile/presentation/album_upload_file_bytes.dart';
-import '../../profile/presentation/read_picked_image_bytes.dart';
 import '../data/feed_post_uploader.dart';
 
 class FeedPostComposeScreen extends ConsumerStatefulWidget {
@@ -31,14 +29,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
     super.dispose();
   }
 
-  Future<void> _pickFromGallery() async {
-    final picker = ImagePicker();
-    final picked = await picker.pickMultiImage(requestFullMetadata: true);
-    if (!mounted || picked.isEmpty) return;
-    await _addPickedImages(picked);
-  }
-
-  Future<void> _pickFromFiles() async {
+  Future<void> _pickFromPhoneGallery() async {
     final picked = await FilePicker.platform.pickFiles(
       allowMultiple: true,
       withData: kIsWeb,
@@ -59,22 +50,6 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       );
     }
     if (!mounted || photos.isEmpty) return;
-    _appendPhotos(photos);
-  }
-
-  Future<void> _addPickedImages(List<XFile> picked) async {
-    final photos = <FeedPostPhoto>[];
-    for (final item in picked) {
-      final bytes = await readPickedImageBytes(item);
-      photos.add(
-        FeedPostPhoto(
-          bytes: bytes,
-          filename: item.name,
-          contentType: item.mimeType ?? _contentTypeForFilename(item.name),
-        ),
-      );
-    }
-    if (!mounted) return;
     _appendPhotos(photos);
   }
 
@@ -168,15 +143,9 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                     ),
                     const SizedBox(height: 20),
                     FilledButton.icon(
-                      onPressed: _publishing ? null : _pickFromGallery,
+                      onPressed: _publishing ? null : _pickFromPhoneGallery,
                       icon: const Icon(Icons.photo_library_outlined),
                       label: const Text('Галерея телефона'),
-                    ),
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      onPressed: _publishing ? null : _pickFromFiles,
-                      icon: const Icon(Icons.folder_open_outlined),
-                      label: const Text('Файлы'),
                     ),
                   ],
                 ),
@@ -194,7 +163,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                     itemBuilder: (_, index) {
                       if (index == _photos.length) {
                         return InkWell(
-                          onTap: _publishing ? null : _pickFromGallery,
+                          onTap: _publishing ? null : _pickFromPhoneGallery,
                           child: Container(
                             width: 108,
                             decoration: BoxDecoration(
@@ -247,7 +216,6 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                   decoration: const InputDecoration(
                     labelText: 'Описание',
                     hintText: 'Расскажите, что на фото...',
-                    border: OutlineInputBorder(),
                   ),
                   onChanged: (_) => setState(() {}),
                 ),

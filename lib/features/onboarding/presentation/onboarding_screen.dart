@@ -450,7 +450,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                     const SizedBox(height: 8),
                     if (options.isNotEmpty)
                       DropdownButtonFormField<String>(
-                        decoration: const InputDecoration(border: OutlineInputBorder()),
+                        decoration: const InputDecoration(),
                         items: options
                             .map(
                               (o) => DropdownMenuItem(
@@ -463,7 +463,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                       )
                     else
                       TextField(
-                        decoration: const InputDecoration(border: OutlineInputBorder()),
+                        decoration: const InputDecoration(),
                         onChanged: (v) => _answers[id] = v,
                       ),
                   ],

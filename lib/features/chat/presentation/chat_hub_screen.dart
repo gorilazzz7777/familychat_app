@@ -419,7 +419,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                         icon: const Icon(Icons.clear),
                       )
                     : null,
-                border: const OutlineInputBorder(),
                 isDense: true,
               ),
               onChanged: (v) => setState(() => _searchQuery = v),

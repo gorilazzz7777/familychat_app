@@ -600,9 +600,6 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                   hintText: 'Поиск альбома',
                   prefixIcon: const Icon(Icons.search, size: 20),
                   contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(20),
-                  ),
                 ),
                 onChanged: (value) =>
                     setState(() => _albumSearchQuery = value.trim().toLowerCase()),
@@ -792,7 +789,6 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                                   labelText: _shareToFeed
                                       ? 'Описание для ленты'
                                       : 'Подпись',
-                                  border: const OutlineInputBorder(),
                                 ),
                                 onChanged: (_) => setState(() {}),
                               ),

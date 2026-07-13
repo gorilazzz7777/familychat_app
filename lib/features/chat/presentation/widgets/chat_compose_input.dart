@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/widgets/family_input_styles.dart';
 import 'chat_compose_send_button.dart';
 import '../../data/chat_send_options.dart';
 
@@ -23,17 +24,9 @@ class ChatComposeInput extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final fill = theme.colorScheme.surfaceContainerHighest;
-    final border = theme.colorScheme.outlineVariant.withValues(alpha: 0.55);
 
-    return Material(
-      color: fill,
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(24),
-        side: BorderSide(color: border),
-      ),
-      clipBehavior: Clip.antiAlias,
+    return DecoratedBox(
+      decoration: FamilyInputStyles.composeShellDecoration(theme),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [

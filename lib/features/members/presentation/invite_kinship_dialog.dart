@@ -23,7 +23,6 @@ Future<String?> showInviteKinshipDialog(
               value: selected,
               decoration: const InputDecoration(
                 labelText: 'Родство',
-                border: OutlineInputBorder(),
               ),
               items: options
                   .map(

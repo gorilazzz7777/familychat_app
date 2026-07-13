@@ -304,20 +304,6 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                           Icons.celebration_outlined,
                           color: scheme.primary,
                         ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide.none,
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(
-                            color: scheme.outlineVariant.withValues(alpha: 0.7),
-                          ),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(color: scheme.primary, width: 2),
-                        ),
                       ),
                       textCapitalization: TextCapitalization.sentences,
                     ),
@@ -356,20 +342,6 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                         prefixIcon: Icon(
                           Icons.notifications_active_outlined,
                           color: scheme.primary,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide.none,
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(
-                            color: scheme.outlineVariant.withValues(alpha: 0.7),
-                          ),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(color: scheme.primary, width: 2),
                         ),
                       ),
                       items: _reminderOptions.entries

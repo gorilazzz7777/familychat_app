@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/family_compose_input.dart';
 import '../data/familychat_realtime.dart';
 
 class FamilyChatScreen extends ConsumerStatefulWidget {
@@ -101,20 +102,11 @@ class _FamilyChatScreenState extends ConsumerState<FamilyChatScreen> {
         SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    decoration: const InputDecoration(
-                      hintText: 'Сообщение...',
-                      border: OutlineInputBorder(),
-                    ),
-                    onSubmitted: (_) => _send(),
-                  ),
-                ),
-                IconButton(onPressed: _send, icon: const Icon(Icons.send)),
-              ],
+            child: FamilyComposeInput(
+              controller: _controller,
+              hintText: 'Сообщение...',
+              textInputAction: TextInputAction.send,
+              onSend: _send,
             ),
           ),
         ),

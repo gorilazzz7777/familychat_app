@@ -43,6 +43,7 @@ import 'widgets/chat_network_image.dart';
 import 'widgets/chat_pending_file_chip.dart';
 import 'widgets/chat_reply_compose_bar.dart';
 import 'widgets/chat_call_history_banner.dart';
+import 'widgets/chat_birthday_welcome_banner.dart';
 import 'widgets/chat_system_message_banner.dart';
 
 class _PendingFileDraft {
@@ -144,6 +145,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _canLeave = false;
   List<int> _participantUserIds = [];
   bool _isBirthdayCelebration = false;
+  Map<String, dynamic>? _birthdayScheduled;
+  bool _birthdayScheduledSaving = false;
   String? _headerAvatarUrl;
   List<ChatMentionParticipant> _mentionParticipants = [];
   double _lastKeyboardInset = 0;
@@ -617,6 +620,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _hasMoreOlder = page.hasMore;
         _loading = false;
         _loadError = null;
+        if (_isBirthdayCelebration) {
+          _birthdayScheduled = page.birthdayScheduled;
+        }
       });
       unawaited(_persistMessageCache());
       unawaited(_markLatestRead());
@@ -699,6 +705,44 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     } catch (_) {
       if (mounted) setState(() => _loadingOlder = false);
     }
+  }
+
+  Future<void> _openBirthdayCongratulationDialog() async {
+    final mine = (_birthdayScheduled?['mine'] as Map<String, dynamic>?) ?? {};
+    final initial = mine['body']?.toString() ?? '';
+    await showBirthdayScheduledCongratulationDialog(
+      context: context,
+      initialText: initial,
+      onSave: (body) async {
+        setState(() => _birthdayScheduledSaving = true);
+        try {
+          final data = await ref
+              .read(familychatRepositoryProvider)
+              .saveBirthdayScheduledCongratulation(
+                widget.threadId,
+                body: body,
+              );
+          if (!mounted) return;
+          setState(() => _birthdayScheduled = data);
+        } finally {
+          if (mounted) setState(() => _birthdayScheduledSaving = false);
+        }
+      },
+      onDelete: initial.trim().isEmpty
+          ? null
+          : () async {
+              setState(() => _birthdayScheduledSaving = true);
+              try {
+                final data = await ref
+                    .read(familychatRepositoryProvider)
+                    .deleteBirthdayScheduledCongratulation(widget.threadId);
+                if (!mounted) return;
+                setState(() => _birthdayScheduled = data);
+              } finally {
+                if (mounted) setState(() => _birthdayScheduledSaving = false);
+              }
+            },
+    );
   }
 
   int _nextTempId() => _tempIdCounter--;
@@ -2012,6 +2056,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         currentUserId: _currentUserId!,
                                         createdAt: created,
                                         onRedial: _isDm ? _startOutgoingCall : null,
+                                      ),
+                                    );
+                                  }
+                                  if (_isBirthdayCelebration &&
+                                      metadata['subtype']?.toString() ==
+                                          'welcome_prep') {
+                                    return KeyedSubtree(
+                                      key: _messageKeys[msgId],
+                                      child: ChatBirthdayWelcomeBanner(
+                                        body: m['body']?.toString() ?? '',
+                                        createdAt: created,
+                                        scheduled: _birthdayScheduled,
+                                        saving: _birthdayScheduledSaving,
+                                        onCompose: _birthdayScheduled?['can_write'] == true
+                                            ? _openBirthdayCongratulationDialog
+                                            : null,
                                       ),
                                     );
                                   }

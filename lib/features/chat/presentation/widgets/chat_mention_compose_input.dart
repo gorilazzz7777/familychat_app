@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/widgets/family_input_styles.dart';
 import 'chat_compose_send_button.dart';
 import '../../data/chat_send_options.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
@@ -151,8 +152,6 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final fill = theme.colorScheme.surfaceContainerHighest;
-    final border = theme.colorScheme.outlineVariant.withValues(alpha: 0.55);
     final suggestions = _suggestions;
 
     return Column(
@@ -195,14 +194,8 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
             ),
           ),
         if (suggestions.isNotEmpty) const SizedBox(height: 6),
-        Material(
-          color: fill,
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-            side: BorderSide(color: border),
-          ),
-          clipBehavior: Clip.antiAlias,
+        DecoratedBox(
+          decoration: FamilyInputStyles.composeShellDecoration(theme),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [

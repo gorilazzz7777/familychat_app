@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../../../core/widgets/family_compose_input.dart';
+
 /// Экран подписи к фото перед отправкой (как в Telegram).
 class ChatMediaComposeSheet extends StatefulWidget {
   const ChatMediaComposeSheet({
@@ -79,46 +81,17 @@ class _ChatMediaComposeSheetState extends State<ChatMediaComposeSheet> {
           ),
           Padding(
             padding: EdgeInsets.fromLTRB(12, 8, 12, 12 + bottomInset),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _captionController,
-                    autofocus: true,
-                    maxLines: 4,
-                    minLines: 1,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: InputDecoration(
-                      hintText: 'Подпись...',
-                      hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.6)),
-                      filled: true,
-                      fillColor: Colors.white.withValues(alpha: 0.12),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    ),
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => _submit(),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Material(
-                  color: Theme.of(context).colorScheme.primary,
-                  shape: const CircleBorder(),
-                  child: InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: _submit,
-                    child: const SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: Icon(Icons.send, color: Colors.white),
-                    ),
-                  ),
-                ),
-              ],
+            child: FamilyComposeInput(
+              controller: _captionController,
+              hintText: 'Подпись...',
+              maxLines: 4,
+              textInputAction: TextInputAction.send,
+              onSend: _submit,
+              fillColor: Colors.white.withValues(alpha: 0.12),
+              borderColor: Colors.white.withValues(alpha: 0.2),
+              textColor: Colors.white,
+              hintColor: Colors.white.withValues(alpha: 0.6),
+              sendIconColor: Colors.white,
             ),
           ),
         ],

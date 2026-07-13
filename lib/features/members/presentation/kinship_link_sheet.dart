@@ -64,7 +64,6 @@ Future<String?> showKinshipLinkSheet(
                   initialValue: selected,
                   decoration: const InputDecoration(
                     labelText: 'Родство',
-                    border: OutlineInputBorder(),
                   ),
                   items: items,
                   onChanged: (v) => setState(() => selected = v ?? _noKinshipCode),

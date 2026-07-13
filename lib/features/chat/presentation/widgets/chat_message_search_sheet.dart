@@ -70,7 +70,6 @@ class _ChatMessageSearchSheetState extends State<ChatMessageSearchSheet> {
                           icon: const Icon(Icons.clear),
                         )
                       : null,
-                  border: const OutlineInputBorder(),
                 ),
                 onChanged: (v) => setState(() => _query = v),
               ),

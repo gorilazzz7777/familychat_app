@@ -223,7 +223,6 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                                 onPressed: () => setState(() => _query = ''),
                                 icon: const Icon(Icons.close),
                               ),
-                        border: const OutlineInputBorder(),
                       ),
                       onChanged: (v) => setState(() => _query = v),
                     ),

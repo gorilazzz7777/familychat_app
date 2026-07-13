@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/family_compose_input.dart';
 import 'widgets/chat_avatar.dart';
 
 class MediaEngagementSheet extends ConsumerStatefulWidget {
@@ -9,25 +10,29 @@ class MediaEngagementSheet extends ConsumerStatefulWidget {
     super.key,
     required this.attachmentId,
     this.focusComment = false,
+    this.commentsOnly = false,
   });
 
   final int attachmentId;
   final bool focusComment;
+  final bool commentsOnly;
 
   static Future<void> show(
     BuildContext context, {
     required int attachmentId,
     bool focusComment = false,
+    bool commentsOnly = false,
   }) {
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      builder: (_) => Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom),
         child: MediaEngagementSheet(
           attachmentId: attachmentId,
           focusComment: focusComment,
+          commentsOnly: commentsOnly,
         ),
       ),
     );
@@ -113,6 +118,9 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final commentsOnly = widget.commentsOnly;
+
     return SizedBox(
       height: MediaQuery.sizeOf(context).height * 0.55,
       child: Column(
@@ -122,24 +130,33 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
             width: 40,
             height: 4,
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.outlineVariant,
+              color: theme.colorScheme.outlineVariant,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
               children: [
-                IconButton(
-                  onPressed: _toggleLike,
-                  icon: Icon(_likedByMe ? Icons.favorite : Icons.favorite_border),
-                  color: _likedByMe ? Colors.red : null,
+                Text(
+                  'Комментарии',
+                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
                 ),
-                Text('$_likesCount'),
-                const SizedBox(width: 16),
-                const Icon(Icons.chat_bubble_outline, size: 20),
-                const SizedBox(width: 6),
-                Text('$_commentsCount'),
+                const Spacer(),
+                if (!commentsOnly) ...[
+                  IconButton(
+                    onPressed: _toggleLike,
+                    icon: Icon(_likedByMe ? Icons.favorite : Icons.favorite_border),
+                    color: _likedByMe ? Colors.red : null,
+                  ),
+                  Text('$_likesCount'),
+                  const SizedBox(width: 16),
+                ],
+                if (!commentsOnly) ...[
+                  const Icon(Icons.chat_bubble_outline, size: 20),
+                  const SizedBox(width: 6),
+                ],
+                if (!commentsOnly) Text('$_commentsCount'),
               ],
             ),
           ),
@@ -147,7 +164,16 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
-                : ListView.builder(
+                : _comments.isEmpty
+                    ? Center(
+                        child: Text(
+                          'Пока нет комментариев',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      )
+                    : ListView.builder(
                     padding: const EdgeInsets.all(12),
                     itemCount: _comments.length,
                     itemBuilder: (_, i) {
@@ -184,28 +210,14 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _commentController,
-                      focusNode: _commentFocus,
-                      minLines: 1,
-                      maxLines: 4,
-                      decoration: const InputDecoration(
-                        hintText: 'Комментарий...',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    onPressed: _sending ? null : _sendComment,
-                    icon: _sending
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.send),
-                  ),
-                ],
+              child: FamilyComposeInput(
+                controller: _commentController,
+                focusNode: _commentFocus,
+                hintText: 'Комментарий...',
+                maxLines: 4,
+                textInputAction: TextInputAction.send,
+                onSend: _sending ? null : _sendComment,
+                sending: _sending,
               ),
             ),
           ),

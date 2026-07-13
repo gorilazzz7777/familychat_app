@@ -1,21 +1,23 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 
-import '../../../chat/presentation/widgets/chat_network_image.dart';
-import '../../../profile/presentation/media_engagement_inline.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
+import 'feed_birthday_event_card.dart';
+import 'feed_event_action_bar.dart';
+import 'feed_event_media_block.dart';
 
 class FeedEventCard extends StatefulWidget {
   const FeedEventCard({
     super.key,
     required this.event,
     required this.onOpenSource,
+    this.onOpenProfile,
     this.onOpenMedia,
     this.onOpenPhotoBatch,
   });
 
   final Map<String, dynamic> event;
   final VoidCallback onOpenSource;
+  final VoidCallback? onOpenProfile;
   final void Function(Map<String, dynamic> photo)? onOpenMedia;
   final void Function(Map<String, dynamic> event, {int initialIndex})? onOpenPhotoBatch;
 
@@ -24,7 +26,6 @@ class FeedEventCard extends StatefulWidget {
 }
 
 class _FeedEventCardState extends State<FeedEventCard> {
-  late final PageController _batchPageController;
   int _batchIndex = 0;
 
   Map<String, dynamic> get _event => widget.event;
@@ -32,16 +33,16 @@ class _FeedEventCardState extends State<FeedEventCard> {
   Map<String, dynamic> get _payload => (_event['payload'] as Map<String, dynamic>?) ?? {};
   String get _kind => _event['kind']?.toString() ?? '';
 
-  @override
-  void initState() {
-    super.initState();
-    _batchPageController = PageController();
-  }
+  bool get _isBirthdayEvent =>
+      _kind == 'calendar_event' && _payload['event_kind']?.toString() == 'birthday';
 
-  @override
-  void dispose() {
-    _batchPageController.dispose();
-    super.dispose();
+  String _honoreeName() {
+    final fromPayload = _payload['person_name']?.toString().trim();
+    if (fromPayload != null && fromPayload.isNotEmpty) return fromPayload;
+    final title = _payload['title']?.toString() ?? '';
+    final parts = title.split('—');
+    if (parts.length > 1) return parts.last.trim();
+    return _actor['name']?.toString() ?? 'Именинник';
   }
 
   String _titleText() {
@@ -66,27 +67,31 @@ class _FeedEventCardState extends State<FeedEventCard> {
     };
   }
 
-  String _whereText() {
+  String _navigateTooltip() {
     return switch (_kind) {
-      'message_sent' => _payload['thread_title']?.toString() ?? 'Чат',
-      'photo_added_to_album' => _payload['album_title']?.toString() ?? 'Альбом',
-      'photo_batch_uploaded' => _payload['mixed_destinations'] == true
-          ? ''
-          : (_payload['album_title']?.toString() ??
-              _payload['destination_label']?.toString() ??
-              ''),
-      'calendar_event' => 'Календарь',
-      'photo_uploaded' || 'media_liked' || 'media_commented' => 'Галерея',
-      _ => '',
+      'message_sent' => 'Открыть чат',
+      'photo_added_to_album' => 'Открыть альбом',
+      'photo_batch_uploaded' => 'Открыть альбом',
+      'photo_uploaded' => 'Открыть галерею',
+      'media_liked' || 'media_commented' => 'Открыть фото',
+      'calendar_event' => 'Открыть календарь',
+      'member_joined' || 'profile_updated' => 'Открыть профиль',
+      _ => 'Перейти',
     };
   }
 
-  String _bodyPreview() {
+  String? _captionText() {
     final caption = _payload['caption']?.toString().trim() ?? '';
-    if (caption.isNotEmpty &&
-        (_kind == 'photo_uploaded' || _kind == 'photo_batch_uploaded')) {
+    if (caption.isEmpty) return null;
+    if (_kind == 'photo_uploaded' ||
+        _kind == 'photo_added_to_album' ||
+        _kind == 'photo_batch_uploaded') {
       return caption;
     }
+    return null;
+  }
+
+  String _bodyPreview() {
     if (_kind == 'message_sent') {
       return _payload['body_preview']?.toString() ?? '';
     }
@@ -150,247 +155,146 @@ class _FeedEventCardState extends State<FeedEventCard> {
     };
   }
 
-  Map<String, dynamic>? _primaryPhoto() {
+  List<Map<String, dynamic>> _displayPhotos() {
+    if (_kind == 'photo_batch_uploaded') {
+      return _batchPhotos();
+    }
     final single = _singlePhoto();
-    if (single != null) return single;
+    if (single != null) return [single];
 
     if (_kind == 'message_sent') {
-      final images = _attachments().where(_isImageAttachment).toList();
-      if (images.length == 1) {
-        final photo = _normalizePhoto(images.first);
-        if (photo['thread_id'] == null || photo['id'] == null) return null;
-        return photo;
-      }
+      final images = _attachments()
+          .where(_isImageAttachment)
+          .map((att) => _normalizePhoto(att))
+          .where((att) => att['thread_id'] != null && att['id'] != null)
+          .toList();
+      if (images.isNotEmpty) return images;
     }
-    return null;
+    return const [];
   }
 
-  List<Map<String, dynamic>> _galleryAttachments() {
-    final payloadThreadId = _payloadThreadId();
-    return _attachments()
-        .where(_isImageAttachment)
-        .map((att) => _normalizePhoto(att, threadId: payloadThreadId))
-        .where((att) => att['thread_id'] != null && att['id'] != null)
-        .toList();
-  }
-
-  int? _attachmentIdForEngagement(Map<String, dynamic> photo) {
+  int? _attachmentIdForEngagement(Map<String, dynamic>? photo) {
+    if (photo == null) return null;
     final id = photo['id'];
     if (id is int) return id;
     return int.tryParse('$id');
   }
 
-  void _openBatchPhoto({int initialIndex = 0}) {
-    if (widget.onOpenPhotoBatch != null) {
-      widget.onOpenPhotoBatch!(widget.event, initialIndex: initialIndex);
-      return;
-    }
-    final photos = _batchPhotos();
-    if (photos.isEmpty) return;
-    final photo = photos[initialIndex.clamp(0, photos.length - 1)];
-    widget.onOpenMedia?.call(photo);
+  int? _currentEngagementAttachmentId(List<Map<String, dynamic>> photos) {
+    if (photos.isEmpty) return null;
+    final index = _kind == 'photo_batch_uploaded'
+        ? _batchIndex.clamp(0, photos.length - 1)
+        : 0;
+    return _attachmentIdForEngagement(photos[index]);
   }
 
-  Widget _buildBatchCarousel(ThemeData theme) {
-    final photos = _batchPhotos();
-    if (photos.isEmpty) return const SizedBox.shrink();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const SizedBox(height: 10),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: SizedBox(
-            height: 220,
-            child: PageView.builder(
-              controller: _batchPageController,
-              itemCount: photos.length,
-              onPageChanged: (index) => setState(() => _batchIndex = index),
-              itemBuilder: (_, index) {
-                final photo = photos[index];
-                return GestureDetector(
-                  onTap: () => _openBatchPhoto(initialIndex: index),
-                  child: ChatNetworkImage(
-                    threadId: photo['thread_id'] as int,
-                    attachment: photo,
-                    width: double.infinity,
-                    height: 220,
-                    fit: BoxFit.cover,
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            Text(
-              '${_batchIndex + 1} / ${photos.length}',
-              style: theme.textTheme.labelMedium,
-            ),
-            const Spacer(),
-            if (photos.length > 1) ...[
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: _batchIndex > 0
-                    ? () => _batchPageController.previousPage(
-                          duration: const Duration(milliseconds: 200),
-                          curve: Curves.easeOut,
-                        )
-                    : null,
-                icon: const Icon(Icons.chevron_left),
-              ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                onPressed: _batchIndex < photos.length - 1
-                    ? () => _batchPageController.nextPage(
-                          duration: const Duration(milliseconds: 200),
-                          curve: Curves.easeOut,
-                        )
-                    : null,
-                icon: const Icon(Icons.chevron_right),
-              ),
-            ],
-          ],
-        ),
-        if (_attachmentIdForEngagement(photos[_batchIndex]) case final attachmentId?)
-          MediaEngagementInline(
-            key: ValueKey<int>(attachmentId),
-            attachmentId: attachmentId,
-            maxComments: 4,
-            dense: true,
-          ),
-      ],
-    );
+  void _openPhoto(int index, List<Map<String, dynamic>> photos) {
+    if (widget.onOpenPhotoBatch != null && _kind == 'photo_batch_uploaded') {
+      widget.onOpenPhotoBatch!(widget.event, initialIndex: index);
+      return;
+    }
+    if (photos.isEmpty) return;
+    final photo = photos[index.clamp(0, photos.length - 1)];
+    widget.onOpenMedia?.call(photo);
   }
 
   @override
   Widget build(BuildContext context) {
+    final createdAt = DateTime.tryParse(_event['created_at']?.toString() ?? '');
+
+    if (_isBirthdayEvent) {
+      return FeedBirthdayEventCard(
+        honoreeName: _honoreeName(),
+        honoreeAvatarUrl: _actor['avatar_url']?.toString(),
+        eventDate: _payload['date']?.toString(),
+        createdAt: createdAt,
+        onOpenChat: widget.onOpenSource,
+        onOpenProfile: widget.onOpenProfile,
+      );
+    }
+
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final createdAt = DateTime.tryParse(_event['created_at']?.toString() ?? '');
-    final timeText = createdAt != null
-        ? DateFormat('d MMM, HH:mm', 'ru').format(createdAt.toLocal())
-        : '';
     final preview = _bodyPreview();
-    final where = _whereText();
-    final primaryPhoto = _primaryPhoto();
-    final galleryAttachments = primaryPhoto == null ? _galleryAttachments() : <Map<String, dynamic>>[];
-    final isBatch = _kind == 'photo_batch_uploaded';
+    final caption = _captionText();
+    final photos = _displayPhotos();
+    final hasMedia = photos.isNotEmpty;
+    final engagementAttachmentId = _currentEngagementAttachmentId(photos);
 
     return Card(
       elevation: 0,
+      clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: cs.outlineVariant),
       ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: isBatch ? () => _openBatchPhoto(initialIndex: _batchIndex) : null,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  ChatAvatar(
-                    name: _actor['name']?.toString() ?? '?',
-                    avatarUrl: _actor['avatar_url']?.toString(),
-                    radius: 20,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_titleText(), style: theme.textTheme.titleSmall),
-                        if (where.isNotEmpty)
-                          Text(
-                            where,
-                            style: theme.textTheme.bodySmall?.copyWith(color: cs.primary),
-                          ),
-                      ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: widget.onOpenProfile,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    ChatAvatar(
+                      name: _actor['name']?.toString() ?? '?',
+                      avatarUrl: _actor['avatar_url']?.toString(),
+                      radius: 18,
                     ),
-                  ),
-                  IconButton(
-                    tooltip: 'Перейти',
-                    visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                    onPressed: widget.onOpenSource,
-                    icon: Icon(Icons.north_east, size: 20, color: cs.primary),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(timeText, style: theme.textTheme.labelSmall),
-                ],
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _titleText(),
+                        style: theme.textTheme.titleSmall,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              if (preview.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Text(
-                  preview,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyMedium,
-                ),
-              ],
-              if (isBatch)
-                _buildBatchCarousel(theme)
-              else if (galleryAttachments.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                SizedBox(
-                  height: 88,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: galleryAttachments.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 8),
-                    itemBuilder: (_, i) {
-                      final att = galleryAttachments[i];
-                      final threadId = att['thread_id'] as int;
-                      return GestureDetector(
-                        onTap: () => widget.onOpenMedia?.call(att),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: ChatNetworkImage(
-                            threadId: threadId,
-                            attachment: att,
-                            width: 88,
-                            height: 88,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ] else if (primaryPhoto != null) ...[
-                const SizedBox(height: 10),
-                GestureDetector(
-                  onTap: () => widget.onOpenMedia?.call(primaryPhoto),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: ChatNetworkImage(
-                      threadId: primaryPhoto['thread_id'] as int,
-                      attachment: primaryPhoto,
-                      height: 180,
-                      width: double.infinity,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                ),
-                if (_attachmentIdForEngagement(primaryPhoto) case final attachmentId?)
-                  MediaEngagementInline(
-                    attachmentId: attachmentId,
-                    maxComments: 4,
-                    dense: true,
-                  ),
-              ],
-            ],
+            ),
           ),
-        ),
+          if (preview.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: Text(
+                preview,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+          if (hasMedia)
+            FeedEventMediaBlock(
+              photos: photos,
+              onPhotoTap: (index) => _openPhoto(index, photos),
+              onIndexChanged: _kind == 'photo_batch_uploaded'
+                  ? (index) => setState(() => _batchIndex = index)
+                  : null,
+            ),
+          if (caption != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+              child: Text(
+                caption,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+          FeedEventActionBar(
+            key: ValueKey<int?>(engagementAttachmentId),
+            attachmentId: engagementAttachmentId,
+            createdAt: createdAt,
+            onNavigate: widget.onOpenSource,
+            navigateTooltip: _navigateTooltip(),
+          ),
+        ],
       ),
     );
   }

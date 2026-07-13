@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
+import '../../widgets/family_input_styles.dart';
 
 /// Горизонтальная линия оттенков + превью и кнопка применения.
 class ThemeColorPickerBody extends StatefulWidget {
@@ -500,32 +501,27 @@ class _PreviewConversation extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  enabled: false,
-                  decoration: InputDecoration(
-                    hintText: 'Сообщение...',
-                    filled: true,
-                    fillColor: scheme.surfaceContainerHighest,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
+          DecoratedBox(
+            decoration: FamilyInputStyles.composeShellDecoration(theme),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    enabled: false,
+                    decoration: const InputDecoration(
+                      hintText: 'Сообщение...',
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: EdgeInsets.fromLTRB(16, 10, 0, 10),
+                      isDense: true,
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              CircleAvatar(
-                backgroundColor: scheme.primary,
-                child: Icon(Icons.send_rounded, color: scheme.onPrimary, size: 20),
-              ),
-            ],
+                Icon(Icons.send_rounded, color: scheme.primary),
+                const SizedBox(width: 8),
+              ],
+            ),
           ),
         ],
       ),

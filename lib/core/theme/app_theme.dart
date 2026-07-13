@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/family_input_styles.dart';
+
 /// Цвета и сборка темы Family Chat из пользовательского seed.
 class AppTheme {
   AppTheme._();
@@ -14,12 +16,14 @@ class AppTheme {
   static const _pickerValue = 0.47;
 
   static ThemeData lightTheme(Color seedColor) {
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: normalizeSeedColor(seedColor),
+      brightness: Brightness.light,
+    );
     return ThemeData(
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: normalizeSeedColor(seedColor),
-        brightness: Brightness.light,
-      ),
+      colorScheme: colorScheme,
       useMaterial3: true,
+      inputDecorationTheme: FamilyInputStyles.decorationTheme(colorScheme),
       tabBarTheme: const TabBarThemeData(
         indicatorSize: TabBarIndicatorSize.tab,
         tabAlignment: TabAlignment.fill,

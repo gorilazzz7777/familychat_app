@@ -144,7 +144,6 @@ class _BirthDatePickerDialogState extends State<_BirthDatePickerDialog> {
               labelText: 'ДД.ММ.ГГГГ',
               hintText: '09.06.1986',
               errorText: _errorText,
-              border: const OutlineInputBorder(),
             ),
             onChanged: (_) {
               if (_errorText != null) {

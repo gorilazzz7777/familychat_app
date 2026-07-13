@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/family_compose_input.dart';
 import 'widgets/chat_avatar.dart';
 
 /// Лайки и комментарии прямо в ленте / под фото без bottom sheet.
@@ -176,47 +177,18 @@ class _MediaEngagementInlineState extends ConsumerState<MediaEngagementInline> {
             ),
           ],
           const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _commentController,
-                  minLines: 1,
-                  maxLines: 3,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _sendComment(),
-                  decoration: InputDecoration(
-                    hintText: 'Комментарий...',
-                    hintStyle: TextStyle(color: hintColor),
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(20),
-                      borderSide: BorderSide(color: onDark ? Colors.white38 : cs.outline),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(20),
-                      borderSide: BorderSide(color: onDark ? Colors.white70 : cs.primary),
-                    ),
-                  ),
-                  style: TextStyle(color: textColor),
-                ),
-              ),
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: 'Отправить',
-                onPressed: _sending ? null : _sendComment,
-                icon: _sending
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Icon(Icons.send, color: sendColor),
-              ),
-            ],
+          FamilyComposeInput(
+            controller: _commentController,
+            hintText: 'Комментарий...',
+            maxLines: 3,
+            textInputAction: TextInputAction.send,
+            onSend: _sending ? null : _sendComment,
+            sending: _sending,
+            fillColor: onDark ? Colors.white.withValues(alpha: 0.12) : null,
+            borderColor: onDark ? Colors.white38 : null,
+            textColor: onDark ? textColor : null,
+            hintColor: onDark ? hintColor : null,
+            sendIconColor: onDark ? sendColor : null,
           ),
         ],
       ),

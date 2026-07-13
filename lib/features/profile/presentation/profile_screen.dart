@@ -385,7 +385,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           controller: _firstName,
           decoration: const InputDecoration(
             labelText: 'Имя',
-            border: OutlineInputBorder(),
           ),
           textCapitalization: TextCapitalization.words,
         ),
@@ -394,7 +393,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           controller: _lastName,
           decoration: const InputDecoration(
             labelText: 'Фамилия',
-            border: OutlineInputBorder(),
           ),
           textCapitalization: TextCapitalization.words,
         ),
@@ -403,7 +401,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           initialValue: _gender,
           decoration: const InputDecoration(
             labelText: 'Пол',
-            border: OutlineInputBorder(),
           ),
           items: const [
             DropdownMenuItem(value: 'male', child: Text('Мужской')),

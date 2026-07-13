@@ -113,7 +113,6 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                     controller: _title,
                     decoration: const InputDecoration(
                       labelText: 'Название группы',
-                      border: OutlineInputBorder(),
                     ),
                   ),
                 ),

@@ -195,7 +195,6 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
                 controller: _title,
                 decoration: const InputDecoration(
                   labelText: 'Название',
-                  border: OutlineInputBorder(),
                 ),
                 textCapitalization: TextCapitalization.sentences,
               ),

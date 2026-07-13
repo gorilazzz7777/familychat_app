@@ -11,10 +11,12 @@ class ThreadMessagesPage {
   const ThreadMessagesPage({
     required this.messages,
     required this.hasMore,
+    this.birthdayScheduled,
   });
 
   final List<Map<String, dynamic>> messages;
   final bool hasMore;
+  final Map<String, dynamic>? birthdayScheduled;
 }
 
 class FamilyChatRepository {
@@ -396,10 +398,43 @@ class FamilyChatRepository {
     final messages = raw is List
         ? raw.map((e) => Map<String, dynamic>.from(e as Map)).toList()
         : <Map<String, dynamic>>[];
+    final scheduledRaw = map['birthday_scheduled'];
     return ThreadMessagesPage(
       messages: messages,
       hasMore: map['has_more'] == true,
+      birthdayScheduled: scheduledRaw is Map
+          ? Map<String, dynamic>.from(scheduledRaw)
+          : null,
     );
+  }
+
+  Future<Map<String, dynamic>> birthdayScheduledCongratulation(
+    int threadId,
+  ) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/birthday-scheduled-congratulation/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> saveBirthdayScheduledCongratulation(
+    int threadId, {
+    required String body,
+  }) async {
+    final res = await _dio.put<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/birthday-scheduled-congratulation/',
+      data: {'body': body},
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> deleteBirthdayScheduledCongratulation(
+    int threadId,
+  ) async {
+    final res = await _dio.delete<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/birthday-scheduled-congratulation/',
+    );
+    return res.data ?? {};
   }
 
   Future<void> markThreadRead(int threadId,

@@ -10,6 +10,7 @@ import '../../chat/presentation/chat_conversation_screen.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
+import '../../calendar/presentation/birthday_detail_screen.dart';
 import '../../calendar/presentation/calendar_screen.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import 'widgets/feed_event_card.dart';
@@ -57,8 +58,10 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   int? _personUserId;
   String? _lastReadAt;
   bool _hasMore = false;
+  bool _showScrollToTop = false;
   static const _pageSize = 30;
   static const _deltaLimit = 50;
+  static const _scrollToTopThreshold = 280.0;
 
   @override
   void initState() {
@@ -94,11 +97,33 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   }
 
   void _onScroll() {
+    if (_scrollController.hasClients) {
+      final show = _scrollController.offset > _scrollToTopThreshold;
+      if (show != _showScrollToTop) {
+        setState(() => _showScrollToTop = show);
+      }
+    }
     if (_loadingMore || _loading) return;
     if (!_hasMore) return;
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent - 200) {
       _loadMore();
+    }
+  }
+
+  Future<void> _scrollToTop() async {
+    if (_scrollController.hasClients) {
+      await _scrollController.animateTo(
+        0,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeOutCubic,
+      );
+    }
+    if (!mounted) return;
+    await refresh(silent: true);
+    if (!mounted) return;
+    if (_showScrollToTop) {
+      setState(() => _showScrollToTop = false);
     }
   }
 
@@ -482,6 +507,28 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
         );
         if (mounted) await refresh(silent: true);
       case 'calendar_event':
+        final eventKind = payload['event_kind']?.toString() ?? '';
+        if (eventKind == 'birthday') {
+          final rawHonoreeId = payload['person_user_id'] ?? payload['user_id'];
+          final honoreeId =
+              rawHonoreeId is int ? rawHonoreeId : int.tryParse('$rawHonoreeId');
+          if (honoreeId != null) {
+            if (!mounted) return;
+            await Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => BirthdayDetailScreen(
+                  honoreeUserId: honoreeId,
+                  initialTitle: payload['person_name']?.toString() ??
+                      payload['title']?.toString() ??
+                      'День рождения',
+                  eventDate: payload['date']?.toString(),
+                ),
+              ),
+            );
+            if (mounted) await refresh(silent: true);
+            return;
+          }
+        }
         if (!mounted) return;
         await Navigator.of(context).push<void>(
           MaterialPageRoute<void>(builder: (_) => const CalendarScreen()),
@@ -535,6 +582,23 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           child: FeedEventCard(
             event: event,
             onOpenSource: () => _openSource(event),
+            onOpenProfile: () async {
+              final payload = (event['payload'] as Map<String, dynamic>?) ?? {};
+              final isBirthday = event['kind']?.toString() == 'calendar_event' &&
+                  payload['event_kind']?.toString() == 'birthday';
+              final actor = (event['actor'] as Map<String, dynamic>?) ?? {};
+              final rawId = isBirthday
+                  ? (payload['person_user_id'] ?? actor['user_id'])
+                  : actor['user_id'];
+              final userId = rawId is int ? rawId : int.tryParse('$rawId');
+              if (userId == null || !mounted) return;
+              await Navigator.of(context).push<void>(
+                MaterialPageRoute<void>(
+                  builder: (_) => MemberProfileScreen(userId: userId),
+                ),
+              );
+              if (mounted) await refresh(silent: true);
+            },
             onOpenPhotoBatch: (batchEvent, {initialIndex = 0}) =>
                 _openPhotoBatch(batchEvent, initialIndex: initialIndex),
             onOpenMedia: (photo) async {
@@ -585,8 +649,11 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           onSelected: _onPersonFilterSelected,
         ),
         Expanded(
-          child: _events.isEmpty
-              ? RefreshIndicator(
+          child: Stack(
+            alignment: Alignment.bottomRight,
+            children: [
+              if (_events.isEmpty)
+                RefreshIndicator(
                   onRefresh: () => refresh(forceFull: true),
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
@@ -596,7 +663,8 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                     ],
                   ),
                 )
-              : RefreshIndicator(
+              else
+                RefreshIndicator(
                   onRefresh: () => refresh(),
                   child: ListView.builder(
                     controller: _scrollController,
@@ -605,8 +673,70 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                     itemBuilder: (context, index) => _buildEntry(entries[index]),
                   ),
                 ),
+              Positioned(
+                right: 8,
+                bottom: 16,
+                child: IgnorePointer(
+                  ignoring: !_showScrollToTop,
+                  child: AnimatedOpacity(
+                    opacity: _showScrollToTop ? 1 : 0,
+                    duration: const Duration(milliseconds: 180),
+                    child: AnimatedSlide(
+                      offset: _showScrollToTop ? Offset.zero : const Offset(0, 0.4),
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOut,
+                      child: _FeedScrollToTopButton(onPressed: _scrollToTop),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ],
+    );
+  }
+}
+
+class _FeedScrollToTopButton extends StatelessWidget {
+  const _FeedScrollToTopButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onPressed,
+        customBorder: const CircleBorder(),
+        child: Ink(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: cs.surface.withValues(alpha: 0.68),
+            border: Border.all(
+              color: cs.outlineVariant.withValues(alpha: 0.45),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.07),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Icon(
+            Icons.keyboard_arrow_up_rounded,
+            size: 28,
+            color: cs.onSurface.withValues(alpha: 0.72),
+          ),
+        ),
+      ),
     );
   }
 }
