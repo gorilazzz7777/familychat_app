@@ -9,7 +9,10 @@ class ChatVoiceRecorder {
   ChatVoiceRecorder() : _recorder = AudioRecorder();
 
   final AudioRecorder _recorder;
+  String? _path;
   DateTime? _startedAt;
+
+  bool get isActive => _startedAt != null;
 
   Future<bool> ensurePermission() async {
     if (await _recorder.hasPermission()) return true;
@@ -18,6 +21,7 @@ class ChatVoiceRecorder {
   }
 
   Future<void> start() async {
+    if (isActive) return;
     final dir = await getTemporaryDirectory();
     final path =
         '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
@@ -25,14 +29,21 @@ class ChatVoiceRecorder {
       const RecordConfig(encoder: AudioEncoder.aacLc),
       path: path,
     );
+    _path = path;
     _startedAt = DateTime.now();
   }
 
   Future<({Uint8List bytes, int durationMs})?> stop() async {
-    final startedAt = _startedAt;
-    final path = await _recorder.stop();
+    if (!isActive) return null;
+
+    final startedAt = _startedAt!;
+    final recordedPath = _path;
     _startedAt = null;
-    if (path == null || startedAt == null) return null;
+    _path = null;
+
+    final stoppedPath = await _recorder.stop();
+    final path = stoppedPath ?? recordedPath;
+    if (path == null) return null;
 
     final durationMs = DateTime.now().difference(startedAt).inMilliseconds;
     final file = File(path);
@@ -44,8 +55,17 @@ class ChatVoiceRecorder {
   }
 
   Future<void> cancel() async {
-    final path = await _recorder.stop();
+    if (!isActive) {
+      await _recorder.stop();
+      return;
+    }
+
+    final recordedPath = _path;
     _startedAt = null;
+    _path = null;
+
+    final stoppedPath = await _recorder.stop();
+    final path = stoppedPath ?? recordedPath;
     if (path == null) return;
     final file = File(path);
     if (await file.exists()) {

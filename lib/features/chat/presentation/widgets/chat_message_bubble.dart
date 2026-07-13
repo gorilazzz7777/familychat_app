@@ -163,7 +163,22 @@ class ChatMessageBubble extends StatelessWidget {
                   ],
                   for (final a in attachments) ...[
                     if (body.isNotEmpty || location != null) const SizedBox(height: 8),
-                    if (a['kind'] == 'image')
+                    if (isVoiceAttachment(a, messageMetadata: messageMetadata))
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(minWidth: 180),
+                        child: ChatVoiceMessagePlayer(
+                          threadId: threadId,
+                          attachment: a,
+                          isMine: isMine,
+                          durationMs: voiceDurationMsForAttachment(
+                            a,
+                            messageMetadata: messageMetadata,
+                          ),
+                          textColor: textColor,
+                          metaColor: metaColor,
+                        ),
+                      )
+                    else if (a['kind'] == 'image')
                       GestureDetector(
                         onTap: onImageTap != null && a['local_bytes'] == null
                             ? () => onImageTap!(a)
@@ -173,18 +188,6 @@ class ChatMessageBubble extends StatelessWidget {
                           borderRadius: BorderRadius.circular(8),
                           child: _attachmentImage(a, maxBubbleWidth - 24),
                         ),
-                      )
-                    else if (isVoiceAttachment(a, messageMetadata: messageMetadata))
-                      ChatVoiceMessagePlayer(
-                        threadId: threadId,
-                        attachment: a,
-                        isMine: isMine,
-                        durationMs: voiceDurationMsForAttachment(
-                          a,
-                          messageMetadata: messageMetadata,
-                        ),
-                        textColor: textColor,
-                        metaColor: metaColor,
                       )
                     else
                       InkWell(

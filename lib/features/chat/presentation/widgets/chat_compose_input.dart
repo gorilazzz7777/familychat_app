@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/widgets/family_input_styles.dart';
 import 'chat_compose_action_button.dart';
+import 'chat_compose_circle_button.dart';
 import '../../data/chat_send_options.dart';
 
 /// Поле ввода сообщения с кнопками вложения и отправки внутри блока.
@@ -38,14 +39,11 @@ class ChatComposeInput extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          IconButton(
+          ChatComposeCircleButton(
             tooltip: 'Вложение',
-            onPressed: onAttach,
-            icon: Icon(
-              Icons.attach_file,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            visualDensity: VisualDensity.compact,
+            icon: Icons.attach_file,
+            iconColor: theme.colorScheme.onSurface,
+            onTap: onAttach,
           ),
           Expanded(
             child: TextField(

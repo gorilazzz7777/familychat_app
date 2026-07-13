@@ -838,15 +838,71 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   void _replaceOptimisticMessage(int tempId, Map<String, dynamic> msg) {
     setState(() {
+      Map<String, dynamic>? optimistic;
+      for (final m in _messages) {
+        if (m['id'] == tempId) {
+          optimistic = m;
+          break;
+        }
+      }
+      final merged = _mergeVoiceMessageFromOptimistic(
+        serverMessage: msg,
+        optimistic: optimistic,
+      );
       final withoutTemp =
           _messages.where((m) => m['id'] != tempId).toList();
-      final msgId = chatAsInt(msg['id']);
+      final msgId = chatAsInt(merged['id']);
       if (msgId == null || !withoutTemp.any((m) => chatAsInt(m['id']) == msgId)) {
-        _messages = chatUpsertMessage(withoutTemp, msg);
+        _messages = chatUpsertMessage(withoutTemp, merged);
       } else {
         _messages = sortChatMessages(withoutTemp);
       }
     });
+  }
+
+  Map<String, dynamic> _mergeVoiceMessageFromOptimistic({
+    required Map<String, dynamic> serverMessage,
+    Map<String, dynamic>? optimistic,
+  }) {
+    if (optimistic == null) return serverMessage;
+
+    final optimisticMeta = (optimistic['metadata'] as Map?)
+            ?.map((key, value) => MapEntry(key.toString(), value)) ??
+        const <String, dynamic>{};
+    final serverMeta = (serverMessage['metadata'] as Map?)
+            ?.map((key, value) => MapEntry(key.toString(), value)) ??
+        const <String, dynamic>{};
+    final mergedMeta = {
+      ...serverMeta,
+      if (optimisticMeta['voice'] is Map && serverMeta['voice'] == null)
+        'voice': optimisticMeta['voice'],
+    };
+
+    final optimisticAtts = chatAttachmentsOf(optimistic);
+    final serverAtts = chatAttachmentsOf(serverMessage);
+    if (optimisticAtts.isEmpty || serverAtts.isEmpty) {
+      return {
+        ...serverMessage,
+        if (mergedMeta.isNotEmpty) 'metadata': mergedMeta,
+      };
+    }
+
+    final localBytes = optimisticAtts.first['local_bytes'];
+    final mergedAtts = serverAtts.asMap().entries.map((entry) {
+      final att = Map<String, dynamic>.from(entry.value);
+      if (entry.key == 0 &&
+          localBytes != null &&
+          isVoiceAttachment(att, messageMetadata: mergedMeta)) {
+        att['local_bytes'] = localBytes;
+      }
+      return att;
+    }).toList();
+
+    return {
+      ...serverMessage,
+      'metadata': mergedMeta,
+      'attachments': mergedAtts,
+    };
   }
 
   void _markOptimisticQueued(int tempId) {
@@ -990,7 +1046,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _sendVoiceMessage(Uint8List bytes, int durationMs) async {
-    if (durationMs < 500) {
+    if (durationMs < 400) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Удерживайте кнопку чуть дольше для записи')),

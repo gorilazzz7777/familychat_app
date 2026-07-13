@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/widgets/family_input_styles.dart';
 import 'chat_compose_action_button.dart';
+import 'chat_compose_circle_button.dart';
 import '../../data/chat_send_options.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 
@@ -207,14 +208,11 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              IconButton(
+              ChatComposeCircleButton(
                 tooltip: 'Вложение',
-                onPressed: widget.onAttach,
-                icon: Icon(
-                  Icons.attach_file,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                visualDensity: VisualDensity.compact,
+                icon: Icons.attach_file,
+                iconColor: theme.colorScheme.onSurface,
+                onTap: widget.onAttach,
               ),
               Expanded(
                 child: TextField(

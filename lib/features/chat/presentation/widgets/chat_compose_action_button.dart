@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/chat_send_options.dart';
 import '../../data/chat_voice_recorder.dart';
+import 'chat_compose_circle_button.dart';
 import 'chat_send_options_sheet.dart';
 
 /// Кнопка ввода: пустое поле — удержание для голосового, иначе отправка текста.
@@ -32,15 +33,22 @@ class ChatComposeActionButton extends StatefulWidget {
 class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
   final _recorder = ChatVoiceRecorder();
   bool _hasText = false;
-  bool _recording = false;
+  bool _holdActive = false;
+  int? _activePointer;
   Timer? _recordingTimer;
-  DateTime? _recordingStartedAt;
+  DateTime? _holdStartedAt;
+  Future<void>? _startFuture;
 
   @override
   void initState() {
     super.initState();
     _hasText = widget.controller.text.trim().isNotEmpty;
     widget.controller.addListener(_onTextChanged);
+    if (!kIsWeb) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_recorder.ensurePermission());
+      });
+    }
   }
 
   @override
@@ -63,55 +71,87 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     widget.onRecordingChanged?.call(recording, durationMs);
   }
 
-  Future<void> _startRecording() async {
-    if (_showSend || _recording) return;
-    if (kIsWeb) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Голосовые сообщения пока недоступны в веб-версии')),
-      );
-      return;
-    }
-    final granted = await _recorder.ensurePermission();
-    if (!granted) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Нужен доступ к микрофону')),
-      );
-      return;
-    }
-    try {
-      await _recorder.start();
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось начать запись')),
-      );
-      return;
-    }
-    if (!mounted) return;
-    _recordingStartedAt = DateTime.now();
-    setState(() {
-      _recording = true;
-    });
-    _notifyRecording(true, 0);
+  void _startHoldTimer() {
+    _holdStartedAt = DateTime.now();
     _recordingTimer?.cancel();
     _recordingTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
-      final startedAt = _recordingStartedAt;
+      final startedAt = _holdStartedAt;
       if (startedAt == null || !mounted) return;
-      final ms = DateTime.now().difference(startedAt).inMilliseconds;
-      _notifyRecording(true, ms);
+      _notifyRecording(true, DateTime.now().difference(startedAt).inMilliseconds);
     });
   }
 
-  Future<void> _finishRecording({required bool send}) async {
+  void _stopHoldTimer() {
     _recordingTimer?.cancel();
     _recordingTimer = null;
-    _recordingStartedAt = null;
-    if (!_recording) return;
+  }
 
-    setState(() => _recording = false);
+  int? _holdDurationMs() {
+    final startedAt = _holdStartedAt;
+    if (startedAt == null) return null;
+    return DateTime.now().difference(startedAt).inMilliseconds;
+  }
+
+  Future<void> _ensureRecordingStarted() async {
+    if (kIsWeb) {
+      throw StateError('web');
+    }
+    final granted = await _recorder.ensurePermission();
+    if (!granted) {
+      throw StateError('permission');
+    }
+    await _recorder.start();
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    if (_showSend || _activePointer != null) return;
+    _activePointer = event.pointer;
+    setState(() => _holdActive = true);
+    _startHoldTimer();
+    _notifyRecording(true, 0);
+    _startFuture = _ensureRecordingStarted();
+    _startFuture!.catchError((_) {});
+  }
+
+  Future<void> _onPointerUp(PointerUpEvent event) async {
+    if (_activePointer != event.pointer) return;
+    await _releaseHold(send: true);
+  }
+
+  Future<void> _onPointerCancel(PointerCancelEvent event) async {
+    if (_activePointer != event.pointer) return;
+    await _releaseHold(send: false);
+  }
+
+  Future<void> _releaseHold({required bool send}) async {
+    final holdMs = _holdDurationMs() ?? 0;
+    _activePointer = null;
+    _holdStartedAt = null;
+    _stopHoldTimer();
+
+    if (_holdActive) {
+      setState(() => _holdActive = false);
+    }
     _notifyRecording(false, 0);
+
+    try {
+      await _startFuture;
+    } catch (error) {
+      if (!mounted) return;
+      if (error is StateError && error.message == 'permission') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Нужен доступ к микрофону')),
+        );
+      } else if (error is! StateError || error.message != 'web') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось начать запись')),
+        );
+      }
+      await _recorder.cancel();
+      return;
+    } finally {
+      _startFuture = null;
+    }
 
     if (!send) {
       await _recorder.cancel();
@@ -119,47 +159,56 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     }
 
     final result = await _recorder.stop();
-    if (result == null) return;
-    await widget.onVoiceComplete(result.bytes, result.durationMs);
+    if (result == null || result.bytes.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось записать голосовое')),
+      );
+      return;
+    }
+
+    final durationMs = result.durationMs > 0 ? result.durationMs : holdMs;
+    if (durationMs < 400) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Удерживайте кнопку чуть дольше для записи')),
+      );
+      return;
+    }
+
+    await widget.onVoiceComplete(result.bytes, durationMs);
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final color = theme.colorScheme.primary;
+    final cs = theme.colorScheme;
 
     if (_showSend) {
-      return Material(
-        type: MaterialType.transparency,
-        child: InkWell(
-          onTap: () => widget.onSend(ChatSendOptions.normal),
-          onLongPress: () async {
-            final options = await ChatSendOptionsSheet.show(context);
-            if (options == null) return;
-            widget.onSend(options);
-          },
-          customBorder: const CircleBorder(),
-          child: Padding(
-            padding: const EdgeInsets.all(8),
-            child: Icon(Icons.send_rounded, color: color),
-          ),
-        ),
+      return ChatComposeCircleButton(
+        tooltip: 'Отправить',
+        icon: Icons.send_rounded,
+        onTap: () => widget.onSend(ChatSendOptions.normal),
+        onLongPress: () async {
+          final options = await ChatSendOptionsSheet.show(context);
+          if (options == null) return;
+          widget.onSend(options);
+        },
       );
     }
 
     return Listener(
-      onPointerDown: (_) => unawaited(_startRecording()),
-      onPointerUp: (_) => unawaited(_finishRecording(send: true)),
-      onPointerCancel: (_) => unawaited(_finishRecording(send: false)),
-      child: Material(
-        type: MaterialType.transparency,
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Icon(
-            _recording ? Icons.mic_rounded : Icons.mic_none_rounded,
-            color: _recording ? theme.colorScheme.error : color,
-          ),
-        ),
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: _onPointerDown,
+      onPointerUp: _onPointerUp,
+      onPointerCancel: _onPointerCancel,
+      child: ChatComposeCircleButton(
+        tooltip: 'Удерживайте для голосового',
+        icon: _holdActive ? Icons.mic_rounded : Icons.mic_none_rounded,
+        iconColor: _holdActive ? cs.error : cs.primary,
+        backgroundColor: _holdActive
+            ? cs.errorContainer.withValues(alpha: 0.72)
+            : null,
       ),
     );
   }

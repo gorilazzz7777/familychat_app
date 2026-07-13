@@ -7,7 +7,9 @@ bool isVoiceAttachment(
 
   final filename = attachment['filename']?.toString() ?? '';
   final contentType = attachment['content_type']?.toString() ?? '';
-  return filename.startsWith('voice_') && contentType.startsWith('audio/');
+  if (filename.startsWith('voice_')) return true;
+  if (contentType.startsWith('audio/')) return true;
+  return false;
 }
 
 int? voiceDurationMsFromMetadata(Map<String, dynamic>? metadata) {

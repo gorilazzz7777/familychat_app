@@ -61,7 +61,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   bool _showScrollToTop = false;
   static const _pageSize = 30;
   static const _deltaLimit = 50;
-  static const _scrollToTopThreshold = 280.0;
+  static const _scrollToTopThreshold = 120.0;
 
   @override
   void initState() {
@@ -96,13 +96,18 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     await _syncUpdates();
   }
 
-  void _onScroll() {
-    if (_scrollController.hasClients) {
-      final show = _scrollController.offset > _scrollToTopThreshold;
-      if (show != _showScrollToTop) {
-        setState(() => _showScrollToTop = show);
-      }
+  void _updateScrollToTopVisibility() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final canScroll = position.maxScrollExtent > _scrollToTopThreshold;
+    final show = canScroll && position.pixels > _scrollToTopThreshold;
+    if (show != _showScrollToTop) {
+      setState(() => _showScrollToTop = show);
     }
+  }
+
+  void _onScroll() {
+    _updateScrollToTopVisibility();
     if (_loadingMore || _loading) return;
     if (!_hasMore) return;
     if (_scrollController.position.pixels >=
@@ -283,6 +288,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       });
       await _persistCache();
       await _maybeMarkRead();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -325,6 +331,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       });
       await _persistCache();
       await _maybeMarkRead();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
     } catch (e) {
       if (!mounted) return;
       if (_events.isEmpty) {
@@ -358,6 +365,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
         _loadingMore = false;
       });
       await _persistCache();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
     } catch (_) {
       if (!mounted) return;
       setState(() => _loadingMore = false);
@@ -677,8 +685,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                   ),
                 ),
               Positioned(
-                right: 8,
-                bottom: 16,
+                left: 0,
+                right: 0,
+                bottom: 20,
                 child: IgnorePointer(
                   ignoring: !_showScrollToTop,
                   child: AnimatedOpacity(
@@ -688,7 +697,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                       offset: _showScrollToTop ? Offset.zero : const Offset(0, 0.4),
                       duration: const Duration(milliseconds: 180),
                       curve: Curves.easeOut,
-                      child: _FeedScrollToTopButton(onPressed: _scrollToTop),
+                      child: Center(
+                        child: _FeedScrollToTopButton(onPressed: _scrollToTop),
+                      ),
                     ),
                   ),
                 ),
@@ -717,26 +728,26 @@ class _FeedScrollToTopButton extends StatelessWidget {
         onTap: onPressed,
         customBorder: const CircleBorder(),
         child: Ink(
-          width: 44,
-          height: 44,
+          width: 48,
+          height: 48,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: cs.surface.withValues(alpha: 0.68),
+            color: cs.surface.withValues(alpha: 0.88),
             border: Border.all(
-              color: cs.outlineVariant.withValues(alpha: 0.45),
+              color: cs.outline.withValues(alpha: 0.35),
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.07),
-                blurRadius: 10,
-                offset: const Offset(0, 2),
+                color: Colors.black.withValues(alpha: 0.14),
+                blurRadius: 14,
+                offset: const Offset(0, 3),
               ),
             ],
           ),
           child: Icon(
             Icons.keyboard_arrow_up_rounded,
-            size: 28,
-            color: cs.onSurface.withValues(alpha: 0.72),
+            size: 30,
+            color: cs.onSurface.withValues(alpha: 0.9),
           ),
         ),
       ),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/i18n/gender_verbs.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import 'feed_birthday_event_card.dart';
 import 'feed_holiday_event_card.dart';
@@ -52,24 +53,21 @@ class _FeedEventCardState extends State<FeedEventCard> {
 
   String _titleText() {
     final name = _actor['name']?.toString() ?? 'Участник';
-    return switch (_kind) {
-      'message_sent' => '$name написал(а) в чате',
-      'photo_uploaded' => '$name добавил(а) фото',
-      'photo_added_to_album' => '$name добавил(а) фото в альбом',
-      'photo_batch_uploaded' => () {
-        final count = _payload['photo_count'] is int
+    if (_kind == 'calendar_event') {
+      return _payload['title']?.toString() ?? 'Событие календаря';
+    }
+    final photoCount = _kind == 'photo_batch_uploaded'
+        ? (_payload['photo_count'] is int
             ? _payload['photo_count'] as int
-            : int.tryParse('${_payload['photo_count']}') ??
-                _batchPhotos().length;
-        return '$name добавил $count фото';
-      }(),
-      'media_liked' => '$name лайкнул(а) фото',
-      'media_commented' => '$name прокомментировал(а) фото',
-      'calendar_event' => _payload['title']?.toString() ?? 'Событие календаря',
-      'member_joined' => '${_payload['name'] ?? name} присоединился(ась) к семье',
-      'profile_updated' => '$name обновил(а) профиль',
-      _ => 'Событие',
-    };
+            : int.tryParse('${_payload['photo_count']}') ?? _batchPhotos().length)
+        : null;
+    return feedEventTitle(
+      kind: _kind,
+      actorName: name,
+      gender: actorGender(_actor),
+      joinedName: _payload['name']?.toString(),
+      photoCount: photoCount,
+    );
   }
 
   String _navigateTooltip() {
