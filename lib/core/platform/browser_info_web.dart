@@ -1,14 +1,30 @@
 import 'dart:html' as html;
 
+String get _ua => html.window.navigator.userAgent.toLowerCase();
+
 bool get isIosBrowser {
-  final ua = html.window.navigator.userAgent.toLowerCase();
+  final ua = _ua;
   return ua.contains('iphone') ||
       ua.contains('ipad') ||
       ua.contains('ipod');
 }
 
+/// Safari на iPhone/iPad (не Chrome/Firefox/Edge поверх WebKit).
+bool get isSafariBrowser {
+  final ua = _ua;
+  if (!ua.contains('safari')) return false;
+  // Chrome/Firefox/Edge на iOS тоже содержат «Safari» в UA.
+  return !ua.contains('crios') &&
+      !ua.contains('fxios') &&
+      !ua.contains('edgios') &&
+      !ua.contains('chromium');
+}
+
 bool get isStandalonePwa {
-  return html.window.matchMedia('(display-mode: standalone)').matches;
+  final window = html.window;
+  return window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: fullscreen)').matches ||
+      window.matchMedia('(display-mode: minimal-ui)').matches;
 }
 
 bool get webNotificationsSupported {

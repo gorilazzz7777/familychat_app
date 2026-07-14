@@ -10,6 +10,7 @@ import '../../data/chat_voice_utils.dart';
 import 'chat_location_preview.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
+import 'chat_message_tap_target.dart';
 import 'chat_mention_text.dart';
 import 'chat_network_image.dart';
 import 'chat_voice_message_player.dart';
@@ -115,128 +116,138 @@ class ChatMessageBubble extends StatelessWidget {
           bottomLeft: Radius.circular(isMine ? 16 : 4),
           bottomRight: Radius.circular(isMine ? 4 : 16),
         ),
-        child: GestureDetector(
+        child: ChatMessageTapTarget(
           onTap: onTap,
           onLongPress: onLongPress,
-          behavior: HitTestBehavior.opaque,
           child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (forward != null) _buildForwardQuote(forward!, quoteAccent, textColor),
-              if (replyTo != null)
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: onReplyTap,
-                  child: _buildReplyQuote(replyTo!, quoteAccent, textColor),
-                ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (_showBody(body, forward))
-                    ChatMentionText(
-                      body: body,
-                      mentions: mentions,
-                      style: theme.textTheme.bodyMedium?.copyWith(color: textColor) ??
-                          TextStyle(color: textColor),
-                      mentionStyle: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-                        color: isMine
-                            ? const Color(0xFF8FD3FF)
-                            : theme.colorScheme.primary,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      linkStyle: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
-                        color: isMine
-                            ? const Color(0xFF8FD3FF)
-                            : theme.colorScheme.primary,
-                        decoration: TextDecoration.underline,
-                      ),
-                    ),
-                  if (location != null) ...[
-                    if (_showBody(body, forward)) const SizedBox(height: 8),
-                    ChatLocationPreview(
-                      location: location!,
-                      isMine: isMine,
-                      maxWidth: maxBubbleWidth - 24,
-                    ),
-                  ],
-                  for (final a in attachments) ...[
-                    if (body.isNotEmpty || location != null) const SizedBox(height: 8),
-                    if (isVoiceAttachment(a, messageMetadata: messageMetadata))
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(minWidth: 180),
-                        child: ChatVoiceMessagePlayer(
-                          threadId: threadId,
-                          attachment: a,
-                          isMine: isMine,
-                          durationMs: voiceDurationMsForAttachment(
-                            a,
-                            messageMetadata: messageMetadata,
-                          ),
-                          textColor: textColor,
-                          metaColor: metaColor,
-                        ),
-                      )
-                    else if (a['kind'] == 'image')
-                      GestureDetector(
-                        onTap: onImageTap != null && a['local_bytes'] == null
-                            ? () => onImageTap!(a)
-                            : null,
-                        behavior: HitTestBehavior.opaque,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: _attachmentImage(a, maxBubbleWidth - 24),
-                        ),
-                      )
-                    else
-                      InkWell(
-                        onTap: () {
-                          final url = a['file_url']?.toString();
-                          if (url != null) launchUrl(Uri.parse(url));
-                        },
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.insert_drive_file_outlined, color: textColor),
-                            const SizedBox(width: 8),
-                            Flexible(
-                              child: Text(
-                                a['filename']?.toString() ?? 'Файл',
-                                style: TextStyle(color: textColor),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                  ],
-                  const SizedBox(height: 4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (scheduledAt != null) ...[
-                        Icon(Icons.schedule, size: 13, color: metaColor),
-                        const SizedBox(width: 4),
-                        Text(
-                          timeFmt.format(scheduledAt!.toLocal()),
-                          style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
-                        ),
-                      ] else if (createdAt != null)
-                        Text(
-                          timeFmt.format(createdAt!.toLocal()),
-                          style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
-                        ),
-                      if (isMine && readStatus != null) ...[
-                        const SizedBox(width: 4),
-                        _ReadStatusIcon(status: readStatus!, color: metaColor),
-                      ],
-                    ],
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (forward != null)
+                  _buildForwardQuote(forward!, quoteAccent, textColor),
+                if (replyTo != null)
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: onReplyTap,
+                    child: _buildReplyQuote(replyTo!, quoteAccent, textColor),
                   ),
-                ],
-              ),
-            ],
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_showBody(body, forward))
+                      ChatMentionText(
+                        body: body,
+                        mentions: mentions,
+                        style: theme.textTheme.bodyMedium
+                                ?.copyWith(color: textColor) ??
+                            TextStyle(color: textColor),
+                        mentionStyle:
+                            (theme.textTheme.bodyMedium ?? const TextStyle())
+                                .copyWith(
+                          color: isMine
+                              ? const Color(0xFF8FD3FF)
+                              : theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        linkStyle:
+                            (theme.textTheme.bodyMedium ?? const TextStyle())
+                                .copyWith(
+                          color: isMine
+                              ? const Color(0xFF8FD3FF)
+                              : theme.colorScheme.primary,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    if (location != null) ...[
+                      if (_showBody(body, forward)) const SizedBox(height: 8),
+                      ChatLocationPreview(
+                        location: location!,
+                        isMine: isMine,
+                        maxWidth: maxBubbleWidth - 24,
+                      ),
+                    ],
+                    for (final a in attachments) ...[
+                      if (body.isNotEmpty || location != null)
+                        const SizedBox(height: 8),
+                      if (isVoiceAttachment(a, messageMetadata: messageMetadata))
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(minWidth: 180),
+                          child: ChatVoiceMessagePlayer(
+                            threadId: threadId,
+                            attachment: a,
+                            isMine: isMine,
+                            durationMs: voiceDurationMsForAttachment(
+                              a,
+                              messageMetadata: messageMetadata,
+                            ),
+                            textColor: textColor,
+                            metaColor: metaColor,
+                          ),
+                        )
+                      else if (a['kind'] == 'image')
+                        GestureDetector(
+                          onTap: onImageTap != null && a['local_bytes'] == null
+                              ? () => onImageTap!(a)
+                              : null,
+                          behavior: HitTestBehavior.opaque,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: _attachmentImage(a, maxBubbleWidth - 24),
+                          ),
+                        )
+                      else
+                        InkWell(
+                          onTap: () {
+                            final url = a['file_url']?.toString();
+                            if (url != null) launchUrl(Uri.parse(url));
+                          },
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.insert_drive_file_outlined,
+                                  color: textColor),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  a['filename']?.toString() ?? 'Файл',
+                                  style: TextStyle(color: textColor),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (scheduledAt != null) ...[
+                          Icon(Icons.schedule, size: 13, color: metaColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            timeFmt.format(scheduledAt!.toLocal()),
+                            style: theme.textTheme.labelSmall
+                                ?.copyWith(color: metaColor),
+                          ),
+                        ] else if (createdAt != null)
+                          Text(
+                            timeFmt.format(createdAt!.toLocal()),
+                            style: theme.textTheme.labelSmall
+                                ?.copyWith(color: metaColor),
+                          ),
+                        if (isMine && readStatus != null) ...[
+                          const SizedBox(width: 4),
+                          _ReadStatusIcon(
+                              status: readStatus!, color: metaColor),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ),
         ),
       ),
     );
@@ -245,7 +256,9 @@ class ChatMessageBubble extends StatelessWidget {
       padding: EdgeInsets.only(
         left: 8,
         right: 8,
-        bottom: compactWithNext ? 1 : 6,
+        bottom: reactions.isNotEmpty
+            ? (compactWithNext ? 14 : 18)
+            : (compactWithNext ? 1 : 6),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
@@ -281,17 +294,27 @@ class ChatMessageBubble extends StatelessWidget {
               alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxWidth: maxBubbleWidth),
-                child: Column(
-                  crossAxisAlignment:
-                      isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
+                child: Stack(
+                  clipBehavior: Clip.none,
                   children: [
                     bubble,
                     if (reactions.isNotEmpty)
-                      ChatMessageReactionsRow(
-                        reactions: reactions,
-                        alignEnd: isMine,
-                        onReactionTap: onReactionTap,
+                      Positioned(
+                        left: isMine ? 20 : 6,
+                        right: isMine ? 6 : 20,
+                        // Наезжает на нижний край пузыря ~на половину чипа.
+                        bottom: -11,
+                        child: Align(
+                          alignment: isMine
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                          child: ChatMessageReactionsRow(
+                            reactions: reactions,
+                            alignEnd: isMine,
+                            onReactionTap: onReactionTap,
+                            overlapStyle: true,
+                          ),
+                        ),
                       ),
                   ],
                 ),

@@ -27,6 +27,7 @@ import '../data/chat_offline_sync.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/chat_scheduled_send_service.dart';
 import '../data/chat_send_options.dart';
+import '../data/chat_typing_utils.dart';
 import '../data/chat_voice_utils.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_thread_avatars.dart';
@@ -156,6 +157,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   double _lastKeyboardInset = 0;
   bool _voiceRecording = false;
   int _voiceRecordingMs = 0;
+  final Map<int, String> _typingNames = {};
+  final Map<int, Timer> _typingExpiry = {};
+  Timer? _typingEmitTimer;
+  Timer? _typingStopTimer;
+  bool _typingEmitted = false;
+  DateTime? _lastTypingEmitAt;
 
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
 
@@ -190,6 +197,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _isBirthdayCelebration = widget.initialIsBirthdayCelebration;
     _headerAvatarUrl = widget.initialPeerAvatarUrl;
     WidgetsBinding.instance.addObserver(this);
+    _controller.addListener(_onComposeTextChanged);
     _inputFocus.addListener(_onInputFocusChanged);
     ActiveChatContext.instance.setOpenThread(widget.threadId);
     FamilyChatRealtime.instance.addListener(_onRealtime);
@@ -379,8 +387,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   @override
   void dispose() {
+    _stopTypingLocal();
+    _clearRemoteTyping();
     _peerStatusTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    _controller.removeListener(_onComposeTextChanged);
     _inputFocus.removeListener(_onInputFocusChanged);
     _inputFocus.dispose();
     if (ActiveChatContext.instance.openThreadId == widget.threadId) {
@@ -402,7 +413,109 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   void _onInputFocusChanged() {
     if (_inputFocus.hasFocus) {
       _syncScrollForKeyboard();
+    } else if (_controller.text.trim().isEmpty) {
+      _stopTypingLocal();
     }
+  }
+
+  void _onComposeTextChanged() {
+    final text = _controller.text.trim();
+    if (text.isEmpty) {
+      _typingStopTimer?.cancel();
+      _typingStopTimer = Timer(const Duration(milliseconds: 800), () {
+        _stopTypingLocal();
+      });
+      return;
+    }
+    _typingStopTimer?.cancel();
+    _typingStopTimer = null;
+    _emitTypingPulse();
+    _typingStopTimer = Timer(const Duration(seconds: 3), () {
+      _stopTypingLocal();
+    });
+  }
+
+  void _emitTypingPulse() {
+    final now = DateTime.now();
+    final last = _lastTypingEmitAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 2)) {
+      _typingEmitTimer ??= Timer(const Duration(seconds: 2), () {
+        _typingEmitTimer = null;
+        if (_controller.text.trim().isNotEmpty) {
+          _emitTypingPulse();
+        }
+      });
+      return;
+    }
+    _lastTypingEmitAt = now;
+    _typingEmitted = true;
+    FamilyChatRealtime.instance.sendTyping(
+      threadId: widget.threadId,
+      isTyping: true,
+    );
+  }
+
+  void _stopTypingLocal() {
+    _typingEmitTimer?.cancel();
+    _typingEmitTimer = null;
+    _typingStopTimer?.cancel();
+    _typingStopTimer = null;
+    if (!_typingEmitted) return;
+    FamilyChatRealtime.instance.sendTyping(
+      threadId: widget.threadId,
+      isTyping: false,
+    );
+    _typingEmitted = false;
+    _lastTypingEmitAt = null;
+  }
+
+  void _clearRemoteTyping() {
+    for (final timer in _typingExpiry.values) {
+      timer.cancel();
+    }
+    _typingExpiry.clear();
+    _typingNames.clear();
+  }
+
+  void _onRemoteTyping({
+    required int userId,
+    required String displayName,
+    required bool isTyping,
+  }) {
+    if (_currentUserId != null && userId == _currentUserId) return;
+    _typingExpiry[userId]?.cancel();
+    if (!isTyping) {
+      _typingExpiry.remove(userId);
+      if (!_typingNames.containsKey(userId)) return;
+      setState(() => _typingNames.remove(userId));
+      return;
+    }
+    final changed = _typingNames[userId] != displayName ||
+        !_typingNames.containsKey(userId);
+    _typingNames[userId] = displayName.isNotEmpty ? displayName : 'Участник';
+    _typingExpiry[userId] = Timer(const Duration(seconds: 4), () {
+      if (!mounted) return;
+      setState(() {
+        _typingNames.remove(userId);
+        _typingExpiry.remove(userId);
+      });
+    });
+    if (changed && mounted) setState(() {});
+  }
+
+  String? get _headerStatusSubtitle {
+    if (_typingNames.isNotEmpty) {
+      final label = chatTypingSubtitle(
+        isDm: _isDm,
+        displayNames: _typingNames.values.toList(),
+      );
+      if (label.isNotEmpty) return label;
+    }
+    if (_isGroupLike && !_hasLeft && _participantUserIds.isNotEmpty) {
+      return chatParticipantCountLabel(_participantUserIds.length);
+    }
+    if (_isDm) return _peerStatusLabel;
+    return null;
   }
 
   void _syncScrollForKeyboard() {
@@ -498,8 +611,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   void _onRealtime(Map<String, dynamic> event) {
     final eventThreadId = chatAsInt(event['thread_id']);
 
+    if (event['event'] == 'chat_typing') {
+      if (eventThreadId != null && eventThreadId != widget.threadId) return;
+      final userId = chatAsInt(event['user_id']);
+      if (userId == null) return;
+      final isTyping = event['is_typing'] != false;
+      _onRemoteTyping(
+        userId: userId,
+        displayName: event['display_name']?.toString() ?? '',
+        isTyping: isTyping,
+      );
+      return;
+    }
+
     if (event['event'] == 'chat_refresh') {
-      if (eventThreadId != widget.threadId) return;
+      // Без thread_id — глобальный refresh (web poll / reconnect).
+      if (eventThreadId != null && eventThreadId != widget.threadId) return;
       unawaited(_load(silent: true));
       return;
     }
@@ -509,11 +636,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (msg is! Map) return;
       final map = chatNormalizeMap(Map<dynamic, dynamic>.from(msg));
       if (chatAsInt(map['thread_id']) != widget.threadId) return;
+      final senderId = chatAsInt(map['sender_user_id']);
+      if (senderId != null) {
+        _onRemoteTyping(userId: senderId, displayName: '', isTyping: false);
+      }
       if (!mounted) return;
       setState(() {
         var next = _messages;
-        if (_currentUserId != null &&
-            chatAsInt(map['sender_user_id']) == _currentUserId) {
+        if (_currentUserId != null && senderId == _currentUserId) {
           next = next.where((m) => m['_pending'] != true).toList();
         }
         _messages = chatUpsertMessage(next, map);
@@ -1045,7 +1175,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     });
   }
 
-  Future<void> _sendVoiceMessage(Uint8List bytes, int durationMs) async {
+  Future<void> _sendVoiceMessage(
+    Uint8List bytes,
+    int durationMs, {
+    String? encoderName,
+  }) async {
     if (durationMs < 400) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1057,7 +1191,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final tempId = _nextTempId();
     final replySnapshot = _replyTo;
     final replyId = chatAsInt(replySnapshot?['message_id']);
-    final filename = voiceMessageFilename(durationMs);
+    final extension = voiceExtensionForEncoder(encoderName ?? (kIsWeb ? 'wav' : 'm4a'));
+    final filename = voiceMessageFilename(durationMs, extension: extension);
+    final contentType = voiceContentTypeForExtension(extension);
     final metadata = {'voice': {'duration_ms': durationMs}};
 
     _addOptimisticMessage(
@@ -1067,7 +1203,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         {
           'kind': 'file',
           'filename': filename,
-          'content_type': 'audio/mp4',
+          'content_type': contentType,
           'local_bytes': bytes,
         },
       ],
@@ -1085,7 +1221,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _OutgoingAttachment(
           bytes: bytes,
           filename: filename,
-          contentType: 'audio/mp4',
+          contentType: contentType,
         ),
       ],
       replyToMessageId: replyId,
@@ -1361,6 +1497,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (editingId != null && fileDraft == null) {
       // Редактирование существующего текстового сообщения.
       if (body.isEmpty) return;
+      _stopTypingLocal();
       _controller.clear();
       setState(() {
         _editingMessageId = null;
@@ -1393,6 +1530,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
     final replyTo = _replyTo;
     final replyId = chatAsInt(replyTo?['message_id']);
+    _stopTypingLocal();
     _controller.clear();
     setState(() {
       _pendingFileDraft = null;
@@ -2068,35 +2206,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
-                            if (_isGroupLike &&
-                                !_hasLeft &&
-                                _participantUserIds.isNotEmpty)
+                            if (_headerStatusSubtitle != null)
                               Text(
-                                chatParticipantCountLabel(
-                                    _participantUserIds.length),
+                                _headerStatusSubtitle!,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: Theme.of(context)
                                     .textTheme
                                     .bodySmall
                                     ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant,
-                                    ),
-                              ),
-                            if (_isDm && _peerStatusLabel != null)
-                              Text(
-                                _peerStatusLabel!,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
-                                    ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant,
+                                      color: _typingNames.isNotEmpty
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .primary
+                                          : Theme.of(context)
+                                              .colorScheme
+                                              .onSurfaceVariant,
                                     ),
                               ),
                           ],

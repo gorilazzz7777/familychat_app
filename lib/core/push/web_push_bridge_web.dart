@@ -3,10 +3,12 @@ import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:js' as js;
 
+import '../../features/chat/data/familychat_realtime.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../routing/app_uri_parser.dart';
 
 bool _listening = false;
+StreamSubscription<html.Event>? _visibilitySub;
 
 Map<String, dynamic>? readWebPendingCallLaunch() {
   try {
@@ -34,8 +36,26 @@ void listenWebPushIncomingCalls() {
     final source = raw['source']?.toString() ?? '';
     if (source != 'familychat-fcm' && source != 'familychat-fcm-sw') return;
     final data = Map<String, dynamic>.from(raw);
-    if (data['type']?.toString() != 'familychat_call') return;
-    IncomingCallCoordinator.instance.presentFromPushData(data);
+    final type = data['type']?.toString() ?? '';
+    if (type == 'familychat_call') {
+      IncomingCallCoordinator.instance.presentFromPushData(data);
+      return;
+    }
+    if (type == 'familychat_chat') {
+      final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+      final messageId = int.tryParse(data['message_id']?.toString() ?? '');
+      FamilyChatRealtime.instance.emitSyntheticEvent({
+        'event': 'chat_refresh',
+        if (threadId != null) 'thread_id': threadId,
+        if (messageId != null) 'message_id': messageId,
+      });
+    }
+  });
+
+  _visibilitySub?.cancel();
+  _visibilitySub = html.document.onVisibilityChange.listen((_) {
+    if (html.document.hidden == true) return;
+    unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
   });
 }
 

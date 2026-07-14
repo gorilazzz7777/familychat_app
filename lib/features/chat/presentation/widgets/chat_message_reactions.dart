@@ -50,36 +50,38 @@ class ChatMessageReactionsRow extends StatelessWidget {
     required this.reactions,
     required this.alignEnd,
     this.onReactionTap,
+    this.overlapStyle = false,
   });
 
   final List<Map<String, dynamic>> reactions;
   final bool alignEnd;
   final void Function(String emoji)? onReactionTap;
 
+  /// Компактные «плавающие» чипы поверх края пузыря.
+  final bool overlapStyle;
+
   @override
   Widget build(BuildContext context) {
     if (reactions.isEmpty) return const SizedBox.shrink();
 
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(top: 2, bottom: 2),
-      child: Wrap(
-        alignment: alignEnd ? WrapAlignment.end : WrapAlignment.start,
-        spacing: 4,
-        runSpacing: 4,
-        children: [
-          for (final reaction in reactions)
-            _ReactionChip(
-              emoji: reaction['emoji']?.toString() ?? '',
-              count: reaction['count'] is int
-                  ? reaction['count'] as int
-                  : int.tryParse('${reaction['count']}') ?? 0,
-              reactedByMe: reaction['reacted_by_me'] == true,
-              onTap: onReactionTap,
-              theme: theme,
-            ),
-        ],
-      ),
+    return Wrap(
+      alignment: alignEnd ? WrapAlignment.end : WrapAlignment.start,
+      spacing: 4,
+      runSpacing: 4,
+      children: [
+        for (final reaction in reactions)
+          _ReactionChip(
+            emoji: reaction['emoji']?.toString() ?? '',
+            count: reaction['count'] is int
+                ? reaction['count'] as int
+                : int.tryParse('${reaction['count']}') ?? 0,
+            reactedByMe: reaction['reacted_by_me'] == true,
+            onTap: onReactionTap,
+            theme: theme,
+            overlapStyle: overlapStyle,
+          ),
+      ],
     );
   }
 }
@@ -90,6 +92,7 @@ class _ReactionChip extends StatelessWidget {
     required this.count,
     required this.reactedByMe,
     required this.theme,
+    required this.overlapStyle,
     this.onTap,
   });
 
@@ -97,39 +100,49 @@ class _ReactionChip extends StatelessWidget {
   final int count;
   final bool reactedByMe;
   final ThemeData theme;
+  final bool overlapStyle;
   final void Function(String emoji)? onTap;
 
   @override
   Widget build(BuildContext context) {
     final bg = reactedByMe
         ? theme.colorScheme.primaryContainer
-        : theme.colorScheme.surfaceContainerHighest;
+        : overlapStyle
+            ? theme.colorScheme.surface
+            : theme.colorScheme.surfaceContainerHighest;
     final border = reactedByMe
-        ? theme.colorScheme.primary.withValues(alpha: 0.5)
-        : theme.colorScheme.outlineVariant.withValues(alpha: 0.5);
+        ? theme.colorScheme.primary.withValues(alpha: 0.55)
+        : theme.colorScheme.outlineVariant.withValues(alpha: 0.55);
 
     return Material(
       color: bg,
-      borderRadius: BorderRadius.circular(12),
+      elevation: overlapStyle ? 1.5 : 0,
+      shadowColor: Colors.black.withValues(alpha: 0.25),
+      borderRadius: BorderRadius.circular(14),
       child: InkWell(
         onTap: onTap == null ? null : () => onTap!(emoji),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          padding: EdgeInsets.symmetric(
+            horizontal: overlapStyle ? 5 : 6,
+            vertical: overlapStyle ? 1 : 2,
+          ),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: border),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: border, width: 0.8),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(emoji, style: const TextStyle(fontSize: 14)),
+              Text(emoji, style: TextStyle(fontSize: overlapStyle ? 13 : 14)),
               if (count > 1) ...[
-                const SizedBox(width: 3),
+                const SizedBox(width: 2),
                 Text(
                   '$count',
                   style: theme.textTheme.labelSmall?.copyWith(
                     fontWeight: FontWeight.w600,
+                    fontSize: 11,
+                    height: 1,
                   ),
                 ),
               ],

@@ -17,6 +17,7 @@ import 'app_actions_scope.dart';
 import 'shell_refresh.dart';
 import '../features/calendar/data/calendar_photo_sync_service.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
+import '../features/chat/data/active_chat_context.dart';
 import '../features/chat/data/chat_unread_providers.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
@@ -66,8 +67,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     IncomingShareBus.instance.addListener(_onIncomingShare);
     if (kIsWeb) {
       _webPollTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-        FamilyChatRealtime.instance
-            .emitSyntheticEvent({'event': 'chat_refresh'});
+        unawaited(_webRealtimeSoftSync());
       });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -102,6 +102,19 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     unawaited(_touchPresence());
     _presenceTimer = Timer.periodic(const Duration(seconds: 45), (_) {
       unawaited(_touchPresence());
+    });
+  }
+
+  Future<void> _webRealtimeSoftSync() async {
+    final realtime = FamilyChatRealtime.instance;
+    if (!realtime.isConnected) {
+      await realtime.reconnectAndRefresh();
+      return;
+    }
+    final threadId = ActiveChatContext.instance.openThreadId;
+    realtime.emitSyntheticEvent({
+      'event': 'chat_refresh',
+      if (threadId != null) 'thread_id': threadId,
     });
   }
 

@@ -134,4 +134,22 @@ class FamilyChatRealtime {
     }
     emitSyntheticEvent({'event': 'chat_refresh'});
   }
+
+  void sendJson(Map<String, dynamic> payload) {
+    final channel = _channel;
+    if (!_connected || channel == null) return;
+    try {
+      channel.sink.add(jsonEncode(payload));
+    } catch (e) {
+      debugPrint('familychat ws send error: $e');
+    }
+  }
+
+  void sendTyping({required int threadId, required bool isTyping}) {
+    sendJson({
+      'event': 'chat_typing',
+      'thread_id': threadId,
+      'is_typing': isTyping,
+    });
+  }
 }

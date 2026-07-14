@@ -11,6 +11,21 @@
   <meta name="apple-mobile-web-app-title" content="Family Chat">
   <link rel="manifest" href="manifest.json">
   <title>Family Chat</title>
+  <style>
+    /* iOS Safari / PWA: не перехватывать long-press в callout/selection текста. */
+    html, body {
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior: none;
+    }
+    flt-glass-pane, flt-semantics-placeholder {
+      -webkit-user-select: none !important;
+      user-select: none !important;
+      -webkit-touch-callout: none !important;
+    }
+  </style>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
   <script src="familychat-fcm.js"></script>

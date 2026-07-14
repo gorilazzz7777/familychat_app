@@ -44,4 +44,22 @@ String formatVoiceDuration(int durationMs) {
   return '0:${seconds.toString().padLeft(2, '0')}';
 }
 
-String voiceMessageFilename(int durationMs) => 'voice_$durationMs.m4a';
+String voiceMessageFilename(int durationMs, {String extension = 'm4a'}) =>
+    'voice_$durationMs.$extension';
+
+String voiceExtensionForEncoder(String encoderName) {
+  final name = encoderName.toLowerCase();
+  if (name.contains('wav')) return 'wav';
+  if (name.contains('opus') || name.contains('webm')) return 'webm';
+  if (name.contains('ogg')) return 'ogg';
+  return 'm4a';
+}
+
+String voiceContentTypeForExtension(String extension) {
+  return switch (extension) {
+    'wav' => 'audio/wav',
+    'webm' => 'audio/webm',
+    'ogg' => 'audio/ogg',
+    _ => 'audio/mp4',
+  };
+}

@@ -22,7 +22,11 @@ class ChatComposeActionButton extends StatefulWidget {
 
   final TextEditingController controller;
   final void Function(ChatSendOptions options) onSend;
-  final Future<void> Function(Uint8List bytes, int durationMs) onVoiceComplete;
+  final Future<void> Function(
+    Uint8List bytes,
+    int durationMs, {
+    String? encoderName,
+  }) onVoiceComplete;
   final bool forceSendButton;
   final void Function(bool isRecording, int durationMs)? onRecordingChanged;
 
@@ -44,6 +48,7 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     super.initState();
     _hasText = widget.controller.text.trim().isNotEmpty;
     widget.controller.addListener(_onTextChanged);
+    // На web разрешение микрофона нужно запрашивать по жесту (удержание).
     if (!kIsWeb) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_recorder.ensurePermission());
@@ -93,9 +98,6 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
   }
 
   Future<void> _ensureRecordingStarted() async {
-    if (kIsWeb) {
-      throw StateError('web');
-    }
     final granted = await _recorder.ensurePermission();
     if (!granted) {
       throw StateError('permission');
@@ -142,9 +144,15 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Нужен доступ к микрофону')),
         );
-      } else if (error is! StateError || error.message != 'web') {
+      } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось начать запись')),
+          SnackBar(
+            content: Text(
+              kIsWeb
+                  ? 'Не удалось начать запись. Разрешите микрофон в браузере'
+                  : 'Не удалось начать запись',
+            ),
+          ),
         );
       }
       await _recorder.cancel();
@@ -176,7 +184,11 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
       return;
     }
 
-    await widget.onVoiceComplete(result.bytes, durationMs);
+    await widget.onVoiceComplete(
+      result.bytes,
+      durationMs,
+      encoderName: result.encoder.name,
+    );
   }
 
   @override

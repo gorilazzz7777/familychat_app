@@ -41,7 +41,11 @@ class ChatMentionComposeInput extends StatefulWidget {
   final FocusNode focusNode;
   final VoidCallback onAttach;
   final void Function(ChatSendOptions options, List<int> mentionedUserIds) onSend;
-  final Future<void> Function(Uint8List bytes, int durationMs) onVoiceComplete;
+  final Future<void> Function(
+    Uint8List bytes,
+    int durationMs, {
+    String? encoderName,
+  }) onVoiceComplete;
   final bool forceSendButton;
   final void Function(bool isRecording, int durationMs)? onRecordingChanged;
   final List<ChatMentionParticipant> participants;

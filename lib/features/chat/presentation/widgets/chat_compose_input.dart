@@ -25,7 +25,11 @@ class ChatComposeInput extends StatelessWidget {
   final FocusNode focusNode;
   final VoidCallback onAttach;
   final void Function(ChatSendOptions options) onSend;
-  final Future<void> Function(Uint8List bytes, int durationMs) onVoiceComplete;
+  final Future<void> Function(
+    Uint8List bytes,
+    int durationMs, {
+    String? encoderName,
+  }) onVoiceComplete;
   final bool forceSendButton;
   final void Function(bool isRecording, int durationMs)? onRecordingChanged;
   final String hintText;

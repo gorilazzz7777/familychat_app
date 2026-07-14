@@ -25,7 +25,7 @@
     return navigator.serviceWorker.register(swUrl);
   }
 
-  function postCallToApp(data) {
+  function postToApp(data) {
     window.postMessage(
       Object.assign({ source: 'familychat-fcm' }, data),
       window.location.origin,
@@ -66,8 +66,8 @@
           data.body = payload.notification.body;
         }
       }
-      if (data.type === 'familychat_call') {
-        postCallToApp(data);
+      if (data.type === 'familychat_call' || data.type === 'familychat_chat') {
+        postToApp(data);
       }
     });
   };

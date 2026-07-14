@@ -1,5 +1,7 @@
 bool get isIosBrowser => false;
 
+bool get isSafariBrowser => false;
+
 bool get isStandalonePwa => false;
 
 bool get webNotificationsSupported => false;
