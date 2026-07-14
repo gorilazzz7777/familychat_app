@@ -44,6 +44,7 @@ dependencies:
   flutter_webrtc: ^1.5.2
   flutter_local_notifications: ^18.0.1
   flutter_ringtone_player: ^4.0.0+4
+  video_player: ^2.9.5
 
 dev_dependencies:
   flutter_test:
