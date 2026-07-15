@@ -9,8 +9,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/network/offline_ui.dart';
+import '../../../core/notifications/familychat_notifications.dart';
+import '../../../core/widgets/gallery_video_player.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
@@ -38,7 +42,7 @@ import 'widgets/chat_compose_input.dart';
 import 'widgets/chat_mention_compose_input.dart';
 import 'widgets/chat_image_viewer.dart';
 import 'widgets/chat_location_compose_sheet.dart';
-import 'widgets/chat_media_compose_sheet.dart';
+import 'widgets/chat_media_drafts_sheet.dart';
 import 'widgets/chat_message_actions_sheet.dart';
 import 'widgets/chat_message_bubble.dart';
 import 'widgets/chat_message_reactions.dart';
@@ -46,7 +50,6 @@ import 'widgets/chat_message_search_sheet.dart';
 import 'widgets/chat_network_image.dart';
 import 'widgets/chat_pending_file_chip.dart';
 import 'widgets/chat_reply_compose_bar.dart';
-import 'widgets/chat_voice_recording_banner.dart';
 import 'widgets/chat_call_history_banner.dart';
 import 'widgets/chat_birthday_welcome_banner.dart';
 import 'widgets/chat_system_message_banner.dart';
@@ -68,11 +71,15 @@ class _OutgoingAttachment {
     required this.bytes,
     required this.filename,
     this.contentType,
+    this.photoExif,
+    this.kind = 'file',
   });
 
   final Uint8List bytes;
   final String filename;
   final String? contentType;
+  final Map<String, dynamic>? photoExif;
+  final String kind;
 }
 
 String? _imageContentTypeForFilename(String filename) {
@@ -155,8 +162,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   String? _headerAvatarUrl;
   List<ChatMentionParticipant> _mentionParticipants = [];
   double _lastKeyboardInset = 0;
-  bool _voiceRecording = false;
-  int _voiceRecordingMs = 0;
   final Map<int, String> _typingNames = {};
   final Map<int, Timer> _typingExpiry = {};
   Timer? _typingEmitTimer;
@@ -203,6 +208,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     FamilyChatRealtime.instance.addListener(_onRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineSync);
     _scrollController.addListener(_onScroll);
+    unawaited(
+      FamilyChatNotifications.clearChatNotifications(threadId: widget.threadId),
+    );
     if (_hasLeft) {
       _loading = false;
     } else {
@@ -1120,6 +1128,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           bytes: att.bytes,
           filename: att.filename,
           contentType: att.contentType,
+          photoExif: att.photoExif,
         );
         final id = chatAsInt(uploaded['id']);
         if (id != null) ids.add(id);
@@ -1141,9 +1150,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       for (var i = 0; i < attachments.length; i++) {
         if (i >= ids.length) break;
         final att = attachments[i];
-        final isImage = att.contentType?.startsWith('image/') ??
-            _imageContentTypeForFilename(att.filename)?.startsWith('image/') ??
-            false;
+        final isImage = att.kind == 'image' ||
+            (att.contentType?.startsWith('image/') ??
+                _imageContentTypeForFilename(att.filename)
+                    ?.startsWith('image/') ??
+                false);
         if (isImage) {
           unawaited(_pollFaceTaggingPrompt(ids[i]));
         }
@@ -1167,24 +1178,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
-  void _onVoiceRecordingChanged(bool isRecording, int durationMs) {
-    if (!mounted) return;
-    setState(() {
-      _voiceRecording = isRecording;
-      _voiceRecordingMs = durationMs;
-    });
-  }
-
   Future<void> _sendVoiceMessage(
     Uint8List bytes,
     int durationMs, {
     String? encoderName,
   }) async {
     if (durationMs < 400) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Удерживайте кнопку чуть дольше для записи')),
-      );
       return;
     }
 
@@ -1311,36 +1310,110 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
+  Future<void> _sendMediaDrafts(
+    String caption,
+    List<MediaUploadDraft> drafts,
+  ) async {
+    final uploadable = drafts.where((d) => d.canUpload).toList();
+    if (uploadable.isEmpty) return;
+
+    final tempId = _nextTempId();
+    _addOptimisticMessage(
+      tempId,
+      body: caption,
+      attachments: [
+        for (final d in uploadable)
+          {
+            'kind': d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
+            'filename': d.filename,
+            'content_type': d.contentType,
+            if (d.thumbnailBytes != null) 'local_bytes': d.thumbnailBytes,
+            if (d.isImage) 'local_bytes': d.bytesForUpload,
+          },
+      ],
+    );
+
+    await _uploadAndSend(
+      tempId,
+      caption: caption,
+      attachments: [
+        for (final d in uploadable)
+          _OutgoingAttachment(
+            bytes: d.bytesForUpload,
+            filename: d.filename,
+            contentType: d.contentType,
+            photoExif: d.geo?.toPhotoExif(),
+            kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
+          ),
+      ],
+    );
+  }
+
+  // ignore: unused_element — kept for share/legacy callers
   Future<void> _sendImageWithCaption(
     Uint8List bytes,
     String filename,
     String caption, {
     String? contentType,
   }) async {
-    final tempId = _nextTempId();
-    _addOptimisticMessage(
-      tempId,
-      body: caption,
-      attachments: [
-        {
-          'kind': 'image',
-          'filename': filename,
-          'local_bytes': bytes,
-        },
-      ],
-    );
-    await _uploadAndSend(
-      tempId,
-      caption: caption,
-      attachments: [
-        _OutgoingAttachment(
-          bytes: bytes,
-          filename: filename,
-          contentType: contentType ??
-              _imageContentTypeForFilename(filename) ??
-              'image/jpeg',
-        ),
-      ],
+    await _sendMediaDrafts(caption, [
+      imageDraftFromBytes(
+        bytes: bytes,
+        filename: filename,
+        contentType: contentType ??
+            _imageContentTypeForFilename(filename) ??
+            'image/jpeg',
+      ),
+    ]);
+  }
+
+  Future<List<MediaUploadDraft>> _prepareDraftsFromPlatformFiles(
+    List<PlatformFile> files, {
+    required void Function(double p, String label) onProgress,
+  }) async {
+    final drafts = <MediaUploadDraft>[];
+    for (var i = 0; i < files.length; i++) {
+      final f = files[i];
+      final base = (i + 0.05) / files.length;
+      onProgress(base, 'Файл ${i + 1}/${files.length}…');
+      final bytes = await readAlbumUploadFileBytes(f);
+      if (bytes == null || bytes.isEmpty) continue;
+      final kind = mediaDraftKindFor(
+        filename: f.name,
+        contentType: f.extension != null ? null : null,
+        bytes: bytes,
+      );
+      if (kind == MediaDraftKind.video) {
+        final draft = await prepareVideoUploadDraft(
+          originalBytes: bytes,
+          filename: f.name,
+          contentType: contentTypeForFilename(f.name),
+          localPath: f.path,
+          onProgress: (p, label) {
+            onProgress(base + p * (1 / files.length), label);
+          },
+        );
+        drafts.add(draft);
+      } else if (kind == MediaDraftKind.image) {
+        drafts.add(
+          imageDraftFromBytes(
+            bytes: bytes,
+            filename: f.name,
+            contentType:
+                _imageContentTypeForFilename(f.name) ?? 'image/jpeg',
+          ),
+        );
+      }
+    }
+    return drafts;
+  }
+
+  Future<void> _openMediaDraftsFlow(List<MediaUploadDraft> drafts) async {
+    if (drafts.isEmpty || !mounted) return;
+    await ChatMediaDraftsSheet.show(
+      context,
+      drafts: drafts,
+      onSend: _sendMediaDrafts,
     );
   }
 
@@ -1411,71 +1484,95 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         if (atts.isEmpty) return;
         await _uploadAndSend(_nextTempId(), caption: '', attachments: atts);
       } else if (action == 'gallery') {
-        // image_picker на Android копирует в cache и обнуляет GPS в EXIF.
+        // file_picker: фото+видео; image_picker на Android может обнулить GPS у фото.
         final picked = await FilePicker.platform.pickFiles(
           allowMultiple: true,
           withData: kIsWeb,
-          type: FileType.image,
+          type: FileType.media,
         );
         if (picked == null || picked.files.isEmpty) return;
-        if (picked.files.length == 1) {
-          final f = picked.files.first;
-          final bytes = await readAlbumUploadFileBytes(f);
-          if (bytes == null || bytes.isEmpty) return;
-          final contentType =
-              _imageContentTypeForFilename(f.name) ?? 'image/jpeg';
-          if (!mounted) return;
-          await ChatMediaComposeSheet.show(
-            context,
-            imageBytes: bytes,
-            filename: f.name,
-            onSend: (caption) => _sendImageWithCaption(
-              bytes,
-              f.name,
-              caption,
-              contentType: contentType,
-            ),
-          );
-          return;
-        }
-        final atts = <_OutgoingAttachment>[];
-        for (final f in picked.files) {
-          final bytes = await readAlbumUploadFileBytes(f);
-          if (bytes == null || bytes.isEmpty) continue;
-          atts.add(
-            _OutgoingAttachment(
-              bytes: bytes,
-              filename: f.name,
-              contentType: _imageContentTypeForFilename(f.name) ?? 'image/jpeg',
-            ),
-          );
-        }
-        if (atts.isEmpty) return;
-        await _uploadAndSend(_nextTempId(), caption: '', attachments: atts);
-      } else {
-        final picker = ImagePicker();
-        // Без imageQuality: иначе image_picker перекодирует JPEG и удаляет EXIF (GPS, дата).
-        final picked = await picker.pickImage(
-          source: ImageSource.camera,
-          requestFullMetadata: true,
-        );
-        if (picked == null) return;
-        final bytes = await readPickedImageBytes(picked);
-        final contentType = picked.mimeType ??
-            _imageContentTypeForFilename(picked.name) ??
-            'image/jpeg';
-        if (!mounted) return;
-        await ChatMediaComposeSheet.show(
-          context,
-          imageBytes: bytes,
-          filename: picked.name,
-          onSend: (caption) => _sendImageWithCaption(
-            bytes,
-            picked.name,
-            caption,
-            contentType: contentType,
+        final drafts = await showMediaProgressDialog<List<MediaUploadDraft>>(
+          context: context,
+          title: 'Подготовка медиа',
+          work: (report) => _prepareDraftsFromPlatformFiles(
+            picked.files,
+            onProgress: report,
           ),
         );
+        if (drafts == null || drafts.isEmpty || !mounted) return;
+        await _openMediaDraftsFlow(drafts);
+      } else {
+        // Камера: фото или видео (системная камера в выбранном режиме).
+        if (!mounted) return;
+        final cameraMode = await showModalBottomSheet<String>(
+          context: context,
+          builder: (ctx) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.photo_camera_outlined),
+                  title: const Text('Фото'),
+                  onTap: () => Navigator.pop(ctx, 'photo'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.videocam_outlined),
+                  title: const Text('Видео'),
+                  onTap: () => Navigator.pop(ctx, 'video'),
+                ),
+              ],
+            ),
+          ),
+        );
+        if (cameraMode == null || !mounted) return;
+
+        final picker = ImagePicker();
+        if (cameraMode == 'video') {
+          final picked = await picker.pickVideo(
+            source: ImageSource.camera,
+            maxDuration: const Duration(minutes: 30),
+          );
+          if (picked == null) return;
+          final bytes = await readPickedImageBytes(picked);
+          if (bytes.isEmpty) return;
+          if (!mounted) return;
+          final draft = await showMediaProgressDialog<MediaUploadDraft>(
+            context: context,
+            title: 'Подготовка видео',
+            work: (report) async {
+              final geo = await captureDeviceGeoIfPossible();
+              return prepareVideoUploadDraft(
+                originalBytes: bytes,
+                filename: picked.name,
+                contentType:
+                    picked.mimeType ?? contentTypeForFilename(picked.name),
+                localPath: picked.path,
+                geoHint: geo,
+                onProgress: report,
+              );
+            },
+          );
+          if (draft == null || !mounted) return;
+          await _openMediaDraftsFlow([draft]);
+        } else {
+          final picked = await picker.pickImage(
+            source: ImageSource.camera,
+            requestFullMetadata: true,
+          );
+          if (picked == null) return;
+          final bytes = await readPickedImageBytes(picked);
+          final contentType = picked.mimeType ??
+              _imageContentTypeForFilename(picked.name) ??
+              'image/jpeg';
+          if (!mounted) return;
+          await _openMediaDraftsFlow([
+            imageDraftFromBytes(
+              bytes: bytes,
+              filename: picked.name,
+              contentType: contentType,
+            ),
+          ]);
+        }
       }
     } catch (e) {
       if (!mounted) return;
@@ -2071,6 +2168,38 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   void _openImageFromAttachment(Map<String, dynamic> attachment,
       {int? messageId}) {
+    if (isVideoAttachment(attachment)) {
+      final repo = ref.read(familychatRepositoryProvider);
+      final url = chatAttachmentImageUrl(
+        repo: repo,
+        threadId: widget.threadId,
+        attachment: attachment,
+      );
+      if (url.isEmpty) return;
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => Dialog(
+          backgroundColor: Colors.black,
+          insetPadding: const EdgeInsets.all(12),
+          child: AspectRatio(
+            aspectRatio: 9 / 16,
+            child: Stack(
+              children: [
+                GalleryVideoPlayer(url: url, autoplay: true),
+                Align(
+                  alignment: Alignment.topRight,
+                  child: IconButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      return;
+    }
     final repo = ref.read(familychatRepositoryProvider);
     _openImage(
       imageUrl: chatAttachmentImageUrl(
@@ -2451,6 +2580,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     onReplyTap: replyMessageId != null
                                         ? () => _scrollToMessage(replyMessageId)
                                         : null,
+                                    onSwipeReply: _selectionMode ||
+                                            m['_pending'] == true ||
+                                            m['_scheduled'] == true
+                                        ? null
+                                        : () => _startReply(m),
                                     onReactionTap: m['_pending'] == true
                                         ? null
                                         : (emoji) =>
@@ -2545,16 +2679,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 setState(() => _pendingFileDraft = null),
                           ),
                         ),
-                      if (_voiceRecording)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-                          child: Align(
-                            alignment: Alignment.center,
-                            child: ChatVoiceRecordingBanner(
-                              durationMs: _voiceRecordingMs,
-                            ),
-                          ),
-                        ),
                       Padding(
                         padding: const EdgeInsets.all(8),
                         child: _isGroupLike
@@ -2571,7 +2695,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 onVoiceComplete: _sendVoiceMessage,
                                 forceSendButton: _pendingFileDraft != null ||
                                     _editingMessageId != null,
-                                onRecordingChanged: _onVoiceRecordingChanged,
                                 participants: _mentionParticipants,
                                 currentUserId: _currentUserId,
                               )
@@ -2584,7 +2707,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 onVoiceComplete: _sendVoiceMessage,
                                 forceSendButton: _pendingFileDraft != null ||
                                     _editingMessageId != null,
-                                onRecordingChanged: _onVoiceRecordingChanged,
                               ),
                       ),
                     ],

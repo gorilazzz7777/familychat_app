@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/widgets/family_input_styles.dart';
 import 'chat_compose_action_button.dart';
 import 'chat_compose_circle_button.dart';
+import 'chat_voice_recording_compose_slot.dart';
 import '../../data/chat_send_options.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 
@@ -31,7 +32,6 @@ class ChatMentionComposeInput extends StatefulWidget {
     required this.onSend,
     required this.onVoiceComplete,
     this.forceSendButton = false,
-    this.onRecordingChanged,
     required this.participants,
     this.currentUserId,
     this.hintText = 'Сообщение...',
@@ -47,7 +47,6 @@ class ChatMentionComposeInput extends StatefulWidget {
     String? encoderName,
   }) onVoiceComplete;
   final bool forceSendButton;
-  final void Function(bool isRecording, int durationMs)? onRecordingChanged;
   final List<ChatMentionParticipant> participants;
   final int? currentUserId;
   final String hintText;
@@ -60,6 +59,10 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
   final Set<int> _mentionedUserIds = {};
   int? _mentionAtIndex;
   String _mentionQuery = '';
+  ChatVoiceRecordingChange _recording = const ChatVoiceRecordingChange(
+    isRecording: false,
+    durationMs: 0,
+  );
 
   @override
   void initState() {
@@ -71,6 +74,11 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
   void dispose() {
     widget.controller.removeListener(_onTextChanged);
     super.dispose();
+  }
+
+  void _onRecordingChanged(ChatVoiceRecordingChange change) {
+    if (!mounted) return;
+    setState(() => _recording = change);
   }
 
   List<ChatMentionParticipant> get _suggestions {
@@ -165,7 +173,8 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final suggestions = _suggestions;
+    final suggestions =
+        _recording.isRecording ? const <ChatMentionParticipant>[] : _suggestions;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -212,36 +221,43 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              ChatComposeCircleButton(
-                tooltip: 'Вложение',
-                icon: Icons.attach_file,
-                iconColor: theme.colorScheme.onSurface,
-                onTap: widget.onAttach,
-              ),
-              Expanded(
-                child: TextField(
-                  controller: widget.controller,
-                  focusNode: widget.focusNode,
-                  keyboardType: TextInputType.multiline,
-                  minLines: 1,
-                  maxLines: 5,
-                  textInputAction: TextInputAction.newline,
-                  decoration: InputDecoration(
-                    hintText: widget.hintText,
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    contentPadding: const EdgeInsets.fromLTRB(0, 10, 0, 10),
-                    isDense: true,
-                  ),
+              if (!_recording.isRecording)
+                ChatComposeCircleButton(
+                  tooltip: 'Вложение',
+                  icon: Icons.attach_file,
+                  iconColor: theme.colorScheme.onSurface,
+                  onTap: widget.onAttach,
                 ),
+              Expanded(
+                child: _recording.isRecording
+                    ? ChatVoiceRecordingComposeSlot(
+                        durationMs: _recording.durationMs,
+                        willCancel: _recording.willCancel,
+                      )
+                    : TextField(
+                        controller: widget.controller,
+                        focusNode: widget.focusNode,
+                        keyboardType: TextInputType.multiline,
+                        minLines: 1,
+                        maxLines: 5,
+                        textInputAction: TextInputAction.newline,
+                        decoration: InputDecoration(
+                          hintText: widget.hintText,
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          contentPadding:
+                              const EdgeInsets.fromLTRB(0, 10, 0, 10),
+                          isDense: true,
+                        ),
+                      ),
               ),
               ChatComposeActionButton(
                 controller: widget.controller,
                 onSend: (options) => _handleSend(options),
                 onVoiceComplete: widget.onVoiceComplete,
                 forceSendButton: widget.forceSendButton,
-                onRecordingChanged: widget.onRecordingChanged,
+                onRecordingChanged: _onRecordingChanged,
               ),
             ],
           ),

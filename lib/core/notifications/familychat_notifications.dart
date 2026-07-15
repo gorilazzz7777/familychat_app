@@ -20,6 +20,10 @@ class FamilyChatNotifications {
   static const messagesChannelId = 'familychat_messages';
   static const callsChannelId = 'familychat_calls';
 
+  static String chatNotificationTag(int threadId) => 'familychat_chat_$threadId';
+
+  static int chatNotificationId(int threadId) => 100000 + threadId;
+
   @pragma('vm:entry-point')
   static void _onBackgroundNotificationTap(NotificationResponse response) {
     _handleNotificationPayload(response.payload);
@@ -120,7 +124,7 @@ class FamilyChatNotifications {
     final type = data['type']?.toString() ?? '';
     if (type == 'familychat_chat') {
       final threadId = int.tryParse(data['thread_id']?.toString() ?? '') ?? 0;
-      return 100000 + threadId;
+      return chatNotificationId(threadId);
     }
     if (type == 'familychat_calendar_reminder') {
       final eventId = int.tryParse(data['event_id']?.toString() ?? '') ?? 0;
@@ -131,6 +135,16 @@ class FamilyChatNotifications {
       return 300000 + callId;
     }
     return DateTime.now().millisecondsSinceEpoch.remainder(1000000);
+  }
+
+  static String? _androidTag(Map<String, dynamic> data) {
+    final type = data['type']?.toString() ?? '';
+    if (type == 'familychat_chat') {
+      final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+      if (threadId == null) return 'familychat_chat';
+      return chatNotificationTag(threadId);
+    }
+    return null;
   }
 
   static Future<void> showIncomingCallWakeUp({
@@ -183,6 +197,7 @@ class FamilyChatNotifications {
       return;
     }
 
+    final tag = _androidTag(data);
     final androidDetails = AndroidNotificationDetails(
       messagesChannelId,
       'Сообщения',
@@ -190,11 +205,17 @@ class FamilyChatNotifications {
       priority: Priority.defaultPriority,
       playSound: true,
       enableVibration: true,
+      tag: tag,
+      // Один баннер на чат: повторный show с тем же id/tag заменяет старый.
+      onlyAlertOnce: false,
     );
-    const iosDetails = DarwinNotificationDetails(
+    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+    final iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
+      threadIdentifier: tag ??
+          (threadId != null ? chatNotificationTag(threadId) : null),
     );
 
     await _plugin.show(
@@ -209,5 +230,43 @@ class FamilyChatNotifications {
   static Future<void> cancelCallNotification(int callId) async {
     if (kIsWeb || !_initialized) return;
     await _plugin.cancel(300000 + callId);
+  }
+
+  /// Снять пуши сообщений из шторки (весь чат или все сообщения).
+  static Future<void> clearChatNotifications({int? threadId}) async {
+    if (kIsWeb || !_initialized) return;
+
+    if (threadId != null) {
+      final tag = chatNotificationTag(threadId);
+      final id = chatNotificationId(threadId);
+      // FCM с tag часто публикует с id=0; локальные — с нашим id.
+      await _plugin.cancel(0, tag: tag);
+      await _plugin.cancel(id, tag: tag);
+      await _plugin.cancel(id);
+      return;
+    }
+
+    try {
+      final active = await _plugin.getActiveNotifications();
+      for (final n in active) {
+        final tag = n.tag;
+        final id = n.id;
+        final isChatTag = tag != null && tag.startsWith('familychat_chat_');
+        final isChatId = id != null && id >= 100000 && id < 200000;
+        if (!isChatTag && !isChatId) continue;
+        if (id != null) {
+          await _plugin.cancel(id, tag: tag);
+        } else if (tag != null) {
+          await _plugin.cancel(0, tag: tag);
+        }
+      }
+    } catch (e) {
+      debugPrint('clearChatNotifications active scan failed: $e');
+    }
+  }
+
+  /// При открытии приложения — убрать пуши сообщений из шторки.
+  static Future<void> clearMessageNotificationsOnAppOpen() async {
+    await clearChatNotifications();
   }
 }

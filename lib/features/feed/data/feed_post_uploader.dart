@@ -9,11 +9,13 @@ class FeedPostPhoto {
     required this.bytes,
     required this.filename,
     this.contentType,
+    this.photoExif,
   });
 
   final Uint8List bytes;
   final String filename;
   final String? contentType;
+  final Map<String, dynamic>? photoExif;
 }
 
 abstract final class FeedPostUploader {
@@ -24,6 +26,7 @@ abstract final class FeedPostUploader {
     required FamilyChatRepository repo,
     required List<FeedPostPhoto> photos,
     String caption = '',
+    void Function(int index, int total, int sent, int totalBytes)? onUploadProgress,
   }) async {
     if (photos.isEmpty) return;
 
@@ -33,13 +36,18 @@ abstract final class FeedPostUploader {
     }
 
     final batchId = createFeedPhotoBatchId();
-    for (final photo in photos) {
+    for (var i = 0; i < photos.length; i++) {
+      final photo = photos[i];
       await repo.familyGalleryUpload(
         bytes: photo.bytes,
         filename: photo.filename,
         contentType: photo.contentType,
         destination: 'family_feed',
         batchId: batchId,
+        photoExif: photo.photoExif,
+        onSendProgress: onUploadProgress == null
+            ? null
+            : (sent, total) => onUploadProgress(i, photos.length, sent, total),
       );
     }
     await repo.completeFeedPhotoBatch(

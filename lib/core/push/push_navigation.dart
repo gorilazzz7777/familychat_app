@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../notifications/familychat_notifications.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../../features/calendar/presentation/calendar_screen.dart';
 import '../../features/chat/presentation/chat_conversation_screen.dart';
@@ -34,6 +37,10 @@ void openChatFromPushData(Map<String, dynamic> data) {
 
   final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
   if (threadId == null) return;
+
+  unawaited(
+    FamilyChatNotifications.clearChatNotifications(threadId: threadId),
+  );
 
   final nav = familyChatNavigatorKey.currentState;
   if (nav == null) {

@@ -8,6 +8,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
@@ -617,19 +619,31 @@ class _ProfileGalleryAlbumScreenState
       for (final file in items) {
         final bytes = await readAlbumUploadFileBytes(file);
         if (bytes == null || bytes.isEmpty) continue;
-        final ext = (file.extension ?? '').toLowerCase();
-        final inferredContentType = switch (ext) {
-          'png' => 'image/png',
-          'webp' => 'image/webp',
-          'heic' || 'heif' => 'image/heic',
-          'gif' => 'image/gif',
-          _ => 'image/jpeg',
-        };
+        final kind = mediaDraftKindFor(filename: file.name, bytes: bytes);
+        if (kind == MediaDraftKind.video) {
+          final draft = await prepareVideoUploadDraft(
+            originalBytes: bytes,
+            filename: file.name,
+            contentType: contentTypeForFilename(file.name),
+            localPath: file.path,
+          );
+          if (!draft.canUpload) continue;
+          photos.add(
+            AlbumUploadPhoto(
+              bytes: draft.bytesForUpload,
+              filename: draft.filename,
+              contentType: draft.contentType,
+              photoExif: draft.geo?.toPhotoExif(),
+            ),
+          );
+          continue;
+        }
+        if (kind != MediaDraftKind.image) continue;
         photos.add(
           AlbumUploadPhoto(
             bytes: bytes,
             filename: file.name,
-            contentType: inferredContentType,
+            contentType: _imageContentTypeForFilename(file.name),
           ),
         );
       }
@@ -1130,7 +1144,7 @@ class _ProfileGalleryAlbumScreenState
       final picked = await FilePicker.platform.pickFiles(
         allowMultiple: true,
         withData: kIsWeb,
-        type: FileType.image,
+        type: FileType.media,
       );
       if (!mounted) return;
       if (picked == null || picked.files.isEmpty) return;

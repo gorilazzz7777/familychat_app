@@ -5,8 +5,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../chat/presentation/widgets/chat_media_drafts_sheet.dart';
 import '../../profile/presentation/album_upload_file_bytes.dart';
 import '../data/feed_post_uploader.dart';
 
@@ -33,7 +36,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
     final picked = await FilePicker.platform.pickFiles(
       allowMultiple: true,
       withData: kIsWeb,
-      type: FileType.image,
+      type: FileType.media,
     );
     if (!mounted || picked == null || picked.files.isEmpty) return;
 
@@ -41,13 +44,41 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
     for (final file in picked.files) {
       final bytes = await readAlbumUploadFileBytes(file);
       if (bytes == null || bytes.isEmpty) continue;
-      photos.add(
-        FeedPostPhoto(
-          bytes: bytes,
-          filename: file.name,
-          contentType: _contentTypeForFilename(file.name),
-        ),
+      final kind = mediaDraftKindFor(
+        filename: file.name,
+        bytes: bytes,
       );
+      if (kind == MediaDraftKind.video) {
+        if (!mounted) return;
+        final draft = await showMediaProgressDialog<MediaUploadDraft>(
+          context: context,
+          title: 'Подготовка видео',
+          work: (report) => prepareVideoUploadDraft(
+            originalBytes: bytes,
+            filename: file.name,
+            contentType: contentTypeForFilename(file.name),
+            localPath: file.path,
+            onProgress: report,
+          ),
+        );
+        if (draft == null || !draft.canUpload) continue;
+        photos.add(
+          FeedPostPhoto(
+            bytes: draft.bytesForUpload,
+            filename: draft.filename,
+            contentType: draft.contentType,
+            photoExif: draft.geo?.toPhotoExif(),
+          ),
+        );
+      } else if (kind == MediaDraftKind.image) {
+        photos.add(
+          FeedPostPhoto(
+            bytes: bytes,
+            filename: file.name,
+            contentType: _contentTypeForFilename(file.name),
+          ),
+        );
+      }
     }
     if (!mounted || photos.isEmpty) return;
     _appendPhotos(photos);

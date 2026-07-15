@@ -12,11 +12,13 @@ class AlbumUploadPhoto {
     required this.bytes,
     required this.filename,
     this.contentType,
+    this.photoExif,
   });
 
   final Uint8List bytes;
   final String filename;
   final String? contentType;
+  final Map<String, dynamic>? photoExif;
 }
 
 class AlbumUploadSession {
@@ -140,6 +142,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
             filename: photo.filename,
             contentType: photo.contentType ?? 'image/jpeg',
             batchId: session.batchSession.batchId,
+            photoExif: photo.photoExif,
           );
           session.pendingPhotos.add(uploaded);
           session.done++;

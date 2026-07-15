@@ -74,6 +74,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       flushPendingChatPush();
       IncomingCallCoordinator.instance.flushPendingIfAny();
       unawaited(FamilyChatNotifications.consumeLaunchNotification());
+      unawaited(FamilyChatNotifications.clearMessageNotificationsOnAppOpen());
       _openPendingShareIfAny();
       final userId = _currentUserId;
       if (userId != null) {
@@ -196,6 +197,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     if (state == AppLifecycleState.resumed) {
       IncomingCallCoordinator.instance.flushPendingIfAny();
       unawaited(FamilyChatNotifications.consumeLaunchNotification());
+      unawaited(FamilyChatNotifications.clearMessageNotificationsOnAppOpen());
       unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
       unawaited(_refreshTab(_index, silent: true));
       unawaited(_touchPresence());

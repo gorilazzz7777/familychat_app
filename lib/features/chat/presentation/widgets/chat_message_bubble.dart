@@ -4,15 +4,19 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import '../../data/chat_location_utils.dart';
 import '../../data/chat_voice_utils.dart';
 import 'chat_location_preview.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
+import 'chat_message_read_status_icon.dart';
 import 'chat_message_tap_target.dart';
 import 'chat_mention_text.dart';
 import 'chat_network_image.dart';
+import 'chat_swipe_to_reply.dart';
 import 'chat_voice_message_player.dart';
 
 class ChatMessageBubble extends StatelessWidget {
@@ -40,6 +44,7 @@ class ChatMessageBubble extends StatelessWidget {
     this.onLongPress,
     this.onImageTap,
     this.onReplyTap,
+    this.onSwipeReply,
     this.onReactionTap,
     this.isGroupLike = false,
     this.mentions = const [],
@@ -70,6 +75,8 @@ class ChatMessageBubble extends StatelessWidget {
   final VoidCallback? onLongPress;
   final void Function(Map<String, dynamic> attachment)? onImageTap;
   final VoidCallback? onReplyTap;
+  /// Свайп влево — то же, что «Ответить» в меню.
+  final VoidCallback? onSwipeReply;
   final void Function(String emoji)? onReactionTap;
   final bool isGroupLike;
   final List<Map<String, dynamic>> mentions;
@@ -185,7 +192,10 @@ class ChatMessageBubble extends StatelessWidget {
                             metaColor: metaColor,
                           ),
                         )
-                      else if (a['kind'] == 'image')
+                      else if (a['kind'] == 'image' ||
+                          (a['local_bytes'] is Uint8List &&
+                              a['kind'] != 'video' &&
+                              a['kind'] != 'file'))
                         GestureDetector(
                           onTap: onImageTap != null && a['local_bytes'] == null
                               ? () => onImageTap!(a)
@@ -195,6 +205,15 @@ class ChatMessageBubble extends StatelessWidget {
                             borderRadius: BorderRadius.circular(8),
                             child: _attachmentImage(a, maxBubbleWidth - 24),
                           ),
+                        )
+                      else if (a['kind'] == 'video' || isVideoAttachment(a))
+                        _ChatVideoAttachmentPreview(
+                          threadId: threadId,
+                          attachment: a,
+                          maxWidth: maxBubbleWidth - 24,
+                          onOpen: onImageTap != null
+                              ? () => onImageTap!(a)
+                              : null,
                         )
                       else
                         InkWell(
@@ -238,8 +257,10 @@ class ChatMessageBubble extends StatelessWidget {
                           ),
                         if (isMine && readStatus != null) ...[
                           const SizedBox(width: 4),
-                          _ReadStatusIcon(
-                              status: readStatus!, color: metaColor),
+                          ChatMessageReadStatusIcon(
+                            status: readStatus!,
+                            color: metaColor,
+                          ),
                         ],
                       ],
                     ),
@@ -252,76 +273,83 @@ class ChatMessageBubble extends StatelessWidget {
       ),
     );
 
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 8,
-        right: 8,
-        bottom: reactions.isNotEmpty
-            ? (compactWithNext ? 14 : 18)
-            : (compactWithNext ? 1 : 6),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        mainAxisAlignment: isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
-        children: [
-          if (selectionMode)
-            Padding(
-              padding: EdgeInsets.only(right: isMine ? 6 : 6),
-              child: Icon(
-                selected ? Icons.check_circle : Icons.circle_outlined,
-                color: selected ? theme.colorScheme.primary : theme.colorScheme.outline,
+    return ChatSwipeToReply(
+      onReply: selectionMode ? null : onSwipeReply,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 8,
+          right: 8,
+          bottom: reactions.isNotEmpty
+              ? (compactWithNext ? 14 : 18)
+              : (compactWithNext ? 1 : 6),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisAlignment:
+              isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
+          children: [
+            if (selectionMode)
+              Padding(
+                padding: EdgeInsets.only(right: isMine ? 6 : 6),
+                child: Icon(
+                  selected ? Icons.check_circle : Icons.circle_outlined,
+                  color: selected
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.outline,
+                ),
               ),
-            ),
-          if (showGroupAvatarColumn) ...[
-            SizedBox(
-              width: _avatarSize,
-              height: _avatarSize,
-              child: showSenderAvatar
-                  ? GestureDetector(
-                      onTap: onSenderAvatarTap,
-                      child: ChatAvatar(
-                        name: senderName ?? '',
-                        avatarUrl: senderAvatarUrl,
-                        radius: _avatarSize / 2,
-                      ),
-                    )
-                  : null,
-            ),
-            const SizedBox(width: 6),
-          ],
-          Flexible(
-            child: Align(
-              alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: maxBubbleWidth),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    bubble,
-                    if (reactions.isNotEmpty)
-                      Positioned(
-                        left: isMine ? 20 : 6,
-                        right: isMine ? 6 : 20,
-                        // Наезжает на нижний край пузыря ~на половину чипа.
-                        bottom: -11,
-                        child: Align(
-                          alignment: isMine
-                              ? Alignment.centerRight
-                              : Alignment.centerLeft,
-                          child: ChatMessageReactionsRow(
-                            reactions: reactions,
-                            alignEnd: isMine,
-                            onReactionTap: onReactionTap,
-                            overlapStyle: true,
+            if (showGroupAvatarColumn) ...[
+              SizedBox(
+                width: _avatarSize,
+                height: _avatarSize,
+                child: showSenderAvatar
+                    ? GestureDetector(
+                        onTap: onSenderAvatarTap,
+                        child: ChatAvatar(
+                          name: senderName ?? '',
+                          avatarUrl: senderAvatarUrl,
+                          radius: _avatarSize / 2,
+                        ),
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 6),
+            ],
+            Flexible(
+              child: Align(
+                alignment:
+                    isMine ? Alignment.centerRight : Alignment.centerLeft,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      bubble,
+                      if (reactions.isNotEmpty)
+                        Positioned(
+                          left: isMine ? 20 : 6,
+                          right: isMine ? 6 : 20,
+                          // Наезжает на нижний край пузыря ~на половину чипа.
+                          bottom: -11,
+                          child: Align(
+                            alignment: isMine
+                                ? Alignment.centerRight
+                                : Alignment.centerLeft,
+                            child: ChatMessageReactionsRow(
+                              reactions: reactions,
+                              alignEnd: isMine,
+                              onReactionTap: onReactionTap,
+                              overlapStyle: true,
+                            ),
                           ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -398,61 +426,58 @@ class ChatMessageBubble extends StatelessWidget {
   }
 }
 
-class _ReadStatusIcon extends StatelessWidget {
-  const _ReadStatusIcon({required this.status, required this.color});
+class _ChatVideoAttachmentPreview extends StatelessWidget {
+  const _ChatVideoAttachmentPreview({
+    required this.threadId,
+    required this.attachment,
+    required this.maxWidth,
+    this.onOpen,
+  });
 
-  final String status;
-  final Color color;
+  final int threadId;
+  final Map<String, dynamic> attachment;
+  final double maxWidth;
+  final VoidCallback? onOpen;
 
   @override
   Widget build(BuildContext context) {
-    if (status == 'sending') {
-      return Semantics(
-        label: 'Отправляется',
-        child: Tooltip(
-          message: 'Отправляется',
-          child: SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.8,
-              color: color,
-            ),
+    final local = attachment['local_bytes'];
+    final url = galleryAttachmentUrl(attachment);
+
+    return GestureDetector(
+      onTap: onOpen,
+      behavior: HitTestBehavior.opaque,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          width: maxWidth,
+          height: 180,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (local is Uint8List)
+                Image.memory(local, fit: BoxFit.cover)
+              else if (url.isNotEmpty)
+                GalleryVideoPlayer(
+                  url: url,
+                  autoplay: false,
+                  showControls: false,
+                )
+              else
+                const ColoredBox(
+                  color: Colors.black26,
+                  child: Icon(Icons.videocam_outlined, color: Colors.white54),
+                ),
+              const Align(
+                alignment: Alignment.center,
+                child: Icon(
+                  Icons.play_circle_fill,
+                  color: Colors.white70,
+                  size: 48,
+                ),
+              ),
+            ],
           ),
-        ),
-      );
-    }
-
-    if (status == 'scheduled') {
-      return Semantics(
-        label: 'Отложенная отправка',
-        child: Tooltip(
-          message: 'Отложенная отправка',
-          child: Icon(Icons.schedule_send, size: 16, color: color),
-        ),
-      );
-    }
-
-    if (status == 'failed') {
-      return Semantics(
-        label: 'Не отправлено',
-        child: Tooltip(
-          message: 'Не отправлено',
-          child: Icon(Icons.error_outline, size: 16, color: color.withValues(alpha: 0.95)),
-        ),
-      );
-    }
-
-    final isRead = status == 'read';
-    final label = isRead ? 'Прочитано' : 'Отправлено';
-    return Semantics(
-      label: label,
-      child: Tooltip(
-        message: label,
-        child: Icon(
-          isRead ? Icons.done_all : Icons.done,
-          size: 16,
-          color: isRead ? const Color(0xFF8FD3FF) : color,
         ),
       ),
     );

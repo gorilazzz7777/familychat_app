@@ -14,6 +14,7 @@ import '../data/familychat_realtime.dart';
 import 'chat_conversation_screen.dart';
 import 'chat_thread_avatars.dart';
 import 'create_group_screen.dart';
+import 'widgets/chat_message_read_status_icon.dart';
 
 enum _ChatFilter { all, family, dm, group }
 
@@ -225,6 +226,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     return 'Сообщение';
   }
 
+  /// Статус только для своих последних сообщений (сервер кладёт read_status).
+  String? _lastMessageReadStatus(Map<String, dynamic>? last) {
+    if (last == null || last['is_system'] == true) return null;
+    final status = last['read_status']?.toString().trim();
+    if (status == null || status.isEmpty) return null;
+    return status;
+  }
+
   List<int> _participantIdsOf(Map<String, dynamic> thread) {
     return (thread['participant_user_ids'] as List?)
             ?.map((e) => e is int ? e : int.tryParse('$e'))
@@ -303,6 +312,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 final title = t['title']?.toString() ?? 'Чат';
                 final unread = t['unread_count'] as int? ?? 0;
                 final last = t['last_message'] as Map<String, dynamic>?;
+                final lastStatus = _lastMessageReadStatus(last);
                 final created = last != null
                     ? DateTime.tryParse(last['created_at']?.toString() ?? '')
                     : null;
@@ -328,28 +338,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                     assetPath: avatarAsset,
                     radius: 24,
                   ),
-                  title: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight:
-                                unread > 0 ? FontWeight.w600 : FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                      if (isBirthday) ...[
-                        const SizedBox(width: 4),
-                        Icon(
-                          Icons.cake_outlined,
-                          size: 16,
-                          color: scheme.primary,
-                        ),
-                      ],
-                    ],
+                  title: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight:
+                          unread > 0 ? FontWeight.w600 : FontWeight.w500,
+                    ),
                   ),
                   subtitle: Padding(
                     padding: const EdgeInsets.only(top: 2),
@@ -357,11 +353,25 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Expanded(
-                          child: Text(
-                            _preview(t),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: previewStyle,
+                          child: Row(
+                            children: [
+                              if (lastStatus != null) ...[
+                                ChatMessageReadStatusIcon(
+                                  status: lastStatus,
+                                  color: scheme.onSurfaceVariant,
+                                  size: 15,
+                                ),
+                                const SizedBox(width: 4),
+                              ],
+                              Expanded(
+                                child: Text(
+                                  _preview(t),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: previewStyle,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                         if (created != null) ...[

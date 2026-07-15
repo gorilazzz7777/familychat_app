@@ -1,13 +1,26 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../data/chat_send_options.dart';
 import '../../data/chat_voice_recorder.dart';
 import 'chat_compose_circle_button.dart';
 import 'chat_send_options_sheet.dart';
+
+class ChatVoiceRecordingChange {
+  const ChatVoiceRecordingChange({
+    required this.isRecording,
+    required this.durationMs,
+    this.willCancel = false,
+  });
+
+  final bool isRecording;
+  final int durationMs;
+  final bool willCancel;
+}
 
 /// Кнопка ввода: пустое поле — удержание для голосового, иначе отправка текста.
 class ChatComposeActionButton extends StatefulWidget {
@@ -28,17 +41,24 @@ class ChatComposeActionButton extends StatefulWidget {
     String? encoderName,
   }) onVoiceComplete;
   final bool forceSendButton;
-  final void Function(bool isRecording, int durationMs)? onRecordingChanged;
+  final void Function(ChatVoiceRecordingChange change)? onRecordingChanged;
 
   @override
-  State<ChatComposeActionButton> createState() => _ChatComposeActionButtonState();
+  State<ChatComposeActionButton> createState() =>
+      _ChatComposeActionButtonState();
 }
 
 class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
+  static const double _cancelPx = 64;
+  static const int _minSendMs = 400;
+
   final _recorder = ChatVoiceRecorder();
   bool _hasText = false;
   bool _holdActive = false;
+  bool _willCancel = false;
   int? _activePointer;
+  Offset? _downGlobal;
+  double _slideDx = 0;
   Timer? _recordingTimer;
   DateTime? _holdStartedAt;
   Future<void>? _startFuture;
@@ -58,6 +78,7 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
 
   @override
   void dispose() {
+    _detachPointerRoute();
     widget.controller.removeListener(_onTextChanged);
     _recordingTimer?.cancel();
     unawaited(_recorder.dispose());
@@ -72,8 +93,18 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
 
   bool get _showSend => widget.forceSendButton || _hasText;
 
-  void _notifyRecording(bool recording, int durationMs) {
-    widget.onRecordingChanged?.call(recording, durationMs);
+  void _notifyRecording({
+    required bool isRecording,
+    required int durationMs,
+    bool willCancel = false,
+  }) {
+    widget.onRecordingChanged?.call(
+      ChatVoiceRecordingChange(
+        isRecording: isRecording,
+        durationMs: durationMs,
+        willCancel: willCancel,
+      ),
+    );
   }
 
   void _startHoldTimer() {
@@ -82,7 +113,11 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     _recordingTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
       final startedAt = _holdStartedAt;
       if (startedAt == null || !mounted) return;
-      _notifyRecording(true, DateTime.now().difference(startedAt).inMilliseconds);
+      _notifyRecording(
+        isRecording: true,
+        durationMs: DateTime.now().difference(startedAt).inMilliseconds,
+        willCancel: _willCancel,
+      );
     });
   }
 
@@ -91,9 +126,9 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     _recordingTimer = null;
   }
 
-  int? _holdDurationMs() {
+  int _holdDurationMs() {
     final startedAt = _holdStartedAt;
-    if (startedAt == null) return null;
+    if (startedAt == null) return 0;
     return DateTime.now().difference(startedAt).inMilliseconds;
   }
 
@@ -108,16 +143,61 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
   void _onPointerDown(PointerDownEvent event) {
     if (_showSend || _activePointer != null) return;
     _activePointer = event.pointer;
+    _downGlobal = event.position;
+    _slideDx = 0;
+    _willCancel = false;
     setState(() => _holdActive = true);
     _startHoldTimer();
-    _notifyRecording(true, 0);
+    _notifyRecording(isRecording: true, durationMs: 0);
     _startFuture = _ensureRecordingStarted();
     _startFuture!.catchError((_) {});
+    // Следим за пальцем и вне кнопки (свайп влево для отмены).
+    GestureBinding.instance.pointerRouter.addRoute(event.pointer, _onGlobalPointer);
+  }
+
+  void _onGlobalPointer(PointerEvent event) {
+    final pointer = _activePointer;
+    if (pointer == null || event.pointer != pointer) return;
+    if (event is PointerMoveEvent) {
+      _onPointerMove(event);
+    } else if (event is PointerUpEvent) {
+      GestureBinding.instance.pointerRouter.removeRoute(pointer, _onGlobalPointer);
+      unawaited(_onPointerUp(event));
+    } else if (event is PointerCancelEvent) {
+      GestureBinding.instance.pointerRouter.removeRoute(pointer, _onGlobalPointer);
+      unawaited(_onPointerCancel(event));
+    }
+  }
+
+  void _detachPointerRoute() {
+    final pointer = _activePointer;
+    if (pointer == null) return;
+    GestureBinding.instance.pointerRouter.removeRoute(pointer, _onGlobalPointer);
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    if (_activePointer != event.pointer || _downGlobal == null) return;
+    final dx = (event.position.dx - _downGlobal!.dx).clamp(-120.0, 0.0);
+    final willCancel = dx <= -_cancelPx;
+    if (dx == _slideDx && willCancel == _willCancel) return;
+    if (willCancel && !_willCancel) {
+      HapticFeedback.selectionClick();
+    }
+    setState(() {
+      _slideDx = dx;
+      _willCancel = willCancel;
+    });
+    _notifyRecording(
+      isRecording: true,
+      durationMs: _holdDurationMs(),
+      willCancel: willCancel,
+    );
   }
 
   Future<void> _onPointerUp(PointerUpEvent event) async {
     if (_activePointer != event.pointer) return;
-    await _releaseHold(send: true);
+    final cancel = _willCancel;
+    await _releaseHold(send: !cancel);
   }
 
   Future<void> _onPointerCancel(PointerCancelEvent event) async {
@@ -126,15 +206,21 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
   }
 
   Future<void> _releaseHold({required bool send}) async {
-    final holdMs = _holdDurationMs() ?? 0;
+    _detachPointerRoute();
+    final holdMs = _holdDurationMs();
     _activePointer = null;
     _holdStartedAt = null;
+    _downGlobal = null;
     _stopHoldTimer();
 
-    if (_holdActive) {
-      setState(() => _holdActive = false);
+    if (_holdActive || _slideDx != 0 || _willCancel) {
+      setState(() {
+        _holdActive = false;
+        _slideDx = 0;
+        _willCancel = false;
+      });
     }
-    _notifyRecording(false, 0);
+    _notifyRecording(isRecording: false, durationMs: 0);
 
     try {
       await _startFuture;
@@ -161,7 +247,7 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
       _startFuture = null;
     }
 
-    if (!send) {
+    if (!send || holdMs < _minSendMs) {
       await _recorder.cancel();
       return;
     }
@@ -176,11 +262,8 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     }
 
     final durationMs = result.durationMs > 0 ? result.durationMs : holdMs;
-    if (durationMs < 400) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Удерживайте кнопку чуть дольше для записи')),
-      );
+    if (durationMs < _minSendMs) {
+      await _recorder.cancel();
       return;
     }
 
@@ -209,18 +292,25 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
       );
     }
 
+    final cancelLook = _holdActive && _willCancel;
+
     return Listener(
       behavior: HitTestBehavior.opaque,
       onPointerDown: _onPointerDown,
-      onPointerUp: _onPointerUp,
-      onPointerCancel: _onPointerCancel,
-      child: ChatComposeCircleButton(
-        tooltip: 'Удерживайте для голосового',
-        icon: _holdActive ? Icons.mic_rounded : Icons.mic_none_rounded,
-        iconColor: _holdActive ? cs.error : cs.primary,
-        backgroundColor: _holdActive
-            ? cs.errorContainer.withValues(alpha: 0.72)
-            : null,
+      child: Transform.translate(
+        offset: Offset(_slideDx, 0),
+        child: ChatComposeCircleButton(
+          tooltip: 'Удерживайте для голосового',
+          icon: Icons.mic_rounded,
+          iconColor: _holdActive
+              ? (cancelLook ? cs.onError : cs.error)
+              : cs.primary,
+          backgroundColor: _holdActive
+              ? (cancelLook
+                  ? cs.error
+                  : cs.errorContainer.withValues(alpha: 0.85))
+              : null,
+        ),
       ),
     );
   }

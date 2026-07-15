@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -653,26 +654,33 @@ class FamilyChatRepository {
     required Uint8List bytes,
     required String filename,
     String? contentType,
+    Map<String, dynamic>? photoExif,
+    void Function(int sent, int total)? onSendProgress,
   }) async {
     await logUploadImageExifDiagnostics(
       bytes: bytes,
       filename: filename,
       readVia: 'upload_chat_attachment',
     );
-    final form = FormData.fromMap({
+    final formMap = <String, dynamic>{
       'file': MultipartFile.fromBytes(
         bytes,
         filename: filename,
         contentType:
             contentType != null ? DioMediaType.parse(contentType) : null,
       ),
-    });
+    };
+    if (photoExif != null && photoExif.isNotEmpty) {
+      formMap['photo_exif'] = jsonEncode(photoExif);
+    }
+    final form = FormData.fromMap(formMap);
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/attachments/',
       data: form,
+      onSendProgress: onSendProgress,
       options: Options(
-        sendTimeout: const Duration(minutes: 3),
-        receiveTimeout: const Duration(minutes: 3),
+        sendTimeout: const Duration(minutes: 10),
+        receiveTimeout: const Duration(minutes: 10),
       ),
     );
     return res.data!;
@@ -977,6 +985,8 @@ class FamilyChatRepository {
     required String filename,
     String? contentType,
     String? batchId,
+    Map<String, dynamic>? photoExif,
+    void Function(int sent, int total)? onSendProgress,
   }) async {
     await logUploadImageExifDiagnostics(
       bytes: bytes,
@@ -991,13 +1001,16 @@ class FamilyChatRepository {
             contentType != null ? DioMediaType.parse(contentType) : null,
       ),
       if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
+      if (photoExif != null && photoExif.isNotEmpty)
+        'photo_exif': jsonEncode(photoExif),
     });
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/custom-albums/$albumPk/photos/upload/',
       data: form,
+      onSendProgress: onSendProgress,
       options: Options(
-        sendTimeout: const Duration(minutes: 3),
-        receiveTimeout: const Duration(minutes: 3),
+        sendTimeout: const Duration(minutes: 10),
+        receiveTimeout: const Duration(minutes: 10),
       ),
     );
     return res.data!;
@@ -1082,6 +1095,8 @@ class FamilyChatRepository {
     required String destination,
     int? albumPk,
     String? batchId,
+    Map<String, dynamic>? photoExif,
+    void Function(int sent, int total)? onSendProgress,
   }) async {
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
@@ -1093,13 +1108,16 @@ class FamilyChatRepository {
       'destination': destination,
       if (albumPk != null) 'album_pk': albumPk,
       if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
+      if (photoExif != null && photoExif.isNotEmpty)
+        'photo_exif': jsonEncode(photoExif),
     });
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/gallery/upload/',
       data: form,
+      onSendProgress: onSendProgress,
       options: Options(
-        sendTimeout: const Duration(minutes: 3),
-        receiveTimeout: const Duration(minutes: 3),
+        sendTimeout: const Duration(minutes: 10),
+        receiveTimeout: const Duration(minutes: 10),
       ),
     );
     return res.data!;
