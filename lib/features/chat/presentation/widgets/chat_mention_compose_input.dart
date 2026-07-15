@@ -216,50 +216,54 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
             ),
           ),
         if (suggestions.isNotEmpty) const SizedBox(height: 6),
-        DecoratedBox(
-          decoration: FamilyInputStyles.composeShellDecoration(theme),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              if (!_recording.isRecording)
-                ChatComposeCircleButton(
-                  tooltip: 'Вложение',
-                  icon: Icons.attach_file,
-                  iconColor: theme.colorScheme.onSurface,
-                  onTap: widget.onAttach,
-                ),
-              Expanded(
-                child: _recording.isRecording
-                    ? ChatVoiceRecordingComposeSlot(
-                        durationMs: _recording.durationMs,
-                        willCancel: _recording.willCancel,
-                      )
-                    : TextField(
-                        controller: widget.controller,
-                        focusNode: widget.focusNode,
-                        keyboardType: TextInputType.multiline,
-                        minLines: 1,
-                        maxLines: 5,
-                        textInputAction: TextInputAction.newline,
-                        decoration: InputDecoration(
-                          hintText: widget.hintText,
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                          contentPadding:
-                              const EdgeInsets.fromLTRB(0, 10, 0, 10),
-                          isDense: true,
+        Material(
+          type: MaterialType.transparency,
+          clipBehavior: Clip.none,
+          child: DecoratedBox(
+            decoration: FamilyInputStyles.composeShellDecoration(theme),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (!_recording.isRecording)
+                  ChatComposeCircleButton(
+                    tooltip: 'Вложение',
+                    icon: Icons.attach_file,
+                    iconColor: theme.colorScheme.onSurface,
+                    onTap: widget.onAttach,
+                  ),
+                Expanded(
+                  child: _recording.isRecording
+                      ? ChatVoiceRecordingComposeSlot(
+                          durationMs: _recording.durationMs,
+                          willCancel: _recording.willCancel,
+                        )
+                      : TextField(
+                          controller: widget.controller,
+                          focusNode: widget.focusNode,
+                          keyboardType: TextInputType.multiline,
+                          minLines: 1,
+                          maxLines: 5,
+                          textInputAction: TextInputAction.newline,
+                          decoration: InputDecoration(
+                            hintText: widget.hintText,
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            contentPadding:
+                                const EdgeInsets.fromLTRB(0, 10, 0, 10),
+                            isDense: true,
+                          ),
                         ),
-                      ),
-              ),
-              ChatComposeActionButton(
-                controller: widget.controller,
-                onSend: (options) => _handleSend(options),
-                onVoiceComplete: widget.onVoiceComplete,
-                forceSendButton: widget.forceSendButton,
-                onRecordingChanged: _onRecordingChanged,
-              ),
-            ],
+                ),
+                ChatComposeActionButton(
+                  controller: widget.controller,
+                  onSend: (options) => _handleSend(options),
+                  onVoiceComplete: widget.onVoiceComplete,
+                  forceSendButton: widget.forceSendButton,
+                  onRecordingChanged: _onRecordingChanged,
+                ),
+              ],
+            ),
           ),
         ),
       ],

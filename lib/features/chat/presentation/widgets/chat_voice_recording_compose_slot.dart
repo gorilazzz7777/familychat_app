@@ -20,7 +20,7 @@ class ChatVoiceRecordingComposeSlot extends StatelessWidget {
     final accent = willCancel ? cs.error : cs.error;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 10, 8, 10),
+      padding: const EdgeInsets.fromLTRB(20, 10, 8, 10),
       child: Row(
         children: [
           Container(

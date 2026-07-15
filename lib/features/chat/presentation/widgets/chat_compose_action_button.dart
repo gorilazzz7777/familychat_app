@@ -56,6 +56,7 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
   bool _hasText = false;
   bool _holdActive = false;
   bool _willCancel = false;
+  bool _releasing = false;
   int? _activePointer;
   Offset? _downGlobal;
   double _slideDx = 0;
@@ -68,7 +69,6 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     super.initState();
     _hasText = widget.controller.text.trim().isNotEmpty;
     widget.controller.addListener(_onTextChanged);
-    // На web разрешение микрофона нужно запрашивать по жесту (удержание).
     if (!kIsWeb) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_recorder.ensurePermission());
@@ -140,8 +140,33 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     await _recorder.start();
   }
 
+  void _detachPointerRoute() {
+    final pointer = _activePointer;
+    if (pointer == null) return;
+    try {
+      GestureBinding.instance.pointerRouter.removeRoute(
+        pointer,
+        _onGlobalPointer,
+      );
+    } catch (_) {}
+  }
+
+  void _onGlobalPointer(PointerEvent event) {
+    final pointer = _activePointer;
+    if (pointer == null || event.pointer != pointer) return;
+    if (event is PointerMoveEvent) {
+      _onPointerMove(event);
+    } else if (event is PointerUpEvent) {
+      _detachPointerRoute();
+      unawaited(_onPointerUp(event));
+    } else if (event is PointerCancelEvent) {
+      _detachPointerRoute();
+      unawaited(_onPointerCancel(event));
+    }
+  }
+
   void _onPointerDown(PointerDownEvent event) {
-    if (_showSend || _activePointer != null) return;
+    if (_showSend || _activePointer != null || _releasing) return;
     _activePointer = event.pointer;
     _downGlobal = event.position;
     _slideDx = 0;
@@ -151,28 +176,11 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     _notifyRecording(isRecording: true, durationMs: 0);
     _startFuture = _ensureRecordingStarted();
     _startFuture!.catchError((_) {});
-    // Следим за пальцем и вне кнопки (свайп влево для отмены).
-    GestureBinding.instance.pointerRouter.addRoute(event.pointer, _onGlobalPointer);
-  }
-
-  void _onGlobalPointer(PointerEvent event) {
-    final pointer = _activePointer;
-    if (pointer == null || event.pointer != pointer) return;
-    if (event is PointerMoveEvent) {
-      _onPointerMove(event);
-    } else if (event is PointerUpEvent) {
-      GestureBinding.instance.pointerRouter.removeRoute(pointer, _onGlobalPointer);
-      unawaited(_onPointerUp(event));
-    } else if (event is PointerCancelEvent) {
-      GestureBinding.instance.pointerRouter.removeRoute(pointer, _onGlobalPointer);
-      unawaited(_onPointerCancel(event));
-    }
-  }
-
-  void _detachPointerRoute() {
-    final pointer = _activePointer;
-    if (pointer == null) return;
-    GestureBinding.instance.pointerRouter.removeRoute(pointer, _onGlobalPointer);
+    // Ловим move/up глобально: палец может уйти с кнопки при свайпе.
+    GestureBinding.instance.pointerRouter.addRoute(
+      event.pointer,
+      _onGlobalPointer,
+    );
   }
 
   void _onPointerMove(PointerMoveEvent event) {
@@ -183,6 +191,7 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     if (willCancel && !_willCancel) {
       HapticFeedback.selectionClick();
     }
+    if (!mounted) return;
     setState(() {
       _slideDx = dx;
       _willCancel = willCancel;
@@ -195,83 +204,98 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
   }
 
   Future<void> _onPointerUp(PointerUpEvent event) async {
-    if (_activePointer != event.pointer) return;
+    if (_activePointer != null && event.pointer != _activePointer) return;
     final cancel = _willCancel;
     await _releaseHold(send: !cancel);
   }
 
   Future<void> _onPointerCancel(PointerCancelEvent event) async {
-    if (_activePointer != event.pointer) return;
+    if (_activePointer != null && event.pointer != _activePointer) return;
     await _releaseHold(send: false);
   }
 
   Future<void> _releaseHold({required bool send}) async {
+    if (_releasing) return;
+    if (!_holdActive && _activePointer == null && _startFuture == null) {
+      return;
+    }
+    _releasing = true;
     _detachPointerRoute();
+
     final holdMs = _holdDurationMs();
+    final startFuture = _startFuture;
     _activePointer = null;
     _holdStartedAt = null;
     _downGlobal = null;
     _stopHoldTimer();
 
-    if (_holdActive || _slideDx != 0 || _willCancel) {
+    if (mounted) {
       setState(() {
         _holdActive = false;
         _slideDx = 0;
         _willCancel = false;
       });
+    } else {
+      _holdActive = false;
+      _slideDx = 0;
+      _willCancel = false;
     }
     _notifyRecording(isRecording: false, durationMs: 0);
 
     try {
-      await _startFuture;
-    } catch (error) {
-      if (!mounted) return;
-      if (error is StateError && error.message == 'permission') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Нужен доступ к микрофону')),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              kIsWeb
-                  ? 'Не удалось начать запись. Разрешите микрофон в браузере'
-                  : 'Не удалось начать запись',
+      try {
+        await startFuture;
+      } catch (error) {
+        if (!mounted) return;
+        if (error is StateError && error.message == 'permission') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Нужен доступ к микрофону')),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                kIsWeb
+                    ? 'Не удалось начать запись. Разрешите микрофон в браузере'
+                    : 'Не удалось начать запись',
+              ),
             ),
-          ),
-        );
+          );
+        }
+        await _recorder.cancel();
+        return;
+      } finally {
+        _startFuture = null;
       }
-      await _recorder.cancel();
-      return;
-    } finally {
-      _startFuture = null;
-    }
 
-    if (!send || holdMs < _minSendMs) {
-      await _recorder.cancel();
-      return;
-    }
+      if (!send || holdMs < _minSendMs) {
+        await _recorder.cancel();
+        return;
+      }
 
-    final result = await _recorder.stop();
-    if (result == null || result.bytes.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось записать голосовое')),
+      final result = await _recorder.stop();
+      if (result == null || result.bytes.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось записать голосовое')),
+        );
+        return;
+      }
+
+      final durationMs = result.durationMs > 0 ? result.durationMs : holdMs;
+      if (durationMs < _minSendMs) {
+        await _recorder.cancel();
+        return;
+      }
+
+      await widget.onVoiceComplete(
+        result.bytes,
+        durationMs,
+        encoderName: result.encoder.name,
       );
-      return;
+    } finally {
+      _releasing = false;
     }
-
-    final durationMs = result.durationMs > 0 ? result.durationMs : holdMs;
-    if (durationMs < _minSendMs) {
-      await _recorder.cancel();
-      return;
-    }
-
-    await widget.onVoiceComplete(
-      result.bytes,
-      durationMs,
-      encoderName: result.encoder.name,
-    );
   }
 
   @override
@@ -294,22 +318,32 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
 
     final cancelLook = _holdActive && _willCancel;
 
+    // Без Tooltip: его long-press ломает отпускание / отправку голосового.
     return Listener(
       behavior: HitTestBehavior.opaque,
       onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: (e) => unawaited(_onPointerUp(e)),
+      onPointerCancel: (e) => unawaited(_onPointerCancel(e)),
       child: Transform.translate(
         offset: Offset(_slideDx, 0),
-        child: ChatComposeCircleButton(
-          tooltip: 'Удерживайте для голосового',
-          icon: Icons.mic_rounded,
-          iconColor: _holdActive
-              ? (cancelLook ? cs.onError : cs.error)
-              : cs.primary,
-          backgroundColor: _holdActive
-              ? (cancelLook
-                  ? cs.error
-                  : cs.errorContainer.withValues(alpha: 0.85))
-              : null,
+        child: AnimatedScale(
+          scale: _holdActive ? 3.0 : 1.0,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
+          // Центр на месте: низ/право уходят за край экрана и обрезаются.
+          alignment: Alignment.center,
+          child: ChatComposeCircleButton(
+            icon: Icons.mic_rounded,
+            iconColor: _holdActive
+                ? (cancelLook ? cs.onError : cs.error)
+                : cs.primary,
+            backgroundColor: _holdActive
+                ? (cancelLook
+                    ? cs.error
+                    : cs.errorContainer.withValues(alpha: 0.85))
+                : null,
+          ),
         ),
       ),
     );
