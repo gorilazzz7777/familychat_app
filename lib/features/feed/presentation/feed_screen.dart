@@ -27,6 +27,21 @@ List<Map<String, dynamic>> _visibleFeedEvents(
   return events.where(_isVisibleFeedEvent).toList();
 }
 
+bool _isAggregatedEngagementEvent(Map<String, dynamic> event) {
+  final kind = event['kind']?.toString();
+  if (kind != 'media_liked' && kind != 'media_commented') return false;
+  final payload = (event['payload'] as Map<String, dynamic>?) ?? {};
+  final flag = payload['aggregated'];
+  return flag == true || flag == 'true' || flag == 1;
+}
+
+int? _eventAttachmentId(Map<String, dynamic> event) {
+  final payload = (event['payload'] as Map<String, dynamic>?) ?? {};
+  final raw = payload['attachment_id'];
+  if (raw is int) return raw;
+  return int.tryParse('$raw');
+}
+
 enum _FeedEntryKind { newDivider, seenDivider, event, loading }
 
 class _FeedEntry {
@@ -217,6 +232,17 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
 
   void _prependUnique(List<Map<String, dynamic>> incoming) {
     if (incoming.isEmpty) return;
+    for (final event in incoming) {
+      if (!_isAggregatedEngagementEvent(event)) continue;
+      final kind = event['kind']?.toString();
+      final attachmentId = _eventAttachmentId(event);
+      if (kind == null || attachmentId == null) continue;
+      _events.removeWhere((existing) {
+        if (!_isAggregatedEngagementEvent(existing)) return false;
+        if (existing['kind']?.toString() != kind) return false;
+        return _eventAttachmentId(existing) == attachmentId;
+      });
+    }
     final ids = _events.map(_eventId).whereType<int>().toSet();
     final fresh = _visibleFeedEvents(incoming.where((event) {
       final id = _eventId(event);

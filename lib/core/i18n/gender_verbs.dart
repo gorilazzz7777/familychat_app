@@ -18,6 +18,7 @@ String feedEventTitle({
   required String gender,
   String? joinedName,
   int? photoCount,
+  int? othersCount,
 }) {
   return switch (kind) {
     'message_sent' =>
@@ -31,10 +32,20 @@ String feedEventTitle({
       final action = genderVerb(gender, male: 'добавил', female: 'добавила');
       return '$actorName $action $count фото';
     }(),
-    'media_liked' =>
-      '$actorName ${genderVerb(gender, male: 'лайкнул', female: 'лайкнула')} фото',
-    'media_commented' =>
-      '$actorName ${genderVerb(gender, male: 'прокомментировал', female: 'прокомментировала')} фото',
+    'media_liked' => () {
+      final others = othersCount ?? 0;
+      if (others > 0) {
+        return '$actorName и ещё $others лайкнули фото';
+      }
+      return '$actorName ${genderVerb(gender, male: 'лайкнул', female: 'лайкнула')} фото';
+    }(),
+    'media_commented' => () {
+      final others = othersCount ?? 0;
+      if (others > 0) {
+        return '$actorName и ещё $others прокомментировали фото';
+      }
+      return '$actorName ${genderVerb(gender, male: 'прокомментировал', female: 'прокомментировала')} фото';
+    }(),
     'member_joined' =>
       '${joinedName ?? actorName} ${genderVerb(gender, male: 'присоединился', female: 'присоединилась')} к семье',
     'profile_updated' =>

@@ -61,12 +61,17 @@ class _FeedEventCardState extends State<FeedEventCard> {
             ? _payload['photo_count'] as int
             : int.tryParse('${_payload['photo_count']}') ?? _batchPhotos().length)
         : null;
+    final othersRaw = _payload['others_count'];
+    final othersCount = othersRaw is int
+        ? othersRaw
+        : int.tryParse('$othersRaw');
     return feedEventTitle(
       kind: _kind,
       actorName: name,
       gender: actorGender(_actor),
       joinedName: _payload['name']?.toString(),
       photoCount: photoCount,
+      othersCount: othersCount,
     );
   }
 

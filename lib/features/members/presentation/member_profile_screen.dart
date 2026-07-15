@@ -11,6 +11,7 @@ import '../../chat/presentation/chat_call_screen.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
 import '../../profile/presentation/profile_gallery_tab.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../../profile/presentation/widgets/premium_badges.dart';
 
 String _genderLabel(String gender) {
   return switch (gender) {
@@ -275,6 +276,14 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
             textAlign: TextAlign.center,
           ),
         ),
+        if (PremiumBadges.labelsFrom(
+          p['entitlements'] as Map<String, dynamic>?,
+        ).isNotEmpty) ...[
+          const SizedBox(height: 8),
+          PremiumBadges(
+            entitlements: p['entitlements'] as Map<String, dynamic>?,
+          ),
+        ],
         if (p['kinship_label'] != null || !isSelf) ...[
           const SizedBox(height: 4),
           Center(

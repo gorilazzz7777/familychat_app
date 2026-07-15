@@ -13,6 +13,7 @@ import 'birthday_picker.dart';
 import 'profile_gallery_tab.dart';
 import '../../chat/presentation/widgets/chat_image_viewer.dart';
 import 'widgets/chat_avatar.dart';
+import 'widgets/premium_badges.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({
@@ -380,6 +381,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             ),
           ),
         ),
+        if (PremiumBadges.labelsFrom(
+          (widget.status['entitlements'] as Map<String, dynamic>?),
+        ).isNotEmpty) ...[
+          const SizedBox(height: 12),
+          PremiumBadges(
+            entitlements:
+                widget.status['entitlements'] as Map<String, dynamic>?,
+          ),
+        ],
         const SizedBox(height: 24),
         TextField(
           controller: _firstName,
