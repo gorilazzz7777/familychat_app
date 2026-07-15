@@ -13,11 +13,13 @@ class ThreadMessagesPage {
     required this.messages,
     required this.hasMore,
     this.birthdayScheduled,
+    this.voiceTranscriptionEnabled = false,
   });
 
   final List<Map<String, dynamic>> messages;
   final bool hasMore;
   final Map<String, dynamic>? birthdayScheduled;
+  final bool voiceTranscriptionEnabled;
 }
 
 class FamilyChatRepository {
@@ -406,6 +408,7 @@ class FamilyChatRepository {
       birthdayScheduled: scheduledRaw is Map
           ? Map<String, dynamic>.from(scheduledRaw)
           : null,
+      voiceTranscriptionEnabled: map['voice_transcription_enabled'] == true,
     );
   }
 
@@ -529,6 +532,7 @@ class FamilyChatRepository {
     bool notifySilent = false,
     Map<String, dynamic>? location,
     int? voiceDurationMs,
+    String? voiceTranscript,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/',
@@ -542,6 +546,8 @@ class FamilyChatRepository {
         if (notifySilent) 'notify_silent': true,
         if (location != null) 'location': location,
         if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
+        if (voiceTranscript != null && voiceTranscript.trim().isNotEmpty)
+          'voice_transcript': voiceTranscript.trim(),
       },
     );
     return res.data!;
