@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/providers/app_providers.dart';
-import '../../../familychat/data/familychat_repository.dart';
+import '../../data/chat_voice_transcription_prefs.dart';
 import '../../data/chat_voice_utils.dart';
 import 'chat_network_image.dart';
 
@@ -16,6 +16,8 @@ class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
     required this.attachment,
     required this.isMine,
     this.durationMs,
+    this.transcript,
+    this.canToggleTranscript = false,
     this.textColor,
     this.metaColor,
   });
@@ -24,6 +26,8 @@ class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
   final Map<String, dynamic> attachment;
   final bool isMine;
   final int? durationMs;
+  final String? transcript;
+  final bool canToggleTranscript;
   final Color? textColor;
   final Color? metaColor;
 
@@ -98,6 +102,12 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
   Widget build(BuildContext context) {
     final textColor = widget.textColor ?? Theme.of(context).colorScheme.onSurface;
     final metaColor = widget.metaColor ?? textColor.withValues(alpha: 0.75);
+    final transcript = widget.transcript?.trim();
+    final hasTranscript =
+        transcript != null && transcript.isNotEmpty && widget.canToggleTranscript;
+    final preferText = ref.watch(voiceMessagePreferTextProvider);
+    final showText = hasTranscript && preferText;
+
     final totalMs = _total.inMilliseconds > 0
         ? _total.inMilliseconds
         : (widget.durationMs ?? 0);
@@ -107,6 +117,38 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     final label = _playing || _position.inMilliseconds > 0
         ? formatVoiceDuration(_position.inMilliseconds)
         : formatVoiceDuration(totalMs);
+
+    final toggle = hasTranscript
+        ? IconButton(
+            tooltip: showText ? 'Показать голос' : 'Показать текст',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            onPressed: () {
+              ref.read(voiceMessagePreferTextProvider.notifier).toggle();
+            },
+            icon: Icon(
+              showText ? Icons.graphic_eq_rounded : Icons.notes_rounded,
+              size: 20,
+              color: metaColor,
+            ),
+          )
+        : null;
+
+    if (showText) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Text(
+              transcript,
+              style: TextStyle(color: textColor, height: 1.35),
+            ),
+          ),
+          if (toggle != null) toggle,
+        ],
+      );
+    }
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -127,15 +169,6 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Голосовое',
-                style: TextStyle(
-                  color: textColor,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 4),
               ClipRRect(
                 borderRadius: BorderRadius.circular(2),
                 child: LinearProgressIndicator(
@@ -153,6 +186,10 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
             ],
           ),
         ),
+        if (toggle != null) ...[
+          const SizedBox(width: 2),
+          toggle,
+        ],
       ],
     );
   }

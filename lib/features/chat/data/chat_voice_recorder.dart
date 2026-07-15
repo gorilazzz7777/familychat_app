@@ -1,8 +1,13 @@
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 
 import 'chat_voice_recording_bytes.dart';
+
+/// 16 kHz — совместимо с Vosk small-ru.
+const int kChatVoiceTranscriptionSampleRate = 16000;
 
 class ChatVoiceRecorder {
   ChatVoiceRecorder() : _recorder = AudioRecorder();
@@ -11,37 +16,44 @@ class ChatVoiceRecorder {
   String? _path;
   DateTime? _startedAt;
   AudioEncoder? _encoder;
+  bool _wavForTranscription = false;
 
   bool get isActive => _startedAt != null;
 
   AudioEncoder get encoder =>
-      _encoder ?? (kIsWeb ? AudioEncoder.wav : AudioEncoder.aacLc);
+      _encoder ??
+      (kIsWeb || _wavForTranscription ? AudioEncoder.wav : AudioEncoder.aacLc);
 
   Future<bool> ensurePermission() async {
     if (await _recorder.hasPermission()) return true;
     if (kIsWeb) {
-      // Browser prompts via getUserMedia inside hasPermission/start.
       return await _recorder.hasPermission();
     }
     final status = await Permission.microphone.request();
     return status.isGranted;
   }
 
-  Future<void> start() async {
+  Future<void> start({bool forTranscription = false}) async {
     if (isActive) return;
-    final preferred =
-        kIsWeb ? AudioEncoder.wav : AudioEncoder.aacLc;
+    // Web всегда WAV; при STT на native — WAV 16 kHz mono под Vosk.
+    final useWav = kIsWeb || forTranscription;
+    _wavForTranscription = useWav;
+    final preferred = useWav ? AudioEncoder.wav : AudioEncoder.aacLc;
     final supported = await _recorder.isEncoderSupported(preferred);
-    final encoder = supported
-        ? preferred
-        : (kIsWeb ? AudioEncoder.wav : AudioEncoder.aacLc);
+    final encoder = supported ? preferred : AudioEncoder.wav;
     _encoder = encoder;
+    _wavForTranscription = encoder == AudioEncoder.wav;
 
-    // На web path формально обязателен, но платформа его не использует
-    // (результат — blob URL из stop()).
     final path = await voiceRecordingTempPath() ??
-        'voice_${DateTime.now().millisecondsSinceEpoch}.wav';
-    await _recorder.start(RecordConfig(encoder: encoder), path: path);
+        'voice_${DateTime.now().millisecondsSinceEpoch}.${_wavForTranscription ? 'wav' : 'm4a'}';
+    final config = _wavForTranscription
+        ? RecordConfig(
+            encoder: encoder,
+            sampleRate: kChatVoiceTranscriptionSampleRate,
+            numChannels: 1,
+          )
+        : RecordConfig(encoder: encoder);
+    await _recorder.start(config, path: path);
     _path = path;
     _startedAt = DateTime.now();
   }

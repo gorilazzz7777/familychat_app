@@ -32,6 +32,7 @@ import '../data/chat_realtime_utils.dart';
 import '../data/chat_scheduled_send_service.dart';
 import '../data/chat_send_options.dart';
 import '../data/chat_typing_utils.dart';
+import '../data/chat_voice_transcription.dart';
 import '../data/chat_voice_utils.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_thread_avatars.dart';
@@ -161,6 +162,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _birthdayScheduledSaving = false;
   String? _headerAvatarUrl;
   List<ChatMentionParticipant> _mentionParticipants = [];
+  bool _voiceTranscriptionEnabled = false;
+  bool _viewerIndividualPremium = false;
   double _lastKeyboardInset = 0;
   final Map<int, String> _typingNames = {};
   final Map<int, Timer> _typingExpiry = {};
@@ -306,7 +309,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     try {
       final st = await ref.read(familychatRepositoryProvider).status();
       _currentUserId = st['user_id'] as int?;
+      final entitlements = st['entitlements'];
+      if (entitlements is Map) {
+        _viewerIndividualPremium = entitlements['individual_premium'] == true;
+      }
     } catch (_) {}
+    // Модель Vosk заранее (без сети) — на случай отправки в premium-треде.
+    unawaited(ChatVoiceTranscription.instance.preloadModelToDisk());
     final skipCache = widget.initialMessageId != null;
     List<Map<String, dynamic>>? cached;
     if (!skipCache) {
@@ -762,6 +771,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           _messages = sortChatMessages(page.messages);
         }
         _hasMoreOlder = page.hasMore;
+        _voiceTranscriptionEnabled = page.voiceTranscriptionEnabled;
         _loading = false;
         _loadError = null;
         if (_isBirthdayCelebration) {
@@ -1107,6 +1117,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
     int? voiceDurationMs,
+    String? voiceTranscript,
   }) async {
     final repo = ref.read(familychatRepositoryProvider);
     final online = await ChatOfflineSync.instance.refreshOnline(repo);
@@ -1142,6 +1153,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             mentionedUserIds.isEmpty ? null : mentionedUserIds,
         notifySilent: notifySilent,
         voiceDurationMs: voiceDurationMs,
+        voiceTranscript: voiceTranscript,
       );
       if (!mounted) return;
       _replaceOptimisticMessage(tempId, msg);
@@ -1187,13 +1199,24 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       return;
     }
 
+    String? transcript;
+    if (_voiceTranscriptionEnabled) {
+      transcript =
+          await ChatVoiceTranscription.instance.transcribeWavBytes(bytes);
+    }
+
     final tempId = _nextTempId();
     final replySnapshot = _replyTo;
     final replyId = chatAsInt(replySnapshot?['message_id']);
     final extension = voiceExtensionForEncoder(encoderName ?? (kIsWeb ? 'wav' : 'm4a'));
     final filename = voiceMessageFilename(durationMs, extension: extension);
     final contentType = voiceContentTypeForExtension(extension);
-    final metadata = {'voice': {'duration_ms': durationMs}};
+    final voiceMeta = <String, dynamic>{'duration_ms': durationMs};
+    if (transcript != null && transcript.trim().isNotEmpty) {
+      voiceMeta['transcript'] = transcript.trim();
+      voiceMeta['transcript_status'] = 'ready';
+    }
+    final metadata = {'voice': voiceMeta};
 
     _addOptimisticMessage(
       tempId,
@@ -1225,6 +1248,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ],
       replyToMessageId: replyId,
       voiceDurationMs: durationMs,
+      voiceTranscript: transcript,
     );
   }
 
@@ -2541,6 +2565,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     mentions: mentions,
                                     location: location,
                                     messageMetadata: messageMetadata,
+                                    canToggleVoiceTranscript:
+                                        _viewerIndividualPremium,
                                     isGroupLike: _isGroupLike,
                                     readStatus: isMine
                                         ? m['read_status']?.toString() ??
@@ -2695,6 +2721,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 onVoiceComplete: _sendVoiceMessage,
                                 forceSendButton: _pendingFileDraft != null ||
                                     _editingMessageId != null,
+                                voiceTranscriptionEnabled:
+                                    _voiceTranscriptionEnabled,
                                 participants: _mentionParticipants,
                                 currentUserId: _currentUserId,
                               )
@@ -2707,6 +2735,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 onVoiceComplete: _sendVoiceMessage,
                                 forceSendButton: _pendingFileDraft != null ||
                                     _editingMessageId != null,
+                                voiceTranscriptionEnabled:
+                                    _voiceTranscriptionEnabled,
                               ),
                       ),
                     ],

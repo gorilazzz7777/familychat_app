@@ -51,6 +51,7 @@ class ChatMessageBubble extends StatelessWidget {
     this.scheduledAt,
     this.location,
     this.messageMetadata = const {},
+    this.canToggleVoiceTranscript = false,
   });
 
   final int threadId;
@@ -83,6 +84,7 @@ class ChatMessageBubble extends StatelessWidget {
   final DateTime? scheduledAt;
   final ChatLocationPoint? location;
   final Map<String, dynamic> messageMetadata;
+  final bool canToggleVoiceTranscript;
 
   static const double _avatarSize = 32;
 
@@ -188,6 +190,14 @@ class ChatMessageBubble extends StatelessWidget {
                               a,
                               messageMetadata: messageMetadata,
                             ),
+                            transcript: () {
+                              final voice = messageMetadata['voice'];
+                              if (voice is! Map) return null;
+                              final text = voice['transcript']?.toString().trim();
+                              if (text == null || text.isEmpty) return null;
+                              return text;
+                            }(),
+                            canToggleTranscript: canToggleVoiceTranscript,
                             textColor: textColor,
                             metaColor: metaColor,
                           ),

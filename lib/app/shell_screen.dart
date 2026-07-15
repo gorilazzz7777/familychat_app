@@ -23,6 +23,7 @@ import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
+import '../features/chat/data/chat_voice_transcription_prefs.dart';
 import '../features/chat/data/incoming_call_coordinator.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../features/feed/presentation/feed_screen.dart';
@@ -88,6 +89,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       unawaited(
         ChatOfflineSync.instance.run(ref.read(familychatRepositoryProvider)),
       );
+      // Распаковка Vosk RU из assets (без интернета).
+      ref.read(voskModelPreloadProvider);
       ChatScheduledSendService.instance.start(
         ref.read(familychatRepositoryProvider),
       );

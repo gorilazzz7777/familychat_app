@@ -24,6 +24,7 @@ import sqflite_darwin
 import url_launcher_macos
 import video_compress
 import video_player_avfoundation
+import vosk_flutter_service
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   AppLinksMacosPlugin.register(with: registry.registrar(forPlugin: "AppLinksMacosPlugin"))
@@ -45,4 +46,5 @@ func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   UrlLauncherPlugin.register(with: registry.registrar(forPlugin: "UrlLauncherPlugin"))
   VideoCompressPlugin.register(with: registry.registrar(forPlugin: "VideoCompressPlugin"))
   VideoPlayerPlugin.register(with: registry.registrar(forPlugin: "VideoPlayerPlugin"))
+  VoskFlutterPlugin.register(with: registry.registrar(forPlugin: "VoskFlutterPlugin"))
 }

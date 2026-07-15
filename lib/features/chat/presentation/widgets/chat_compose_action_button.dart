@@ -30,6 +30,7 @@ class ChatComposeActionButton extends StatefulWidget {
     required this.onSend,
     required this.onVoiceComplete,
     this.forceSendButton = false,
+    this.voiceTranscriptionEnabled = false,
     this.onRecordingChanged,
   });
 
@@ -41,6 +42,7 @@ class ChatComposeActionButton extends StatefulWidget {
     String? encoderName,
   }) onVoiceComplete;
   final bool forceSendButton;
+  final bool voiceTranscriptionEnabled;
   final void Function(ChatVoiceRecordingChange change)? onRecordingChanged;
 
   @override
@@ -137,7 +139,9 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     if (!granted) {
       throw StateError('permission');
     }
-    await _recorder.start();
+    await _recorder.start(
+      forTranscription: widget.voiceTranscriptionEnabled,
+    );
   }
 
   void _detachPointerRoute() {

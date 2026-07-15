@@ -18,6 +18,7 @@ class ChatComposeInput extends StatefulWidget {
     required this.onSend,
     required this.onVoiceComplete,
     this.forceSendButton = false,
+    this.voiceTranscriptionEnabled = false,
     this.hintText = 'Сообщение...',
   });
 
@@ -31,6 +32,7 @@ class ChatComposeInput extends StatefulWidget {
     String? encoderName,
   }) onVoiceComplete;
   final bool forceSendButton;
+  final bool voiceTranscriptionEnabled;
   final String hintText;
 
   @override
@@ -96,6 +98,7 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
               onSend: widget.onSend,
               onVoiceComplete: widget.onVoiceComplete,
               forceSendButton: widget.forceSendButton,
+              voiceTranscriptionEnabled: widget.voiceTranscriptionEnabled,
               onRecordingChanged: _onRecordingChanged,
             ),
           ],
