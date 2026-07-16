@@ -43,6 +43,7 @@ import 'widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import 'widgets/chat_compose_input.dart';
 import 'widgets/chat_mention_compose_input.dart';
 import 'widgets/chat_image_viewer.dart';
+import 'widgets/chat_image_album.dart';
 import 'widgets/chat_message_actions_sheet.dart';
 import 'widgets/chat_message_bubble.dart';
 import 'widgets/chat_message_reactions.dart';
@@ -1135,7 +1136,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final att = Map<String, dynamic>.from(entry.value);
       if (entry.key < optimisticAtts.length) {
         final local = optimisticAtts[entry.key]['local_bytes'];
-        if (local is Uint8List && local.isNotEmpty) {
+        if (local is Uint8List &&
+            local.isNotEmpty &&
+            (isVoiceAttachment(att, messageMetadata: mergedMeta) ||
+                chatAttachmentLooksLikeImage(att) ||
+                att['kind'] == 'image')) {
           att['local_bytes'] = local;
         }
       }

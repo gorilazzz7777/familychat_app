@@ -8,7 +8,8 @@ bool chatAttachmentLooksLikeImage(Map<String, dynamic> attachment) {
   final kind = attachment['kind']?.toString();
   if (kind == 'image') return true;
   if (kind == 'video' || kind == 'file') return false;
-  return attachment['local_bytes'] is Uint8List;
+  final local = attachment['local_bytes'];
+  return local is Uint8List && local.isNotEmpty;
 }
 
 /// Сетка фото в одном сообщении (как в мессенджерах).
@@ -32,33 +33,37 @@ class ChatImageAlbum extends StatelessWidget {
   Widget build(BuildContext context) {
     final count = attachments.length;
     if (count == 0) return const SizedBox.shrink();
+
+    final width = maxWidth > 0 ? maxWidth : 200.0;
     if (count == 1) {
+      final height = _singleHeight(width);
       return _tile(
         attachments.first,
-        width: maxWidth,
-        height: _singleHeight(maxWidth),
+        width: width,
+        height: height,
         borderRadius: BorderRadius.circular(8),
       );
     }
 
-    final height = _albumHeight(count, maxWidth);
+    final height = _albumHeight(count, width);
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: SizedBox(
-        width: maxWidth,
+        width: width,
         height: height,
-        child: _layout(count, maxWidth, height),
+        child: _layout(count, width, height),
       ),
     );
   }
 
-  double _singleHeight(double width) => (width * 0.75).clamp(140.0, 280.0);
+  double _singleHeight(double width) =>
+      (width * 0.75).clamp(140.0, 280.0).toDouble();
 
   double _albumHeight(int count, double width) {
-    if (count == 2) return (width * 0.55).clamp(120.0, 220.0);
-    if (count == 3) return (width * 0.7).clamp(160.0, 260.0);
-    if (count == 4) return width * 0.95;
-    return (width * 0.85).clamp(180.0, 300.0);
+    if (count == 2) return (width * 0.55).clamp(120.0, 220.0).toDouble();
+    if (count == 3) return (width * 0.7).clamp(160.0, 260.0).toDouble();
+    if (count == 4) return (width * 0.95).toDouble();
+    return (width * 0.85).clamp(180.0, 300.0).toDouble();
   }
 
   Widget _layout(int count, double width, double height) {
@@ -66,17 +71,9 @@ class ChatImageAlbum extends StatelessWidget {
       final cellW = (width - _gap) / 2;
       return Row(
         children: [
-          SizedBox(
-            width: cellW,
-            height: height,
-            child: _tile(attachments[0], width: cellW, height: height),
-          ),
+          _tile(attachments[0], width: cellW, height: height),
           const SizedBox(width: _gap),
-          SizedBox(
-            width: cellW,
-            height: height,
-            child: _tile(attachments[1], width: cellW, height: height),
-          ),
+          _tile(attachments[1], width: cellW, height: height),
         ],
       );
     }
@@ -87,28 +84,16 @@ class ChatImageAlbum extends StatelessWidget {
       final halfH = (height - _gap) / 2;
       return Row(
         children: [
-          SizedBox(
-            width: leftW,
-            height: height,
-            child: _tile(attachments[0], width: leftW, height: height),
-          ),
+          _tile(attachments[0], width: leftW, height: height),
           const SizedBox(width: _gap),
           SizedBox(
             width: rightW,
             height: height,
             child: Column(
               children: [
-                SizedBox(
-                  width: rightW,
-                  height: halfH,
-                  child: _tile(attachments[1], width: rightW, height: halfH),
-                ),
+                _tile(attachments[1], width: rightW, height: halfH),
                 const SizedBox(height: _gap),
-                SizedBox(
-                  width: rightW,
-                  height: halfH,
-                  child: _tile(attachments[2], width: rightW, height: halfH),
-                ),
+                _tile(attachments[2], width: rightW, height: halfH),
               ],
             ),
           ),
@@ -123,40 +108,24 @@ class ChatImageAlbum extends StatelessWidget {
         children: [
           Row(
             children: [
-              SizedBox(
-                width: cellW,
-                height: cellH,
-                child: _tile(attachments[0], width: cellW, height: cellH),
-              ),
+              _tile(attachments[0], width: cellW, height: cellH),
               const SizedBox(width: _gap),
-              SizedBox(
-                width: cellW,
-                height: cellH,
-                child: _tile(attachments[1], width: cellW, height: cellH),
-              ),
+              _tile(attachments[1], width: cellW, height: cellH),
             ],
           ),
           const SizedBox(height: _gap),
           Row(
             children: [
-              SizedBox(
-                width: cellW,
-                height: cellH,
-                child: _tile(attachments[2], width: cellW, height: cellH),
-              ),
+              _tile(attachments[2], width: cellW, height: cellH),
               const SizedBox(width: _gap),
-              SizedBox(
-                width: cellW,
-                height: cellH,
-                child: _tile(attachments[3], width: cellW, height: cellH),
-              ),
+              _tile(attachments[3], width: cellW, height: cellH),
             ],
           ),
         ],
       );
     }
 
-    // 5+: две строки по 2, снизу ряд с остатком (макс 3 видимых + оверлей).
+    // 5+: 2×2, на последней плитке +N.
     final cellW = (width - _gap) / 2;
     final rowH = (height - _gap) / 2;
     final remaining = count - 4;
@@ -164,37 +133,21 @@ class ChatImageAlbum extends StatelessWidget {
       children: [
         Row(
           children: [
-            SizedBox(
-              width: cellW,
-              height: rowH,
-              child: _tile(attachments[0], width: cellW, height: rowH),
-            ),
+            _tile(attachments[0], width: cellW, height: rowH),
             const SizedBox(width: _gap),
-            SizedBox(
-              width: cellW,
-              height: rowH,
-              child: _tile(attachments[1], width: cellW, height: rowH),
-            ),
+            _tile(attachments[1], width: cellW, height: rowH),
           ],
         ),
         const SizedBox(height: _gap),
         Row(
           children: [
-            SizedBox(
-              width: cellW,
-              height: rowH,
-              child: _tile(attachments[2], width: cellW, height: rowH),
-            ),
+            _tile(attachments[2], width: cellW, height: rowH),
             const SizedBox(width: _gap),
-            SizedBox(
+            _tile(
+              attachments[3],
               width: cellW,
               height: rowH,
-              child: _tile(
-                attachments[3],
-                width: cellW,
-                height: rowH,
-                overlayLabel: remaining > 0 ? '+$remaining' : null,
-              ),
+              overlayLabel: remaining > 0 ? '+$remaining' : null,
             ),
           ],
         ),
@@ -210,10 +163,11 @@ class ChatImageAlbum extends StatelessWidget {
     String? overlayLabel,
   }) {
     final local = attachment['local_bytes'];
-    final canOpen = onImageTap != null && local is! Uint8List;
+    final hasLocal = local is Uint8List && local.isNotEmpty;
+    final canOpen = onImageTap != null && !hasLocal;
 
     Widget image;
-    if (local is Uint8List) {
+    if (hasLocal) {
       image = Image.memory(
         local,
         width: width,
@@ -231,25 +185,31 @@ class ChatImageAlbum extends StatelessWidget {
       );
     }
 
-    Widget child = Stack(
-      fit: StackFit.expand,
-      children: [
-        image,
-        if (overlayLabel != null)
-          ColoredBox(
-            color: Colors.black54,
-            child: Center(
-              child: Text(
-                overlayLabel,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w600,
+    // Жёсткий SizedBox обязателен: StackFit.expand в Column пузыря
+    // без bounded constraints роняет layout всего списка сообщений.
+    Widget child = SizedBox(
+      width: width,
+      height: height,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          image,
+          if (overlayLabel != null)
+            ColoredBox(
+              color: Colors.black54,
+              child: Center(
+                child: Text(
+                  overlayLabel,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ),
-          ),
-      ],
+        ],
+      ),
     );
 
     if (borderRadius != null) {
