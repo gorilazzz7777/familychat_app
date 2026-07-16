@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
@@ -30,7 +31,8 @@ class AttachGalleryTab extends StatefulWidget {
   State<AttachGalleryTab> createState() => _AttachGalleryTabState();
 }
 
-class _AttachGalleryTabState extends State<AttachGalleryTab> {
+class _AttachGalleryTabState extends State<AttachGalleryTab>
+    with WidgetsBindingObserver {
   bool _loading = true;
   String? _error;
   bool _limitedAccess = false;
@@ -46,7 +48,21 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bootstrap();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _limitedAccess) {
+      _bootstrap();
+    }
   }
 
   @override
@@ -74,6 +90,12 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
       _error = null;
     });
     try {
+      // Сначала системный диалог Android 13+ («Разрешить все» / «Выбранные»).
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        await Permission.photos.request();
+        await Permission.videos.request();
+      }
+
       final perm = await PhotoManager.requestPermissionExtend(
         requestOption: const PermissionRequestOption(
           androidPermission: AndroidPermission(
@@ -92,6 +114,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
       }
 
       final paths = await _loadAllAlbums();
+      final limited = _detectLimitedAccess(perm: perm, albums: paths);
       AssetPathEntity? preferred;
       for (final p in paths) {
         if (p.isAll) {
@@ -105,7 +128,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
         _albums = paths;
         _album = preferred;
         _loading = false;
-        _limitedAccess = perm == PermissionState.limited;
+        _limitedAccess = limited;
       });
       await _reloadAssets();
     } catch (e) {
@@ -114,6 +137,61 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
         _loading = false;
         _error = 'Не удалось открыть галерею';
       });
+    }
+  }
+
+  /// Android 14 «только выбранные» часто выглядит как Recent+Pictures с одинаковым count.
+  bool _detectLimitedAccess({
+    required PermissionState perm,
+    required List<AssetPathEntity> albums,
+  }) {
+    if (perm == PermissionState.limited) return true;
+    if (perm.isAuth) return false;
+    if (albums.length > 3) return false;
+    bool isGeneric(String raw) {
+      final n = raw.toLowerCase().trim();
+      return n.isEmpty ||
+          n == 'recent' ||
+          n == 'pictures' ||
+          n == 'picture' ||
+          n == 'gallery' ||
+          n.contains('recent') ||
+          n == 'последние' ||
+          n.startsWith('последн') ||
+          n == 'картинки' ||
+          n == 'изображения' ||
+          n == 'все фото' ||
+          n == 'все';
+    }
+
+    return albums.isNotEmpty && albums.every((a) => a.isAll || isGeneric(a.name));
+  }
+
+  Future<void> _openFullAccessSettings() async {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Нужен доступ ко всем фото'),
+        content: const Text(
+          'Сейчас приложение видит только выбранные снимки '
+          '(обычно «Recent» / «Pictures»).\n\n'
+          'В настройках выберите «Разрешить всегда» / «Все фото», '
+          'чтобы появились Камера, Скриншоты, WhatsApp и другие альбомы.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Позже'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Открыть настройки'),
+          ),
+        ],
+      ),
+    );
+    if (go == true) {
+      await PhotoManager.openSetting();
     }
   }
 
@@ -153,21 +231,25 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
     for (final path in albums) {
       try {
         final count = await path.assetCountAsync;
-        if (count > 0 || path.isAll) {
-          withCounts.add((path: path, count: count));
-        }
+        // Не отбрасываем «пустые» системные альбомы при полном доступе —
+        // при limited count часто 0 у Camera/WhatsApp, хотя альбом есть.
+        withCounts.add((path: path, count: count));
       } catch (_) {
         withCounts.add((path: path, count: 0));
       }
     }
 
-    withCounts.sort((a, b) {
+    // При полном доступе прячем реально пустые; isAll оставляем всегда.
+    final visible = withCounts.where((e) => e.path.isAll || e.count > 0).toList();
+    final useList = visible.isNotEmpty ? visible : withCounts;
+
+    useList.sort((a, b) {
       if (a.path.isAll != b.path.isAll) return a.path.isAll ? -1 : 1;
       final byCount = b.count.compareTo(a.count);
       if (byCount != 0) return byCount;
       return a.path.name.toLowerCase().compareTo(b.path.name.toLowerCase());
     });
-    return withCounts.map((e) => e.path).toList();
+    return useList.map((e) => e.path).toList();
   }
 
   Future<void> _pickAlbum() async {
@@ -457,22 +539,47 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
               const Spacer(),
               if (_limitedAccess)
                 TextButton(
-                  onPressed: () async {
-                    await PhotoManager.presentLimited(type: RequestType.common);
-                    await _bootstrap();
-                  },
-                  child: const Text('Ещё фото'),
+                  onPressed: _openFullAccessSettings,
+                  child: const Text('Все фото'),
                 ),
             ],
           ),
         ),
         if (_limitedAccess)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: Text(
-              'Доступ ограничен: видны не все альбомы. Нажмите «Ещё фото» или разрешите полный доступ в настройках.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+          Material(
+            color: theme.colorScheme.secondaryContainer.withValues(alpha: 0.55),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Виден ограниченный доступ (${_albums.length} альбома). '
+                    'Камера, WhatsApp, скриншоты появятся после «Разрешить все фото» в настройках Android.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      FilledButton(
+                        onPressed: _openFullAccessSettings,
+                        child: const Text('Открыть настройки'),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: () async {
+                          await PhotoManager.presentLimited(
+                            type: RequestType.common,
+                          );
+                          await _bootstrap();
+                        },
+                        child: const Text('Выбрать ещё'),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
