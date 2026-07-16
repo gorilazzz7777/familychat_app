@@ -124,6 +124,7 @@ class CalendarPhotoSyncService {
   }
 
   /// Фоновая загрузка с камеры — только во временный альбом.
+  /// Берём альбом Camera (или аналог); если такого нет — все фото.
   Future<int> syncAndroidCameraPhotos({
     required int userId,
     required CalendarPhotoSyncInfo info,
@@ -140,15 +141,7 @@ class CalendarPhotoSyncService {
       type: RequestType.image,
       onlyAll: false,
     );
-    AssetPathEntity? cameraPath;
-    for (final path in paths) {
-      final name = path.name.toLowerCase();
-      if (name.contains('camera') || name == 'камера') {
-        cameraPath = path;
-        break;
-      }
-    }
-    cameraPath ??= paths.isNotEmpty ? paths.first : null;
+    final cameraPath = _resolveAndroidCameraPath(paths);
     if (cameraPath == null) return 0;
 
     final count = await cameraPath.assetCountAsync;
@@ -225,6 +218,72 @@ class CalendarPhotoSyncService {
     }
     onProgress?.call(candidates.length, candidates.length);
     return uploaded;
+  }
+
+  /// Предпочитаем папку Camera / аналоги; иначе — альбом «все фото».
+  static AssetPathEntity? _resolveAndroidCameraPath(List<AssetPathEntity> paths) {
+    if (paths.isEmpty) return null;
+
+    AssetPathEntity? best;
+    var bestScore = 0;
+    for (final path in paths) {
+      if (path.isAll) continue;
+      final score = _cameraAlbumScore(path.name);
+      if (score > bestScore) {
+        bestScore = score;
+        best = path;
+      }
+    }
+    if (best != null) return best;
+
+    for (final path in paths) {
+      if (path.isAll) return path;
+    }
+    return paths.first;
+  }
+
+  static int _cameraAlbumScore(String rawName) {
+    final name = rawName.toLowerCase().trim();
+    if (name.isEmpty) return 0;
+
+    const blocked = <String>[
+      'screenshot',
+      'screenshots',
+      'скрин',
+      'снимок экрана',
+      'whatsapp',
+      'telegram',
+      'download',
+      'downloads',
+      'загруз',
+      'bluetooth',
+    ];
+    for (final b in blocked) {
+      if (name.contains(b)) return 0;
+    }
+
+    const exact = <String>{
+      'camera',
+      'камера',
+      'dcim',
+      'cámara',
+      'camara',
+      'kamera',
+      'fotocamera',
+      'appareil photo',
+      'カメラ',
+      '相机',
+      '相機',
+    };
+    if (exact.contains(name)) return 100;
+    if (name == 'camera roll' || name == 'плёнка' || name == 'пленка') {
+      return 90;
+    }
+    if (name.contains('dcim') && name.contains('camera')) return 95;
+    if (RegExp(r'(^|[\s/_-])camera([\s/_-]|$)').hasMatch(name)) return 85;
+    if (name.contains('camera') || name.contains('камер')) return 70;
+    if (name.contains('dcim')) return 50;
+    return 0;
   }
 
   Future<List<CalendarDevicePhoto>> pickWebPhotosWithDateFilter(
