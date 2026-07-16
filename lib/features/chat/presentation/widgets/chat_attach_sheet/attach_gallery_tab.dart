@@ -33,6 +33,7 @@ class AttachGalleryTab extends StatefulWidget {
 class _AttachGalleryTabState extends State<AttachGalleryTab> {
   bool _loading = true;
   String? _error;
+  bool _limitedAccess = false;
   List<AssetPathEntity> _albums = [];
   AssetPathEntity? _album;
   final List<AssetEntity> _assets = [];
@@ -73,7 +74,14 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
       _error = null;
     });
     try {
-      final perm = await PhotoManager.requestPermissionExtend();
+      final perm = await PhotoManager.requestPermissionExtend(
+        requestOption: const PermissionRequestOption(
+          androidPermission: AndroidPermission(
+            type: RequestType.common,
+            mediaLocation: true,
+          ),
+        ),
+      );
       if (!perm.isAuth && !perm.hasAccess) {
         if (!mounted) return;
         setState(() {
@@ -82,23 +90,22 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
         });
         return;
       }
-      final paths = await PhotoManager.getAssetPathList(
-        type: RequestType.common,
-        onlyAll: false,
-      );
-      AssetPathEntity? all;
+
+      final paths = await _loadAllAlbums();
+      AssetPathEntity? preferred;
       for (final p in paths) {
         if (p.isAll) {
-          all = p;
+          preferred = p;
           break;
         }
       }
-      all ??= paths.isNotEmpty ? paths.first : null;
+      preferred ??= paths.isNotEmpty ? paths.first : null;
       if (!mounted) return;
       setState(() {
         _albums = paths;
-        _album = all;
+        _album = preferred;
         _loading = false;
+        _limitedAccess = perm == PermissionState.limited;
       });
       await _reloadAssets();
     } catch (e) {
@@ -108,6 +115,118 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
         _error = 'Не удалось открыть галерею';
       });
     }
+  }
+
+  Future<List<AssetPathEntity>> _loadAllAlbums() async {
+    final filter = FilterOptionGroup(
+      imageOption: const FilterOption(
+        sizeConstraint: SizeConstraint(ignoreSize: true),
+      ),
+      videoOption: const FilterOption(
+        sizeConstraint: SizeConstraint(ignoreSize: true),
+      ),
+      orders: [
+        const OrderOption(type: OrderOptionType.createDate, asc: false),
+      ],
+    );
+
+    final byId = <String, AssetPathEntity>{};
+
+    Future<void> addFrom(RequestType type) async {
+      final list = await PhotoManager.getAssetPathList(
+        type: type,
+        hasAll: true,
+        onlyAll: false,
+        filterOption: filter,
+      );
+      for (final path in list) {
+        byId.putIfAbsent(path.id, () => path);
+      }
+    }
+
+    await addFrom(RequestType.common);
+    await addFrom(RequestType.image);
+    await addFrom(RequestType.video);
+
+    final albums = byId.values.toList();
+    final withCounts = <({AssetPathEntity path, int count})>[];
+    for (final path in albums) {
+      try {
+        final count = await path.assetCountAsync;
+        if (count > 0 || path.isAll) {
+          withCounts.add((path: path, count: count));
+        }
+      } catch (_) {
+        withCounts.add((path: path, count: 0));
+      }
+    }
+
+    withCounts.sort((a, b) {
+      if (a.path.isAll != b.path.isAll) return a.path.isAll ? -1 : 1;
+      final byCount = b.count.compareTo(a.count);
+      if (byCount != 0) return byCount;
+      return a.path.name.toLowerCase().compareTo(b.path.name.toLowerCase());
+    });
+    return withCounts.map((e) => e.path).toList();
+  }
+
+  Future<void> _pickAlbum() async {
+    if (_albums.isEmpty) return;
+    final chosen = await showModalBottomSheet<AssetPathEntity>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: SizedBox(
+            height: MediaQuery.sizeOf(ctx).height * 0.55,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: Text(
+                    'Альбомы',
+                    style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: _albums.length,
+                    itemBuilder: (context, i) {
+                      final album = _albums[i];
+                      return FutureBuilder<int>(
+                        future: album.assetCountAsync,
+                        builder: (context, snap) {
+                          final count = snap.data;
+                          final title = album.isAll
+                              ? (album.name.trim().isEmpty
+                                  ? 'Все фото'
+                                  : album.name)
+                              : album.name;
+                          return ListTile(
+                            title: Text(title),
+                            subtitle: count == null ? null : Text('$count'),
+                            trailing: album.id == _album?.id
+                                ? const Icon(Icons.check)
+                                : null,
+                            onTap: () => Navigator.pop(ctx, album),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (chosen == null || !mounted) return;
+    setState(() => _album = chosen);
+    await _reloadAssets();
   }
 
   Future<void> _reloadAssets() async {
@@ -134,30 +253,6 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
     } catch (_) {
       if (mounted) setState(() => _loadingMore = false);
     }
-  }
-
-  Future<void> _pickAlbum() async {
-    if (_albums.isEmpty) return;
-    final chosen = await showModalBottomSheet<AssetPathEntity>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: ListView(
-          children: [
-            for (final album in _albums)
-              ListTile(
-                title: Text(album.name),
-                trailing: album.id == _album?.id
-                    ? const Icon(Icons.check)
-                    : null,
-                onTap: () => Navigator.pop(ctx, album),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (chosen == null || !mounted) return;
-    setState(() => _album = chosen);
-    await _reloadAssets();
   }
 
   bool _isSelected(String id) => widget.selected.any((e) => e.id == id);
@@ -344,17 +439,41 @@ class _AttachGalleryTabState extends State<AttachGalleryTab> {
 
     return Column(
       children: [
-        if (widget.expanded)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-            child: Row(
-              children: [
-                TextButton.icon(
-                  onPressed: _pickAlbum,
-                  icon: const Icon(Icons.arrow_drop_down),
-                  label: Text(_album?.name ?? 'Галерея'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+          child: Row(
+            children: [
+              TextButton.icon(
+                onPressed: _pickAlbum,
+                icon: const Icon(Icons.arrow_drop_down),
+                label: Text(
+                  _album == null
+                      ? 'Галерея'
+                      : (_album!.isAll && _album!.name.trim().isEmpty
+                          ? 'Все фото'
+                          : _album!.name),
                 ),
-              ],
+              ),
+              const Spacer(),
+              if (_limitedAccess)
+                TextButton(
+                  onPressed: () async {
+                    await PhotoManager.presentLimited(type: RequestType.common);
+                    await _bootstrap();
+                  },
+                  child: const Text('Ещё фото'),
+                ),
+            ],
+          ),
+        ),
+        if (_limitedAccess)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Text(
+              'Доступ ограничен: видны не все альбомы. Нажмите «Ещё фото» или разрешите полный доступ в настройках.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
         Expanded(

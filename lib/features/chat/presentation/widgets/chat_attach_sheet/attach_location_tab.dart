@@ -113,11 +113,14 @@ class _AttachLocationTabState extends State<AttachLocationTab> {
             ),
           )
         else if (_sendPoint != null)
-          ChatLocationMap(
-            sendPoint: _sendPoint!,
-            userPoint: _userPoint,
-            height: mapHeight,
-            onSendPointChanged: (point) => setState(() => _sendPoint = point),
+          SizedBox(
+            width: double.infinity,
+            child: ChatLocationMap(
+              sendPoint: _sendPoint!,
+              userPoint: _userPoint,
+              height: mapHeight,
+              onSendPointChanged: (point) => setState(() => _sendPoint = point),
+            ),
           ),
         const SizedBox(height: 16),
         ListTile(
