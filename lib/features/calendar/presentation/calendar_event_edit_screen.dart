@@ -423,7 +423,8 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                         scheme: scheme,
                         icon: Icons.sync_rounded,
                         title: 'Подтягивать фото с телефона',
-                        subtitle: 'Автоматически добавлять снимки за даты события',
+                        subtitle:
+                            'Только из папки Camera (или аналога) за даты события',
                         value: _autoSyncPhotos,
                         enabled: !_saving,
                         onChanged: (v) => setState(() => _autoSyncPhotos = v),
