@@ -315,7 +315,12 @@ class _MediaProgressDialogState extends State<_MediaProgressDialog> {
         });
         if (mounted) Navigator.of(context).pop(result);
       } catch (e) {
-        if (mounted) Navigator.of(context).pop();
+        if (mounted) {
+          Navigator.of(context).pop();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Ошибка подготовки: $e')),
+          );
+        }
       }
     });
   }

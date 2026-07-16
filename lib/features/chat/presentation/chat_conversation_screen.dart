@@ -169,6 +169,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   final Map<int, Timer> _typingExpiry = {};
   Timer? _typingEmitTimer;
   Timer? _typingStopTimer;
+  Timer? _transcriptPollTimer;
+  final Map<int, int> _transcriptPollAttempts = {};
   bool _typingEmitted = false;
   DateTime? _lastTypingEmitAt;
 
@@ -417,6 +419,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     FamilyChatRealtime.instance.removeListener(_onRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
     ChatScheduledSendService.instance.removeListener(_onScheduledSend);
+    _transcriptPollTimer?.cancel();
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -665,6 +668,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         }
         _messages = chatUpsertMessage(next, map);
       });
+      _maybeScheduleVoiceTranscriptPoll(map);
       _scrollToBottom();
       unawaited(_markLatestRead());
       unawaited(_persistMessageCache());
@@ -780,6 +784,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       });
       unawaited(_persistMessageCache());
       unawaited(_markLatestRead());
+      for (final message in _messages) {
+        _maybeScheduleVoiceTranscriptPoll(message);
+      }
       if (silent || widget.initialMessageId == null) {
         _scrollToBottom(jump: true, settle: true);
       }
@@ -800,6 +807,90 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         });
       }
     }
+  }
+
+  bool _voiceMessageNeedsTranscriptPoll(Map<String, dynamic> message) {
+    if (!_viewerIndividualPremium || !_voiceTranscriptionEnabled) return false;
+    final voice = message['metadata']?['voice'];
+    if (voice is! Map) return false;
+    final text = voice['transcript']?.toString().trim();
+    if (text != null && text.isNotEmpty) return false;
+    final status = voice['transcript_status']?.toString();
+    if (status == 'failed') return false;
+    return true;
+  }
+
+  void _maybeScheduleVoiceTranscriptPoll(Map<String, dynamic> message) {
+    final id = chatAsInt(message['id']);
+    if (id == null || id <= 0) return;
+    if (!_voiceMessageNeedsTranscriptPoll(message)) {
+      _transcriptPollAttempts.remove(id);
+      return;
+    }
+    if (_transcriptPollAttempts.containsKey(id)) return;
+    _transcriptPollAttempts[id] = 0;
+    _ensureTranscriptPollTimer();
+  }
+
+  void _ensureTranscriptPollTimer() {
+    _transcriptPollTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
+      if (_transcriptPollAttempts.isEmpty) {
+        _transcriptPollTimer?.cancel();
+        _transcriptPollTimer = null;
+        return;
+      }
+      unawaited(_pollVoiceTranscripts());
+    });
+  }
+
+  Future<void> _pollVoiceTranscripts() async {
+    if (!mounted || _transcriptPollAttempts.isEmpty) return;
+    const maxAttempts = 15;
+
+    final pendingIds = _transcriptPollAttempts.keys.toList();
+    for (final id in pendingIds) {
+      final count = (_transcriptPollAttempts[id] ?? 0) + 1;
+      if (count > maxAttempts) {
+        _transcriptPollAttempts.remove(id);
+        continue;
+      }
+      _transcriptPollAttempts[id] = count;
+    }
+    if (_transcriptPollAttempts.isEmpty) {
+      _transcriptPollTimer?.cancel();
+      _transcriptPollTimer = null;
+      return;
+    }
+
+    try {
+      final page = await ref.read(familychatRepositoryProvider).threadMessages(
+            widget.threadId,
+            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
+          );
+      if (!mounted) return;
+      var updated = false;
+      for (final incoming in page.messages) {
+        final id = chatAsInt(incoming['id']);
+        if (id == null || !_transcriptPollAttempts.containsKey(id)) continue;
+        if (!_voiceMessageNeedsTranscriptPoll(incoming)) {
+          _transcriptPollAttempts.remove(id);
+        }
+        final idx = _messages.indexWhere((m) => chatAsInt(m['id']) == id);
+        if (idx >= 0) {
+          final currentVoice = _messages[idx]['metadata']?['voice'];
+          final incomingVoice = incoming['metadata']?['voice'];
+          if (incomingVoice != currentVoice) {
+            updated = true;
+          }
+        }
+      }
+      if (updated) {
+        setState(() {
+          _messages = chatMergeMessageLists(_messages, page.messages);
+        });
+        unawaited(_persistMessageCache());
+      }
+    } catch (_) {}
   }
 
   List<Map<String, dynamic>> _mergeLatestMessages(
@@ -1109,7 +1200,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     });
   }
 
-  Future<void> _uploadAndSend(
+  Future<bool> _uploadAndSend(
     int tempId, {
     required String caption,
     required List<_OutgoingAttachment> attachments,
@@ -1129,7 +1220,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         replyToMessageId: replyToMessageId,
         mentionedUserIds: mentionedUserIds,
       );
-      return;
+      return true;
     }
     try {
       final ids = <int>[];
@@ -1155,7 +1246,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         voiceDurationMs: voiceDurationMs,
         voiceTranscript: voiceTranscript,
       );
-      if (!mounted) return;
+      if (!mounted) return true;
       _replaceOptimisticMessage(tempId, msg);
       _scrollToBottom();
       await _persistMessageCache();
@@ -1171,8 +1262,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           unawaited(_pollFaceTaggingPrompt(ids[i]));
         }
       }
+      return true;
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) return false;
       if (ChatNetworkStatus.looksOffline(error)) {
         await _enqueueOfflineMessage(
           tempId: tempId,
@@ -1181,12 +1273,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           replyToMessageId: replyToMessageId,
           mentionedUserIds: mentionedUserIds,
         );
-        return;
+        return true;
       }
       _markOptimisticFailed(tempId);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Не удалось отправить сообщение')),
       );
+      return false;
     }
   }
 
@@ -1339,7 +1432,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     List<MediaUploadDraft> drafts,
   ) async {
     final uploadable = drafts.where((d) => d.canUpload).toList();
-    if (uploadable.isEmpty) return;
+    if (uploadable.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Нет файлов для отправки (проверьте размер видео)'),
+          ),
+        );
+      }
+      return;
+    }
 
     final tempId = _nextTempId();
     _addOptimisticMessage(
@@ -1357,7 +1459,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ],
     );
 
-    await _uploadAndSend(
+    final ok = await _uploadAndSend(
       tempId,
       caption: caption,
       attachments: [
@@ -1371,6 +1473,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           ),
       ],
     );
+    if (!ok) {
+      throw StateError('upload failed');
+    }
   }
 
   // ignore: unused_element — kept for share/legacy callers
@@ -1402,9 +1507,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       onProgress(base, 'Файл ${i + 1}/${files.length}…');
       final bytes = await readAlbumUploadFileBytes(f);
       if (bytes == null || bytes.isEmpty) continue;
+      final contentType = contentTypeForFilename(f.name);
       final kind = mediaDraftKindFor(
         filename: f.name,
-        contentType: f.extension != null ? null : null,
+        contentType: contentType,
         bytes: bytes,
       );
       if (kind == MediaDraftKind.video) {
@@ -1424,13 +1530,55 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             bytes: bytes,
             filename: f.name,
             contentType:
-                _imageContentTypeForFilename(f.name) ?? 'image/jpeg',
+                _imageContentTypeForFilename(f.name) ?? contentType,
+          ),
+        );
+      } else {
+        drafts.add(
+          MediaUploadDraft(
+            id: 'f_${DateTime.now().microsecondsSinceEpoch}_$i',
+            kind: MediaDraftKind.file,
+            filename: f.name,
+            contentType: contentType,
+            originalBytes: bytes,
+            preparedBytes: bytes,
           ),
         );
       }
     }
     return drafts;
   }
+
+  Future<FilePickerResult?> _pickChatPlatformFiles({
+    required bool allowMultiple,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+  }) {
+    return FilePicker.platform.pickFiles(
+      allowMultiple: allowMultiple,
+      type: type,
+      allowedExtensions: allowedExtensions,
+      withData: !kIsWeb,
+      withReadStream: kIsWeb,
+      readSequential: kIsWeb,
+    );
+  }
+
+  static const List<String> _webGalleryExtensions = [
+    'jpg',
+    'jpeg',
+    'png',
+    'webp',
+    'gif',
+    'heic',
+    'heif',
+    'mp4',
+    'mov',
+    'webm',
+    'm4v',
+    '3gp',
+    'avi',
+  ];
 
   Future<void> _openMediaDraftsFlow(List<MediaUploadDraft> drafts) async {
     if (drafts.isEmpty || !mounted) return;
@@ -1480,10 +1628,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         if (point == null || !mounted) return;
         await _sendLocationMessage(point);
       } else if (action == 'file') {
-        final picked = await FilePicker.platform.pickFiles(
-          withData: kIsWeb,
-          allowMultiple: true,
-        );
+        final picked = await _pickChatPlatformFiles(allowMultiple: true);
         if (picked == null || picked.files.isEmpty) return;
         if (picked.files.length == 1) {
           final f = picked.files.first;
@@ -1509,10 +1654,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         await _uploadAndSend(_nextTempId(), caption: '', attachments: atts);
       } else if (action == 'gallery') {
         // file_picker: фото+видео; image_picker на Android может обнулить GPS у фото.
-        final picked = await FilePicker.platform.pickFiles(
+        // На web FileType.media ненадёжен — custom extensions + readStream.
+        final picked = await _pickChatPlatformFiles(
           allowMultiple: true,
-          withData: kIsWeb,
-          type: FileType.media,
+          type: kIsWeb ? FileType.custom : FileType.media,
+          allowedExtensions: kIsWeb ? _webGalleryExtensions : null,
         );
         if (picked == null || picked.files.isEmpty) return;
         final drafts = await showMediaProgressDialog<List<MediaUploadDraft>>(
@@ -1523,7 +1669,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             onProgress: report,
           ),
         );
-        if (drafts == null || drafts.isEmpty || !mounted) return;
+        if (!mounted) return;
+        if (drafts == null || drafts.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Не удалось прочитать выбранные файлы'),
+            ),
+          );
+          return;
+        }
         await _openMediaDraftsFlow(drafts);
       } else {
         // Камера: фото или видео (системная камера в выбранном режиме).
