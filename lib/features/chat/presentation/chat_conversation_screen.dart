@@ -1564,22 +1564,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
   }
 
-  static const List<String> _webGalleryExtensions = [
-    'jpg',
-    'jpeg',
-    'png',
-    'webp',
-    'gif',
-    'heic',
-    'heif',
-    'mp4',
-    'mov',
-    'webm',
-    'm4v',
-    '3gp',
-    'avi',
-  ];
-
   Future<void> _openMediaDraftsFlow(List<MediaUploadDraft> drafts) async {
     if (drafts.isEmpty || !mounted) return;
     await ChatMediaDraftsSheet.show(
@@ -1654,12 +1638,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         await _uploadAndSend(_nextTempId(), caption: '', attachments: atts);
       } else if (action == 'gallery') {
         // file_picker: фото+видео; image_picker на Android может обнулить GPS у фото.
-        // На web FileType.media ненадёжен — custom extensions + readStream.
-        final picked = await _pickChatPlatformFiles(
-          allowMultiple: true,
-          type: kIsWeb ? FileType.custom : FileType.media,
-          allowedExtensions: kIsWeb ? _webGalleryExtensions : null,
-        );
+        // На web withReadStream часто даёт пустые bytes — для галереи грузим withData.
+        final picked = kIsWeb
+            ? await FilePicker.platform.pickFiles(
+                allowMultiple: true,
+                type: FileType.media,
+                withData: true,
+                readSequential: true,
+              )
+            : await _pickChatPlatformFiles(
+                allowMultiple: true,
+                type: FileType.media,
+              );
         if (picked == null || picked.files.isEmpty) return;
         final drafts = await showMediaProgressDialog<List<MediaUploadDraft>>(
           context: context,

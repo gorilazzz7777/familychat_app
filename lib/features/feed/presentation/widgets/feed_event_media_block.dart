@@ -1,8 +1,12 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/providers/app_providers.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../chat/presentation/widgets/chat_network_image.dart';
 
@@ -11,7 +15,7 @@ import '../../../chat/presentation/widgets/chat_network_image.dart';
 /// - одно фото → рамка по его aspect (clamp 4:5 … ~16:9);
 /// - карусель → по самому «высокому» (меньший w/h);
 /// - [BoxFit.cover] — без серых полос.
-class FeedEventMediaBlock extends StatefulWidget {
+class FeedEventMediaBlock extends ConsumerStatefulWidget {
   const FeedEventMediaBlock({
     super.key,
     required this.photos,
@@ -30,10 +34,11 @@ class FeedEventMediaBlock extends StatefulWidget {
   static const double fallbackAspect = 1.0;
 
   @override
-  State<FeedEventMediaBlock> createState() => _FeedEventMediaBlockState();
+  ConsumerState<FeedEventMediaBlock> createState() =>
+      _FeedEventMediaBlockState();
 }
 
-class _FeedEventMediaBlockState extends State<FeedEventMediaBlock> {
+class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
   late final PageController _pageController;
   late int _index;
   late List<double?> _aspects;
@@ -136,9 +141,32 @@ class _FeedEventMediaBlockState extends State<FeedEventMediaBlock> {
     final cached = _aspectCache[key];
     if (cached != null) return cached;
 
+    if (isVideoAttachment(photo)) return FeedEventMediaBlock.fallbackAspect;
+
+    final threadId = photo['thread_id'] is int
+        ? photo['thread_id'] as int
+        : int.tryParse('${photo['thread_id']}');
+    final rawId = photo['id'] ?? photo['attachment_id'];
+    final attachmentId = rawId is int ? rawId : int.tryParse('$rawId');
+
+    if (kIsWeb && threadId != null && attachmentId != null) {
+      try {
+        final bytes = await ref
+            .read(familychatRepositoryProvider)
+            .fetchChatAttachmentBytes(threadId, attachmentId);
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        final w = frame.image.width.toDouble();
+        final h = frame.image.height.toDouble();
+        frame.image.dispose();
+        if (w > 0 && h > 0) return w / h;
+      } catch (_) {
+        return null;
+      }
+    }
+
     final url = _photoUrl(photo);
     if (url.isEmpty) return null;
-    if (isVideoAttachment(photo)) return FeedEventMediaBlock.fallbackAspect;
 
     final provider = NetworkImage(url);
     final completer = Completer<double?>();
