@@ -27,7 +27,10 @@ abstract final class ChatOfflinePrefetch {
         final threadId = chatAsInt(thread['id']);
         if (threadId == null) continue;
         try {
-          final page = await repo.threadMessages(threadId, limit: 30);
+          final page = await repo.threadMessages(
+            threadId,
+            limit: FamilyChatLocalCache.initialMessagesPageSize,
+          );
           await FamilyChatLocalCache.saveThreadMessages(threadId, page.messages);
           await _prefetchMessageMedia(repo, threadId, page.messages);
         } catch (_) {}

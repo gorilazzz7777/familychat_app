@@ -767,20 +767,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       });
     }
     try {
+      // Сначала 10 — быстрая отрисовка текста/рамок; ещё 20 — в фоне.
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
             widget.threadId,
-            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
+            limit: FamilyChatLocalCache.initialMessagesPageSize,
           );
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
-        if (silent && _messages.length > FamilyChatLocalCache.maxCachedMessagesPerThread) {
+        if (silent &&
+            _messages.length > FamilyChatLocalCache.maxCachedMessagesPerThread) {
           _messages = _mergeLatestMessages(_messages, page.messages);
         } else if (silent) {
           _messages = chatMergeMessageLists(_messages, page.messages);
         } else {
           _messages = sortChatMessages(page.messages);
         }
-        _hasMoreOlder = page.hasMore;
+        _hasMoreOlder = page.hasMore ||
+            (silent &&
+                _messages.length >
+                    FamilyChatLocalCache.initialMessagesPageSize);
         _voiceTranscriptionEnabled = page.voiceTranscriptionEnabled;
         _loading = false;
         _loadError = null;
@@ -796,6 +801,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (silent || widget.initialMessageId == null) {
         _scrollToBottom(jump: true, settle: true);
       }
+      unawaited(_backfillOlderMessages(generation));
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
       if (_messages.isNotEmpty) {
@@ -812,6 +818,83 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           );
         });
       }
+    }
+  }
+
+  /// Догружает до [maxCachedMessagesPerThread] более старые сообщения в фоне.
+  Future<void> _backfillOlderMessages(int generation) async {
+    final target = FamilyChatLocalCache.maxCachedMessagesPerThread;
+    final pageSize = FamilyChatLocalCache.backfillMessagesPageSize;
+    if (!mounted || generation != _loadGeneration) return;
+    if (_messages.length >= target) return;
+    if (!_hasMoreOlder) return;
+
+    final oldestId = chatAsInt(_messages.first['id']);
+    if (oldestId == null || oldestId <= 0) return;
+
+    final need = (target - _messages.length).clamp(1, pageSize);
+    try {
+      final page = await ref.read(familychatRepositoryProvider).threadMessages(
+            widget.threadId,
+            limit: need,
+            beforeId: oldestId,
+          );
+      if (!mounted || generation != _loadGeneration) return;
+
+      final existingIds =
+          _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+      final older = page.messages.where((m) {
+        final id = chatAsInt(m['id']);
+        return id != null && !existingIds.contains(id);
+      }).toList();
+      if (older.isEmpty && !page.hasMore) {
+        setState(() => _hasMoreOlder = false);
+        return;
+      }
+      if (older.isEmpty) return;
+
+      final previousExtent = _scrollController.hasClients
+          ? _scrollController.position.maxScrollExtent
+          : 0.0;
+      final previousPixels = _scrollController.hasClients
+          ? _scrollController.position.pixels
+          : 0.0;
+      final anchorPixels = previousPixels;
+      final anchorExtent = previousExtent;
+
+      setState(() {
+        _messages = sortChatMessages([...older, ..._messages]);
+        if (_messages.length > target) {
+          _messages = _messages.sublist(_messages.length - target);
+        }
+        _hasMoreOlder = page.hasMore;
+      });
+      unawaited(_persistMessageCache());
+      for (final message in older) {
+        _maybeScheduleVoiceTranscriptPoll(message);
+      }
+
+      // Внизу чата — остаёмся внизу; иначе компенсируем рост списка сверху.
+      if (_scrollController.hasClients) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scrollController.hasClients) return;
+          final nearBottom =
+              anchorExtent <= 0 || anchorPixels >= anchorExtent - 80;
+          if (nearBottom) {
+            _scrollToBottom(jump: true);
+            return;
+          }
+          final newExtent = _scrollController.position.maxScrollExtent;
+          final delta = newExtent - anchorExtent;
+          if (delta > 0) {
+            _scrollController.jumpTo(
+              (anchorPixels + delta).clamp(0.0, newExtent),
+            );
+          }
+        });
+      }
+    } catch (_) {
+      // Фоновая догрузка не блокирует чат.
     }
   }
 
@@ -871,7 +954,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     try {
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
             widget.threadId,
-            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
+            limit: FamilyChatLocalCache.initialMessagesPageSize,
           );
       if (!mounted) return;
       var updated = false;

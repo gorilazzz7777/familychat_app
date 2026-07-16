@@ -12,6 +12,10 @@ import '../../features/chat/data/chat_realtime_utils.dart';
 abstract final class FamilyChatLocalCache {
   static const _cacheDirName = 'familychat_local_cache';
   static const messageRetentionDays = 20;
+  /// Быстрая первая страница при открытии чата.
+  static const initialMessagesPageSize = 10;
+  /// Догрузка старше в фоне после первой отрисовки (10+20=30).
+  static const backfillMessagesPageSize = 20;
   static const maxCachedMessagesPerThread = 30;
   static const maxCachedFeedEvents = 90;
   static const maxCachedAttachmentBytes = 2 * 1024 * 1024;
