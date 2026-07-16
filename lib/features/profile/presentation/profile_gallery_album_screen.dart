@@ -15,6 +15,7 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../calendar/data/calendar_photo_sync_service.dart';
 import '../../calendar/presentation/calendar_photo_pick_confirm_screen.dart';
+import '../../calendar/presentation/calendar_staging_review_screen.dart';
 import '../data/album_upload_coordinator.dart';
 import 'album_upload_file_bytes.dart';
 import 'read_picked_image_bytes.dart';
@@ -280,20 +281,28 @@ class _ProfileGalleryAlbumScreenState
     try {
       final uploaded = await service.uploadDevicePhotos(
         userId: widget.userId,
-        albumPk: pk,
+        info: info,
         photos: selected,
-        alreadySynced: info.syncedDeviceAssetIds,
       );
       final refreshed = await service.fetchAlbumSyncInfo(pk);
       if (!mounted) return;
       setState(() => _calendarSyncInfo = refreshed ?? info);
       if (uploaded > 0) {
         await _load(reset: true);
+        if (!mounted) return;
+        final reviewInfo = refreshed ?? info;
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => CalendarStagingReviewScreen(info: reviewInfo),
+          ),
+        );
+        await _initCalendarPhotoSync();
+        await _load(reset: true);
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось загрузить фото')),
+        );
       }
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Загружено фото: $uploaded')),
-      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -311,8 +320,11 @@ class _ProfileGalleryAlbumScreenState
     final isAndroid = CalendarPhotoSyncService.isAndroidNative;
     final showWebUpload = kIsWeb;
     final showAndroidSync = isAndroid && info.syncActive;
+    final pending = info.pendingReviewCount;
 
-    if (!showWebUpload && !showAndroidSync) return const SizedBox.shrink();
+    if (!showWebUpload && !showAndroidSync && pending <= 0) {
+      return const SizedBox.shrink();
+    }
 
     return Material(
       color: Theme.of(context)
@@ -321,35 +333,70 @@ class _ProfileGalleryAlbumScreenState
           .withValues(alpha: 0.5),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
-              child: Text(
-                info.autoSyncPhotos && isAndroid
-                    ? 'Альбом события: фото с камеры подтягиваются автоматически'
-                    : 'Альбом события: можно добавить фото с телефона',
-                style: Theme.of(context).textTheme.bodySmall,
+            if (pending > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'На проверке: $pending фото',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                    ),
+                    FilledButton.tonal(
+                      onPressed: () async {
+                        await Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) =>
+                                CalendarStagingReviewScreen(info: info),
+                          ),
+                        );
+                        await _initCalendarPhotoSync();
+                        await _load(reset: true);
+                      },
+                      child: const Text('Проверить'),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            if (showWebUpload)
-              TextButton(
-                onPressed: _addingPhotos || _calendarSyncRunning
-                    ? null
-                    : _uploadCalendarPhotosFromPhone,
-                child: const Text('Загрузить'),
-              ),
-            if (showAndroidSync)
-              TextButton(
-                onPressed: _addingPhotos || _calendarSyncRunning
-                    ? null
-                    : () => _runCalendarAndroidSync(),
-                child: _calendarSyncRunning
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Синхронизировать'),
+            if (showWebUpload || showAndroidSync)
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      info.autoSyncPhotos && isAndroid
+                          ? 'Альбом события: фото сначала во временный альбом, потом после проверки — в общий'
+                          : 'Альбом события: можно добавить фото с телефона',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  if (showWebUpload)
+                    TextButton(
+                      onPressed: _addingPhotos || _calendarSyncRunning
+                          ? null
+                          : _uploadCalendarPhotosFromPhone,
+                      child: const Text('Загрузить'),
+                    ),
+                  if (showAndroidSync)
+                    TextButton(
+                      onPressed: _addingPhotos || _calendarSyncRunning
+                          ? null
+                          : () => _runCalendarAndroidSync(),
+                      child: _calendarSyncRunning
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Синхронизировать'),
+                    ),
+                ],
               ),
           ],
         ),

@@ -20,6 +20,7 @@ import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
 import '../core/theme/theme_seed_controller.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
+import '../features/onboarding/presentation/family_transfer_flow.dart';
 import 'shell_screen.dart';
 import 'push_permission_prompt.dart';
 import 'app_actions_scope.dart';
@@ -43,6 +44,8 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   String? _pendingInvite;
   String? _pendingFriendInvite;
   bool _friendInviteHandling = false;
+  bool _familyTransferHandling = false;
+  Map<String, dynamic>? _transferOnboardingSession;
 
   final _appLinks = AppLinks();
   StreamSubscription<String>? _accessSub;
@@ -94,6 +97,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_pendingInviteKey, token);
     if (mounted) setState(() => _pendingInvite = token);
+    if (_ready) {
+      unawaited(_maybeHandleFamilyTransfer());
+    }
   }
 
   Future<void> _consumePendingInvite() async {
@@ -236,6 +242,54 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     _syncAppActions();
     if (_ready) {
       unawaited(_maybeHandleFriendInvite());
+      unawaited(_maybeHandleFamilyTransfer());
+    }
+  }
+
+  Future<void> _maybeHandleFamilyTransfer() async {
+    final token = _pendingInvite;
+    if (token == null ||
+        token.isEmpty ||
+        _familyTransferHandling ||
+        !_ready) {
+      return;
+    }
+    _familyTransferHandling = true;
+    try {
+      final result = await confirmAndTransferFamilyInvite(
+        context,
+        ref.read(familychatRepositoryProvider),
+        token,
+      );
+      await _clearPendingInvite();
+      if (!mounted || result == null) return;
+      if (result['needs_profile'] == true) {
+        // Профиль отсутствует — обычный онбординг по invite.
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_pendingInviteKey, token);
+        setState(() {
+          _ready = false;
+          _transferOnboardingSession = null;
+          _pendingInvite = token;
+        });
+        return;
+      }
+      final questions =
+          (result['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      final sessionId = result['onboarding_session_id'] as int?;
+      if (sessionId == null) {
+        await _boot();
+        return;
+      }
+      setState(() {
+        _ready = false;
+        _transferOnboardingSession = {
+          'onboarding_session_id': sessionId,
+          'questions': questions,
+        };
+      });
+    } finally {
+      _familyTransferHandling = false;
     }
   }
 
@@ -320,6 +374,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       _checking = false;
       _pendingInvite = null;
       _pendingFriendInvite = null;
+      _transferOnboardingSession = null;
     });
   }
 
@@ -348,11 +403,15 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     return PushPermissionPrompt(
       child: !_ready
           ? OnboardingScreen(
-              onComplete: _boot,
+              onComplete: () {
+                setState(() => _transferOnboardingSession = null);
+                _boot();
+              },
               onLogout: _logout,
               pendingInviteToken: _pendingInvite,
               pendingFriendInviteToken: _pendingFriendInvite,
               onPendingInviteCleared: _clearPendingInvite,
+              transferSession: _transferOnboardingSession,
             )
           : ShellScreen(
               status: _status!,

@@ -168,9 +168,17 @@ class FamilyChatRepository {
     return res.data!;
   }
 
-  Future<Map<String, dynamic>> acceptInvite(String token) async {
+  Future<Map<String, dynamic>> acceptInvite(
+    String token, {
+    bool confirmTransfer = false,
+  }) async {
+    final data = <String, dynamic>{};
+    if (confirmTransfer) {
+      data['confirm_transfer'] = true;
+    }
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/invite/$token/accept/',
+      data: data.isEmpty ? null : data,
     );
     return res.data!;
   }
@@ -341,11 +349,16 @@ class FamilyChatRepository {
 
   Future<Map<String, dynamic>> registerCalendarSyncedAssets(
     int albumPk,
-    List<String> deviceAssetIds,
-  ) async {
+    List<String> deviceAssetIds, {
+    Map<String, int>? attachmentIdsByDevice,
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/calendar/albums/$albumPk/photo-sync/',
-      data: {'device_asset_ids': deviceAssetIds},
+      data: {
+        'device_asset_ids': deviceAssetIds,
+        if (attachmentIdsByDevice != null && attachmentIdsByDevice.isNotEmpty)
+          'attachment_ids_by_device': attachmentIdsByDevice,
+      },
     );
     return res.data!;
   }
@@ -355,6 +368,42 @@ class FamilyChatRepository {
       'familychat/calendar/photo-sync/active/',
     );
     return (res.data?['events'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+  }
+
+  Future<List<Map<String, dynamic>>> pendingCalendarPhotoReviews() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/calendar/photo-sync/pending-review/',
+    );
+    return (res.data?['events'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+  }
+
+  Future<Map<String, dynamic>> fetchCalendarStagingPhotos(int eventId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/calendar/events/$eventId/staging/photos/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> promoteCalendarStagingPhotos(
+    int eventId,
+    List<int> attachmentIds,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/calendar/events/$eventId/staging/promote/',
+      data: {'attachment_ids': attachmentIds},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> rejectCalendarStagingPhotos(
+    int eventId,
+    List<int> attachmentIds,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/calendar/events/$eventId/staging/reject/',
+      data: {'attachment_ids': attachmentIds},
+    );
+    return res.data!;
   }
 
   Future<List<Map<String, dynamic>>> chatThreads() async {
@@ -733,6 +782,33 @@ class FamilyChatRepository {
     final res = await _dio.patch<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/notifications/',
       data: {'mute': mute},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> setThreadQuietHours(
+    int threadId, {
+    required String start,
+    required String end,
+    required int utcOffsetMinutes,
+  }) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/notifications/',
+      data: {
+        'quiet_hours': {
+          'start': start,
+          'end': end,
+          'utc_offset_minutes': utcOffsetMinutes,
+        },
+      },
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> clearThreadQuietHours(int threadId) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/notifications/',
+      data: {'quiet_hours': null},
     );
     return res.data!;
   }

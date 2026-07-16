@@ -93,6 +93,26 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   String? _headerAvatarUrl;
   String? _headerSubtitle;
   bool _notificationsEnabled = true;
+  bool _canQuietHours = false;
+  String? _quietHoursStart;
+  String? _quietHoursEnd;
+
+  bool get _hasQuietHoursSchedule =>
+      (_quietHoursStart?.isNotEmpty ?? false) &&
+      (_quietHoursEnd?.isNotEmpty ?? false);
+
+  void _applyNotificationsPayload(Map<String, dynamic> data) {
+    _notificationsEnabled = data['notifications_enabled'] == true;
+    _canQuietHours = data['can_quiet_hours'] == true;
+    final quiet = data['quiet_hours'];
+    if (quiet is Map) {
+      _quietHoursStart = quiet['start']?.toString();
+      _quietHoursEnd = quiet['end']?.toString();
+    } else {
+      _quietHoursStart = null;
+      _quietHoursEnd = null;
+    }
+  }
 
   bool get _showParticipants =>
       (widget.kind == 'group' || widget.kind == 'family') && !widget.hasLeft;
@@ -249,7 +269,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       setState(() {
         _media = (media as List).cast<Map<String, dynamic>>();
         _links = (links as List).cast<Map<String, dynamic>>();
-        _notificationsEnabled = notif['notifications_enabled'] == true;
+        _applyNotificationsPayload(notif);
         if (_showParticipants) {
           _participants = participants;
         }
@@ -272,9 +292,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           .read(familychatRepositoryProvider)
           .threadNotifications(widget.threadId);
       if (!mounted) return;
-      setState(() {
-        _notificationsEnabled = data['notifications_enabled'] == true;
-      });
+      setState(() => _applyNotificationsPayload(data));
     } catch (_) {}
   }
 
@@ -302,6 +320,128 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 ? 'Уведомления включены'
                 : 'Уведомления отключены')),
       );
+      await _refreshNotifications();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка: $e')),
+      );
+    }
+  }
+
+  String _formatHm(TimeOfDay t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  TimeOfDay _parseHm(String? raw, TimeOfDay fallback) {
+    final parts = (raw ?? '').split(':');
+    if (parts.length < 2) return fallback;
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    if (h == null || m == null) return fallback;
+    return TimeOfDay(hour: h.clamp(0, 23), minute: m.clamp(0, 59));
+  }
+
+  Future<void> _editQuietHours() async {
+    var start = _parseHm(_quietHoursStart, const TimeOfDay(hour: 22, minute: 0));
+    var end = _parseHm(_quietHoursEnd, const TimeOfDay(hour: 8, minute: 0));
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            Future<void> pickStart() async {
+              final picked = await showTimePicker(
+                context: ctx,
+                initialTime: start,
+                helpText: 'С какого времени не беспокоить',
+              );
+              if (picked != null) setLocal(() => start = picked);
+            }
+
+            Future<void> pickEnd() async {
+              final picked = await showTimePicker(
+                context: ctx,
+                initialTime: end,
+                helpText: 'До какого времени не беспокоить',
+              );
+              if (picked != null) setLocal(() => end = picked);
+            }
+
+            return AlertDialog(
+              title: const Text('Время без уведомлений'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'В выбранном промежутке уведомления не приходят. '
+                    'Вне промежутка — приходят как обычно.',
+                  ),
+                  const SizedBox(height: 16),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('С'),
+                    trailing: Text(
+                      _formatHm(start),
+                      style: Theme.of(ctx).textTheme.titleMedium,
+                    ),
+                    onTap: pickStart,
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('До'),
+                    trailing: Text(
+                      _formatHm(end),
+                      style: Theme.of(ctx).textTheme.titleMedium,
+                    ),
+                    onTap: pickEnd,
+                  ),
+                ],
+              ),
+              actions: [
+                if (_hasQuietHoursSchedule)
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('Сбросить'),
+                  ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Отмена'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Сохранить'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (!mounted || saved == null) return;
+    try {
+      final repo = ref.read(familychatRepositoryProvider);
+      if (saved) {
+        await repo.setThreadQuietHours(
+          widget.threadId,
+          start: _formatHm(start),
+          end: _formatHm(end),
+          utcOffsetMinutes: DateTime.now().timeZoneOffset.inMinutes,
+        );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Тихие часы: с ${_formatHm(start)} до ${_formatHm(end)}',
+            ),
+          ),
+        );
+      } else {
+        await repo.clearThreadQuietHours(widget.threadId);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Тихие часы сброшены')),
+        );
+      }
       await _refreshNotifications();
     } catch (e) {
       if (!mounted) return;
@@ -746,6 +886,19 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                   Navigator.pop(ctx);
                   _mute('forever');
                 }),
+            if (_canQuietHours)
+              ListTile(
+                title: const Text('Время'),
+                subtitle: Text(
+                  _hasQuietHoursSchedule
+                      ? 'с $_quietHoursStart до $_quietHoursEnd'
+                      : 'Промежуток без уведомлений',
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _editQuietHours();
+                },
+              ),
             ListTile(
                 title: const Text('Включить уведомления'),
                 onTap: () {
@@ -1082,11 +1235,17 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           ),
           const SizedBox(width: 10),
           _TgProfileAction(
-            icon: _notificationsEnabled
+            icon: (_notificationsEnabled && !_hasQuietHoursSchedule)
                 ? Icons.notifications_outlined
                 : Icons.notifications_off_outlined,
             tooltip: 'Звук',
-            onTap: _notificationsEnabled ? _showMuteOptions : () => _mute('off'),
+            onTap: () {
+              if (!_notificationsEnabled && !_hasQuietHoursSchedule) {
+                _mute('off');
+              } else {
+                _showMuteOptions();
+              }
+            },
           ),
           if (_isDm) ...[
             const SizedBox(width: 10),

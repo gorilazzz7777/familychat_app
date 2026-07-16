@@ -24,6 +24,7 @@ class OnboardingScreen extends ConsumerStatefulWidget {
     this.pendingInviteToken,
     this.pendingFriendInviteToken,
     this.onPendingInviteCleared,
+    this.transferSession,
   });
 
   final VoidCallback onComplete;
@@ -31,6 +32,8 @@ class OnboardingScreen extends ConsumerStatefulWidget {
   final String? pendingInviteToken;
   final String? pendingFriendInviteToken;
   final VoidCallback? onPendingInviteCleared;
+  /// После перехода в другую семью — только вопросы родства (без профиля).
+  final Map<String, dynamic>? transferSession;
 
   @override
   ConsumerState<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -63,8 +66,20 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     _inviteToken = widget.pendingInviteToken;
     final friendToken = widget.pendingFriendInviteToken?.trim();
     _fromFriendInvite = friendToken != null && friendToken.isNotEmpty;
-    // Пришли по invite-ссылке — пропускаем экран «Как начать?».
-    if (_inviteToken != null && _inviteToken!.isNotEmpty) {
+    final transfer = widget.transferSession;
+    if (transfer != null) {
+      _joinByInvite = true;
+      _sessionId = transfer['onboarding_session_id'] as int?;
+      _questions =
+          (transfer['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      _step = _OnboardingStep.questions;
+      if (_questions.isEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _completeOnboarding([]);
+        });
+      }
+    } else if (_inviteToken != null && _inviteToken!.isNotEmpty) {
+      // Пришли по invite-ссылке — пропускаем экран «Как начать?».
       _joinByInvite = true;
       _step = _OnboardingStep.profile;
     } else if (_fromFriendInvite) {
@@ -173,7 +188,45 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _continueInviteFlow() async {
     final token = _inviteToken!;
     try {
-      final accept = await ref.read(familychatRepositoryProvider).acceptInvite(token);
+      var accept = await ref.read(familychatRepositoryProvider).acceptInvite(token);
+      if (!mounted) return;
+      if (accept['needs_transfer_confirm'] == true) {
+        final current =
+            accept['current_family_name']?.toString() ?? 'текущей семьи';
+        final target =
+            accept['target_family_name']?.toString() ?? 'новой семьи';
+        final sole = accept['sole_member'] == true;
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Переход в другую семью'),
+            content: Text(
+              sole
+                  ? 'Вы единственный участник «$current». Семья будет удалена.\n\n'
+                      'Перейти в «$target»?'
+                  : 'Покинуть «$current» и перейти в «$target»?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Отмена'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Перейти'),
+              ),
+            ],
+          ),
+        );
+        if (ok != true || !mounted) {
+          setState(() => _loading = false);
+          return;
+        }
+        accept = await ref
+            .read(familychatRepositoryProvider)
+            .acceptInvite(token, confirmTransfer: true);
+        if (!mounted) return;
+      }
       if (accept['needs_profile'] == true) {
         final q = await ref.read(familychatRepositoryProvider).startOnboardingQuestions(token);
         _sessionId = q['onboarding_session_id'] as int?;
@@ -306,7 +359,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Добро пожаловать'),
+        title: Text(
+          widget.transferSession != null
+              ? 'Новая семья'
+              : 'Добро пожаловать',
+        ),
         leading: BackButton(
           onPressed: _loading ? null : widget.onLogout,
         ),
@@ -427,9 +484,13 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           ],
           if (_step == _OnboardingStep.questions) ...[
             Text(
-              _questionRound == 1
-                  ? 'Уточним ваше место в семье:'
-                  : 'Нужно уточнить ещё несколько деталей:',
+              widget.transferSession != null
+                  ? (_questionRound == 1
+                      ? 'Уточним ваше место в новой семье:'
+                      : 'Нужно уточнить ещё несколько деталей:')
+                  : (_questionRound == 1
+                      ? 'Уточним ваше место в семье:'
+                      : 'Нужно уточнить ещё несколько деталей:'),
               style: const TextStyle(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 16),

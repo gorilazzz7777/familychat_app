@@ -5,10 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
-import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../data/chat_hub_tab_order_storage.dart';
 import '../data/chat_unread_providers.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_conversation_screen.dart';
@@ -28,7 +28,7 @@ class ChatHubScreen extends ConsumerStatefulWidget {
 
 class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     with SingleTickerProviderStateMixin {
-  static const _filters = <_ChatFilter>[
+  static const _defaultFilters = <_ChatFilter>[
     _ChatFilter.all,
     _ChatFilter.family,
     _ChatFilter.dm,
@@ -37,6 +37,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   ];
 
   late final TabController _tabController;
+  List<_ChatFilter> _filters = List<_ChatFilter>.of(_defaultFilters);
   List<Map<String, dynamic>> _threads = [];
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
   bool _loading = true;
@@ -63,6 +64,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     _tabController = TabController(length: _filters.length, vsync: this);
     FamilyChatRealtime.instance.addListener(_onRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineSync);
+    unawaited(_restoreTabOrder());
     _load();
   }
 
@@ -73,6 +75,65 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
     _searchController.dispose();
     super.dispose();
+  }
+
+  String _filterLabel(_ChatFilter filter) {
+    return switch (filter) {
+      _ChatFilter.all => 'Все',
+      _ChatFilter.family => 'Семья',
+      _ChatFilter.dm => 'Личные',
+      _ChatFilter.group => 'Группы',
+      _ChatFilter.friends => 'Друзья',
+    };
+  }
+
+  String _filterKey(_ChatFilter filter) => filter.name;
+
+  _ChatFilter? _filterFromKey(String key) {
+    for (final f in _ChatFilter.values) {
+      if (f.name == key) return f;
+    }
+    return null;
+  }
+
+  Future<void> _restoreTabOrder() async {
+    final saved = await ChatHubTabOrderStorage.load();
+    if (!mounted || saved == null || saved.isEmpty) return;
+    final restored = <_ChatFilter>[];
+    for (final key in saved) {
+      final filter = _filterFromKey(key);
+      if (filter != null && !restored.contains(filter)) {
+        restored.add(filter);
+      }
+    }
+    for (final filter in _defaultFilters) {
+      if (!restored.contains(filter)) restored.add(filter);
+    }
+    if (restored.length != _defaultFilters.length) return;
+    final same = restored.length == _filters.length &&
+        List.generate(restored.length, (i) => restored[i] == _filters[i])
+            .every((ok) => ok);
+    if (same) return;
+    setState(() => _filters = restored);
+  }
+
+  Future<void> _persistTabOrder() async {
+    await ChatHubTabOrderStorage.save(_filters.map(_filterKey).toList());
+  }
+
+  void _onReorderTabs(int oldIndex, int newIndex) {
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (oldIndex == newIndex) return;
+    final selected = _filters[_tabController.index];
+    setState(() {
+      final item = _filters.removeAt(oldIndex);
+      _filters.insert(newIndex, item);
+    });
+    final nextIndex = _filters.indexOf(selected);
+    if (nextIndex >= 0 && _tabController.index != nextIndex) {
+      _tabController.index = nextIndex;
+    }
+    unawaited(_persistTabOrder());
   }
 
   void _onOfflineSync() {
@@ -483,20 +544,16 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           ),
         Material(
           color: scheme.surface,
-          child: FamilyTabBar.build(
+          child: _ChatFilterTabBar(
+            filters: _filters,
             controller: _tabController,
+            labelOf: _filterLabel,
+            onReorder: _onReorderTabs,
             labelStyle: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w700,
             ),
             unselectedLabelStyle: theme.textTheme.titleSmall,
             dividerColor: scheme.outlineVariant.withValues(alpha: 0.45),
-            tabs: const [
-              Tab(text: 'Все'),
-              Tab(text: 'Семья'),
-              Tab(text: 'Личные'),
-              Tab(text: 'Группы'),
-              Tab(text: 'Друзья'),
-            ],
           ),
         ),
         Expanded(
@@ -504,6 +561,124 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
             controller: _tabController,
             children: _filters.map(_buildThreadList).toList(),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ChatFilterTabBar extends StatelessWidget {
+  const _ChatFilterTabBar({
+    required this.filters,
+    required this.controller,
+    required this.labelOf,
+    required this.onReorder,
+    this.labelStyle,
+    this.unselectedLabelStyle,
+    this.dividerColor,
+  });
+
+  final List<_ChatFilter> filters;
+  final TabController controller;
+  final String Function(_ChatFilter filter) labelOf;
+  final void Function(int oldIndex, int newIndex) onReorder;
+  final TextStyle? labelStyle;
+  final TextStyle? unselectedLabelStyle;
+  final Color? dividerColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final selectedColor = scheme.primary;
+    final unselectedColor = scheme.onSurfaceVariant;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          height: 46,
+          child: AnimatedBuilder(
+            animation: Listenable.merge([
+              controller,
+              if (controller.animation != null) controller.animation!,
+            ]),
+            builder: (context, _) {
+              final animValue =
+                  controller.animation?.value ?? controller.index.toDouble();
+              return ReorderableListView.builder(
+                scrollDirection: Axis.horizontal,
+                buildDefaultDragHandles: false,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                proxyDecorator: (child, index, animation) {
+                  return AnimatedBuilder(
+                    animation: animation,
+                    builder: (context, _) {
+                      final t = Curves.easeInOut.transform(animation.value);
+                      return Material(
+                        elevation: 2 + 4 * t,
+                        color: scheme.surface,
+                        shadowColor: scheme.shadow.withValues(alpha: 0.28),
+                        borderRadius: BorderRadius.circular(10),
+                        child: child,
+                      );
+                    },
+                  );
+                },
+                onReorder: onReorder,
+                itemCount: filters.length,
+                itemBuilder: (context, index) {
+                  final filter = filters[index];
+                  final selected = animValue.round() == index;
+                  return ReorderableDelayedDragStartListener(
+                    key: ValueKey(filter),
+                    index: index,
+                    child: IntrinsicWidth(
+                      child: InkWell(
+                        onTap: () {
+                          if (controller.index != index) {
+                            controller.animateTo(index);
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          alignment: Alignment.center,
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          decoration: BoxDecoration(
+                            border: Border(
+                              bottom: BorderSide(
+                                width: 3,
+                                color: selected
+                                    ? selectedColor
+                                    : Colors.transparent,
+                              ),
+                            ),
+                          ),
+                          child: Text(
+                            labelOf(filter),
+                            softWrap: false,
+                            overflow: TextOverflow.visible,
+                            style: (selected
+                                    ? labelStyle
+                                    : unselectedLabelStyle)
+                                ?.copyWith(
+                              color: selected
+                                  ? selectedColor
+                                  : unselectedColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+        Divider(
+          height: 1,
+          thickness: 1,
+          color: dividerColor,
         ),
       ],
     );

@@ -16,6 +16,7 @@ import '../core/share/incoming_share_bus.dart';
 import 'app_actions_scope.dart';
 import 'shell_refresh.dart';
 import '../features/calendar/data/calendar_photo_sync_service.dart';
+import '../features/calendar/presentation/calendar_staging_review_screen.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/data/active_chat_context.dart';
 import '../features/chat/data/chat_unread_providers.dart';
@@ -80,10 +81,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       final userId = _currentUserId;
       if (userId != null) {
         unawaited(
-          runActiveAndroidCalendarSync(
-            repo: ref.read(familychatRepositoryProvider),
-            userId: userId,
-          ),
+          _runCalendarSyncAndMaybeReview(userId),
         );
       }
       unawaited(
@@ -125,6 +123,54 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   Future<void> _touchPresence() async {
     await ChatOfflineSync.instance.refreshOnline(
       ref.read(familychatRepositoryProvider),
+    );
+  }
+
+  Future<void> _runCalendarSyncAndMaybeReview(int userId) async {
+    final repo = ref.read(familychatRepositoryProvider);
+    await runActiveAndroidCalendarSync(repo: repo, userId: userId);
+    if (!mounted) return;
+    final service = CalendarPhotoSyncService(repo);
+    if (!await service.shouldShowDailyReviewPrompt()) return;
+    List<CalendarPhotoSyncInfo> pending;
+    try {
+      pending = await service.fetchPendingReviews();
+    } catch (_) {
+      return;
+    }
+    if (!mounted || pending.isEmpty) return;
+    await service.markDailyReviewPromptShown();
+    if (!mounted) return;
+    final first = pending.first;
+    final total = pending.fold<int>(0, (s, e) => s + e.pendingReviewCount);
+    final open = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Новые фото события'),
+        content: Text(
+          pending.length == 1
+              ? 'Собрали $total фото для «${first.title}». '
+                  'Проверьте перед добавлением в общий альбом.'
+              : 'Собрали $total фото по ${pending.length} событиям. '
+                  'Проверьте перед добавлением в общие альбомы.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Позже'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Проверить'),
+          ),
+        ],
+      ),
+    );
+    if (open != true || !mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CalendarStagingReviewScreen(info: first),
+      ),
     );
   }
 
@@ -216,12 +262,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       unawaited(ChatScheduledSendService.instance.dispatchDue());
       final userId = _currentUserId;
       if (userId != null) {
-        unawaited(
-          runActiveAndroidCalendarSync(
-            repo: ref.read(familychatRepositoryProvider),
-            userId: userId,
-          ),
-        );
+        unawaited(_runCalendarSyncAndMaybeReview(userId));
       }
     } else if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
