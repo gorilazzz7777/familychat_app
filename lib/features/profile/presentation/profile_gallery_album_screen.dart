@@ -994,6 +994,63 @@ class _ProfileGalleryAlbumScreenState
     }
   }
 
+  Future<void> _removeSelectedFromAlbum() async {
+    final pk = widget.customAlbumPk;
+    final ids = _selectedPhotoIds.toList();
+    if (pk == null || ids.isEmpty) return;
+
+    final count = ids.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Убрать из альбома?'),
+        content: Text(
+          count == 1
+              ? 'Фото останется в галерее и других альбомах, но исчезнет из этого альбома.'
+              : 'Выбранные фото ($count) останутся в галерее, но будут убраны из этого альбома.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Убрать'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _bulkActionRunning = true);
+    try {
+      final repo = ref.read(familychatRepositoryProvider);
+      var removed = 0;
+      for (final id in ids) {
+        try {
+          await repo.removePhotoFromCustomAlbum(widget.userId, pk, id);
+          removed += 1;
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Убрано из альбома: $removed')),
+      );
+      setState(() {
+        _selectedPhotoIds.clear();
+        _selectionMode = false;
+      });
+      await _load(reset: true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+    } finally {
+      if (mounted) setState(() => _bulkActionRunning = false);
+    }
+  }
+
   String _photoWord(int count) {
     final mod10 = count % 10;
     final mod100 = count % 100;
@@ -1365,6 +1422,8 @@ class _ProfileGalleryAlbumScreenState
                         _shareSelectedPhotos();
                       case 'tag':
                         _showBulkTagDialog();
+                      case 'remove_album':
+                        _removeSelectedFromAlbum();
                       case 'delete':
                         _deleteSelectedPhotos();
                     }
@@ -1376,10 +1435,15 @@ class _ProfileGalleryAlbumScreenState
                         value: 'share', child: Text('Поделиться')),
                     const PopupMenuItem(
                         value: 'tag', child: Text('Добавить тег')),
+                    if (canManageCustom)
+                      const PopupMenuItem(
+                        value: 'remove_album',
+                        child: Text('Убрать из альбома'),
+                      ),
                     if (widget.isOwnGallery)
                       const PopupMenuItem(
                         value: 'delete',
-                        child: Text('Удалить',
+                        child: Text('Удалить совсем',
                             style: TextStyle(color: Colors.red)),
                       ),
                   ],
