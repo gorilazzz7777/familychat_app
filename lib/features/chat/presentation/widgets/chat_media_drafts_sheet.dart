@@ -344,7 +344,8 @@ class _MediaProgressDialogState extends State<_MediaProgressDialog> {
   }
 }
 
-/// Удобная обёртка: байты изображения как MediaUploadDraft.
+/// Удобная обёртка: байты изображения как MediaUploadDraft (без сжатия).
+/// Для отправки в чат предпочитайте [prepareImageUploadDraft].
 MediaUploadDraft imageDraftFromBytes({
   required Uint8List bytes,
   required String filename,

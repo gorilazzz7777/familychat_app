@@ -47,6 +47,8 @@ dependencies:
   flutter_ringtone_player: ^4.0.0+4
   video_player: ^2.9.5
   video_compress: ^3.1.4
+  camera: ^0.12.0+2
+  flutter_image_compress: ^2.4.0
 
 dependency_overrides:
   # Upstream vosk_flutter_service has a web plugin manifest issue that makes

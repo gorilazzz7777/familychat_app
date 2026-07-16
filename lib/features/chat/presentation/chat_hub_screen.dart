@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../data/chat_hub_tab_order_storage.dart';
@@ -398,7 +399,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     final filtered = _filteredBy(filter);
 
     if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+      return const ChatHubListSkeleton();
     }
 
     return RefreshIndicator(

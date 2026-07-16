@@ -1,28 +1,27 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/image_upload_pipeline.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/notifications/familychat_notifications.dart';
 import '../../../core/widgets/gallery_video_player.dart';
 import '../../../core/widgets/family_app_bar.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/face_tagging_sheet.dart';
-import '../../profile/presentation/album_upload_file_bytes.dart';
-import '../../profile/presentation/read_picked_image_bytes.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../data/chat_attach_local_cache.dart';
 import '../data/chat_location_utils.dart';
 import '../data/active_chat_context.dart';
 import '../data/chat_network_status.dart';
@@ -39,11 +38,11 @@ import 'chat_thread_avatars.dart';
 import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
 import 'chat_call_screen.dart';
+import 'widgets/chat_attach_sheet/chat_attach_models.dart';
+import 'widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import 'widgets/chat_compose_input.dart';
 import 'widgets/chat_mention_compose_input.dart';
 import 'widgets/chat_image_viewer.dart';
-import 'widgets/chat_location_compose_sheet.dart';
-import 'widgets/chat_media_drafts_sheet.dart';
 import 'widgets/chat_message_actions_sheet.dart';
 import 'widgets/chat_message_bubble.dart';
 import 'widgets/chat_message_reactions.dart';
@@ -1450,6 +1449,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
 
     final tempId = _nextTempId();
+    final replySnapshot = _replyTo;
+    final replyId = chatAsInt(replySnapshot?['message_id']);
     _addOptimisticMessage(
       tempId,
       body: caption,
@@ -1463,7 +1464,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             if (d.isImage) 'local_bytes': d.bytesForUpload,
           },
       ],
+      replyTo: replySnapshot,
     );
+    if (_replyTo != null) {
+      setState(() => _replyTo = null);
+    }
 
     final ok = await _uploadAndSend(
       tempId,
@@ -1478,9 +1483,120 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
           ),
       ],
+      replyToMessageId: replyId,
     );
     if (!ok) {
       throw StateError('upload failed');
+    }
+  }
+
+  /// Быстрая отправка из in-app шторки: сразу bubble + loader, сжатие в фоне.
+  Future<void> _sendAttachItems(
+    String caption,
+    List<ChatAttachSelectionItem> items,
+  ) async {
+    if (items.isEmpty) return;
+
+    final tempId = _nextTempId();
+    final replySnapshot = _replyTo;
+    final replyId = chatAsInt(replySnapshot?['message_id']);
+
+    for (final item in items) {
+      await ChatAttachLocalCache.storeBytes(
+        id: item.id,
+        bytes: item.bytes,
+        filename: item.filename,
+      );
+    }
+
+    _addOptimisticMessage(
+      tempId,
+      body: caption,
+      attachments: [
+        for (final item in items)
+          {
+            'kind': item.kind,
+            'filename': item.filename,
+            'content_type': item.contentType,
+            'local_bytes': item.previewBytes,
+          },
+      ],
+      replyTo: replySnapshot,
+    );
+    if (_replyTo != null) {
+      setState(() => _replyTo = null);
+    }
+
+    try {
+      final drafts = <MediaUploadDraft>[];
+      for (final item in items) {
+        if (item.kind == 'video') {
+          drafts.add(
+            await prepareVideoUploadDraft(
+              originalBytes: item.bytes,
+              filename: item.filename,
+              contentType: item.contentType,
+              localPath: item.localPath,
+            ),
+          );
+        } else if (item.kind == 'image') {
+          drafts.add(
+            await prepareImageUploadDraft(
+              originalBytes: item.bytes,
+              filename: item.filename,
+              contentType: item.contentType,
+              previewBytes: item.thumbnailBytes,
+              localPath: item.localPath,
+            ),
+          );
+        } else {
+          drafts.add(
+            MediaUploadDraft(
+              id: item.id,
+              kind: MediaDraftKind.file,
+              filename: item.filename,
+              contentType: item.contentType ?? contentTypeForFilename(item.filename),
+              originalBytes: item.bytes,
+              preparedBytes: item.bytes,
+              localPath: item.localPath,
+            ),
+          );
+        }
+      }
+
+      final uploadable = drafts.where((d) => d.canUpload).toList();
+      if (uploadable.isEmpty) {
+        if (!mounted) return;
+        _markOptimisticFailed(tempId);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Нет файлов для отправки (проверьте размер)'),
+          ),
+        );
+        return;
+      }
+
+      await _uploadAndSend(
+        tempId,
+        caption: caption,
+        attachments: [
+          for (final d in uploadable)
+            _OutgoingAttachment(
+              bytes: d.bytesForUpload,
+              filename: d.filename,
+              contentType: d.contentType,
+              photoExif: d.geo?.toPhotoExif(),
+              kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
+            ),
+        ],
+        replyToMessageId: replyId,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      _markOptimisticFailed(tempId);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось отправить вложение')),
+      );
     }
   }
 
@@ -1491,269 +1607,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     String caption, {
     String? contentType,
   }) async {
-    await _sendMediaDrafts(caption, [
-      imageDraftFromBytes(
-        bytes: bytes,
-        filename: filename,
-        contentType: contentType ??
-            _imageContentTypeForFilename(filename) ??
-            'image/jpeg',
-      ),
-    ]);
-  }
-
-  Future<List<MediaUploadDraft>> _prepareDraftsFromPlatformFiles(
-    List<PlatformFile> files, {
-    required void Function(double p, String label) onProgress,
-  }) async {
-    final drafts = <MediaUploadDraft>[];
-    for (var i = 0; i < files.length; i++) {
-      final f = files[i];
-      final base = (i + 0.05) / files.length;
-      onProgress(base, 'Файл ${i + 1}/${files.length}…');
-      final bytes = await readAlbumUploadFileBytes(f);
-      if (bytes == null || bytes.isEmpty) continue;
-      final contentType = contentTypeForFilename(f.name);
-      final kind = mediaDraftKindFor(
-        filename: f.name,
-        contentType: contentType,
-        bytes: bytes,
-      );
-      if (kind == MediaDraftKind.video) {
-        final draft = await prepareVideoUploadDraft(
-          originalBytes: bytes,
-          filename: f.name,
-          contentType: contentTypeForFilename(f.name),
-          localPath: kIsWeb ? null : f.path,
-          onProgress: (p, label) {
-            onProgress(base + p * (1 / files.length), label);
-          },
-        );
-        drafts.add(draft);
-      } else if (kind == MediaDraftKind.image) {
-        drafts.add(
-          imageDraftFromBytes(
-            bytes: bytes,
-            filename: f.name,
-            contentType:
-                _imageContentTypeForFilename(f.name) ?? contentType,
-          ),
-        );
-      } else {
-        drafts.add(
-          MediaUploadDraft(
-            id: 'f_${DateTime.now().microsecondsSinceEpoch}_$i',
-            kind: MediaDraftKind.file,
-            filename: f.name,
-            contentType: contentType,
-            originalBytes: bytes,
-            preparedBytes: bytes,
-          ),
-        );
-      }
-    }
-    return drafts;
-  }
-
-  Future<FilePickerResult?> _pickChatPlatformFiles({
-    required bool allowMultiple,
-    FileType type = FileType.any,
-    List<String>? allowedExtensions,
-  }) {
-    return FilePicker.platform.pickFiles(
-      allowMultiple: allowMultiple,
-      type: type,
-      allowedExtensions: allowedExtensions,
-      withData: !kIsWeb,
-      withReadStream: kIsWeb,
-      readSequential: kIsWeb,
+    final draft = await prepareImageUploadDraft(
+      originalBytes: bytes,
+      filename: filename,
+      contentType: contentType ??
+          _imageContentTypeForFilename(filename) ??
+          'image/jpeg',
     );
-  }
-
-  Future<void> _openMediaDraftsFlow(List<MediaUploadDraft> drafts) async {
-    if (drafts.isEmpty || !mounted) return;
-    await ChatMediaDraftsSheet.show(
-      context,
-      drafts: drafts,
-      onSend: _sendMediaDrafts,
-    );
+    await _sendMediaDrafts(caption, [draft]);
   }
 
   Future<void> _pickAttachment() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Галерея'),
-              onTap: () => Navigator.pop(ctx, 'gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('Камера'),
-              onTap: () => Navigator.pop(ctx, 'camera'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.attach_file),
-              title: const Text('Файл'),
-              onTap: () => Navigator.pop(ctx, 'file'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.location_on_outlined),
-              title: const Text('Геолокация'),
-              onTap: () => Navigator.pop(ctx, 'location'),
-            ),
-          ],
-        ),
-      ),
+    await ChatAttachSheet.show(
+      context,
+      onSendMedia: _sendAttachItems,
+      onSendLocation: _sendLocationMessage,
     );
-    if (!mounted || action == null) return;
-
-    try {
-      if (action == 'location') {
-        final point = await ChatLocationComposeSheet.show(context);
-        if (point == null || !mounted) return;
-        await _sendLocationMessage(point);
-      } else if (action == 'file') {
-        final picked = await _pickChatPlatformFiles(allowMultiple: true);
-        if (picked == null || picked.files.isEmpty) return;
-        if (picked.files.length == 1) {
-          final f = picked.files.first;
-          final bytes = await readAlbumUploadFileBytes(f);
-          if (bytes == null || bytes.isEmpty) return;
-          setState(() {
-            _pendingFileDraft = _PendingFileDraft(
-              bytes: bytes,
-              filename: f.name,
-              contentType: null,
-            );
-          });
-          return;
-        }
-        final atts = <_OutgoingAttachment>[];
-        for (final f in picked.files) {
-          final bytes = await readAlbumUploadFileBytes(f);
-          if (bytes == null || bytes.isEmpty) continue;
-          atts.add(_OutgoingAttachment(
-              bytes: bytes, filename: f.name, contentType: null));
-        }
-        if (atts.isEmpty) return;
-        await _uploadAndSend(_nextTempId(), caption: '', attachments: atts);
-      } else if (action == 'gallery') {
-        // file_picker: фото+видео; image_picker на Android может обнулить GPS у фото.
-        // На web withReadStream часто даёт пустые bytes — для галереи грузим withData.
-        final picked = kIsWeb
-            ? await FilePicker.platform.pickFiles(
-                allowMultiple: true,
-                type: FileType.media,
-                withData: true,
-                readSequential: true,
-              )
-            : await _pickChatPlatformFiles(
-                allowMultiple: true,
-                type: FileType.media,
-              );
-        if (picked == null || picked.files.isEmpty) return;
-        final drafts = await showMediaProgressDialog<List<MediaUploadDraft>>(
-          context: context,
-          title: 'Подготовка медиа',
-          work: (report) => _prepareDraftsFromPlatformFiles(
-            picked.files,
-            onProgress: report,
-          ),
-        );
-        if (!mounted) return;
-        if (drafts == null || drafts.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Не удалось прочитать выбранные файлы'),
-            ),
-          );
-          return;
-        }
-        await _openMediaDraftsFlow(drafts);
-      } else {
-        // Камера: фото или видео (системная камера в выбранном режиме).
-        if (!mounted) return;
-        final cameraMode = await showModalBottomSheet<String>(
-          context: context,
-          builder: (ctx) => SafeArea(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.photo_camera_outlined),
-                  title: const Text('Фото'),
-                  onTap: () => Navigator.pop(ctx, 'photo'),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.videocam_outlined),
-                  title: const Text('Видео'),
-                  onTap: () => Navigator.pop(ctx, 'video'),
-                ),
-              ],
-            ),
-          ),
-        );
-        if (cameraMode == null || !mounted) return;
-
-        final picker = ImagePicker();
-        if (cameraMode == 'video') {
-          final picked = await picker.pickVideo(
-            source: ImageSource.camera,
-            maxDuration: const Duration(minutes: 30),
-          );
-          if (picked == null) return;
-          final bytes = await readPickedImageBytes(picked);
-          if (bytes.isEmpty) return;
-          if (!mounted) return;
-          final draft = await showMediaProgressDialog<MediaUploadDraft>(
-            context: context,
-            title: 'Подготовка видео',
-            work: (report) async {
-              final geo = await captureDeviceGeoIfPossible();
-              return prepareVideoUploadDraft(
-                originalBytes: bytes,
-                filename: picked.name,
-                contentType:
-                    picked.mimeType ?? contentTypeForFilename(picked.name),
-                localPath: picked.path,
-                geoHint: geo,
-                onProgress: report,
-              );
-            },
-          );
-          if (draft == null || !mounted) return;
-          await _openMediaDraftsFlow([draft]);
-        } else {
-          final picked = await picker.pickImage(
-            source: ImageSource.camera,
-            requestFullMetadata: true,
-          );
-          if (picked == null) return;
-          final bytes = await readPickedImageBytes(picked);
-          final contentType = picked.mimeType ??
-              _imageContentTypeForFilename(picked.name) ??
-              'image/jpeg';
-          if (!mounted) return;
-          await _openMediaDraftsFlow([
-            imageDraftFromBytes(
-              bytes: bytes,
-              filename: picked.name,
-              contentType: contentType,
-            ),
-          ]);
-        }
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка: $e')),
-      );
-    }
   }
 
   Future<void> _send({
@@ -2586,7 +2455,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             else ...[
               Expanded(
                 child: _loading
-                    ? const Center(child: CircularProgressIndicator())
+                    ? const ChatMessagesSkeleton()
                     : _loadError != null && _messages.isEmpty
                         ? Center(
                             child: Padding(

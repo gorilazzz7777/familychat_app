@@ -70,5 +70,11 @@
 	<string>Нужен доступ к геолокации, чтобы отправлять место в чате.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Нужен доступ к микрофону, чтобы записывать голосовые сообщения.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Нужен доступ к камере, чтобы снимать фото и видео для чата.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Нужен доступ к фото, чтобы выбирать снимки для отправки в чат.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Нужен доступ для сохранения медиа.</string>
 </dict>
 </plist>

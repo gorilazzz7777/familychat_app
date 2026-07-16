@@ -6,14 +6,18 @@
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Family Chat — семейный мессенджер">
+  <meta name="theme-color" content="#7EC8F0">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Family Chat">
   <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icons/Icon-192.png">
   <title>Family Chat</title>
   <style>
-    /* iOS Safari / PWA: не перехватывать long-press в callout/selection текста. */
     html, body {
+      margin: 0;
+      height: 100%;
+      background: #f4f8fb;
       -webkit-user-select: none;
       user-select: none;
       -webkit-touch-callout: none;
@@ -24,6 +28,56 @@
       -webkit-user-select: none !important;
       user-select: none !important;
       -webkit-touch-callout: none !important;
+    }
+    #app-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      background: linear-gradient(160deg, #e8f4fc 0%, #f7fafc 55%, #ffffff 100%);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      transition: opacity 0.28s ease, visibility 0.28s ease;
+    }
+    #app-splash.is-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    #app-splash img {
+      width: 88px;
+      height: 88px;
+      border-radius: 22px;
+      box-shadow: 0 10px 28px rgba(48, 120, 168, 0.18);
+      object-fit: cover;
+      background: #fff;
+    }
+    #app-splash .brand {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      color: #1a3344;
+    }
+    #app-splash .hint {
+      margin: 0;
+      font-size: 0.9rem;
+      color: #5a7384;
+    }
+    #app-splash .spinner {
+      width: 28px;
+      height: 28px;
+      margin-top: 8px;
+      border: 3px solid rgba(126, 200, 240, 0.35);
+      border-top-color: #7EC8F0;
+      border-radius: 50%;
+      animation: splash-spin 0.75s linear infinite;
+    }
+    @keyframes splash-spin {
+      to { transform: rotate(360deg); }
     }
   </style>
   <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
@@ -38,6 +92,28 @@
   </script>
 </head>
 <body>
+  <div id="app-splash" aria-busy="true" aria-live="polite">
+    <img src="icons/Icon-192.png" alt="Family Chat" width="88" height="88">
+    <p class="brand">Family Chat</p>
+    <p class="hint">Загрузка…</p>
+    <div class="spinner" aria-hidden="true"></div>
+  </div>
+  <script>
+    (function () {
+      function hideSplash() {
+        var el = document.getElementById('app-splash');
+        if (!el || el.classList.contains('is-hidden')) return;
+        el.classList.add('is-hidden');
+        el.setAttribute('aria-busy', 'false');
+        setTimeout(function () {
+          if (el && el.parentNode) el.parentNode.removeChild(el);
+        }, 320);
+      }
+      window.addEventListener('flutter-first-frame', hideSplash, { once: true });
+      // Fallback if event is missed (slow devices / older bootstrap).
+      setTimeout(hideSplash, 20000);
+    })();
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
