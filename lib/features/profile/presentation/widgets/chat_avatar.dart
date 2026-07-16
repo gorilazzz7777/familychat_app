@@ -8,12 +8,14 @@ class ChatAvatar extends StatelessWidget {
     super.key,
     required this.name,
     this.avatarUrl,
+    this.userId,
     this.assetPath,
     this.radius = 24,
   });
 
   final String name;
   final String? avatarUrl;
+  final int? userId;
   final String? assetPath;
   final double radius;
 
@@ -56,6 +58,7 @@ class ChatAvatar extends StatelessWidget {
         child: ClipOval(
           child: FamilyPublicImage(
             url: url,
+            userId: userId,
             width: size,
             height: size,
             fit: BoxFit.cover,

@@ -2496,6 +2496,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                       ChatAvatar(
                         name: _title,
                         avatarUrl: _headerAvatarUrl,
+                        userId: widget.peerUserId,
                         assetPath: chatThreadAvatarAsset(
                           kind: widget.kind,
                           isBirthdayCelebration: _isBirthdayCelebration,

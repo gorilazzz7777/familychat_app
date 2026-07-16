@@ -887,6 +887,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                   ChatAvatar(
                     name: _title,
                     avatarUrl: _headerAvatarUrl,
+                    userId: widget.peerUserId,
                     assetPath: _headerAvatarAsset,
                     radius: 44,
                   ),

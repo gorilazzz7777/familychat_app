@@ -156,13 +156,16 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   int? _dmPeerUserId(Map<String, dynamic> thread) {
-    if (thread['kind']?.toString() != 'dm') return null;
+    final kind = thread['kind']?.toString();
+    if (kind != 'dm' && kind != 'friend_dm') return null;
     final raw = thread['peer_user_id'];
     if (raw is int) return raw;
     return int.tryParse('$raw');
   }
 
   String? _dmAvatarUrl(Map<String, dynamic> thread) {
+    final fromThread = thread['peer_avatar_url']?.toString().trim();
+    if (fromThread != null && fromThread.isNotEmpty) return fromThread;
     final peerId = _dmPeerUserId(thread);
     if (peerId == null) return null;
     final member = _memberByUserId[peerId];
@@ -378,6 +381,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                   leading: ChatAvatar(
                     name: _avatarName(t),
                     avatarUrl: avatarAsset != null ? null : _dmAvatarUrl(t),
+                    userId: avatarAsset != null ? null : _dmPeerUserId(t),
                     assetPath: avatarAsset,
                     radius: 24,
                   ),
