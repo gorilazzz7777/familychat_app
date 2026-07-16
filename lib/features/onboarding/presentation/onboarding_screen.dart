@@ -22,12 +22,14 @@ class OnboardingScreen extends ConsumerStatefulWidget {
     required this.onComplete,
     required this.onLogout,
     this.pendingInviteToken,
+    this.pendingFriendInviteToken,
     this.onPendingInviteCleared,
   });
 
   final VoidCallback onComplete;
   final VoidCallback onLogout;
   final String? pendingInviteToken;
+  final String? pendingFriendInviteToken;
   final VoidCallback? onPendingInviteCleared;
 
   @override
@@ -53,11 +55,22 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   int _questionRound = 1;
   String? _inviteToken;
   bool _joinByInvite = false;
+  bool _fromFriendInvite = false;
 
   @override
   void initState() {
     super.initState();
     _inviteToken = widget.pendingInviteToken;
+    final friendToken = widget.pendingFriendInviteToken?.trim();
+    _fromFriendInvite = friendToken != null && friendToken.isNotEmpty;
+    // Пришли по invite-ссылке — пропускаем экран «Как начать?».
+    if (_inviteToken != null && _inviteToken!.isNotEmpty) {
+      _joinByInvite = true;
+      _step = _OnboardingStep.profile;
+    } else if (_fromFriendInvite) {
+      _joinByInvite = false;
+      _step = _OnboardingStep.profile;
+    }
     _loadKinship();
     _loadPrefill();
   }
@@ -207,6 +220,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       final name = 'Семья ${_lastName.text.trim()}'.trim();
       await ref.read(familychatRepositoryProvider).createFamily(name: name);
       if (!mounted) return;
+      if (_fromFriendInvite) {
+        // Пришли по ссылке «друг» — семья создана, дальше диалог контакта.
+        setState(() => _loading = false);
+        widget.onComplete();
+        return;
+      }
       setState(() {
         _loading = false;
         _step = _OnboardingStep.inviteKinship;
@@ -304,15 +323,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           ],
           if (_step == _OnboardingStep.choose) ...[
             const Text('Как вы хотите начать?'),
-            if (_inviteToken != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Найдено приглашение в семью — можно присоединиться или создать свою.',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
             const SizedBox(height: 16),
             FilledButton(
               onPressed: () async {
@@ -329,23 +339,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             const SizedBox(height: 8),
             OutlinedButton(
               onPressed: () {
-                if (_inviteToken == null || _inviteToken!.isEmpty) {
-                  setState(() => _error =
-                      'Откройте приложение по ссылке-приглашению, затем войдите в аккаунт.');
-                  return;
-                }
-                setState(() {
-                  _error = null;
-                  _joinByInvite = true;
-                  _step = _OnboardingStep.profile;
-                });
-                _loadPrefill();
+                setState(() => _error =
+                    'Откройте приложение по ссылке-приглашению, затем войдите в аккаунт.');
               },
-              child: Text(
-                _inviteToken != null
-                    ? 'Присоединиться по приглашению'
-                    : 'У меня есть приглашение',
-              ),
+              child: const Text('У меня есть приглашение'),
             ),
           ],
           if (_step == _OnboardingStep.profile) ...[

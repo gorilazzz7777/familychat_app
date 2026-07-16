@@ -351,6 +351,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
               onComplete: _boot,
               onLogout: _logout,
               pendingInviteToken: _pendingInvite,
+              pendingFriendInviteToken: _pendingFriendInvite,
               onPendingInviteCleared: _clearPendingInvite,
             )
           : ShellScreen(
