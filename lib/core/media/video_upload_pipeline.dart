@@ -89,14 +89,25 @@ MediaDraftKind mediaDraftKindFor({
       })) {
     return MediaDraftKind.image;
   }
-  // ftyp → mp4/mov
+  // ftyp встречается и у видео (mp4/mov), и у HEIC/HEIF.
+  // На web HEIC часто приходит без корректного mime, поэтому различаем по major brand.
   if (bytes != null &&
       bytes.length >= 12 &&
       bytes[4] == 0x66 &&
       bytes[5] == 0x74 &&
       bytes[6] == 0x79 &&
       bytes[7] == 0x70) {
-    return MediaDraftKind.video;
+    final majorBrand = String.fromCharCodes(bytes.sublist(8, 12))
+        .toLowerCase()
+        .trim();
+    const imageBrands = {'heic', 'heix', 'hevc', 'hevx', 'heif', 'mif1', 'msf1'};
+    if (imageBrands.contains(majorBrand)) {
+      return MediaDraftKind.image;
+    }
+    const videoBrands = {'mp41', 'mp42', 'isom', 'iso2', 'avc1', 'qt  '};
+    if (videoBrands.contains(majorBrand)) {
+      return MediaDraftKind.video;
+    }
   }
   return MediaDraftKind.file;
 }

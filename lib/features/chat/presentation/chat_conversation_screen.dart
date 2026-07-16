@@ -1518,7 +1518,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           originalBytes: bytes,
           filename: f.name,
           contentType: contentTypeForFilename(f.name),
-          localPath: f.path,
+          localPath: kIsWeb ? null : f.path,
           onProgress: (p, label) {
             onProgress(base + p * (1 / files.length), label);
           },
