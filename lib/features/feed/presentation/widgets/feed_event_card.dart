@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/i18n/gender_verbs.dart';
@@ -122,8 +123,10 @@ class _FeedEventCardState extends State<FeedEventCard> {
   int? _payloadThreadId() => _parseThreadId(_payload['thread_id']);
 
   bool _isImageAttachment(Map<String, dynamic> att) {
+    final local = att['local_bytes'];
+    if (local is Uint8List && local.isNotEmpty) return true;
     final kind = att['kind']?.toString();
-    if (kind == 'image') return true;
+    if (kind == 'image' || kind == 'video') return true;
     final name = att['filename']?.toString().toLowerCase() ?? '';
     return name.endsWith('.jpg') ||
         name.endsWith('.jpeg') ||
@@ -147,7 +150,9 @@ class _FeedEventCardState extends State<FeedEventCard> {
     return _attachments()
         .where(_isImageAttachment)
         .map((att) => _normalizePhoto(att))
-        .where((att) => att['thread_id'] != null && att['id'] != null)
+        .where((att) =>
+            att['local_bytes'] != null ||
+            (att['thread_id'] != null && att['id'] != null))
         .toList();
   }
 

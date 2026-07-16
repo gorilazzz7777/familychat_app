@@ -7,18 +7,29 @@ import 'attach_location_tab.dart';
 import 'attach_selection_bar.dart';
 import 'chat_attach_models.dart';
 
+/// Режим шторки: полный чат или только галерея/камера телефона.
+enum ChatAttachSheetStyle {
+  /// Галерея · Файл · Гео + подпись (чат).
+  chat,
+
+  /// Только галерея с live-камерой (альбом / лента).
+  phoneMedia,
+}
+
 class ChatAttachSheet extends StatefulWidget {
   const ChatAttachSheet({
     super.key,
     required this.onSendMedia,
-    required this.onSendLocation,
+    this.onSendLocation,
+    this.style = ChatAttachSheetStyle.chat,
   });
 
   final Future<void> Function(
     String caption,
     List<ChatAttachSelectionItem> items,
   ) onSendMedia;
-  final Future<void> Function(ChatLocationPoint point) onSendLocation;
+  final Future<void> Function(ChatLocationPoint point)? onSendLocation;
+  final ChatAttachSheetStyle style;
 
   static Future<void> show(
     BuildContext context, {
@@ -26,8 +37,13 @@ class ChatAttachSheet extends StatefulWidget {
       String caption,
       List<ChatAttachSelectionItem> items,
     ) onSendMedia,
-    required Future<void> Function(ChatLocationPoint point) onSendLocation,
+    Future<void> Function(ChatLocationPoint point)? onSendLocation,
+    ChatAttachSheetStyle style = ChatAttachSheetStyle.chat,
   }) {
+    assert(
+      style != ChatAttachSheetStyle.chat || onSendLocation != null,
+      'ChatAttachSheetStyle.chat requires onSendLocation',
+    );
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -36,6 +52,7 @@ class ChatAttachSheet extends StatefulWidget {
       builder: (_) => ChatAttachSheet(
         onSendMedia: onSendMedia,
         onSendLocation: onSendLocation,
+        style: style,
       ),
     );
   }
@@ -45,16 +62,19 @@ class ChatAttachSheet extends StatefulWidget {
 }
 
 class _ChatAttachSheetState extends State<ChatAttachSheet> {
-  ChatAttachMode _mode = ChatAttachMode.gallery;
+  late ChatAttachMode _mode;
   final List<ChatAttachSelectionItem> _selected = [];
   final _captionCtrl = TextEditingController();
   final _sheetCtrl = DraggableScrollableController();
   bool _sending = false;
   bool _expanded = false;
 
+  bool get _mediaOnly => widget.style == ChatAttachSheetStyle.phoneMedia;
+
   @override
   void initState() {
     super.initState();
+    _mode = ChatAttachMode.gallery;
     _sheetCtrl.addListener(_onSheetSize);
   }
 
@@ -89,7 +109,7 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
   Future<void> _sendSelected() async {
     if (_selected.isEmpty || _sending) return;
     setState(() => _sending = true);
-    final caption = _captionCtrl.text.trim();
+    final caption = _mediaOnly ? '' : _captionCtrl.text.trim();
     final items = List<ChatAttachSelectionItem>.from(_selected);
     if (mounted) Navigator.of(context).pop();
     try {
@@ -101,7 +121,7 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
 
   Future<void> _sendLocation(ChatLocationPoint point) async {
     if (mounted) Navigator.of(context).pop();
-    await widget.onSendLocation(point);
+    await widget.onSendLocation?.call(point);
   }
 
   @override
@@ -114,7 +134,7 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
       child: DraggableScrollableSheet(
         controller: _sheetCtrl,
         expand: false,
-        initialChildSize: 0.48,
+        initialChildSize: _mediaOnly ? 0.55 : 0.48,
         minChildSize: 0.34,
         maxChildSize: 0.95,
         builder: (context, scrollController) {
@@ -133,7 +153,21 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
                     borderRadius: BorderRadius.circular(999),
                   ),
                 ),
-                const SizedBox(height: 8),
+                if (_mediaOnly)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'С телефона',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ),
+                  )
+                else
+                  const SizedBox(height: 8),
                 Expanded(
                   child: switch (_mode) {
                     ChatAttachMode.gallery => AttachGalleryTab(
@@ -158,13 +192,17 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
                     items: _selected,
                     controller: _captionCtrl,
                     sending: _sending,
+                    showCaption: !_mediaOnly,
+                    sendIcon: _mediaOnly ? Icons.check_rounded : Icons.send_rounded,
                     onSend: _sendSelected,
                     onRemove: _removeSelected,
                   ),
-                _ModeBar(
-                  mode: _mode,
-                  onChanged: (m) => setState(() => _mode = m),
-                ),
+                if (!_mediaOnly)
+                  _ModeBar(
+                    mode: _mode,
+                    onChanged: (m) => setState(() => _mode = m),
+                  ),
+                if (_mediaOnly) const SizedBox(height: 4),
               ],
             ),
           );

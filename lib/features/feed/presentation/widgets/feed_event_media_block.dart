@@ -141,6 +141,20 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     final cached = _aspectCache[key];
     if (cached != null) return cached;
 
+    final local = photo['local_bytes'];
+    if (local is Uint8List && local.isNotEmpty) {
+      try {
+        final codec = await ui.instantiateImageCodec(local);
+        final frame = await codec.getNextFrame();
+        final w = frame.image.width.toDouble();
+        final h = frame.image.height.toDouble();
+        frame.image.dispose();
+        if (w > 0 && h > 0) return w / h;
+      } catch (_) {
+        return FeedEventMediaBlock.fallbackAspect;
+      }
+    }
+
     if (isVideoAttachment(photo)) return FeedEventMediaBlock.fallbackAspect;
 
     final threadId = photo['thread_id'] is int
@@ -208,6 +222,16 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     final showCounter = widget.photos.length > 1;
 
     Widget buildMedia(Map<String, dynamic> photo) {
+      final local = photo['local_bytes'];
+      if (local is Uint8List && local.isNotEmpty) {
+        return Image.memory(
+          local,
+          width: double.infinity,
+          height: height,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+        );
+      }
       if (isVideoAttachment(photo)) {
         return GalleryVideoPlayer(
           url: _photoUrl(photo),

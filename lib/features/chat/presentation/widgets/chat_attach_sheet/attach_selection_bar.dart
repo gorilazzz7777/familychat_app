@@ -10,6 +10,8 @@ class AttachSelectionBar extends StatelessWidget {
     required this.onSend,
     required this.onRemove,
     this.sending = false,
+    this.showCaption = true,
+    this.sendIcon = Icons.send_rounded,
   });
 
   final List<ChatAttachSelectionItem> items;
@@ -17,6 +19,8 @@ class AttachSelectionBar extends StatelessWidget {
   final VoidCallback onSend;
   final void Function(String id) onRemove;
   final bool sending;
+  final bool showCaption;
+  final IconData sendIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -62,7 +66,9 @@ class AttachSelectionBar extends StatelessWidget {
                                     fit: BoxFit.cover,
                                     errorBuilder: (_, __, ___) => ColoredBox(
                                       color: scheme.surfaceContainerHighest,
-                                      child: const Icon(Icons.broken_image_outlined),
+                                      child: const Icon(
+                                        Icons.broken_image_outlined,
+                                      ),
                                     ),
                                   ),
                           ),
@@ -86,7 +92,10 @@ class AttachSelectionBar extends StatelessWidget {
                         if (item.kind == 'video')
                           const Positioned.fill(
                             child: Center(
-                              child: Icon(Icons.play_circle_fill, color: Colors.white70),
+                              child: Icon(
+                                Icons.play_circle_fill,
+                                color: Colors.white70,
+                              ),
                             ),
                           ),
                       ],
@@ -95,45 +104,62 @@ class AttachSelectionBar extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: controller,
-                      minLines: 1,
-                      maxLines: 4,
-                      textCapitalization: TextCapitalization.sentences,
-                      decoration: InputDecoration(
-                        hintText: 'Подпись…',
-                        filled: true,
-                        fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(22),
-                          borderSide: BorderSide.none,
+              if (showCaption)
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        minLines: 1,
+                        maxLines: 4,
+                        textCapitalization: TextCapitalization.sentences,
+                        decoration: InputDecoration(
+                          hintText: 'Подпись…',
+                          filled: true,
+                          fillColor: scheme.surfaceContainerHighest
+                              .withValues(alpha: 0.55),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(22),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 10,
+                          ),
                         ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
-                        ),
+                        onSubmitted: (_) {
+                          if (!sending) onSend();
+                        },
                       ),
-                      onSubmitted: (_) {
-                        if (!sending) onSend();
-                      },
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton.filled(
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      onPressed: sending ? null : onSend,
+                      icon: sending
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Icon(sendIcon),
+                    ),
+                  ],
+                )
+              else
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
                     onPressed: sending ? null : onSend,
                     icon: sending
                         ? const SizedBox(
-                            width: 22,
-                            height: 22,
+                            width: 18,
+                            height: 18,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Icon(Icons.send_rounded),
+                        : Icon(sendIcon),
+                    label: Text(sending ? 'Добавляем…' : 'Добавить'),
                   ),
-                ],
-              ),
+                ),
             ],
           ),
         ),

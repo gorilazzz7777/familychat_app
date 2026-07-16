@@ -122,6 +122,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   void _ensureBytesLoadStarted() {
+    final local = widget.attachment['local_bytes'];
+    if (local is Uint8List && local.isNotEmpty) return;
     if (_loadStarted) return;
     _loadStarted = true;
     unawaited(_loadBytes());
@@ -150,6 +152,11 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   Future<void> _loadBytes({int attempt = 0}) async {
+    final local = widget.attachment['local_bytes'];
+    if (local is Uint8List && local.isNotEmpty) {
+      if (mounted) setState(() => _bytesFailed = false);
+      return;
+    }
     final attachmentId = _attachmentId;
     if (attachmentId == null) {
       if (mounted) setState(() => _bytesFailed = true);
@@ -305,6 +312,18 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
 
   @override
   Widget build(BuildContext context) {
+    final local = widget.attachment['local_bytes'];
+    if (local is Uint8List && local.isNotEmpty) {
+      return Image.memory(
+        local,
+        height: widget.height,
+        width: widget.width,
+        fit: widget.fit,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => _errorBox(retryable: false),
+      );
+    }
+
     if (_useBytesPath) {
       return _buildBytesImage();
     }

@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/feed/feed_photo_batch_session.dart';
+import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/image_upload_pipeline.dart';
+import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/push/push_message_handler.dart';
 import '../../familychat/data/familychat_repository.dart';
 
@@ -13,12 +16,21 @@ class AlbumUploadPhoto {
     required this.filename,
     this.contentType,
     this.photoExif,
+    this.kind = 'image',
+    this.localPath,
+    this.thumbnailBytes,
+    this.optimisticKey,
   });
 
   final Uint8List bytes;
   final String filename;
   final String? contentType;
   final Map<String, dynamic>? photoExif;
+  final String kind;
+  final String? localPath;
+  final Uint8List? thumbnailBytes;
+  /// Ключ optimistic-превью в UI альбома (заменяется после upload).
+  final String? optimisticKey;
 }
 
 class AlbumUploadSession {
@@ -135,17 +147,25 @@ class AlbumUploadCoordinator extends ChangeNotifier {
 
         final photo = queue.removeAt(0);
         try {
-          final uploaded = await repo.uploadPhotoToCustomAlbum(
-            session.userId,
-            session.albumPk,
-            bytes: photo.bytes,
-            filename: photo.filename,
-            contentType: photo.contentType ?? 'image/jpeg',
-            batchId: session.batchSession.batchId,
-            photoExif: photo.photoExif,
-          );
-          session.pendingPhotos.add(uploaded);
-          session.done++;
+          final prepared = await _prepareForUpload(photo);
+          if (prepared == null) {
+            session.failed++;
+          } else {
+            final uploaded = await repo.uploadPhotoToCustomAlbum(
+              session.userId,
+              session.albumPk,
+              bytes: prepared.bytes,
+              filename: prepared.filename,
+              contentType: prepared.contentType ?? 'image/jpeg',
+              batchId: session.batchSession.batchId,
+              photoExif: prepared.photoExif,
+            );
+            if (photo.optimisticKey != null) {
+              uploaded['_optimistic_key'] = photo.optimisticKey;
+            }
+            session.pendingPhotos.add(uploaded);
+            session.done++;
+          }
         } catch (_) {
           session.failed++;
         } finally {
@@ -189,5 +209,41 @@ class AlbumUploadCoordinator extends ChangeNotifier {
     final photos = List<Map<String, dynamic>>.from(session.pendingPhotos);
     session.pendingPhotos.clear();
     return photos;
+  }
+
+  static Future<AlbumUploadPhoto?> _prepareForUpload(AlbumUploadPhoto photo) async {
+    if (photo.kind == 'video') {
+      final draft = await prepareVideoUploadDraft(
+        originalBytes: photo.bytes,
+        filename: photo.filename,
+        contentType: photo.contentType ?? contentTypeForFilename(photo.filename),
+        localPath: photo.localPath,
+      );
+      if (!draft.canUpload) return null;
+      return AlbumUploadPhoto(
+        bytes: draft.bytesForUpload,
+        filename: draft.filename,
+        contentType: draft.contentType,
+        photoExif: draft.geo?.toPhotoExif() ?? photo.photoExif,
+        kind: 'video',
+        optimisticKey: photo.optimisticKey,
+      );
+    }
+    final draft = await prepareImageUploadDraft(
+      originalBytes: photo.bytes,
+      filename: photo.filename,
+      contentType: photo.contentType,
+      previewBytes: photo.thumbnailBytes,
+      localPath: photo.localPath,
+    );
+    if (!draft.canUpload) return null;
+    return AlbumUploadPhoto(
+      bytes: draft.bytesForUpload,
+      filename: draft.filename,
+      contentType: draft.contentType,
+      photoExif: draft.geo?.toPhotoExif() ?? photo.photoExif,
+      kind: 'image',
+      optimisticKey: photo.optimisticKey,
+    );
   }
 }

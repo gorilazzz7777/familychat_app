@@ -1,23 +1,21 @@
+import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/media/gallery_media_utils.dart';
-import '../../../core/media/video_upload_pipeline.dart';
-import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
-import '../../chat/presentation/widgets/chat_media_drafts_sheet.dart';
-import '../../profile/presentation/album_upload_file_bytes.dart';
+import '../../../core/widgets/family_app_bar.dart';
+import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
+import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../data/feed_post_uploader.dart';
 
 class FeedPostComposeScreen extends ConsumerStatefulWidget {
   const FeedPostComposeScreen({super.key});
 
   @override
-  ConsumerState<FeedPostComposeScreen> createState() => _FeedPostComposeScreenState();
+  ConsumerState<FeedPostComposeScreen> createState() =>
+      _FeedPostComposeScreenState();
 }
 
 class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
@@ -32,53 +30,34 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
     super.dispose();
   }
 
-  Future<void> _pickFromPhoneGallery() async {
-    final picked = await FilePicker.platform.pickFiles(
-      allowMultiple: true,
-      withData: kIsWeb,
-      type: FileType.media,
+  Future<void> _pickFromPhone() async {
+    if (_publishing) return;
+    await ChatAttachSheet.show(
+      context,
+      style: ChatAttachSheetStyle.phoneMedia,
+      onSendMedia: (caption, items) async {
+        await _appendAttachItems(items);
+      },
     );
-    if (!mounted || picked == null || picked.files.isEmpty) return;
+  }
+
+  Future<void> _appendAttachItems(List<ChatAttachSelectionItem> items) async {
+    if (items.isEmpty || !mounted) return;
 
     final photos = <FeedPostPhoto>[];
-    for (final file in picked.files) {
-      final bytes = await readAlbumUploadFileBytes(file);
-      if (bytes == null || bytes.isEmpty) continue;
-      final kind = mediaDraftKindFor(
-        filename: file.name,
-        bytes: bytes,
+    for (final item in items) {
+      if (item.kind != 'image' && item.kind != 'video') continue;
+      final photo = FeedPostPhoto(
+        bytes: item.bytes,
+        filename: item.filename,
+        contentType: item.contentType ?? _contentTypeForFilename(item.filename),
+        kind: item.kind,
+        localPath: item.localPath,
+        thumbnailBytes: item.thumbnailBytes,
+        cacheId: item.id,
       );
-      if (kind == MediaDraftKind.video) {
-        if (!mounted) return;
-        final draft = await showMediaProgressDialog<MediaUploadDraft>(
-          context: context,
-          title: 'Подготовка видео',
-          work: (report) => prepareVideoUploadDraft(
-            originalBytes: bytes,
-            filename: file.name,
-            contentType: contentTypeForFilename(file.name),
-            localPath: file.path,
-            onProgress: report,
-          ),
-        );
-        if (draft == null || !draft.canUpload) continue;
-        photos.add(
-          FeedPostPhoto(
-            bytes: draft.bytesForUpload,
-            filename: draft.filename,
-            contentType: draft.contentType,
-            photoExif: draft.geo?.toPhotoExif(),
-          ),
-        );
-      } else if (kind == MediaDraftKind.image) {
-        photos.add(
-          FeedPostPhoto(
-            bytes: bytes,
-            filename: file.name,
-            contentType: _contentTypeForFilename(file.name),
-          ),
-        );
-      }
+      unawaited(FeedPostUploader.cacheLocally(photo));
+      photos.add(photo);
     }
     if (!mounted || photos.isEmpty) return;
     _appendPhotos(photos);
@@ -116,7 +95,10 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
     if (_photos.isEmpty || _publishing) return;
     final caption = _captionController.text.trim();
     if (caption.length > FeedPostUploader.maxCaptionLength) {
-      setState(() => _error = 'Описание не длиннее ${FeedPostUploader.maxCaptionLength} символов');
+      setState(
+        () => _error =
+            'Описание не длиннее ${FeedPostUploader.maxCaptionLength} символов',
+      );
       return;
     }
 
@@ -124,21 +106,41 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       _publishing = true;
       _error = null;
     });
+
+    Map<String, dynamic> actor = {'name': 'Вы'};
     try {
-      await FeedPostUploader.publish(
-        repo: ref.read(familychatRepositoryProvider),
-        photos: _photos,
-        caption: caption,
-      );
-      if (!mounted) return;
-      Navigator.of(context).pop(true);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _publishing = false;
-        _error = e.toString();
-      });
-    }
+      final status = await ref.read(familychatRepositoryProvider).status();
+      final profile = status['profile'];
+      if (profile is Map) {
+        actor = {
+          'user_id': status['user_id'],
+          'name': profile['display_name']?.toString() ?? 'Вы',
+          'avatar_url': profile['avatar_url']?.toString(),
+          'gender': profile['gender']?.toString(),
+        };
+      } else {
+        actor = {
+          'user_id': status['user_id'],
+          'name': 'Вы',
+        };
+      }
+    } catch (_) {}
+
+    final snapshot = List<FeedPostPhoto>.from(_photos);
+    final optimistic = FeedPostUploader.buildOptimisticEvent(
+      photos: snapshot,
+      caption: caption,
+      actor: actor,
+    );
+
+    FeedPostUploader.publishInBackground(
+      repo: ref.read(familychatRepositoryProvider),
+      photos: snapshot,
+      caption: caption,
+    );
+
+    if (!mounted) return;
+    Navigator.of(context).pop(optimistic);
   }
 
   @override
@@ -174,9 +176,9 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                     ),
                     const SizedBox(height: 20),
                     FilledButton.icon(
-                      onPressed: _publishing ? null : _pickFromPhoneGallery,
-                      icon: const Icon(Icons.photo_library_outlined),
-                      label: const Text('Галерея телефона'),
+                      onPressed: _publishing ? null : _pickFromPhone,
+                      icon: const Icon(Icons.phone_android_outlined),
+                      label: const Text('С телефона'),
                     ),
                   ],
                 ),
@@ -194,16 +196,19 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                     itemBuilder: (_, index) {
                       if (index == _photos.length) {
                         return InkWell(
-                          onTap: _publishing ? null : _pickFromPhoneGallery,
+                          onTap: _publishing ? null : _pickFromPhone,
                           child: Container(
                             width: 108,
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
-                                color: Theme.of(context).colorScheme.outlineVariant,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outlineVariant,
                               ),
                             ),
-                            child: const Icon(Icons.add_photo_alternate_outlined),
+                            child:
+                                const Icon(Icons.add_photo_alternate_outlined),
                           ),
                         );
                       }
@@ -213,12 +218,21 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                           ClipRRect(
                             borderRadius: BorderRadius.circular(8),
                             child: Image.memory(
-                              photo.bytes,
+                              photo.previewBytes,
                               width: 108,
                               height: 108,
                               fit: BoxFit.cover,
                             ),
                           ),
+                          if (photo.kind == 'video')
+                            const Positioned.fill(
+                              child: Center(
+                                child: Icon(
+                                  Icons.play_circle_fill,
+                                  color: Colors.white70,
+                                ),
+                              ),
+                            ),
                           Positioned(
                             top: 4,
                             right: 4,
@@ -229,7 +243,8 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                               ),
                               onPressed: _publishing
                                   ? null
-                                  : () => setState(() => _photos.removeAt(index)),
+                                  : () =>
+                                      setState(() => _photos.removeAt(index)),
                               icon: const Icon(Icons.close, size: 16),
                             ),
                           ),
@@ -259,10 +274,13 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                   const SizedBox(height: 12),
                   Text(
                     _error!,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
                   ),
                 ],
-                if (captionLength > FeedPostUploader.maxCaptionLength - 40) ...[
+                if (captionLength >
+                    FeedPostUploader.maxCaptionLength - 40) ...[
                   const SizedBox(height: 8),
                   Text(
                     'Осталось ${math.max(0, FeedPostUploader.maxCaptionLength - captionLength)} символов',

@@ -371,13 +371,19 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   }
 
   Future<void> _openFeedPost() async {
-    final posted = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(
+    final posted = await Navigator.of(context).push<Object?>(
+      MaterialPageRoute<Object?>(
         builder: (_) => const FeedPostComposeScreen(),
       ),
     );
-    if (!mounted || posted != true) return;
-    await _refreshTab(0, silent: true);
+    if (!mounted || posted == null) return;
+    if (posted is Map<String, dynamic>) {
+      _feedKey.currentState?.prependOptimisticEvent(posted);
+      return;
+    }
+    if (posted == true) {
+      await _refreshTab(0, silent: true);
+    }
   }
 
   @override

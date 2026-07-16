@@ -244,6 +244,15 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
         return _eventAttachmentId(existing) == attachmentId;
       });
     }
+    // Убираем optimistic-дубликаты, когда пришёл реальный пост.
+    final hasRealPhotoBatch = incoming.any(
+      (e) =>
+          e['_optimistic'] != true &&
+          e['kind']?.toString() == 'photo_batch_uploaded',
+    );
+    if (hasRealPhotoBatch) {
+      _events.removeWhere((existing) => existing['_optimistic'] == true);
+    }
     final ids = _events.map(_eventId).whereType<int>().toSet();
     final fresh = _visibleFeedEvents(incoming.where((event) {
       final id = _eventId(event);
@@ -251,6 +260,17 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     }));
     if (fresh.isEmpty) return;
     _events.insertAll(0, fresh);
+  }
+
+  void prependOptimisticEvent(Map<String, dynamic> event) {
+    if (!mounted) return;
+    setState(() {
+      _events.removeWhere((e) => e['_optimistic'] == true);
+      _events.insert(0, event);
+      _loading = false;
+      _error = null;
+    });
+    unawaited(_persistCache());
   }
 
   Future<void> _maybeMarkRead() async {

@@ -5,6 +5,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/debug/upload_image_exif_log.dart';
+import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../familychat/data/familychat_repository.dart';
 
 class CalendarPhotoSyncInfo {
@@ -320,19 +321,27 @@ class CalendarPhotoSyncService {
     required CalendarPhotoSyncInfo info,
     required List<CalendarDevicePhoto> photos,
   }) async {
-    final stagingAlbumId = info.stagingAlbumId ?? info.galleryAlbumId;
+    final hasStaging = info.stagingAlbumId != null;
+    final targetAlbumId = info.stagingAlbumId ?? info.galleryAlbumId;
+    final toUpload = photos
+        .where((p) => !info.syncedDeviceAssetIds.contains(p.deviceAssetId))
+        .toList();
+    // Без staging каждый upload пишет в ленту — нужен один batch + finalize.
+    final FeedPhotoBatchSession? feedBatch = !hasStaging && toUpload.length > 1
+        ? FeedPhotoBatchSession(totalTasks: toUpload.length)
+        : null;
     final registered = <String>[];
     final attachmentByDevice = <String, int>{};
     var uploaded = 0;
-    for (final photo in photos) {
-      if (info.syncedDeviceAssetIds.contains(photo.deviceAssetId)) continue;
+    for (final photo in toUpload) {
       try {
         final result = await _repo.uploadPhotoToCustomAlbum(
           userId,
-          stagingAlbumId,
+          targetAlbumId,
           bytes: photo.bytes,
           filename: photo.filename,
           contentType: photo.contentType,
+          batchId: feedBatch?.batchId,
         );
         final attId = result['id'] is int
             ? result['id'] as int
@@ -340,7 +349,10 @@ class CalendarPhotoSyncService {
         registered.add(photo.deviceAssetId);
         if (attId != null) attachmentByDevice[photo.deviceAssetId] = attId;
         uploaded++;
-      } catch (_) {}
+      } catch (_) {
+      } finally {
+        await feedBatch?.markAttemptFinished(_repo);
+      }
     }
     if (registered.isNotEmpty) {
       await _repo.registerCalendarSyncedAssets(

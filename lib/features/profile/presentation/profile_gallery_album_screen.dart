@@ -4,21 +4,19 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../../../core/media/gallery_media_utils.dart';
-import '../../../core/media/video_upload_pipeline.dart';
+import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../calendar/data/calendar_photo_sync_service.dart';
 import '../../calendar/presentation/calendar_photo_pick_confirm_screen.dart';
 import '../../calendar/presentation/calendar_staging_review_screen.dart';
+import '../../chat/data/chat_attach_local_cache.dart';
+import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
+import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../data/album_upload_coordinator.dart';
-import 'album_upload_file_bytes.dart';
-import 'read_picked_image_bytes.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
 import 'pick_gallery_photos_sheet.dart';
@@ -143,7 +141,12 @@ class _ProfileGalleryAlbumScreenState
     final session = coordinator.sessionForAlbum(albumPk);
     final pending = coordinator.takePendingPhotos(albumPk);
     for (final photo in pending) {
-      _prependPhotoIfNew(photo);
+      final optimisticKey = photo['_optimistic_key']?.toString();
+      if (optimisticKey != null && optimisticKey.isNotEmpty) {
+        _replaceOptimisticPhoto(optimisticKey, photo);
+      } else {
+        _prependPhotoIfNew(photo);
+      }
     }
 
     if (session != null && session.active) {
@@ -484,30 +487,6 @@ class _ProfileGalleryAlbumScreenState
     return id is int ? id : int.tryParse('$id');
   }
 
-  void _beginPreparingUpload() {
-    setState(() {
-      _addingPhotos = true;
-      _preparingUpload = true;
-      _uploadTotal = 0;
-      _uploadDone = 0;
-      _uploadFailed = 0;
-    });
-  }
-
-  void _endPreparingIfIdle() {
-    if (!mounted || !_preparingUpload) return;
-    final albumPk = widget.customAlbumPk;
-    if (albumPk != null &&
-        AlbumUploadCoordinator.instance.isActiveForAlbum(albumPk)) {
-      return;
-    }
-    if (_uploadTotal > 0) return;
-    setState(() {
-      _preparingUpload = false;
-      _addingPhotos = false;
-    });
-  }
-
   void _beginUploadSession(int total) {
     setState(() {
       _addingPhotos = true;
@@ -549,6 +528,41 @@ class _ProfileGalleryAlbumScreenState
       _total++;
     });
   }
+
+  void _replaceOptimisticPhoto(String optimisticKey, Map<String, dynamic> photo) {
+    setState(() {
+      final idx = _photos.indexWhere(
+        (p) => p['_optimistic_key']?.toString() == optimisticKey,
+      );
+      if (idx >= 0) {
+        final old = _photos[idx];
+        final local = old['local_bytes'];
+        if (local is Uint8List && local.isNotEmpty) {
+          photo = Map<String, dynamic>.from(photo)..['local_bytes'] = local;
+          final threadId = photo['thread_id'] is int
+              ? photo['thread_id'] as int
+              : int.tryParse('${photo['thread_id']}');
+          final id = _photoId(photo);
+          if (threadId != null && id != null) {
+            unawaited(
+              FamilyChatLocalCache.saveAttachmentBytes(threadId, id, local),
+            );
+          }
+        }
+        _photos[idx] = photo;
+      } else {
+        final id = _photoId(photo);
+        if (id != null && !_currentPhotoIds.contains(id)) {
+          _photos.insert(0, photo);
+          _offset++;
+          _total++;
+        }
+      }
+    });
+  }
+
+  int _nextOptimisticId() =>
+      -DateTime.now().microsecondsSinceEpoch - _photos.length;
 
   Future<void> _pollNewPhotosDuringUpload() async {
     if (!mounted ||
@@ -629,77 +643,107 @@ class _ProfileGalleryAlbumScreenState
     return items.take(_maxUploadCount).toList();
   }
 
-  Future<void> _uploadDeviceImages({
+  Future<void> _uploadAttachItems({
     required int albumPk,
-    required List<XFile> pickedItems,
+    required List<ChatAttachSelectionItem> items,
   }) async {
-    final items = _limitUploadSelection(pickedItems);
-    if (items.isEmpty) return;
-    _beginPreparingUpload();
-    try {
-      final photos = <AlbumUploadPhoto>[];
-      for (final picked in items) {
-        final bytes = await readPickedImageBytes(picked);
-        photos.add(
-          AlbumUploadPhoto(
-            bytes: bytes,
-            filename: picked.name,
-            contentType:
-                picked.mimeType ?? _imageContentTypeForFilename(picked.name),
-          ),
-        );
-      }
-      if (photos.isEmpty) return;
-      _startCoordinatorUpload(albumPk: albumPk, photos: photos);
-    } finally {
-      _endPreparingIfIdle();
+    final limited = _limitUploadSelection(items);
+    if (limited.isEmpty) return;
+
+    final photos = <AlbumUploadPhoto>[];
+    final optimistic = <Map<String, dynamic>>[];
+    for (final item in limited) {
+      if (item.kind != 'image' && item.kind != 'video') continue;
+      final key = item.id;
+      final preview = item.kind == 'video'
+          ? (item.thumbnailBytes ?? item.previewBytes)
+          : item.bytes;
+      unawaited(
+        ChatAttachLocalCache.storeBytes(
+          id: key,
+          bytes: item.bytes,
+          filename: item.filename,
+        ),
+      );
+      final tempId = _nextOptimisticId();
+      optimistic.add({
+        'id': tempId,
+        'thread_id': 0,
+        'kind': item.kind,
+        'filename': item.filename,
+        'local_bytes': preview,
+        '_optimistic_key': key,
+        '_pending': true,
+      });
+      photos.add(
+        AlbumUploadPhoto(
+          bytes: item.bytes,
+          filename: item.filename,
+          contentType:
+              item.contentType ?? _imageContentTypeForFilename(item.filename),
+          kind: item.kind,
+          localPath: item.localPath,
+          thumbnailBytes: item.thumbnailBytes,
+          optimisticKey: key,
+        ),
+      );
     }
+    if (photos.isEmpty) return;
+
+    setState(() {
+      _photos.insertAll(0, optimistic);
+      _offset += optimistic.length;
+      _total += optimistic.length;
+      _addingPhotos = true;
+      _preparingUpload = false;
+      _uploadTotal = photos.length;
+      _uploadDone = 0;
+      _uploadFailed = 0;
+    });
+    _startCoordinatorUpload(albumPk: albumPk, photos: photos);
   }
 
-  Future<void> _uploadPhoneFiles({
-    required int albumPk,
-    required List<PlatformFile> files,
-  }) async {
-    final items = _limitUploadSelection(files);
-    if (items.isEmpty) return;
-    _beginPreparingUpload();
-    try {
-      final photos = <AlbumUploadPhoto>[];
-      for (final file in items) {
-        final bytes = await readAlbumUploadFileBytes(file);
-        if (bytes == null || bytes.isEmpty) continue;
-        final kind = mediaDraftKindFor(filename: file.name, bytes: bytes);
-        if (kind == MediaDraftKind.video) {
-          final draft = await prepareVideoUploadDraft(
-            originalBytes: bytes,
-            filename: file.name,
-            contentType: contentTypeForFilename(file.name),
-            localPath: file.path,
-          );
-          if (!draft.canUpload) continue;
-          photos.add(
-            AlbumUploadPhoto(
-              bytes: draft.bytesForUpload,
-              filename: draft.filename,
-              contentType: draft.contentType,
-              photoExif: draft.geo?.toPhotoExif(),
+  Future<void> _pickFromPhoneAttachSheet() async {
+    final pk = widget.customAlbumPk;
+    if (pk == null) return;
+    await ChatAttachSheet.show(
+      context,
+      style: ChatAttachSheetStyle.phoneMedia,
+      onSendMedia: (caption, items) async {
+        await _uploadAttachItems(albumPk: pk, items: items);
+      },
+    );
+  }
+
+  Future<void> _showAddPhotosSheet() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.collections_outlined),
+              title: const Text('Из галереи'),
+              subtitle: const Text('Уже загруженные фото семьи'),
+              onTap: () => Navigator.pop(ctx, 'gallery'),
             ),
-          );
-          continue;
-        }
-        if (kind != MediaDraftKind.image) continue;
-        photos.add(
-          AlbumUploadPhoto(
-            bytes: bytes,
-            filename: file.name,
-            contentType: _imageContentTypeForFilename(file.name),
-          ),
-        );
-      }
-      if (photos.isEmpty) return;
-      _startCoordinatorUpload(albumPk: albumPk, photos: photos);
-    } finally {
-      _endPreparingIfIdle();
+            ListTile(
+              leading: const Icon(Icons.phone_android_outlined),
+              title: const Text('С телефона'),
+              subtitle: const Text('Галерея и камера'),
+              onTap: () => Navigator.pop(ctx, 'phone'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'gallery':
+        await _pickFromGallery();
+      case 'phone':
+        await _pickFromPhoneAttachSheet();
     }
   }
 
@@ -1221,80 +1265,6 @@ class _ProfileGalleryAlbumScreenState
     if (lower.endsWith('.webp')) return 'image/webp';
     if (lower.endsWith('.heic')) return 'image/heic';
     return 'image/jpeg';
-  }
-
-  Future<void> _uploadFromDevice(ImageSource source) async {
-    final pk = widget.customAlbumPk;
-    if (pk == null) return;
-    _beginPreparingUpload();
-    await Future<void>.delayed(Duration.zero);
-    try {
-      final picker = ImagePicker();
-      final picked = await picker.pickImage(
-        source: source,
-        requestFullMetadata: true,
-      );
-      if (!mounted || picked == null) return;
-      await _uploadDeviceImages(albumPk: pk, pickedItems: [picked]);
-    } finally {
-      _endPreparingIfIdle();
-    }
-  }
-
-  Future<void> _uploadFromPhoneFiles() async {
-    final pk = widget.customAlbumPk;
-    if (pk == null) return;
-    _beginPreparingUpload();
-    await Future<void>.delayed(Duration.zero);
-    try {
-      final picked = await FilePicker.platform.pickFiles(
-        allowMultiple: true,
-        withData: kIsWeb,
-        type: FileType.media,
-      );
-      if (!mounted) return;
-      if (picked == null || picked.files.isEmpty) return;
-      await _uploadPhoneFiles(albumPk: pk, files: picked.files);
-    } finally {
-      _endPreparingIfIdle();
-    }
-  }
-
-  Future<void> _showAddPhotosSheet() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Из галереи'),
-              onTap: () => Navigator.pop(ctx, 'gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Галерея телефона'),
-              onTap: () => Navigator.pop(ctx, 'phone'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.camera_alt_outlined),
-              title: const Text('Камера'),
-              onTap: () => Navigator.pop(ctx, 'camera'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted || action == null) return;
-    switch (action) {
-      case 'gallery':
-        await _pickFromGallery();
-      case 'phone':
-        await _uploadFromPhoneFiles();
-      case 'camera':
-        await _uploadFromDevice(ImageSource.camera);
-    }
   }
 
   Widget _buildPreparingOverlay() {
