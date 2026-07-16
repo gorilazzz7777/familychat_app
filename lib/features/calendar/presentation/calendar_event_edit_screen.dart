@@ -45,8 +45,6 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
   String _albumAccessMode = 'all';
   Set<int> _albumAccessUserIds = {};
   Set<int> _participantUserIds = {};
-  String _albumAddMode = 'owner';
-  Set<int> _albumAddUserIds = {};
   List<Map<String, dynamic>> _members = [];
   bool _loadingMembers = true;
   bool _loading = false;
@@ -111,14 +109,6 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
               .whereType<int>()
               .toSet();
         }
-        _albumAddMode = data['album_add_mode']?.toString() ?? 'owner';
-        final rawAddIds = data['album_add_user_ids'];
-        if (rawAddIds is List) {
-          _albumAddUserIds = rawAddIds
-              .map((e) => e is int ? e : int.tryParse('$e'))
-              .whereType<int>()
-              .toSet();
-        }
         _loading = false;
       });
     } catch (e) {
@@ -176,8 +166,6 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
       'album_access_mode': _albumAccessMode,
       'album_access_user_ids': _albumAccessUserIds.toList(),
       'participant_user_ids': _participantUserIds.toList(),
-      'album_add_mode': _albumAddMode,
-      'album_add_user_ids': _albumAddUserIds.toList(),
     };
   }
 
@@ -193,7 +181,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
       return;
     }
     if (_createAlbum &&
-        _albumAccessMode != 'all' &&
+        _albumAccessMode == 'deny' &&
         _albumAccessUserIds.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Выберите участников для альбома')),
@@ -201,10 +189,11 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
       return;
     }
     if (_createAlbum &&
-        _albumAddMode == 'selected' &&
-        _albumAddUserIds.isEmpty) {
+        _albumAccessMode == 'allow' &&
+        _albumAccessUserIds.isEmpty &&
+        _participantUserIds.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Выберите, кто может добавлять фото')),
+        const SnackBar(content: Text('Выберите участников для альбома')),
       );
       return;
     }
@@ -456,58 +445,6 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                         onSelectedUserIdsChanged: (ids) =>
                             setState(() => _albumAccessUserIds = ids),
                       ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Кто может добавлять фото',
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      _AlbumAddOptionTile(
-                        scheme: scheme,
-                        title: 'Только создатель',
-                        selected: _albumAddMode == 'owner',
-                        enabled: !_saving,
-                        onTap: () => setState(() => _albumAddMode = 'owner'),
-                      ),
-                      _AlbumAddOptionTile(
-                        scheme: scheme,
-                        title: 'Все участники семьи',
-                        selected: _albumAddMode == 'all',
-                        enabled: !_saving,
-                        onTap: () => setState(() => _albumAddMode = 'all'),
-                      ),
-                      _AlbumAddOptionTile(
-                        scheme: scheme,
-                        title: 'Выбранные участники',
-                        selected: _albumAddMode == 'selected',
-                        enabled: !_saving,
-                        onTap: () => setState(() => _albumAddMode = 'selected'),
-                      ),
-                      if (_albumAddMode == 'selected') ...[
-                        const SizedBox(height: 8),
-                        ..._members.map((m) {
-                          final uid = m['user_id'];
-                          final userId = uid is int ? uid : int.tryParse('$uid');
-                          if (userId == null) return const SizedBox.shrink();
-                          final name = m['display_name']?.toString() ?? '';
-                          final selected = _albumAddUserIds.contains(userId);
-                          return _MemberSelectTile(
-                            scheme: scheme,
-                            name: name,
-                            selected: selected,
-                            enabled: !_saving,
-                            onChanged: (v) => setState(() {
-                              if (v) {
-                                _albumAddUserIds.add(userId);
-                              } else {
-                                _albumAddUserIds.remove(userId);
-                              }
-                            }),
-                          );
-                        }),
-                      ],
                     ],
                   ],
                 ),
@@ -853,63 +790,6 @@ class _ToggleRow extends StatelessWidget {
             onChanged: enabled ? onChanged : null,
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _AlbumAddOptionTile extends StatelessWidget {
-  const _AlbumAddOptionTile({
-    required this.scheme,
-    required this.title,
-    required this.selected,
-    required this.enabled,
-    required this.onTap,
-  });
-
-  final ColorScheme scheme;
-  final String title;
-  final bool selected;
-  final bool enabled;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Material(
-        color: selected
-            ? scheme.primaryContainer.withValues(alpha: 0.5)
-            : scheme.surfaceContainerHighest.withValues(alpha: 0.3),
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          onTap: enabled ? onTap : null,
-          borderRadius: BorderRadius.circular(12),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-            child: Row(
-              children: [
-                Icon(
-                  selected
-                      ? Icons.radio_button_checked_rounded
-                      : Icons.radio_button_off_rounded,
-                  color: selected ? scheme.primary : scheme.onSurfaceVariant,
-                  size: 22,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    title,
-                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          fontWeight:
-                              selected ? FontWeight.w600 : FontWeight.w500,
-                        ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
       ),
     );
   }

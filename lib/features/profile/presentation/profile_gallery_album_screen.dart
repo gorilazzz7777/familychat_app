@@ -206,7 +206,7 @@ class _ProfileGalleryAlbumScreenState
 
   Future<void> _initCalendarPhotoSync() async {
     final pk = widget.customAlbumPk;
-    if (pk == null || !widget.canManage) return;
+    if (pk == null || !(widget.canManage || widget.canAddPhotos)) return;
     final service =
         CalendarPhotoSyncService(ref.read(familychatRepositoryProvider));
     final info = await service.fetchAlbumSyncInfo(pk);
@@ -315,7 +315,9 @@ class _ProfileGalleryAlbumScreenState
 
   Widget _buildCalendarSyncBanner() {
     final info = _calendarSyncInfo;
-    if (info == null || !widget.canManage) return const SizedBox.shrink();
+    if (info == null || !(widget.canManage || widget.canAddPhotos)) {
+      return const SizedBox.shrink();
+    }
 
     final isAndroid = CalendarPhotoSyncService.isAndroidNative;
     final showWebUpload = kIsWeb;

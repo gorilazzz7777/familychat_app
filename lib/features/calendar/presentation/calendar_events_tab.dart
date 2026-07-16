@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/data/chat_offline_sync.dart';
+import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import 'calendar_event_edit_screen.dart';
 import 'birthday_detail_screen.dart';
 import 'widgets/album_access_fields.dart';
@@ -115,6 +116,23 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
   }
 
   Future<void> _openCustomEvent(Map<String, dynamic> event) async {
+    if (event['editable'] != true) {
+      final rawAlbum = event['gallery_album_id'];
+      final albumPk = rawAlbum is int ? rawAlbum : int.tryParse('$rawAlbum');
+      final rawOwner = event['owner_user_id'];
+      final ownerUserId = rawOwner is int ? rawOwner : int.tryParse('$rawOwner');
+      if (event['is_participant'] == true && albumPk != null && ownerUserId != null) {
+        await openProfileGalleryAlbum(
+          context,
+          userId: ownerUserId,
+          albumId: 'custom:$albumPk',
+          title: event['title']?.toString() ?? 'Альбом события',
+          canManage: false,
+          canAddPhotos: true,
+        );
+      }
+      return;
+    }
     final id = event['id'];
     final eventId = id is int ? id : int.tryParse('$id');
     if (eventId == null) return;

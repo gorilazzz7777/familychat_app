@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/data/chat_offline_sync.dart';
+import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import '../data/calendar_agenda_utils.dart';
 import 'calendar_event_edit_screen.dart';
 import 'birthday_detail_screen.dart';
@@ -152,6 +153,23 @@ class _CalendarMonthsTabState extends ConsumerState<CalendarMonthsTab> {
       );
       return;
     }
+    if (kind == 'custom' && item['editable'] != true) {
+      final opened = await _openParticipantEventAlbum(item);
+      if (opened) return;
+      if (!mounted) return;
+      final title = item['title']?.toString() ?? 'Событие';
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(title),
+          content: Text(DateFormat('d MMMM yyyy', 'ru').format(day)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть')),
+          ],
+        ),
+      );
+      return;
+    }
     if (item['editable'] != true) {
       final title = item['title']?.toString() ?? 'Событие';
       await showDialog<void>(
@@ -181,6 +199,25 @@ class _CalendarMonthsTabState extends ConsumerState<CalendarMonthsTab> {
       ),
     );
     if (changed == true) await _refresh();
+  }
+
+  Future<bool> _openParticipantEventAlbum(Map<String, dynamic> item) async {
+    if (item['is_participant'] != true) return false;
+    final rawAlbum = item['gallery_album_id'];
+    final albumPk = rawAlbum is int ? rawAlbum : int.tryParse('$rawAlbum');
+    if (albumPk == null) return false;
+    final rawOwner = item['owner_user_id'];
+    final ownerUserId = rawOwner is int ? rawOwner : int.tryParse('$rawOwner');
+    if (ownerUserId == null) return false;
+    await openProfileGalleryAlbum(
+      context,
+      userId: ownerUserId,
+      albumId: 'custom:$albumPk',
+      title: item['title']?.toString() ?? 'Альбом события',
+      canManage: false,
+      canAddPhotos: true,
+    );
+    return true;
   }
 
   @override
@@ -308,7 +345,10 @@ class _DayEventsSheet extends StatelessWidget {
                   margin: const EdgeInsets.only(bottom: 8),
                   child: ListTile(
                     title: Text(e['title']?.toString() ?? ''),
-                    trailing: e['editable'] == true
+                    trailing: (e['editable'] == true ||
+                            (e['kind']?.toString() == 'custom' &&
+                                e['is_participant'] == true &&
+                                e['gallery_album_id'] != null))
                         ? const Icon(Icons.chevron_right)
                         : null,
                     onTap: () => onEventTap(e),
