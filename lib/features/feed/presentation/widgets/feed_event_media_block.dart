@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
-import '../../../../core/widgets/family_public_image.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
+import '../../../chat/presentation/widgets/chat_network_image.dart';
 
 /// Медиа в ленте: высота подстраивается под пропорции фото.
 ///
@@ -186,17 +186,19 @@ class _FeedEventMediaBlockState extends State<FeedEventMediaBlock> {
           fit: BoxFit.cover,
         );
       }
-      return FamilyPublicImage(
-        url: _photoUrl(photo),
-        width: double.infinity,
-        height: height,
-        fit: BoxFit.cover,
-        placeholder: ColoredBox(
-          color: cs.surfaceContainerHighest,
-          child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-        ),
-        error: const Center(child: Icon(Icons.broken_image_outlined)),
-      );
+      final threadId = photo['thread_id'] is int
+          ? photo['thread_id'] as int
+          : int.tryParse('${photo['thread_id']}');
+      if (threadId != null) {
+        return ChatNetworkImage(
+          threadId: threadId,
+          attachment: photo,
+          width: double.infinity,
+          height: height,
+          fit: BoxFit.cover,
+        );
+      }
+      return const Center(child: Icon(Icons.broken_image_outlined));
     }
 
     return AnimatedSize(
