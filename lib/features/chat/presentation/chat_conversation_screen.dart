@@ -2515,6 +2515,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                             onRefresh: _load,
                             child: ListView.builder(
                               controller: _scrollController,
+                              // Меньше оффскрин-префетча медиа — видимые грузятся первыми.
+                              cacheExtent: 180,
                               keyboardDismissBehavior:
                                   ScrollViewKeyboardDismissBehavior.onDrag,
                               padding: const EdgeInsets.symmetric(vertical: 8),

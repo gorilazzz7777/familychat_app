@@ -9,6 +9,9 @@ import 'chat_realtime_utils.dart';
 
 /// Фоновая загрузка списка чатов и последних сообщений для офлайн-режима.
 abstract final class ChatOfflinePrefetch {
+  /// На web полный файл тяжёлый — не выкачиваем всю ленту заранее.
+  static const int _maxPrefetchImagesPerThread = kIsWeb ? 4 : 12;
+
   static Future<void> run(FamilyChatRepository repo) async {
     try {
       final results = await Future.wait([
@@ -37,8 +40,12 @@ abstract final class ChatOfflinePrefetch {
     int threadId,
     List<Map<String, dynamic>> messages,
   ) async {
-    for (final message in messages) {
+    var remaining = _maxPrefetchImagesPerThread;
+    // Свежие сообщения важнее — идём с конца.
+    for (final message in messages.reversed) {
+      if (remaining <= 0) break;
       for (final attachment in chatAttachmentsOf(message)) {
+        if (remaining <= 0) break;
         if (attachment['kind']?.toString() != 'image') continue;
         final attachmentId = chatAsInt(attachment['id']);
         if (attachmentId == null) continue;
@@ -49,13 +56,18 @@ abstract final class ChatOfflinePrefetch {
               threadId,
               attachmentId,
             );
-            if (existing != null && existing.isNotEmpty) continue;
-            final bytes = await repo.fetchChatAttachmentBytes(threadId, attachmentId);
+            if (existing != null && existing.isNotEmpty) {
+              remaining--;
+              continue;
+            }
+            final bytes =
+                await repo.fetchChatAttachmentBytes(threadId, attachmentId);
             await FamilyChatLocalCache.saveAttachmentBytes(
               threadId,
               attachmentId,
               bytes,
             );
+            remaining--;
           } catch (_) {}
           continue;
         }
@@ -64,6 +76,7 @@ abstract final class ChatOfflinePrefetch {
         if (url.isEmpty) continue;
         try {
           await FamilyChatMediaCache.preview.downloadFile(url);
+          remaining--;
         } catch (_) {}
       }
     }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -35,6 +36,11 @@ class FamilyChatRepository {
   static final Map<int, Future<Uint8List>> _avatarBytesInFlight =
       <int, Future<Uint8List>>{};
 
+  /// Сколько полных файлов вложений качаем одновременно (web/bytes path).
+  static const int maxConcurrentAttachmentDownloads = 3;
+  static int _attachmentDownloadsActive = 0;
+  static final List<void Function()> _attachmentDownloadWaiters = <void Function()>[];
+
   static Uint8List? peekMemberAvatarBytes(int userId) {
     final cached = _avatarBytesCache[userId];
     if (cached != null && cached.isNotEmpty) return cached;
@@ -45,6 +51,26 @@ class FamilyChatRepository {
     final cached = _attachmentBytesCache['$threadId:$attachmentId'];
     if (cached != null && cached.isNotEmpty) return cached;
     return null;
+  }
+
+  static Future<void> _acquireAttachmentDownloadSlot() async {
+    while (_attachmentDownloadsActive >= maxConcurrentAttachmentDownloads) {
+      final ready = Completer<void>();
+      _attachmentDownloadWaiters.add(() {
+        if (!ready.isCompleted) ready.complete();
+      });
+      await ready.future;
+    }
+    _attachmentDownloadsActive++;
+  }
+
+  static void _releaseAttachmentDownloadSlot() {
+    if (_attachmentDownloadsActive > 0) {
+      _attachmentDownloadsActive--;
+    }
+    if (_attachmentDownloadWaiters.isEmpty) return;
+    final next = _attachmentDownloadWaiters.removeAt(0);
+    next();
   }
 
   Future<Map<String, dynamic>> status({bool? appForeground}) async {
@@ -591,15 +617,20 @@ class FamilyChatRepository {
     int threadId,
     int attachmentId,
   ) async {
-    final res = await _dio.get<List<int>>(
-      'familychat/chat/threads/$threadId/attachments/$attachmentId/content/',
-      options: Options(responseType: ResponseType.bytes),
-    );
-    final data = res.data;
-    if (data == null || data.isEmpty) {
-      throw StateError('Пустой файл');
+    await _acquireAttachmentDownloadSlot();
+    try {
+      final res = await _dio.get<List<int>>(
+        'familychat/chat/threads/$threadId/attachments/$attachmentId/content/',
+        options: Options(responseType: ResponseType.bytes),
+      );
+      final data = res.data;
+      if (data == null || data.isEmpty) {
+        throw StateError('Пустой файл');
+      }
+      return data is Uint8List ? data : Uint8List.fromList(data);
+    } finally {
+      _releaseAttachmentDownloadSlot();
     }
-    return data is Uint8List ? data : Uint8List.fromList(data);
   }
 
   Future<Map<String, dynamic>> sendThreadMessage(

@@ -19,7 +19,8 @@ String _attachmentCacheKey(int threadId, int attachmentId) =>
 
 /// Изображение вложения чата.
 ///
-/// На web и при пустом `file_url` — байты через API (JWT).
+/// Текст/рамки рисуются сразу; байты догружаются в фоне с лимитом параллелизма.
+/// На web и при пустом `file_url` — через API (JWT).
 /// На native с `file_url` — CachedNetworkImage.
 class ChatNetworkImage extends ConsumerStatefulWidget {
   const ChatNetworkImage({
@@ -45,6 +46,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   Map<String, String>? _headers;
   bool _bytesFailed = false;
   bool _loadStarted = false;
+  bool _wantsNetworkLoad = false;
 
   int? get _attachmentId => chatAsInt(widget.attachment['id']);
 
@@ -63,7 +65,13 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   void initState() {
     super.initState();
     if (_useBytesPath) {
-      _ensureBytesLoadStarted();
+      // Сначала даём отрисовать текст и рамки, сеть — после кадра / из кэша.
+      final cached = _cachedBytes();
+      if (cached != null) {
+        _ensureBytesLoadStarted();
+      } else {
+        _scheduleDeferredNetworkLoad();
+      }
     } else {
       _loadHeaders();
     }
@@ -79,13 +87,32 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     if (oldId != newId || oldWidget.threadId != widget.threadId || urlChanged) {
       _bytesFailed = false;
       _loadStarted = false;
+      _wantsNetworkLoad = false;
       if (_useBytesPath) {
-        _ensureBytesLoadStarted();
+        final cached = _cachedBytes();
+        if (cached != null) {
+          _ensureBytesLoadStarted();
+        } else {
+          _scheduleDeferredNetworkLoad();
+        }
       } else {
         _loadHeaders();
         setState(() {});
       }
     }
+  }
+
+  void _scheduleDeferredNetworkLoad() {
+    if (_wantsNetworkLoad) return;
+    _wantsNetworkLoad = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_wantsNetworkLoad) return;
+      // Ещё один кадр — список сообщений успевает отрисоваться.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_wantsNetworkLoad) return;
+        _ensureBytesLoadStarted();
+      });
+    });
   }
 
   Future<void> _loadHeaders() async {
@@ -194,6 +221,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
           ? () {
               setState(() => _bytesFailed = false);
               _loadStarted = false;
+              _wantsNetworkLoad = false;
               _ensureBytesLoadStarted();
             }
           : null,
@@ -201,7 +229,10 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         height: widget.height,
         width: widget.width,
         child: ColoredBox(
-          color: const Color(0x11000000),
+          color: Theme.of(context)
+              .colorScheme
+              .surfaceContainerHighest
+              .withValues(alpha: 0.55),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -225,21 +256,23 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     );
   }
 
-  Widget _loadingBox() {
+  /// Рамка-заглушка без спиннера — текст чата читается сразу.
+  Widget _framePlaceholder() {
+    final scheme = Theme.of(context).colorScheme;
     return SizedBox(
       height: widget.height,
       width: widget.width,
-      child: ColoredBox(
-        color: const Color(0x11000000),
-        child: Center(
-          child: SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: Theme.of(context).colorScheme.primary,
-            ),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
+          border: Border.all(
+            color: scheme.outlineVariant.withValues(alpha: 0.35),
           ),
+        ),
+        child: Icon(
+          Icons.image_outlined,
+          size: 28,
+          color: scheme.onSurfaceVariant.withValues(alpha: 0.45),
         ),
       ),
     );
@@ -255,7 +288,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         if (_bytesFailed) return _errorBox();
 
         final bytes = _cachedBytes();
-        if (bytes == null) return _loadingBox();
+        if (bytes == null) return _framePlaceholder();
 
         return Image.memory(
           bytes,
@@ -287,7 +320,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       height: widget.height,
       width: widget.width,
       fit: widget.fit,
-      placeholder: (_, __) => _loadingBox(),
+      placeholder: (_, __) => _framePlaceholder(),
       errorWidget: (_, __, ___) => _errorBox(retryable: false),
       imageBuilder: (context, imageProvider) {
         unawaited(FamilyChatMediaCache.trimIfNeeded());
