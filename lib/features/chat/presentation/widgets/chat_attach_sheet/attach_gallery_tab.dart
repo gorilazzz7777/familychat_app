@@ -114,6 +114,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       }
 
       final paths = await _loadAllAlbums();
+      _albumCoverFutures.clear();
       final limited = _detectLimitedAccess(perm: perm, albums: paths);
       AssetPathEntity? preferred;
       for (final p in paths) {
@@ -174,7 +175,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
         title: const Text('Нужен доступ ко всем фото'),
         content: const Text(
           'Сейчас приложение видит только выбранные снимки '
-          '(обычно «Recent» / «Pictures»).\n\n'
+          '(обычно «Недавние» / «Изображения»).\n\n'
           'В настройках выберите «Разрешить всегда» / «Все фото», '
           'чтобы появились Камера, Скриншоты, WhatsApp и другие альбомы.',
         ),
@@ -257,45 +258,49 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     final chosen = await showModalBottomSheet<AssetPathEntity>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
       builder: (ctx) {
+        final theme = Theme.of(ctx);
         return SafeArea(
           child: SizedBox(
-            height: MediaQuery.sizeOf(ctx).height * 0.55,
+            height: MediaQuery.sizeOf(ctx).height * 0.62,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                const SizedBox(height: 8),
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.onSurfaceVariant
+                          .withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
                   child: Text(
                     'Альбомы',
-                    style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 Expanded(
                   child: ListView.builder(
+                    padding: const EdgeInsets.only(bottom: 12),
                     itemCount: _albums.length,
                     itemBuilder: (context, i) {
                       final album = _albums[i];
-                      return FutureBuilder<int>(
-                        future: album.assetCountAsync,
-                        builder: (context, snap) {
-                          final count = snap.data;
-                          final title = album.isAll
-                              ? (album.name.trim().isEmpty
-                                  ? 'Все фото'
-                                  : album.name)
-                              : album.name;
-                          return ListTile(
-                            title: Text(title),
-                            subtitle: count == null ? null : Text('$count'),
-                            trailing: album.id == _album?.id
-                                ? const Icon(Icons.check)
-                                : null,
-                            onTap: () => Navigator.pop(ctx, album),
-                          );
-                        },
+                      return _AlbumPickerTile(
+                        album: album,
+                        selected: album.id == _album?.id,
+                        onTap: () => Navigator.pop(ctx, album),
                       );
                     },
                   ),
@@ -531,9 +536,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                 label: Text(
                   _album == null
                       ? 'Галерея'
-                      : (_album!.isAll && _album!.name.trim().isEmpty
-                          ? 'Все фото'
-                          : _album!.name),
+                      : localizeGalleryAlbumName(_album!),
                 ),
               ),
               const Spacer(),
@@ -702,6 +705,149 @@ class _AssetThumb extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Русские названия системных альбомов Android/iOS.
+String localizeGalleryAlbumName(AssetPathEntity album) {
+  if (album.isAll) {
+    final n = album.name.trim();
+    if (n.isEmpty) return 'Все фото';
+    final localized = localizeGalleryAlbumTitle(n);
+    // «Recent» как isAll → «Все фото» понятнее в шапке выбора.
+    if (localized == 'Недавние') return 'Все фото';
+    return localized;
+  }
+  return localizeGalleryAlbumTitle(album.name);
+}
+
+String localizeGalleryAlbumTitle(String raw) {
+  final n = raw.trim();
+  switch (n.toLowerCase()) {
+    case 'recent':
+    case 'recents':
+      return 'Недавние';
+    case 'pictures':
+    case 'picture':
+      return 'Изображения';
+    case 'camera':
+      return 'Камера';
+    case 'screenshots':
+    case 'screenshot':
+      return 'Скриншоты';
+    case 'download':
+    case 'downloads':
+      return 'Загрузки';
+    case 'videos':
+    case 'video':
+      return 'Видео';
+    default:
+      return n;
+  }
+}
+
+final Map<String, Future<Uint8List?>> _albumCoverFutures = {};
+
+Future<Uint8List?> _albumCoverBytes(AssetPathEntity album) {
+  return _albumCoverFutures.putIfAbsent(album.id, () async {
+    try {
+      final assets = await album.getAssetListRange(start: 0, end: 1);
+      if (assets.isEmpty) return null;
+      return assets.first.thumbnailDataWithSize(
+        const ThumbnailSize(160, 160),
+      );
+    } catch (_) {
+      return null;
+    }
+  });
+}
+
+class _AlbumPickerTile extends StatelessWidget {
+  const _AlbumPickerTile({
+    required this.album,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final AssetPathEntity album;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final title = localizeGalleryAlbumName(album);
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                width: 56,
+                height: 56,
+                child: FutureBuilder<Uint8List?>(
+                  future: _albumCoverBytes(album),
+                  builder: (context, snap) {
+                    final data = snap.data;
+                    if (data == null || data.isEmpty) {
+                      return ColoredBox(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        child: Icon(
+                          Icons.photo_library_outlined,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      );
+                    }
+                    return Image.memory(
+                      data,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                    );
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: FutureBuilder<int>(
+                future: album.assetCountAsync,
+                builder: (context, snap) {
+                  final count = snap.data;
+                  return Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: title,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (count != null)
+                          TextSpan(
+                            text: '  $count',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w400,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  );
+                },
+              ),
+            ),
+            if (selected)
+              Icon(Icons.check, color: theme.colorScheme.primary),
+          ],
+        ),
       ),
     );
   }

@@ -579,12 +579,20 @@ Widget faceTaggingAttachmentPreview({
   required Map<String, dynamic> attachment,
   Uint8List? localBytes,
 }) {
-  if (localBytes != null) {
-    return Image.memory(localBytes, fit: BoxFit.contain);
+  if (localBytes != null && localBytes.isNotEmpty) {
+    return Image.memory(
+      localBytes,
+      fit: BoxFit.contain,
+      width: double.infinity,
+      height: double.infinity,
+      gaplessPlayback: true,
+    );
   }
-  return ChatNetworkImage(
-    threadId: threadId,
-    attachment: attachment,
-    fit: BoxFit.contain,
+  return SizedBox.expand(
+    child: ChatNetworkImage(
+      threadId: threadId,
+      attachment: attachment,
+      fit: BoxFit.contain,
+    ),
   );
 }

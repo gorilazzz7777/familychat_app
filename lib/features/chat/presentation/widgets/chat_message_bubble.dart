@@ -9,13 +9,13 @@ import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import '../../data/chat_location_utils.dart';
 import '../../data/chat_voice_utils.dart';
+import 'chat_image_album.dart';
 import 'chat_location_preview.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
 import 'chat_message_read_status_icon.dart';
 import 'chat_message_tap_target.dart';
 import 'chat_mention_text.dart';
-import 'chat_network_image.dart';
 import 'chat_swipe_to_reply.dart';
 import 'chat_voice_message_player.dart';
 
@@ -176,77 +176,13 @@ class ChatMessageBubble extends StatelessWidget {
                         maxWidth: maxBubbleWidth - 24,
                       ),
                     ],
-                    for (final a in attachments) ...[
-                      if (body.isNotEmpty || location != null)
-                        const SizedBox(height: 8),
-                      if (isVoiceAttachment(a, messageMetadata: messageMetadata))
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(minWidth: 180),
-                          child: ChatVoiceMessagePlayer(
-                            threadId: threadId,
-                            attachment: a,
-                            isMine: isMine,
-                            durationMs: voiceDurationMsForAttachment(
-                              a,
-                              messageMetadata: messageMetadata,
-                            ),
-                            transcript: () {
-                              final voice = messageMetadata['voice'];
-                              if (voice is! Map) return null;
-                              final text = voice['transcript']?.toString().trim();
-                              if (text == null || text.isEmpty) return null;
-                              return text;
-                            }(),
-                            canToggleTranscript: canToggleVoiceTranscript,
-                            textColor: textColor,
-                            metaColor: metaColor,
-                          ),
-                        )
-                      else if (a['kind'] == 'image' ||
-                          (a['local_bytes'] is Uint8List &&
-                              a['kind'] != 'video' &&
-                              a['kind'] != 'file'))
-                        GestureDetector(
-                          onTap: onImageTap != null && a['local_bytes'] == null
-                              ? () => onImageTap!(a)
-                              : null,
-                          behavior: HitTestBehavior.opaque,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: _attachmentImage(a, maxBubbleWidth - 24),
-                          ),
-                        )
-                      else if (a['kind'] == 'video' || isVideoAttachment(a))
-                        _ChatVideoAttachmentPreview(
-                          threadId: threadId,
-                          attachment: a,
-                          maxWidth: maxBubbleWidth - 24,
-                          onOpen: onImageTap != null
-                              ? () => onImageTap!(a)
-                              : null,
-                        )
-                      else
-                        InkWell(
-                          onTap: () {
-                            final url = a['file_url']?.toString();
-                            if (url != null) launchUrl(Uri.parse(url));
-                          },
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.insert_drive_file_outlined,
-                                  color: textColor),
-                              const SizedBox(width: 8),
-                              Flexible(
-                                child: Text(
-                                  a['filename']?.toString() ?? 'Файл',
-                                  style: TextStyle(color: textColor),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
+                    ..._buildAttachmentBlocks(
+                      textColor: textColor,
+                      metaColor: metaColor,
+                      maxWidth: maxBubbleWidth - 24,
+                      hasLeadingContent:
+                          _showBody(body, forward) || location != null,
+                    ),
                     const SizedBox(height: 4),
                     Row(
                       mainAxisSize: MainAxisSize.min,
@@ -415,24 +351,109 @@ class ChatMessageBubble extends StatelessWidget {
     );
   }
 
-  Widget _attachmentImage(Map<String, dynamic> attachment, double width) {
-    final local = attachment['local_bytes'];
-    if (local is Uint8List) {
-      return Image.memory(
-        local,
-        height: 180,
-        width: width,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
+  List<Widget> _buildAttachmentBlocks({
+    required Color textColor,
+    required Color metaColor,
+    required double maxWidth,
+    required bool hasLeadingContent,
+  }) {
+    final images = <Map<String, dynamic>>[];
+    final rest = <Map<String, dynamic>>[];
+    for (final a in attachments) {
+      if (isVoiceAttachment(a, messageMetadata: messageMetadata) ||
+          a['kind'] == 'video' ||
+          isVideoAttachment(a) ||
+          (a['kind'] == 'file' && !chatAttachmentLooksLikeImage(a))) {
+        rest.add(a);
+      } else if (chatAttachmentLooksLikeImage(a)) {
+        images.add(a);
+      } else {
+        rest.add(a);
+      }
+    }
+
+    final out = <Widget>[];
+    var needsGap = hasLeadingContent;
+
+    void addGap() {
+      if (needsGap) out.add(const SizedBox(height: 8));
+      needsGap = true;
+    }
+
+    if (images.isNotEmpty) {
+      addGap();
+      out.add(
+        ChatImageAlbum(
+          threadId: threadId,
+          attachments: images,
+          maxWidth: maxWidth,
+          onImageTap: onImageTap,
+        ),
       );
     }
-    return ChatNetworkImage(
-      threadId: threadId,
-      attachment: attachment,
-      height: 180,
-      width: width,
-      fit: BoxFit.cover,
-    );
+
+    for (final a in rest) {
+      addGap();
+      if (isVoiceAttachment(a, messageMetadata: messageMetadata)) {
+        out.add(
+          ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 180),
+            child: ChatVoiceMessagePlayer(
+              threadId: threadId,
+              attachment: a,
+              isMine: isMine,
+              durationMs: voiceDurationMsForAttachment(
+                a,
+                messageMetadata: messageMetadata,
+              ),
+              transcript: () {
+                final voice = messageMetadata['voice'];
+                if (voice is! Map) return null;
+                final text = voice['transcript']?.toString().trim();
+                if (text == null || text.isEmpty) return null;
+                return text;
+              }(),
+              canToggleTranscript: canToggleVoiceTranscript,
+              textColor: textColor,
+              metaColor: metaColor,
+            ),
+          ),
+        );
+      } else if (a['kind'] == 'video' || isVideoAttachment(a)) {
+        out.add(
+          _ChatVideoAttachmentPreview(
+            threadId: threadId,
+            attachment: a,
+            maxWidth: maxWidth,
+            onOpen: onImageTap != null ? () => onImageTap!(a) : null,
+          ),
+        );
+      } else {
+        out.add(
+          InkWell(
+            onTap: () {
+              final url = a['file_url']?.toString();
+              if (url != null) launchUrl(Uri.parse(url));
+            },
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.insert_drive_file_outlined, color: textColor),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    a['filename']?.toString() ?? 'Файл',
+                    style: TextStyle(color: textColor),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+
+    return out;
   }
 }
 

@@ -1131,13 +1131,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       };
     }
 
-    final localBytes = optimisticAtts.first['local_bytes'];
     final mergedAtts = serverAtts.asMap().entries.map((entry) {
       final att = Map<String, dynamic>.from(entry.value);
-      if (entry.key == 0 &&
-          localBytes != null &&
-          isVoiceAttachment(att, messageMetadata: mergedMeta)) {
-        att['local_bytes'] = localBytes;
+      if (entry.key < optimisticAtts.length) {
+        final local = optimisticAtts[entry.key]['local_bytes'];
+        if (local is Uint8List && local.isNotEmpty) {
+          att['local_bytes'] = local;
+        }
       }
       return att;
     }).toList();
@@ -1264,6 +1264,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                     ?.startsWith('image/') ??
                 false);
         if (isImage) {
+          unawaited(
+            FamilyChatLocalCache.saveAttachmentBytes(
+              widget.threadId,
+              ids[i],
+              att.bytes,
+            ),
+          );
           unawaited(_pollFaceTaggingPrompt(ids[i]));
         }
       }
@@ -1398,6 +1405,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
+  Map<String, dynamic> _attachmentForFaceTagging(int attachmentId) {
+    for (final m in _messages) {
+      for (final a in chatAttachmentsOf(m)) {
+        if (chatAsInt(a['id']) == attachmentId) {
+          return Map<String, dynamic>.from(a);
+        }
+      }
+    }
+    return {
+      'id': attachmentId,
+      'thread_id': widget.threadId,
+    };
+  }
+
   Future<void> _pollFaceTaggingPrompt(int attachmentId) async {
     final repo = ref.read(familychatRepositoryProvider);
     for (var attempt = 0; attempt < 40; attempt++) {
@@ -1411,10 +1432,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         if (taggingStatus != 'done') continue;
         if (status['should_prompt_face_tagging'] != true) return;
         if (!mounted) return;
-        final attachment = {
-          'id': attachmentId,
-          'thread_id': widget.threadId,
-        };
+        final attachment = _attachmentForFaceTagging(attachmentId);
+        Uint8List? localBytes;
+        final rawLocal = attachment['local_bytes'];
+        if (rawLocal is Uint8List && rawLocal.isNotEmpty) {
+          localBytes = rawLocal;
+        } else {
+          localBytes = await FamilyChatLocalCache.readAttachmentBytes(
+            widget.threadId,
+            attachmentId,
+          );
+        }
+        if (!mounted) return;
         await FaceTaggingSheet.show(
           context,
           threadId: widget.threadId,
@@ -1423,6 +1452,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           imageChild: faceTaggingAttachmentPreview(
             threadId: widget.threadId,
             attachment: attachment,
+            localBytes: localBytes,
           ),
         );
         return;
