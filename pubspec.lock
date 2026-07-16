@@ -1557,10 +1557,9 @@ packages:
   vosk_flutter_service:
     dependency: "direct main"
     description:
-      name: vosk_flutter_service
-      sha256: a361995dd06583f975fcb78d002cbd31897b81a02842029a38acbbef611d5d23
-      url: "https://pub.dev"
-    source: hosted
+      path: "vendor/vosk_flutter_service"
+      relative: true
+    source: path
     version: "0.1.2"
   web:
     dependency: transitive
