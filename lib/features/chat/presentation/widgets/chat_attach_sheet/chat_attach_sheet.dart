@@ -1,19 +1,23 @@
 import 'package:flutter/material.dart';
 
 import '../../../data/chat_location_utils.dart';
+import 'attach_family_gallery_tab.dart';
 import 'attach_file_tab.dart';
 import 'attach_gallery_tab.dart';
 import 'attach_location_tab.dart';
 import 'attach_selection_bar.dart';
 import 'chat_attach_models.dart';
 
-/// Режим шторки: полный чат или только галерея/камера телефона.
+/// Режим шторки: полный чат, только телефон, или альбом (телефон + галерея семьи).
 enum ChatAttachSheetStyle {
   /// Галерея · Файл · Гео + подпись (чат).
   chat,
 
-  /// Только галерея с live-камерой (альбом / лента).
+  /// Только галерея с live-камерой (лента).
   phoneMedia,
+
+  /// С телефона · Из галереи (пользовательский альбом).
+  albumMedia,
 }
 
 class ChatAttachSheet extends StatefulWidget {
@@ -21,6 +25,9 @@ class ChatAttachSheet extends StatefulWidget {
     super.key,
     required this.onSendMedia,
     this.onSendLocation,
+    this.onAddFromFamilyGallery,
+    this.familyGalleryUserId,
+    this.excludeFamilyAttachmentIds = const {},
     this.style = ChatAttachSheetStyle.chat,
   });
 
@@ -29,6 +36,9 @@ class ChatAttachSheet extends StatefulWidget {
     List<ChatAttachSelectionItem> items,
   ) onSendMedia;
   final Future<void> Function(ChatLocationPoint point)? onSendLocation;
+  final Future<void> Function(List<int> attachmentIds)? onAddFromFamilyGallery;
+  final int? familyGalleryUserId;
+  final Set<int> excludeFamilyAttachmentIds;
   final ChatAttachSheetStyle style;
 
   static Future<void> show(
@@ -38,11 +48,19 @@ class ChatAttachSheet extends StatefulWidget {
       List<ChatAttachSelectionItem> items,
     ) onSendMedia,
     Future<void> Function(ChatLocationPoint point)? onSendLocation,
+    Future<void> Function(List<int> attachmentIds)? onAddFromFamilyGallery,
+    int? familyGalleryUserId,
+    Set<int> excludeFamilyAttachmentIds = const {},
     ChatAttachSheetStyle style = ChatAttachSheetStyle.chat,
   }) {
     assert(
       style != ChatAttachSheetStyle.chat || onSendLocation != null,
       'ChatAttachSheetStyle.chat requires onSendLocation',
+    );
+    assert(
+      style != ChatAttachSheetStyle.albumMedia ||
+          (onAddFromFamilyGallery != null && familyGalleryUserId != null),
+      'ChatAttachSheetStyle.albumMedia requires family gallery callbacks',
     );
     return showModalBottomSheet<void>(
       context: context,
@@ -52,6 +70,9 @@ class ChatAttachSheet extends StatefulWidget {
       builder: (_) => ChatAttachSheet(
         onSendMedia: onSendMedia,
         onSendLocation: onSendLocation,
+        onAddFromFamilyGallery: onAddFromFamilyGallery,
+        familyGalleryUserId: familyGalleryUserId,
+        excludeFamilyAttachmentIds: excludeFamilyAttachmentIds,
         style: style,
       ),
     );
@@ -64,12 +85,17 @@ class ChatAttachSheet extends StatefulWidget {
 class _ChatAttachSheetState extends State<ChatAttachSheet> {
   late ChatAttachMode _mode;
   final List<ChatAttachSelectionItem> _selected = [];
+  final Set<int> _familySelected = {};
   final _captionCtrl = TextEditingController();
   final _sheetCtrl = DraggableScrollableController();
   bool _sending = false;
   bool _expanded = false;
 
-  bool get _mediaOnly => widget.style == ChatAttachSheetStyle.phoneMedia;
+  bool get _phoneOnly => widget.style == ChatAttachSheetStyle.phoneMedia;
+  bool get _albumMode => widget.style == ChatAttachSheetStyle.albumMedia;
+  bool get _hideCaption =>
+      widget.style == ChatAttachSheetStyle.phoneMedia ||
+      widget.style == ChatAttachSheetStyle.albumMedia;
 
   @override
   void initState() {
@@ -94,6 +120,15 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
     super.dispose();
   }
 
+  void _setMode(ChatAttachMode mode) {
+    if (mode == _mode) return;
+    setState(() {
+      _mode = mode;
+      _selected.clear();
+      _familySelected.clear();
+    });
+  }
+
   void _setSelected(List<ChatAttachSelectionItem> items) {
     setState(() {
       _selected
@@ -106,14 +141,34 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
     setState(() => _selected.removeWhere((e) => e.id == id));
   }
 
+  void _setFamilySelected(Set<int> ids) {
+    setState(() {
+      _familySelected
+        ..clear()
+        ..addAll(ids);
+    });
+  }
+
   Future<void> _sendSelected() async {
     if (_selected.isEmpty || _sending) return;
     setState(() => _sending = true);
-    final caption = _mediaOnly ? '' : _captionCtrl.text.trim();
+    final caption = _hideCaption ? '' : _captionCtrl.text.trim();
     final items = List<ChatAttachSelectionItem>.from(_selected);
     if (mounted) Navigator.of(context).pop();
     try {
       await widget.onSendMedia(caption, items);
+    } catch (_) {
+      // caller shows errors
+    }
+  }
+
+  Future<void> _sendFamilySelected() async {
+    if (_familySelected.isEmpty || _sending) return;
+    setState(() => _sending = true);
+    final ids = _familySelected.toList();
+    if (mounted) Navigator.of(context).pop();
+    try {
+      await widget.onAddFromFamilyGallery?.call(ids);
     } catch (_) {
       // caller shows errors
     }
@@ -134,7 +189,7 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
       child: DraggableScrollableSheet(
         controller: _sheetCtrl,
         expand: false,
-        initialChildSize: _mediaOnly ? 0.55 : 0.48,
+        initialChildSize: _phoneOnly || _albumMode ? 0.55 : 0.48,
         minChildSize: 0.34,
         maxChildSize: 0.95,
         builder: (context, scrollController) {
@@ -153,7 +208,7 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
                     borderRadius: BorderRadius.circular(999),
                   ),
                 ),
-                if (_mediaOnly)
+                if (_phoneOnly)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
                     child: Align(
@@ -185,24 +240,40 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
                         onSend: _sendLocation,
                         scrollController: scrollController,
                       ),
+                    ChatAttachMode.familyGallery => AttachFamilyGalleryTab(
+                        userId: widget.familyGalleryUserId!,
+                        selected: _familySelected,
+                        onSelectedChanged: _setFamilySelected,
+                        scrollController: scrollController,
+                        excludeAttachmentIds: widget.excludeFamilyAttachmentIds,
+                      ),
                   },
                 ),
-                if (_mode != ChatAttachMode.location)
+                if (_mode == ChatAttachMode.familyGallery)
+                  _FamilySelectionBar(
+                    count: _familySelected.length,
+                    sending: _sending,
+                    onSend: _sendFamilySelected,
+                  )
+                else if (_mode != ChatAttachMode.location)
                   AttachSelectionBar(
                     items: _selected,
                     controller: _captionCtrl,
                     sending: _sending,
-                    showCaption: !_mediaOnly,
-                    sendIcon: _mediaOnly ? Icons.check_rounded : Icons.send_rounded,
+                    showCaption: !_hideCaption,
+                    sendIcon: _hideCaption
+                        ? Icons.check_rounded
+                        : Icons.send_rounded,
                     onSend: _sendSelected,
                     onRemove: _removeSelected,
                   ),
-                if (!_mediaOnly)
+                if (!_phoneOnly)
                   _ModeBar(
+                    style: widget.style,
                     mode: _mode,
-                    onChanged: (m) => setState(() => _mode = m),
+                    onChanged: _setMode,
                   ),
-                if (_mediaOnly) const SizedBox(height: 4),
+                if (_phoneOnly) const SizedBox(height: 4),
               ],
             ),
           );
@@ -212,45 +283,101 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
   }
 }
 
+class _FamilySelectionBar extends StatelessWidget {
+  const _FamilySelectionBar({
+    required this.count,
+    required this.sending,
+    required this.onSend,
+  });
+
+  final int count;
+  final bool sending;
+  final VoidCallback onSend;
+
+  @override
+  Widget build(BuildContext context) {
+    if (count <= 0) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surface,
+      elevation: 8,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Выбрано: $count',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
+              FilledButton.icon(
+                onPressed: sending ? null : onSend,
+                icon: sending
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check_rounded),
+                label: const Text('Добавить'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ModeBar extends StatelessWidget {
   const _ModeBar({
+    required this.style,
     required this.mode,
     required this.onChanged,
   });
 
+  final ChatAttachSheetStyle style;
   final ChatAttachMode mode;
   final ValueChanged<ChatAttachMode> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final chips = switch (style) {
+      ChatAttachSheetStyle.albumMedia => const [
+          (ChatAttachMode.gallery, 'С телефона', Icons.phone_android_outlined),
+          (
+            ChatAttachMode.familyGallery,
+            'Из галереи',
+            Icons.collections_outlined
+          ),
+        ],
+      _ => const [
+          (ChatAttachMode.gallery, 'Галерея', Icons.photo_outlined),
+          (ChatAttachMode.file, 'Файл', Icons.insert_drive_file_outlined),
+          (ChatAttachMode.location, 'Геопозиция', Icons.location_on_outlined),
+        ],
+    };
+
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
         child: Row(
           children: [
-            _ModeChip(
-              label: 'Галерея',
-              icon: Icons.photo_outlined,
-              selected: mode == ChatAttachMode.gallery,
-              onTap: () => onChanged(ChatAttachMode.gallery),
-              scheme: scheme,
-            ),
-            _ModeChip(
-              label: 'Файл',
-              icon: Icons.insert_drive_file_outlined,
-              selected: mode == ChatAttachMode.file,
-              onTap: () => onChanged(ChatAttachMode.file),
-              scheme: scheme,
-            ),
-            _ModeChip(
-              label: 'Геопозиция',
-              icon: Icons.location_on_outlined,
-              selected: mode == ChatAttachMode.location,
-              onTap: () => onChanged(ChatAttachMode.location),
-              scheme: scheme,
-            ),
+            for (final chip in chips)
+              _ModeChip(
+                label: chip.$2,
+                icon: chip.$3,
+                selected: mode == chip.$1,
+                onTap: () => onChanged(chip.$1),
+                scheme: scheme,
+              ),
           ],
         ),
       ),

@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-enum ChatAttachMode { gallery, file, location }
+enum ChatAttachMode { gallery, file, location, familyGallery }
 
 /// Выбранный элемент в шторке вложений (ещё до сжатия/отправки).
 class ChatAttachSelectionItem {

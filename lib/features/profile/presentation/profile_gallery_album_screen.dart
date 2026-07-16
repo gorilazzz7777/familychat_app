@@ -19,7 +19,6 @@ import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart
 import '../data/album_upload_coordinator.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
-import 'pick_gallery_photos_sheet.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import 'widgets/chat_avatar.dart';
 
@@ -703,48 +702,21 @@ class _ProfileGalleryAlbumScreenState
     _startCoordinatorUpload(albumPk: albumPk, photos: photos);
   }
 
-  Future<void> _pickFromPhoneAttachSheet() async {
+  Future<void> _showAddPhotosSheet() async {
     final pk = widget.customAlbumPk;
     if (pk == null) return;
     await ChatAttachSheet.show(
       context,
-      style: ChatAttachSheetStyle.phoneMedia,
+      style: ChatAttachSheetStyle.albumMedia,
+      familyGalleryUserId: widget.userId,
+      excludeFamilyAttachmentIds: _currentPhotoIds,
       onSendMedia: (caption, items) async {
         await _uploadAttachItems(albumPk: pk, items: items);
       },
+      onAddFromFamilyGallery: (ids) async {
+        await _addGalleryPhotosInChunks(albumPk: pk, attachmentIds: ids);
+      },
     );
-  }
-
-  Future<void> _showAddPhotosSheet() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.collections_outlined),
-              title: const Text('Из галереи'),
-              subtitle: const Text('Уже загруженные фото семьи'),
-              onTap: () => Navigator.pop(ctx, 'gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.phone_android_outlined),
-              title: const Text('С телефона'),
-              subtitle: const Text('Галерея и камера'),
-              onTap: () => Navigator.pop(ctx, 'phone'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted || action == null) return;
-    switch (action) {
-      case 'gallery':
-        await _pickFromGallery();
-      case 'phone':
-        await _pickFromPhoneAttachSheet();
-    }
   }
 
   Future<void> _addGalleryPhotosInChunks({
@@ -1245,18 +1217,6 @@ class _ProfileGalleryAlbumScreenState
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Ошибка: $e')));
     }
-  }
-
-  Future<void> _pickFromGallery() async {
-    final pk = widget.customAlbumPk;
-    if (pk == null) return;
-    final ids = await PickGalleryPhotosSheet.show(
-      context,
-      userId: widget.userId,
-      excludeAttachmentIds: _currentPhotoIds,
-    );
-    if (ids == null || ids.isEmpty || !mounted) return;
-    await _addGalleryPhotosInChunks(albumPk: pk, attachmentIds: ids);
   }
 
   String? _imageContentTypeForFilename(String name) {
