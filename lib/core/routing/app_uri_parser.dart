@@ -17,6 +17,7 @@ class OAuthCallbackResult {
 }
 
 String? extractInviteToken(Uri uri) {
+  if (extractFriendInviteToken(uri) != null) return null;
   final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
   for (var i = 0; i < segments.length - 1; i++) {
     if (segments[i] == 'invite') {
@@ -25,6 +26,21 @@ String? extractInviteToken(Uri uri) {
     }
   }
   if (uri.scheme == 'familychat' && uri.host == 'invite') {
+    final token = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
+    if (token != null && token.isNotEmpty) return token;
+  }
+  return null;
+}
+
+String? extractFriendInviteToken(Uri uri) {
+  final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+  for (var i = 0; i < segments.length - 1; i++) {
+    if (segments[i] == 'friend-invite') {
+      final token = segments[i + 1].trim();
+      if (token.isNotEmpty) return token;
+    }
+  }
+  if (uri.scheme == 'familychat' && uri.host == 'friend-invite') {
     final token = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
     if (token != null && token.isNotEmpty) return token;
   }

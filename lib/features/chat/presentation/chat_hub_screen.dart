@@ -14,9 +14,10 @@ import '../data/familychat_realtime.dart';
 import 'chat_conversation_screen.dart';
 import 'chat_thread_avatars.dart';
 import 'create_group_screen.dart';
+import 'friend_invite_flow.dart';
 import 'widgets/chat_message_read_status_icon.dart';
 
-enum _ChatFilter { all, family, dm, group }
+enum _ChatFilter { all, family, dm, group, friends }
 
 class ChatHubScreen extends ConsumerStatefulWidget {
   const ChatHubScreen({super.key});
@@ -32,6 +33,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     _ChatFilter.family,
     _ChatFilter.dm,
     _ChatFilter.group,
+    _ChatFilter.friends,
   ];
 
   late final TabController _tabController;
@@ -202,6 +204,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       _ChatFilter.family => kind == 'family' || _isBirthdayCelebration(thread),
       _ChatFilter.dm => kind == 'dm',
       _ChatFilter.group => kind == 'group' && !_isBirthdayCelebration(thread),
+      _ChatFilter.friends => kind == 'friend_dm',
     };
   }
 
@@ -260,6 +263,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           initialParticipantUserIds: _participantIdsOf(thread),
           initialIsBirthdayCelebration: thread['is_birthday_celebration'] == true,
           initialPeerAvatarUrl: _dmAvatarUrl(thread),
+          initialCanSend: thread['can_send'] != false,
         ),
       ),
     );
@@ -276,6 +280,44 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     await _load();
   }
 
+  Future<void> openCreateMenu({required bool hasIndividualPremium}) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.group_add_outlined),
+              title: const Text('Группа'),
+              onTap: () => Navigator.pop(ctx, 'group'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.person_add_alt_1_outlined),
+              title: const Text('Контакт'),
+              subtitle: Text(
+                hasIndividualPremium
+                    ? 'Личный чат вне семьи'
+                    : 'Нужен Individual Premium',
+              ),
+              onTap: () => Navigator.pop(ctx, 'contact'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'group') {
+      await createGroup();
+      return;
+    }
+    await runFriendInviteFlow(
+      context,
+      ref.read(familychatRepositoryProvider),
+      hasIndividualPremium: hasIndividualPremium,
+    );
+  }
+
   String _emptyLabel(_ChatFilter filter) {
     if (_searchQuery.trim().isNotEmpty) return 'Чаты не найдены';
     return switch (filter) {
@@ -283,6 +325,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       _ChatFilter.family => 'Нет семейных чатов',
       _ChatFilter.dm => 'Нет личных чатов',
       _ChatFilter.group => 'Нет групповых чатов',
+      _ChatFilter.friends => 'Нет контактов',
     };
   }
 
@@ -448,6 +491,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               Tab(text: 'Семья'),
               Tab(text: 'Личные'),
               Tab(text: 'Группы'),
+              Tab(text: 'Друзья'),
             ],
           ),
         ),

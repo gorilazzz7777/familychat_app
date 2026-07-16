@@ -14,6 +14,8 @@ import '../core/session/auth_session_bus.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
+import '../features/chat/presentation/chat_conversation_screen.dart';
+import '../features/chat/presentation/friend_invite_flow.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
 import '../core/theme/theme_seed_controller.dart';
@@ -31,6 +33,7 @@ class BootstrapScreen extends ConsumerStatefulWidget {
 
 class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   static const _pendingInviteKey = 'pending_invite_token';
+  static const _pendingFriendInviteKey = 'pending_friend_invite_token';
 
   bool _checking = true;
   bool _loggedIn = false;
@@ -38,6 +41,8 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   Map<String, dynamic>? _status;
   String? _bootError;
   String? _pendingInvite;
+  String? _pendingFriendInvite;
+  bool _friendInviteHandling = false;
 
   final _appLinks = AppLinks();
   StreamSubscription<String>? _accessSub;
@@ -77,6 +82,13 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   }
 
   Future<void> _handleInviteUri(Uri uri) async {
+    final friendToken = extractFriendInviteToken(uri);
+    if (friendToken != null) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_pendingFriendInviteKey, friendToken);
+      if (mounted) setState(() => _pendingFriendInvite = friendToken);
+      return;
+    }
     final token = extractInviteToken(uri);
     if (token == null) return;
     final prefs = await SharedPreferences.getInstance();
@@ -86,6 +98,18 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
   Future<void> _consumePendingInvite() async {
     final prefs = await SharedPreferences.getInstance();
+    final friendToken = prefs.getString(_pendingFriendInviteKey);
+    if (friendToken != null && friendToken.isNotEmpty) {
+      try {
+        await ref
+            .read(familychatRepositoryProvider)
+            .fetchFriendInviteInfo(friendToken);
+        if (mounted) setState(() => _pendingFriendInvite = friendToken);
+      } catch (_) {
+        await prefs.remove(_pendingFriendInviteKey);
+        if (mounted) setState(() => _pendingFriendInvite = null);
+      }
+    }
     final token = prefs.getString(_pendingInviteKey);
     if (token == null || token.isEmpty) return;
     try {
@@ -101,6 +125,12 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_pendingInviteKey);
     if (mounted) setState(() => _pendingInvite = null);
+  }
+
+  Future<void> _clearPendingFriendInvite() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingFriendInviteKey);
+    if (mounted) setState(() => _pendingFriendInvite = null);
   }
 
   OAuthCallbackResult? _readOAuthCallback() {
@@ -123,6 +153,12 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_pendingInviteKey, inviteToken);
       _pendingInvite = inviteToken;
+    }
+    final friendToken = extractFriendInviteToken(Uri.base);
+    if (friendToken != null) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_pendingFriendInviteKey, friendToken);
+      _pendingFriendInvite = friendToken;
     }
     final pendingCall = readWebPendingCallLaunch();
     if (pendingCall != null) {
@@ -198,6 +234,47 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       _bootError = null;
     });
     _syncAppActions();
+    if (_ready) {
+      unawaited(_maybeHandleFriendInvite());
+    }
+  }
+
+  Future<void> _maybeHandleFriendInvite() async {
+    final token = _pendingFriendInvite;
+    if (token == null || token.isEmpty || _friendInviteHandling) return;
+    _friendInviteHandling = true;
+    try {
+      final result = await confirmAndAcceptFriendInvite(
+        context,
+        ref.read(familychatRepositoryProvider),
+        token,
+      );
+      await _clearPendingFriendInvite();
+      if (!mounted || result == null) return;
+      final thread = result['thread'] as Map<String, dynamic>?;
+      if (thread == null) return;
+      final threadId = thread['id'] is int
+          ? thread['id'] as int
+          : int.tryParse('${thread['id']}');
+      if (threadId == null) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => ChatConversationScreen(
+            threadId: threadId,
+            title: thread['title']?.toString() ?? 'Чат',
+            defaultTitle: thread['default_title']?.toString() ??
+                thread['title']?.toString() ??
+                'Чат',
+            customTitle: thread['custom_title']?.toString() ?? '',
+            kind: thread['kind']?.toString() ?? 'friend_dm',
+            peerUserId: thread['peer_user_id'] as int?,
+            initialCanSend: thread['can_send'] != false,
+          ),
+        ),
+      );
+    } finally {
+      _friendInviteHandling = false;
+    }
   }
 
   void _syncAppActions() {
@@ -234,6 +311,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     await prefs.remove('familychat_push_prompt_dismissed');
     await prefs.remove('familychat_web_push_registered');
     await prefs.remove(_pendingInviteKey);
+    await prefs.remove(_pendingFriendInviteKey);
     if (!mounted) return;
     setState(() {
       _loggedIn = false;
@@ -241,6 +319,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       _status = null;
       _checking = false;
       _pendingInvite = null;
+      _pendingFriendInvite = null;
     });
   }
 

@@ -363,8 +363,16 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                   ),
                   IconButton(
                     icon: const Icon(Icons.add),
-                    tooltip: 'Создать группу',
-                    onPressed: () => _chatHubKey.currentState?.createGroup(),
+                    tooltip: 'Создать',
+                    onPressed: () {
+                      final entitlements =
+                          widget.status['entitlements'] as Map?;
+                      final premium =
+                          entitlements?['individual_premium'] == true;
+                      _chatHubKey.currentState?.openCreateMenu(
+                        hasIndividualPremium: premium,
+                      );
+                    },
                   ),
                 ],
                 if (_index == 2)

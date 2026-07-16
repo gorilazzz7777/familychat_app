@@ -109,6 +109,7 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
     this.initialParticipantUserIds = const [],
     this.initialIsBirthdayCelebration = false,
     this.initialPeerAvatarUrl,
+    this.initialCanSend = true,
   });
 
   final int threadId;
@@ -124,6 +125,7 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
   final List<int> initialParticipantUserIds;
   final bool initialIsBirthdayCelebration;
   final String? initialPeerAvatarUrl;
+  final bool initialCanSend;
 
   @override
   ConsumerState<ChatConversationScreen> createState() =>
@@ -164,6 +166,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   List<ChatMentionParticipant> _mentionParticipants = [];
   bool _voiceTranscriptionEnabled = false;
   bool _viewerIndividualPremium = false;
+  bool _canSend = true;
   double _lastKeyboardInset = 0;
   final Map<int, String> _typingNames = {};
   final Map<int, Timer> _typingExpiry = {};
@@ -176,7 +179,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
 
-  bool get _isDm => widget.kind == 'dm';
+  bool get _isDm => widget.kind == 'dm' || widget.kind == 'friend_dm';
+
+  bool get _isFriendDm => widget.kind == 'friend_dm';
 
   void _startOutgoingCall() {
     unawaited(
@@ -203,6 +208,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _hasLeft = widget.initialHasLeft;
     _canRejoin = widget.initialCanRejoin;
     _canLeave = widget.initialCanLeave;
+    _canSend = widget.initialCanSend;
     _participantUserIds = List<int>.from(widget.initialParticipantUserIds);
     _isBirthdayCelebration = widget.initialIsBirthdayCelebration;
     _headerAvatarUrl = widget.initialPeerAvatarUrl;
@@ -2263,6 +2269,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         peerUserId: widget.peerUserId,
         isBirthdayCelebration: _isBirthdayCelebration,
         initialHeaderAvatarUrl: _headerAvatarUrl,
+        onFriendHidden: () {
+          if (!mounted) return;
+          Navigator.of(context).pop();
+        },
         onTitleChanged: (title, customTitle) {
           if (!mounted) return;
           setState(() {
@@ -2528,7 +2538,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                   ),
                 ),
                 actions: [
-                  if (_isDm && !_loading)
+                  if (_isDm && _canSend && !_loading)
                     IconButton(
                       tooltip: 'Аудиозвонок',
                       onPressed: _startOutgoingCall,
@@ -2806,6 +2816,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      if (_isFriendDm && !_canSend)
+                        Material(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+                            child: Text(
+                              'Переписка недоступна: нужен Individual Premium '
+                              'у одного из участников. История сохранена.',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                        ),
                       if (_replyTo != null)
                         ChatReplyComposeBar(
                           senderName:
@@ -2849,40 +2873,42 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 setState(() => _pendingFileDraft = null),
                           ),
                         ),
-                      Padding(
-                        padding: const EdgeInsets.all(8),
-                        child: _isGroupLike
-                            ? ChatMentionComposeInput(
-                                controller: _controller,
-                                focusNode: _inputFocus,
-                                onAttach: _pickAttachment,
-                                onSend: (options, mentionedUserIds) => unawaited(
-                                  _send(
-                                    mentionedUserIds: mentionedUserIds,
-                                    options: options,
+                      if (_canSend)
+                        Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: _isGroupLike
+                              ? ChatMentionComposeInput(
+                                  controller: _controller,
+                                  focusNode: _inputFocus,
+                                  onAttach: _pickAttachment,
+                                  onSend: (options, mentionedUserIds) =>
+                                      unawaited(
+                                    _send(
+                                      mentionedUserIds: mentionedUserIds,
+                                      options: options,
+                                    ),
                                   ),
+                                  onVoiceComplete: _sendVoiceMessage,
+                                  forceSendButton: _pendingFileDraft != null ||
+                                      _editingMessageId != null,
+                                  voiceTranscriptionEnabled:
+                                      _voiceTranscriptionEnabled,
+                                  participants: _mentionParticipants,
+                                  currentUserId: _currentUserId,
+                                )
+                              : ChatComposeInput(
+                                  controller: _controller,
+                                  focusNode: _inputFocus,
+                                  onAttach: _pickAttachment,
+                                  onSend: (options) =>
+                                      unawaited(_send(options: options)),
+                                  onVoiceComplete: _sendVoiceMessage,
+                                  forceSendButton: _pendingFileDraft != null ||
+                                      _editingMessageId != null,
+                                  voiceTranscriptionEnabled:
+                                      _voiceTranscriptionEnabled,
                                 ),
-                                onVoiceComplete: _sendVoiceMessage,
-                                forceSendButton: _pendingFileDraft != null ||
-                                    _editingMessageId != null,
-                                voiceTranscriptionEnabled:
-                                    _voiceTranscriptionEnabled,
-                                participants: _mentionParticipants,
-                                currentUserId: _currentUserId,
-                              )
-                            : ChatComposeInput(
-                                controller: _controller,
-                                focusNode: _inputFocus,
-                                onAttach: _pickAttachment,
-                                onSend: (options) =>
-                                    unawaited(_send(options: options)),
-                                onVoiceComplete: _sendVoiceMessage,
-                                forceSendButton: _pendingFileDraft != null ||
-                                    _editingMessageId != null,
-                                voiceTranscriptionEnabled:
-                                    _voiceTranscriptionEnabled,
-                              ),
-                      ),
+                        ),
                     ],
                   ),
                 ),

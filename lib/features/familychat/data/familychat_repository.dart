@@ -175,6 +175,36 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> createFriendInvite() async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/friend-invites/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> fetchFriendInviteInfo(String token) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/friend-invite/$token/',
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> acceptFriendInvite(String token) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/friend-invite/$token/accept/',
+    );
+    return res.data!;
+  }
+
+  Future<List<Map<String, dynamic>>> listFriends() async {
+    final res = await _dio.get<Map<String, dynamic>>('familychat/friends/');
+    return (res.data?['contacts'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+  }
+
+  Future<void> hideFriend(int peerUserId) async {
+    await _dio.post('familychat/friends/$peerUserId/hide/');
+  }
+
   Future<Map<String, dynamic>> startOnboardingQuestions(String token) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/onboarding/questions/',

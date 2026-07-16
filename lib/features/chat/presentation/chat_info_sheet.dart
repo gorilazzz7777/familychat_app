@@ -54,6 +54,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
     this.onMembershipChanged,
     this.onGoToMessage,
     this.onOpenImage,
+    this.onFriendHidden,
   });
 
   final int threadId;
@@ -72,6 +73,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
   final VoidCallback? onMembershipChanged;
   final ChatGoToMessage? onGoToMessage;
   final ChatOpenImage? onOpenImage;
+  final VoidCallback? onFriendHidden;
 
   @override
   ConsumerState<ChatInfoSheet> createState() => _ChatInfoSheetState();
@@ -95,7 +97,9 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   bool get _showParticipants =>
       (widget.kind == 'group' || widget.kind == 'family') && !widget.hasLeft;
 
-  bool get _isDm => widget.kind == 'dm' && widget.peerUserId != null;
+  bool get _isDm =>
+      (widget.kind == 'dm' || widget.kind == 'friend_dm') &&
+      widget.peerUserId != null;
 
   bool get _hasHeaderNetworkPhoto {
     final url = _headerAvatarUrl?.trim();
@@ -495,6 +499,12 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 title: const Text('Добавить участников'),
                 onTap: () => Navigator.pop(ctx, 'add'),
               ),
+            if (widget.kind == 'friend_dm' && widget.peerUserId != null)
+              ListTile(
+                leading: const Icon(Icons.person_remove_outlined),
+                title: const Text('Удалить из контактов'),
+                onTap: () => Navigator.pop(ctx, 'hide_friend'),
+              ),
           ],
         ),
       ),
@@ -507,13 +517,52 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         await _leaveChat();
       case 'add':
         await _addMembers();
+      case 'hide_friend':
+        await _hideFriend();
+    }
+  }
+
+  Future<void> _hideFriend() async {
+    final peerId = widget.peerUserId;
+    if (peerId == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить из контактов?'),
+        content: const Text(
+          'Чат исчезнет только у вас. История на сервере сохранится.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ref.read(familychatRepositoryProvider).hideFriend(peerId);
+      if (!mounted) return;
+      widget.onFriendHidden?.call();
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось удалить контакт: $e')),
+      );
     }
   }
 
   bool get _hasMoreActions =>
       widget.canRejoin ||
       (widget.canLeave && !widget.hasLeft) ||
-      (widget.kind == 'group' && !widget.hasLeft);
+      (widget.kind == 'group' && !widget.hasLeft) ||
+      (widget.kind == 'friend_dm' && widget.peerUserId != null);
 
   List<Widget> _tabContentSlivers() {
     final index = _tabs.index;
