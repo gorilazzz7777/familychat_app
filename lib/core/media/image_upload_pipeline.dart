@@ -14,6 +14,7 @@ Future<Uint8List> compressImageBytes(
   Uint8List bytes, {
   int maxSide = kImageMaxSide,
   int quality = kImageCompressQuality,
+  String? localPath,
 }) async {
   if (bytes.isEmpty) return bytes;
   try {
@@ -24,18 +25,39 @@ Future<Uint8List> compressImageBytes(
       quality: quality,
       format: CompressFormat.jpeg,
     );
-    if (out.isEmpty) return bytes;
-    // Не раздуваем файл, если сжатие вышло больше оригинала.
-    if (out.length >= bytes.length && bytes.length < 400 * 1024) {
+    if (out.isNotEmpty) {
+      if (!(out.length >= bytes.length && bytes.length < 400 * 1024)) {
+        return Uint8List.fromList(out);
+      }
       return bytes;
     }
-    return Uint8List.fromList(out);
   } catch (e) {
     if (kDebugMode) {
-      debugPrint('compressImageBytes failed: $e');
+      debugPrint('compressImageBytes list failed: $e');
     }
-    return bytes;
   }
+
+  // iOS HEIC / сбой list-API: пробуем через файл на диске.
+  final path = localPath;
+  if (path != null && path.isNotEmpty) {
+    try {
+      final out = await FlutterImageCompress.compressWithFile(
+        path,
+        minWidth: maxSide,
+        minHeight: maxSide,
+        quality: quality,
+        format: CompressFormat.jpeg,
+      );
+      if (out != null && out.isNotEmpty) {
+        return Uint8List.fromList(out);
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('compressImageBytes file failed: $e');
+      }
+    }
+  }
+  return bytes;
 }
 
 /// Подготовка фото: сжатие + draft для optimistic UI.
@@ -53,9 +75,13 @@ Future<MediaUploadDraft> prepareImageUploadDraft({
               originalBytes,
               maxSide: 480,
               quality: 60,
+              localPath: localPath,
             )
           : originalBytes);
-  final prepared = await compressImageBytes(originalBytes);
+  final prepared = await compressImageBytes(
+    originalBytes,
+    localPath: localPath,
+  );
   final outName = _jpegFilename(filename);
   return MediaUploadDraft(
     id: id,

@@ -1709,11 +1709,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         ],
         replyToMessageId: replyId,
       );
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('_sendAttachItems failed: $e\n$st');
       if (!mounted) return;
       _markOptimisticFailed(tempId);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось отправить вложение')),
+        SnackBar(content: Text('Не удалось отправить вложение: $e')),
       );
     }
   }

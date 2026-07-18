@@ -154,11 +154,14 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
     setState(() => _sending = true);
     final caption = _hideCaption ? '' : _captionCtrl.text.trim();
     final items = List<ChatAttachSelectionItem>.from(_selected);
+    final send = widget.onSendMedia;
     if (mounted) Navigator.of(context).pop();
+    // После pop виджет шторки disposed — отправку запускаем на следующем кадре.
+    await Future<void>.delayed(Duration.zero);
     try {
-      await widget.onSendMedia(caption, items);
-    } catch (_) {
-      // caller shows errors
+      await send(caption, items);
+    } catch (e, st) {
+      debugPrint('ChatAttachSheet send failed: $e\n$st');
     }
   }
 
@@ -189,8 +192,9 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
       child: DraggableScrollableSheet(
         controller: _sheetCtrl,
         expand: false,
-        initialChildSize: _phoneOnly || _albumMode ? 0.55 : 0.48,
-        minChildSize: 0.34,
+        // ~2/3 экрана при открытии (можно потянуть выше/ниже).
+        initialChildSize: 0.67,
+        minChildSize: 0.40,
         maxChildSize: 0.95,
         builder: (context, scrollController) {
           return Material(

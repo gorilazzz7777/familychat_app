@@ -487,7 +487,14 @@ class _ChatVideoAttachmentPreview extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               if (local is Uint8List)
-                Image.memory(local, fit: BoxFit.cover)
+                Image.memory(
+                  local,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => const ColoredBox(
+                    color: Colors.black26,
+                    child: Icon(Icons.videocam_outlined, color: Colors.white54),
+                  ),
+                )
               else if (url.isNotEmpty)
                 GalleryVideoPlayer(
                   url: url,

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -347,6 +349,52 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
 
   bool _isSelected(String id) => widget.selected.any((e) => e.id == id);
 
+  /// На iOS `originFile` часто даёт HEIC, который Image.memory / часть пайплайна
+  /// обрабатывают плохо. `file` обычно уже пригодный JPEG/PNG.
+  Future<({Uint8List bytes, String? path})?> _readAssetPayload(
+    AssetEntity asset,
+  ) async {
+    Future<({Uint8List bytes, String? path})?> fromFile(
+      Future<File?> Function() getter,
+    ) async {
+      try {
+        final file = await getter();
+        if (file == null) return null;
+        final bytes = await file.readAsBytes();
+        if (bytes.isEmpty) return null;
+        return (bytes: bytes, path: file.path);
+      } catch (e) {
+        debugPrint('attach asset file read failed: $e');
+        return null;
+      }
+    }
+
+    Future<({Uint8List bytes, String? path})?> fromOriginBytes() async {
+      try {
+        final bytes = await asset.originBytes;
+        if (bytes == null || bytes.isEmpty) return null;
+        final file = await asset.file;
+        return (bytes: bytes, path: file?.path);
+      } catch (e) {
+        debugPrint('attach asset originBytes failed: $e');
+        return null;
+      }
+    }
+
+    final preferConvertedFile =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+    if (preferConvertedFile) {
+      return await fromFile(() => asset.file) ??
+          await fromOriginBytes() ??
+          await fromFile(() => asset.originFile);
+    }
+
+    return await fromFile(() => asset.originFile) ??
+        await fromOriginBytes() ??
+        await fromFile(() => asset.file);
+  }
+
   Future<void> _toggleAsset(AssetEntity asset) async {
     final id = 'asset_${asset.id}';
     if (_isSelected(id)) {
@@ -355,13 +403,24 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       );
       return;
     }
-    final file = await asset.originFile ?? await asset.file;
-    if (file == null) return;
-    final bytes = await file.readAsBytes();
-    if (bytes.isEmpty) return;
+
+    final loaded = await _readAssetPayload(asset);
+    if (loaded == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Не удалось прочитать фото. Попробуйте другое.'),
+        ),
+      );
+      return;
+    }
+    final bytes = loaded.bytes;
+    final filePath = loaded.path;
+
     final title = await asset.titleAsync;
-    final filename =
-        title.isNotEmpty ? title : 'media_${asset.id}.${asset.type == AssetType.video ? 'mp4' : 'jpg'}';
+    final filename = title.isNotEmpty
+        ? title
+        : 'media_${asset.id}.${asset.type == AssetType.video ? 'mp4' : 'jpg'}';
     final thumbData = await asset.thumbnailDataWithSize(
       const ThumbnailSize(200, 200),
     );
@@ -374,7 +433,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       bytes: bytes,
       thumbnailBytes: thumbData,
       contentType: contentTypeForFilename(filename),
-      localPath: file.path,
+      localPath: filePath,
       assetId: asset.id,
       kind: kind,
     );
