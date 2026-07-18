@@ -741,6 +741,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.2.5"
+  gorila_chat:
+    dependency: "direct main"
+    description:
+      path: "packages/gorila_chat"
+      relative: true
+    source: path
+    version: "0.1.0"
   gtk:
     dependency: transitive
     description:
