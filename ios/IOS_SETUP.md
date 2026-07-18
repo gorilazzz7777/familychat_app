@@ -11,7 +11,7 @@ pod install
 open Runner.xcworkspace
 ```
 
-Vosk iOS binaries не коммитятся (см. `vendor/vosk_flutter_service/.gitignore`) — команда `install -t ios` обязательна перед первой сборкой.
+Если `pod install` ругается на `share_handler_ios_models` — в `Podfile` уже есть явный путь к `.symlinks/plugins/share_handler_ios/ios/Models`. Сначала выполните `flutter pub get` из корня проекта (чтобы появился `.symlinks`), затем снова `pod install`.
 
 ## Firebase / Push (обязательно для уведомлений)
 

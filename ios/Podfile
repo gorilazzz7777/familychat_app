@@ -33,12 +33,17 @@ target 'Runner' do
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 
-  # share_handler: Share Extension target (создаётся в Xcode, см. ios/ShareExtension).
-  # Пока target отсутствует, блок ниже не подключается — раскомментируйте после
-  # File → New → Target → Share Extension с именем ShareExtension.
+  # share_handler_ios зависит от локального podspec в Models/ — Flutter его не
+  # регистрирует автоматически, без этой строки pod install падает.
+  pod 'share_handler_ios_models',
+      :path => '.symlinks/plugins/share_handler_ios/ios/Models'
+
+  # Share Extension target (создаётся в Xcode, см. ios/ShareExtension).
+  # Раскомментируйте после File → New → Target → Share Extension.
   # target 'ShareExtension' do
   #   inherit! :search_paths
-  #   pod 'share_handler_ios_models', :path => '.symlinks/plugins/share_handler_ios/ios/Models'
+  #   pod 'share_handler_ios_models',
+  #       :path => '.symlinks/plugins/share_handler_ios/ios/Models'
   # end
 
   target 'RunnerTests' do
