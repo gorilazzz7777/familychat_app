@@ -124,14 +124,22 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
                     );
                   } else if (result == WebPushRegistrationResult.notConfigured) {
                     messenger?.showSnackBar(
-                      const SnackBar(
-                        content: Text('Push временно недоступен. Попробуйте позже.'),
+                      SnackBar(
+                        content: Text(
+                          PushRegistrationService.lastWebPushError ??
+                              'Push временно недоступен. Попробуйте позже.',
+                        ),
                       ),
                     );
                   } else {
+                    final detail = PushRegistrationService.lastWebPushError;
                     messenger?.showSnackBar(
-                      const SnackBar(
-                        content: Text('Не удалось включить уведомления'),
+                      SnackBar(
+                        content: Text(
+                          detail != null && detail.isNotEmpty
+                              ? 'Не удалось включить уведомления: $detail'
+                              : 'Не удалось включить уведомления',
+                        ),
                       ),
                     );
                   }

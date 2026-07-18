@@ -203,10 +203,19 @@ class PushRegistrationService {
     if (_isNativeMobile) {
       final ok = await _registerNative(repository, requestPermission: true);
       if (!ok) {
+        if (Firebase.apps.isEmpty) {
+          lastWebPushError ??=
+              'Firebase не настроен для iOS (нужен GoogleService-Info.plist)';
+          return WebPushRegistrationResult.notConfigured;
+        }
         final status = await getPushPermissionStatus();
         if (status == PushPermissionStatus.denied ||
             status == PushPermissionStatus.notDetermined) {
           return WebPushRegistrationResult.permissionDenied;
+        }
+        if (lastWebPushError != null &&
+            lastWebPushError!.toLowerCase().contains('apns')) {
+          return WebPushRegistrationResult.tokenFailed;
         }
         return WebPushRegistrationResult.serverFailed;
       }
@@ -266,7 +275,11 @@ class PushRegistrationService {
     bool requestPermission = true,
   }) async {
     await ensureFirebaseInitialized();
-    if (Firebase.apps.isEmpty) return false;
+    if (Firebase.apps.isEmpty) {
+      lastWebPushError =
+          'Firebase не настроен для iOS (нужен GoogleService-Info.plist)';
+      return false;
+    }
 
     final messaging = FirebaseMessaging.instance;
     final platform = _nativePlatformName;
@@ -310,15 +323,28 @@ class PushRegistrationService {
           badge: true,
           sound: true,
         );
-        final apns = await messaging.getAPNSToken();
+        String? apns = await messaging.getAPNSToken();
         if (apns == null) {
-          // Короткое ожидание после registerForRemoteNotifications.
-          await Future<void>.delayed(const Duration(milliseconds: 800));
+          // Симулятор / холодный старт: ждём APNs несколько попыток.
+          for (var i = 0; i < 5 && apns == null; i++) {
+            await Future<void>.delayed(Duration(milliseconds: 400 * (i + 1)));
+            apns = await messaging.getAPNSToken();
+          }
+        }
+        if (apns == null) {
+          lastWebPushError =
+              'APNs token недоступен (на симуляторе push часто не работает; '
+              'нужен реальный iPhone + Push capability + GoogleService-Info.plist)';
+          _failStep('apnsToken', lastWebPushError!);
+          return false;
         }
       }
 
       final token = await messaging.getToken();
-      if (token == null || token.isEmpty) return false;
+      if (token == null || token.isEmpty) {
+        lastWebPushError = 'FCM getToken вернул пустой токен';
+        return false;
+      }
       await repository.registerFcm(token: token, platform: platform);
       await _wireHandlers(messaging, repository, platform: platform);
       return true;

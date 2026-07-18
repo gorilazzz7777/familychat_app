@@ -19,15 +19,18 @@ import 'core/theme/theme_seed_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await initializeDateFormatting('ru', null);
+  // Не блокируем первый кадр: даты и Firebase догружаются параллельно.
+  unawaited(initializeDateFormatting('ru', null));
   if (kIsWeb) {
     usePathUrlStrategy();
   } else {
-    try {
-      await PushRegistrationService.ensureFirebaseInitialized();
-    } catch (e) {
-      debugPrint('[FCM] init failed: $e');
-    }
+    unawaited(() async {
+      try {
+        await PushRegistrationService.ensureFirebaseInitialized();
+      } catch (e) {
+        debugPrint('[FCM] init failed: $e');
+      }
+    }());
     FirebaseMessaging.onBackgroundMessage(familychatFirebaseBackgroundHandler);
     unawaited(FamilyChatNotifications.initialize());
     unawaited(IncomingShareBus.instance.init());

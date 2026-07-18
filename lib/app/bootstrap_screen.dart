@@ -381,7 +381,43 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   @override
   Widget build(BuildContext context) {
     if (_checking) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      final scheme = Theme.of(context).colorScheme;
+      return Scaffold(
+        backgroundColor: scheme.surface,
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset(
+                'assets/logo/logo.png',
+                width: 88,
+                height: 88,
+                errorBuilder: (_, __, ___) => Icon(
+                  Icons.favorite_rounded,
+                  size: 64,
+                  color: scheme.primary,
+                ),
+              ),
+              const SizedBox(height: 28),
+              SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: scheme.primary,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Загрузка…',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ),
+        ),
+      );
     }
     if (_bootError != null) {
       return Scaffold(
