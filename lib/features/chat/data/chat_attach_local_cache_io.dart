@@ -19,6 +19,9 @@ class ChatAttachLocalCache {
     }
   }
 
+  static String _safeName(String value) =>
+      value.replaceAll(RegExp(r'[^\w.\-]'), '_');
+
   static Future<String?> storeBytes({
     required String id,
     required Uint8List bytes,
@@ -26,10 +29,24 @@ class ChatAttachLocalCache {
   }) async {
     final dir = await _dir();
     if (dir == null) return null;
-    final safe = filename.replaceAll(RegExp(r'[^\w.\-]'), '_');
-    final file = File('${dir.path}/${id}_$safe');
-    await file.writeAsBytes(bytes, flush: true);
-    return file.path;
+    // iOS PhotoKit id содержит слэши вида UUID/L0/001 — иначе File создаёт
+    // несуществующие подпапки и падает PathNotFoundException.
+    final safeId = _safeName(id);
+    final safe = _safeName(filename);
+    final file = File('${dir.path}/${safeId}_$safe');
+    try {
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(bytes, flush: true);
+      return file.path;
+    } catch (e) {
+      // Кэш опционален для отправки — не валим весь send.
+      assert(() {
+        // ignore: avoid_print
+        print('ChatAttachLocalCache.storeBytes failed: $e');
+        return true;
+      }());
+      return null;
+    }
   }
 
   static Future<Uint8List?> readBytes(String? path) async {
