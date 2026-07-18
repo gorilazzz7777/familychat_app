@@ -28,6 +28,9 @@ class GorilaChatRealtime {
   int _reconnectAttempt = 0;
   bool _connecting = false;
   bool _connected = false;
+  /// True when the next successful [connect] should emit `chat_refresh`
+  /// (after drop / backoff reconnect — open chats must HTTP-resync).
+  bool _refreshAfterConnect = false;
 
   bool get isConnected => _connected && _channel != null;
 
@@ -80,6 +83,10 @@ class GorilaChatRealtime {
         await _channel!.ready.timeout(const Duration(seconds: 20));
         _connected = true;
         _reconnectAttempt = 0;
+        if (_refreshAfterConnect) {
+          _refreshAfterConnect = false;
+          emitSyntheticEvent({'event': 'chat_refresh'});
+        }
       } catch (e) {
         debugPrint('$debugName ws connect error: $e');
         _connected = false;
@@ -104,6 +111,7 @@ class GorilaChatRealtime {
   void _scheduleReconnect() {
     final token = _accessToken;
     if (token == null || token.isEmpty) return;
+    _refreshAfterConnect = true;
     _reconnectTimer?.cancel();
     final seconds = math.min(30, math.pow(2, _reconnectAttempt).toInt());
     _reconnectAttempt++;
