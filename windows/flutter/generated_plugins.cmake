@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   app_links
   audioplayers_windows
+  desktop_webview_window
   emoji_picker_flutter
   file_selector_windows
   firebase_core
@@ -16,6 +17,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   share_plus
   url_launcher_windows
   vosk_flutter_service
+  window_to_front
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
