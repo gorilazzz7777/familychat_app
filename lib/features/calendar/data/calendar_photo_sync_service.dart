@@ -88,8 +88,11 @@ class CalendarPhotoSyncService {
   final FamilyChatRepository _repo;
   static const _dailyReviewKey = 'familychat_calendar_staging_review_day';
 
+  /// Автосинхронизация камеры доступна на Android и iOS (не web).
   static bool get isAndroidNative =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
 
   Future<CalendarPhotoSyncInfo?> fetchAlbumSyncInfo(int albumPk) async {
     try {

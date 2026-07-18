@@ -33,9 +33,14 @@ class FamilyChatNotifications {
     if (_initialized || kIsWeb) return;
 
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const iosInit = DarwinInitializationSettings(
+      requestAlertPermission: false,
+      requestBadgePermission: false,
+      requestSoundPermission: false,
+    );
     const initSettings = InitializationSettings(
       android: androidInit,
-      iOS: DarwinInitializationSettings(),
+      iOS: iosInit,
     );
 
     await _plugin.initialize(
@@ -153,7 +158,6 @@ class FamilyChatNotifications {
     required Map<String, dynamic> data,
   }) async {
     if (kIsWeb || !_initialized) return;
-    if (defaultTargetPlatform != TargetPlatform.android) return;
 
     final androidDetails = AndroidNotificationDetails(
       callsChannelId,

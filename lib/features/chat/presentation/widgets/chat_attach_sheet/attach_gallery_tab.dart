@@ -90,10 +90,13 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       _error = null;
     });
     try {
-      // Сначала системный диалог Android 13+ («Разрешить все» / «Выбранные»).
-      if (defaultTargetPlatform == TargetPlatform.android) {
+      // Системный диалог: Android 13+ и iOS (полный / ограниченный доступ).
+      if (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS) {
         await Permission.photos.request();
-        await Permission.videos.request();
+        if (defaultTargetPlatform == TargetPlatform.android) {
+          await Permission.videos.request();
+        }
       }
 
       final perm = await PhotoManager.requestPermissionExtend(
@@ -558,7 +561,9 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                 children: [
                   Text(
                     'Виден ограниченный доступ (${_albums.length} альбома). '
-                    'Камера, WhatsApp, скриншоты появятся после «Разрешить все фото» в настройках Android.',
+                    '${defaultTargetPlatform == TargetPlatform.iOS
+                        ? 'Откройте Настройки → Family Chat → Фото и выберите «Все фото».'
+                        : 'Камера, WhatsApp, скриншоты появятся после «Разрешить все фото» в настройках Android.'}',
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),

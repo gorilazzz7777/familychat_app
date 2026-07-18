@@ -1,0 +1,3 @@
+# Large native Vosk binaries (download via CLI, not committed).
+ios/Frameworks/
+macos/Frameworks/

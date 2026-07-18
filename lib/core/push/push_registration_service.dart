@@ -130,8 +130,17 @@ class PushRegistrationService {
       if (isIosBrowser && !isStandalonePwa) return false;
       return true;
     }
-    return defaultTargetPlatform == TargetPlatform.android;
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
   }
+
+  static bool get _isNativeMobile =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
+
+  static String get _nativePlatformName =>
+      defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android';
 
   static Future<PushPermissionStatus> getPushPermissionStatus() async {
     if (!await isPushSupported()) return PushPermissionStatus.unsupported;
@@ -144,14 +153,35 @@ class PushRegistrationService {
       };
     }
 
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      await ensureFirebaseInitialized();
+      if (Firebase.apps.isEmpty) return PushPermissionStatus.unsupported;
+      final settings =
+          await FirebaseMessaging.instance.getNotificationSettings();
+      return switch (settings.authorizationStatus) {
+        AuthorizationStatus.authorized ||
+        AuthorizationStatus.provisional =>
+          PushPermissionStatus.granted,
+        AuthorizationStatus.denied => PushPermissionStatus.denied,
+        AuthorizationStatus.notDetermined => PushPermissionStatus.notDetermined,
+      };
+    }
+
     final permission = await Permission.notification.status;
     if (permission.isGranted) return PushPermissionStatus.granted;
     if (permission.isPermanentlyDenied) return PushPermissionStatus.denied;
     return PushPermissionStatus.notDetermined;
   }
 
-  static Future<bool> isAndroidPermissionPermanentlyDenied() async {
-    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return false;
+  static Future<bool> isNativePermissionPermanentlyDenied() async {
+    if (!_isNativeMobile) return false;
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      await ensureFirebaseInitialized();
+      if (Firebase.apps.isEmpty) return false;
+      final settings =
+          await FirebaseMessaging.instance.getNotificationSettings();
+      return settings.authorizationStatus == AuthorizationStatus.denied;
+    }
     return Permission.notification.isPermanentlyDenied;
   }
 
@@ -170,16 +200,17 @@ class PushRegistrationService {
       return registerWebPush(repository);
     }
 
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      final permission = await Permission.notification.status;
-      if (!permission.isGranted && !permission.isPermanentlyDenied) {
-        await Permission.notification.request();
+    if (_isNativeMobile) {
+      final ok = await _registerNative(repository, requestPermission: true);
+      if (!ok) {
+        final status = await getPushPermissionStatus();
+        if (status == PushPermissionStatus.denied ||
+            status == PushPermissionStatus.notDetermined) {
+          return WebPushRegistrationResult.permissionDenied;
+        }
+        return WebPushRegistrationResult.serverFailed;
       }
-      if (!await Permission.notification.isGranted) {
-        return WebPushRegistrationResult.permissionDenied;
-      }
-      final ok = await _registerAndroid(repository, requestPermission: false);
-      return ok ? WebPushRegistrationResult.success : WebPushRegistrationResult.serverFailed;
+      return WebPushRegistrationResult.success;
     }
 
     return WebPushRegistrationResult.failed;
@@ -195,8 +226,8 @@ class PushRegistrationService {
       }
       return false;
     }
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return _registerAndroid(repository, requestPermission: false);
+    if (_isNativeMobile) {
+      return _registerNative(repository, requestPermission: false);
     }
     return false;
   }
@@ -230,30 +261,66 @@ class PushRegistrationService {
     }
   }
 
-  static Future<bool> _registerAndroid(
+  static Future<bool> _registerNative(
     FamilyChatRepository repository, {
     bool requestPermission = true,
   }) async {
-    if (requestPermission) {
-      final permission = await Permission.notification.status;
-      if (!permission.isGranted && !permission.isPermanentlyDenied) {
-        await Permission.notification.request();
-      }
-    }
-
     await ensureFirebaseInitialized();
     if (Firebase.apps.isEmpty) return false;
 
-    if (!await Permission.notification.isGranted) return false;
+    final messaging = FirebaseMessaging.instance;
+    final platform = _nativePlatformName;
+
+    if (requestPermission) {
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        final settings = await messaging.requestPermission(
+          alert: true,
+          badge: true,
+          sound: true,
+          provisional: false,
+        );
+        final granted =
+            settings.authorizationStatus == AuthorizationStatus.authorized ||
+                settings.authorizationStatus == AuthorizationStatus.provisional;
+        if (!granted) return false;
+      } else {
+        final permission = await Permission.notification.status;
+        if (!permission.isGranted && !permission.isPermanentlyDenied) {
+          await Permission.notification.request();
+        }
+        if (!await Permission.notification.isGranted) return false;
+      }
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      if (!await Permission.notification.isGranted) return false;
+    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+      final settings = await messaging.getNotificationSettings();
+      final granted =
+          settings.authorizationStatus == AuthorizationStatus.authorized ||
+              settings.authorizationStatus == AuthorizationStatus.provisional;
+      if (!granted) return false;
+    }
 
     await FamilyChatNotifications.initialize();
 
-    final messaging = FirebaseMessaging.instance;
     try {
+      // APNs token нужен до getToken() на iOS.
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        await messaging.setForegroundNotificationPresentationOptions(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
+        final apns = await messaging.getAPNSToken();
+        if (apns == null) {
+          // Короткое ожидание после registerForRemoteNotifications.
+          await Future<void>.delayed(const Duration(milliseconds: 800));
+        }
+      }
+
       final token = await messaging.getToken();
       if (token == null || token.isEmpty) return false;
-      await repository.registerFcm(token: token, platform: 'android');
-      await _wireHandlers(messaging, repository, platform: 'android');
+      await repository.registerFcm(token: token, platform: platform);
+      await _wireHandlers(messaging, repository, platform: platform);
       return true;
     } catch (e, st) {
       _failStep('registerFcm', e, st);

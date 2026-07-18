@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../core/platform/browser_info.dart';
 import '../core/providers/app_providers.dart';
 import '../core/push/push_registration_service.dart';
 
@@ -70,8 +69,7 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
     if (!mounted) return;
 
     final permanentlyDenied = !kIsWeb &&
-        defaultTargetPlatform == TargetPlatform.android &&
-        await PushRegistrationService.isAndroidPermissionPermanentlyDenied();
+        await PushRegistrationService.isNativePermissionPermanentlyDenied();
 
     await showDialog<void>(
       context: context,
@@ -158,7 +156,11 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
     }
 
     if (permanentlyDenied) {
-      return 'Уведомления отключены в настройках Android. Откройте настройки '
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        return 'Уведомления отключены. Откройте Настройки → Family Chat → '
+            'Уведомления и включите «Разрешить уведомления».';
+      }
+      return 'Уведомления отключены в настройках. Откройте настройки '
           'приложения Family Chat и включите уведомления.';
     }
 

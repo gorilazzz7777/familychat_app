@@ -248,7 +248,9 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
   }
 
   bool get _showAndroidAutoSync =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
 
   @override
   Widget build(BuildContext context) {
