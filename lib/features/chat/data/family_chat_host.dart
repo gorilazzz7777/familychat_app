@@ -20,18 +20,15 @@ class FamilyChatHost implements ChatHost {
   Color? get brandColor => null;
 
   @override
+  GlobalKey<NavigatorState>? get navigatorKey => null;
+
+  @override
   Future<void> openUserProfile(
     BuildContext context, {
     required int userId,
   }) async {
     // Profile navigation stays in app screens; host is a stable extension point.
   }
-
-  @override
-  Future<void> openChatInfo(
-    BuildContext context, {
-    required int threadId,
-  }) async {}
 }
 
 final familyChatHostProvider = Provider<FamilyChatHost>((ref) {

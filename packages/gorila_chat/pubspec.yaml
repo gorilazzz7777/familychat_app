@@ -1,7 +1,7 @@
 name: gorila_chat
-description: Shared chat core (realtime, contracts, utils) — Family Chat is the reference implementation.
+description: Shared chat module — UI, realtime, contracts. Family Chat is the reference.
 publish_to: "none"
-version: 0.1.0
+version: 0.2.0
 
 environment:
   sdk: ^3.5.0
@@ -11,6 +11,15 @@ dependencies:
   flutter:
     sdk: flutter
   web_socket_channel: ^3.0.3
+  flutter_webrtc: ^1.5.2
+  photo_manager: ^3.6.4
+  camera: ^0.12.0+2
+  image_picker: ^1.1.2
+  file_picker: ^8.1.7
+  cached_network_image: ^3.4.1
+  permission_handler: ^11.4.0
+  intl: ^0.20.2
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

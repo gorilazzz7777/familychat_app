@@ -8,9 +8,9 @@ abstract class ChatHost {
   /// Open member / user profile from a chat context.
   Future<void> openUserProfile(BuildContext context, {required int userId});
 
-  /// Open chat info / settings sheet for [threadId].
-  Future<void> openChatInfo(BuildContext context, {required int threadId});
-
   /// Optional brand accent; null → Theme.of(context).colorScheme.primary.
   Color? get brandColor => null;
+
+  /// Navigator key for incoming-call fullscreen routes (and similar).
+  GlobalKey<NavigatorState>? get navigatorKey => null;
 }

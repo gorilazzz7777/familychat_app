@@ -1,58 +1,49 @@
 # gorila_chat
 
-Shared chat core used by **Family Chat** (reference) and **TeamCoach**.
+Self-contained chat module (UI + realtime + contracts). Apps differ only by API adapters.
 
 ## Layout
 
 ```text
-familychat_app/packages/gorila_chat/   ← this package
+familychat_app/packages/gorila_chat/
 teamcoach_app  → path: ../familychat_app/packages/gorila_chat
 ```
 
-After changing the package, rebuild consumers (`flutter pub get` + run).
+## Public API
 
-## What lives here
+- `GorilaConversationScreen` — conversation UI (bubbles, compose, attach, info, calls)
+- `ChatAttachSheet` — Family Chat–style gallery/file sheet
+- `ChatCallScreen` / `IncomingCallScreen` / `IncomingCallCoordinator`
+- `GorilaChatRealtime` — WS reconnect + `chat_refresh`
+- `ChatRepository` / `ChatCallRepository` / `ChatHost` / `ChatCapabilities`
 
-- `GorilaChatRealtime` — WS with reconnect / backoff / `chat_refresh` (Family Chat behaviour)
-- Message utils — normalize, upsert, merge, thread_id-safe compare
-- `ChatConversationSession` — apply WS events to an open thread
-- Contracts — `ChatCapabilities`, `ChatHost`, `ChatRepository`
-- Feature matrix — see `lib/src/util/feature_matrix.dart`
-
-## What stays in apps
-
-- HTTP API adapters (`familychat/*` vs `teamcoach/*`)
-- Brand UI / navigation shell
-- Domain renderers (albums, workout system cards)
-- Capability-gated features the backend does not support
-
-## Wire-up
+## TeamCoach wire-up
 
 ```dart
-final realtime = GorilaChatRealtime(
-  debugName: 'teamcoach',
-  uriForToken: (token) => Env.teamcoachWsUri(token),
-);
-await realtime.connect(accessToken);
+final adapter = TeamCoachChatAdapter(repo, mode: TeamCoachChatMode.dm)
+  ..peerUserId = peerId;
 
-// On AppLifecycleState.resumed:
-await realtime.reconnectAndRefresh();
+GorilaConversationScreen(
+  threadId: threadId,
+  title: title,
+  repository: adapter,
+  callRepository: adapter,
+  realtime: TeamCoachRealtime.instance,
+  capabilities: ChatCapabilities.teamCoach,
+  systemMessageBuilder: (ctx, msg) => /* workout cards */,
+);
+
+IncomingCallCoordinator.instance.configure(
+  navigatorKey: teamCoachNavigatorKey,
+  callRepository: adapter,
+  realtime: TeamCoachRealtime.instance,
+  pushType: 'teamcoach_call',
+);
 ```
 
-Open conversation should listen for `chat_message` and `chat_refresh` (reload via HTTP).
+## Verification
 
-## Capabilities
-
-Use `ChatCapabilities.familyChat` or `ChatCapabilities.teamCoach` (see `feature_matrix.dart`). Host apps implement `ChatRepository` / `ChatHost`; the package does not call Family Chat or TeamCoach HTTP directly.
-
-## iPhone / Android verification (TeamCoach open chat)
-
-1. Clone `familychat_app` next to `teamcoach_app` (path dependency).
-2. `flutter pub get` in TeamCoach, run on device.
-3. Open a chat thread and leave it open.
-4. From another device/account, send a message into that thread.
-5. **Pass:** the bubble appears within ~1–6s without leaving the screen
-   (WS event, FCM soft-refresh, or soft-sync poll).
-6. Background the app ~30s, resume — WS reconnects and open chat resyncs.
-7. DM AppBar / info sheet show peer avatar when `avatar_url` exists.
-8. Attach (+) opens gallery grid sheet (not a plain list of 3 rows).
+1. Open chat → incoming message appears without leaving.
+2. Attach (+) → gallery grid (not a plain list).
+3. DM AppBar / info show avatar when `avatar_url` exists.
+4. Call: callee gets fullscreen incoming via WS **and** FCM `teamcoach_call`; after accept, two-way audio.
