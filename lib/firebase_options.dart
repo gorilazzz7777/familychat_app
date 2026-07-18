@@ -79,35 +79,41 @@ class DefaultFirebaseOptions {
     );
   }
 
-  /// iOS: dart-define или `null` → Firebase.initializeApp() читает GoogleService-Info.plist.
-  static FirebaseOptions? get ios {
+  /// iOS: dart-define или встроенные значения из GoogleService-Info.plist.
+  static FirebaseOptions get ios {
     const apiKey = String.fromEnvironment('FIREBASE_IOS_API_KEY');
     const appId = String.fromEnvironment('FIREBASE_IOS_APP_ID');
     const senderId = String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID');
     const projectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
 
-    if (apiKey.isEmpty ||
-        appId.isEmpty ||
-        senderId.isEmpty ||
-        projectId.isEmpty) {
-      return null;
+    if (apiKey.isNotEmpty &&
+        appId.isNotEmpty &&
+        senderId.isNotEmpty &&
+        projectId.isNotEmpty) {
+      const storageBucket = String.fromEnvironment('FIREBASE_STORAGE_BUCKET');
+      const iosBundleId = String.fromEnvironment(
+        'FIREBASE_IOS_BUNDLE_ID',
+        defaultValue: 'com.familychat.familychatApp',
+      );
+      return FirebaseOptions(
+        apiKey: apiKey,
+        appId: appId,
+        messagingSenderId: senderId,
+        projectId: projectId,
+        storageBucket: storageBucket.isEmpty
+            ? 'familychat-53a64.firebasestorage.app'
+            : storageBucket,
+        iosBundleId: iosBundleId,
+      );
     }
 
-    const storageBucket = String.fromEnvironment('FIREBASE_STORAGE_BUCKET');
-    const iosBundleId = String.fromEnvironment(
-      'FIREBASE_IOS_BUNDLE_ID',
-      defaultValue: 'com.familychat.familychatApp',
-    );
-
-    return FirebaseOptions(
-      apiKey: apiKey,
-      appId: appId,
-      messagingSenderId: senderId,
-      projectId: projectId,
-      storageBucket: storageBucket.isEmpty
-          ? 'familychat-53a64.firebasestorage.app'
-          : storageBucket,
-      iosBundleId: iosBundleId,
+    return const FirebaseOptions(
+      apiKey: 'AIzaSyBXc6x6ODjkYQptFRwUId2fhE2i8Y5WwFI',
+      appId: '1:156229477633:ios:d85ed5b96656ab19b46700',
+      messagingSenderId: '156229477633',
+      projectId: 'familychat-53a64',
+      storageBucket: 'familychat-53a64.firebasestorage.app',
+      iosBundleId: 'com.familychat.familychatApp',
     );
   }
 }
