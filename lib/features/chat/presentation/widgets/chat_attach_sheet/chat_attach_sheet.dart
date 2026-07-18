@@ -253,35 +253,66 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
                       ),
                   },
                 ),
-                if (_mode == ChatAttachMode.familyGallery)
-                  _FamilySelectionBar(
-                    count: _familySelected.length,
-                    sending: _sending,
-                    onSend: _sendFamilySelected,
-                  )
-                else if (_mode != ChatAttachMode.location)
-                  AttachSelectionBar(
-                    items: _selected,
-                    controller: _captionCtrl,
-                    sending: _sending,
-                    showCaption: !_hideCaption,
-                    sendIcon: _hideCaption
-                        ? Icons.check_rounded
-                        : Icons.send_rounded,
-                    onSend: _sendSelected,
-                    onRemove: _removeSelected,
-                  ),
-                if (!_phoneOnly)
-                  _ModeBar(
-                    style: widget.style,
-                    mode: _mode,
-                    onChanged: _setMode,
-                  ),
-                if (_phoneOnly) const SizedBox(height: 4),
+                _buildBottomChrome(scheme),
               ],
             ),
           );
         },
+      ),
+    );
+  }
+
+  bool get _hasSendSelection {
+    if (_mode == ChatAttachMode.location) return false;
+    if (_mode == ChatAttachMode.familyGallery) return _familySelected.isNotEmpty;
+    return _selected.isNotEmpty;
+  }
+
+  Widget _buildBottomChrome(ColorScheme scheme) {
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    return Material(
+      color: scheme.surface,
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: SizedBox(
+          height: kChatAttachBottomChromeHeight,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            switchInCurve: Curves.easeOut,
+            switchOutCurve: Curves.easeIn,
+            child: _hasSendSelection
+                ? KeyedSubtree(
+                    key: const ValueKey('attach-send'),
+                    child: _mode == ChatAttachMode.familyGallery
+                        ? _FamilySelectionBar(
+                            count: _familySelected.length,
+                            sending: _sending,
+                            onSend: _sendFamilySelected,
+                          )
+                        : AttachSelectionBar(
+                            items: _selected,
+                            controller: _captionCtrl,
+                            sending: _sending,
+                            showCaption: !_hideCaption,
+                            sendIcon: _hideCaption
+                                ? Icons.check_rounded
+                                : Icons.send_rounded,
+                            onSend: _sendSelected,
+                            onRemove: _removeSelected,
+                          ),
+                  )
+                : KeyedSubtree(
+                    key: const ValueKey('attach-modes'),
+                    child: _phoneOnly
+                        ? const SizedBox.expand()
+                        : _ModeBar(
+                            style: widget.style,
+                            mode: _mode,
+                            onChanged: _setMode,
+                          ),
+                  ),
+          ),
+        ),
       ),
     );
   }
@@ -300,38 +331,32 @@ class _FamilySelectionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (count <= 0) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.surface,
-      elevation: 8,
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Выбрано: $count',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
+    return SizedBox.expand(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Выбрано: $count',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
               ),
-              FilledButton.icon(
-                onPressed: sending ? null : onSend,
-                icon: sending
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.check_rounded),
-                label: const Text('Добавить'),
-              ),
-            ],
-          ),
+            ),
+            FilledButton.icon(
+              onPressed: sending ? null : onSend,
+              icon: sending
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.check_rounded),
+              label: const Text('Добавить'),
+            ),
+          ],
         ),
       ),
     );
@@ -368,11 +393,11 @@ class _ModeBar extends StatelessWidget {
         ],
     };
 
-    return SafeArea(
-      top: false,
+    return SizedBox.expand(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+        padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             for (final chip in chips)
               _ModeChip(
@@ -417,8 +442,7 @@ class _ModeChip extends StatelessWidget {
           child: InkWell(
             borderRadius: BorderRadius.circular(16),
             onTap: onTap,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
