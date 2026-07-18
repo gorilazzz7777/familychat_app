@@ -19,6 +19,13 @@ class ChatOfflineSync extends ChangeNotifier {
   bool get isOnline => _online;
   bool get isSyncing => _syncing;
 
+  /// Явно выставить флаг (холодный старт из кэша при отсутствии сети).
+  void setOnline(bool online) {
+    if (_online == online) return;
+    _online = online;
+    notifyListeners();
+  }
+
   List<ChatOutboxDelivery> consumeDeliveries() {
     final items = _recentDeliveries;
     _recentDeliveries = const [];

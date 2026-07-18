@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/offline_ui.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/widgets/family_public_image.dart';
@@ -227,7 +228,9 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
               ),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const DeferredPlaceholder(
+              child: Center(child: CircularProgressIndicator()),
+            )
           : _error != null
               ? Center(child: Text(_error!))
               : _profile == null

@@ -10,6 +10,7 @@ import 'package:photo_manager/photo_manager.dart';
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
 import '../../../../profile/presentation/read_picked_image_bytes.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
+import '../../../../../core/widgets/app_skeletons.dart';
 import 'attach_camera_tile.dart';
 import 'chat_attach_models.dart';
 
@@ -568,7 +569,9 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     }
 
     if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+      return const DeferredPlaceholder(
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
     if (_error != null) {
       return Center(

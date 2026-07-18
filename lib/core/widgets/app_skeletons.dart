@@ -1,4 +1,49 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+/// Показывает [child] только если виджет прожил дольше [delay].
+/// Если данные пришли быстрее — заглушка не мелькает.
+class DeferredPlaceholder extends StatefulWidget {
+  const DeferredPlaceholder({
+    super.key,
+    required this.child,
+    this.delay = const Duration(seconds: 1),
+  });
+
+  final Widget child;
+  final Duration delay;
+
+  @override
+  State<DeferredPlaceholder> createState() => _DeferredPlaceholderState();
+}
+
+class _DeferredPlaceholderState extends State<DeferredPlaceholder> {
+  bool _visible = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(widget.delay, () {
+      if (mounted) setState(() => _visible = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Пусто до delay: при быстрой загрузке заглушка не мигает.
+    // В Expanded/tight-constraints shrink всё равно займёт доступную область.
+    if (!_visible) return const SizedBox.shrink();
+    return widget.child;
+  }
+}
 
 /// Лёгкие плейсхолдеры для первой отрисовки, пока грузятся данные.
 class AppSkeletonBox extends StatelessWidget {

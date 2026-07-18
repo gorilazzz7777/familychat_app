@@ -1,10 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
-import '../../chat/data/chat_offline_sync.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import 'calendar_event_edit_screen.dart';
 import 'birthday_detail_screen.dart';
@@ -47,34 +50,52 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
   }
 
   Future<void> _load() async {
-    final repo = ref.read(familychatRepositoryProvider);
-    final online = await ChatOfflineSync.instance.refreshOnline(repo);
-    if (!online) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _events = [];
-          _error = null;
-        });
-      }
-      return;
-    }
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final data = await ref.read(familychatRepositoryProvider).calendar(
-            year: _month.year,
-            month: _month.month,
-          );
-      if (!mounted) return;
+    final cached = await FamilyChatLocalCache.readCalendarMonth(
+      year: _month.year,
+      month: _month.month,
+    );
+    if (cached != null && mounted) {
+      final events =
+          (cached['events'] as List?)?.cast<Map<String, dynamic>>() ?? [];
       setState(() {
-        _events = (data['events'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        _events = events;
         _loading = false;
+        _error = null;
+      });
+    } else if (_events.isEmpty && mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+
+    final repo = ref.read(familychatRepositoryProvider);
+    try {
+      final data = await repo.calendar(
+        year: _month.year,
+        month: _month.month,
+      );
+      await FamilyChatLocalCache.saveCalendarMonth(
+        year: _month.year,
+        month: _month.month,
+        data: data,
+      );
+      if (!mounted) return;
+      final events =
+          (data['events'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      final same = _eventsFingerprint(_events) == _eventsFingerprint(events);
+      if (same && !_loading) return;
+      setState(() {
+        _events = events;
+        _loading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
+      if (_events.isNotEmpty) {
+        setState(() => _loading = false);
+        return;
+      }
       setState(() {
         _loading = false;
         _error = OfflineUi.loadErrorMessage(
@@ -83,6 +104,12 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
         );
       });
     }
+  }
+
+  String _eventsFingerprint(List<Map<String, dynamic>> events) {
+    return events
+        .map((e) => '${e['id']}|${e['date']}|${e['title']}|${e['kind']}')
+        .join(';');
   }
 
   void _shiftMonth(int delta) {
@@ -203,7 +230,9 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
         ),
         Expanded(
           child: _loading
-              ? const Center(child: CircularProgressIndicator())
+              ? const DeferredPlaceholder(
+                  child: Center(child: CircularProgressIndicator()),
+                )
               : _error != null
                   ? Center(child: Text(_error!))
                   : _events.isEmpty

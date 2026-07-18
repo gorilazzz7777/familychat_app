@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../data/calendar_photo_sync_service.dart';
@@ -152,7 +153,9 @@ class _CalendarStagingReviewScreenState
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const DeferredPlaceholder(
+              child: Center(child: CircularProgressIndicator()),
+            )
           : _photos.isEmpty
               ? const Center(child: Text('Нет фото на проверке'))
               : Column(

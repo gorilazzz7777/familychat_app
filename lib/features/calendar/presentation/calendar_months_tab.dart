@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import '../data/calendar_agenda_utils.dart';
@@ -238,7 +239,9 @@ class _CalendarMonthsTabState extends ConsumerState<CalendarMonthsTab> {
     }
 
     if (_loading && _items.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return const DeferredPlaceholder(
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
 
     return ValueListenableBuilder<bool>(

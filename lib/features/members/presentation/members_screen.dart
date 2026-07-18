@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
@@ -57,16 +59,24 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
   }
 
   Future<void> _load() async {
-    final repo = ref.read(familychatRepositoryProvider);
-    final online = await ChatOfflineSync.instance.refreshOnline(repo);
-    if (!online) {
-      if (mounted) setState(() => _loading = false);
-      return;
+    final cached = await FamilyChatLocalCache.readChatMembers();
+    if (cached != null && cached.isNotEmpty && mounted) {
+      setState(() {
+        _members = cached;
+        _loading = false;
+      });
     }
-    setState(() => _loading = true);
+
+    final repo = ref.read(familychatRepositoryProvider);
+    if (_members.isEmpty && mounted) {
+      setState(() => _loading = true);
+    }
     try {
-      final list = await ref.read(familychatRepositoryProvider).members();
+      final list = await repo.members();
+      await FamilyChatLocalCache.saveChatMembers(list);
       if (!mounted) return;
+      final same = _membersFingerprint(_members) == _membersFingerprint(list);
+      if (same && !_loading) return;
       setState(() {
         _members = list;
         _loading = false;
@@ -74,6 +84,13 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  String _membersFingerprint(List<Map<String, dynamic>> members) {
+    return members
+        .map((m) =>
+            '${m['user_id']}|${m['display_name']}|${m['avatar_url']}|${m['kinship_label']}|${m['is_online']}')
+        .join(';');
   }
 
   void _openMember(Map<String, dynamic> member) {
@@ -206,7 +223,9 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
       physics: const NeverScrollableScrollPhysics(),
       children: [
         _loading
-            ? const Center(child: CircularProgressIndicator())
+            ? const DeferredPlaceholder(
+                child: Center(child: CircularProgressIndicator()),
+              )
             : RefreshIndicator(
                 onRefresh: _load,
                 child: ListView(

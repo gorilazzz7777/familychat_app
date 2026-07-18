@@ -7,11 +7,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/cache/familychat_local_cache.dart';
 import '../core/providers/app_providers.dart';
 import '../core/routing/app_uri_parser.dart';
 import '../core/push/push_navigation.dart';
 import '../core/session/auth_session_bus.dart';
 import '../features/auth/presentation/login_screen.dart';
+import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_conversation_screen.dart';
@@ -102,7 +104,24 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
   }
 
-  Future<void> _consumePendingInvite() async {
+  /// Читает pending invite из prefs без сетевой валидации (не блокирует UI).
+  Future<void> _hydratePendingInvitesFromPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final friendToken = prefs.getString(_pendingFriendInviteKey);
+      final token = prefs.getString(_pendingInviteKey);
+      if (!mounted) return;
+      setState(() {
+        _pendingFriendInvite =
+            (friendToken != null && friendToken.isNotEmpty) ? friendToken : null;
+        _pendingInvite = (token != null && token.isNotEmpty) ? token : null;
+      });
+    } catch (_) {}
+  }
+
+  /// Фоновая проверка invite; невалидные токены убираем.
+  Future<void> _validatePendingInvitesInBackground() async {
+    await _hydratePendingInvitesFromPrefs();
     final prefs = await SharedPreferences.getInstance();
     final friendToken = prefs.getString(_pendingFriendInviteKey);
     if (friendToken != null && friendToken.isNotEmpty) {
@@ -143,17 +162,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     return parseOAuthCallback(Uri.base);
   }
 
-  Future<void> _handleWebEntry() async {
+  /// Локальная часть web-entry: invite из URL, pending call. Без сети.
+  Future<void> _persistWebEntryLocal() async {
     if (!kIsWeb) return;
-    final oauth = _readOAuthCallback();
-    if (oauth != null && oauth.isOk && oauth.sessionCode != null) {
-      try {
-        await ref.read(authRepositoryProvider).consumeSession(
-              provider: oauth.provider,
-              sessionCode: oauth.sessionCode!,
-            );
-      } catch (_) {}
-    }
     final inviteToken = extractInviteToken(Uri.base);
     if (inviteToken != null) {
       final prefs = await SharedPreferences.getInstance();
@@ -172,6 +183,19 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
   }
 
+  /// OAuth return: consume session (нужен спиннер).
+  Future<void> _consumeOAuthIfNeeded() async {
+    if (!kIsWeb) return;
+    final oauth = _readOAuthCallback();
+    if (oauth == null || !oauth.isOk || oauth.sessionCode == null) return;
+    try {
+      await ref.read(authRepositoryProvider).consumeSession(
+            provider: oauth.provider,
+            sessionCode: oauth.sessionCode!,
+          );
+    } catch (_) {}
+  }
+
   Future<bool> _hasSession() async {
     try {
       return await ref.read(authRepositoryProvider).hasSession();
@@ -180,22 +204,63 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
   }
 
+  bool _isAuthFailure(Object? error) {
+    if (error is! DioException) return false;
+    final code = error.response?.statusCode;
+    return code == 401 || code == 403;
+  }
+
+  void _enterWithStatus(Map<String, dynamic> status, {required bool fromCache}) {
+    setState(() {
+      _checking = false;
+      _loggedIn = true;
+      _status = status;
+      _ready = status['onboarding_complete'] == true &&
+          status['has_family'] == true;
+      _bootError = null;
+    });
+    if (fromCache) {
+      ChatOfflineSync.instance.setOnline(false);
+    } else {
+      ChatOfflineSync.instance.setOnline(true);
+      unawaited(FamilyChatLocalCache.saveStatus(status));
+    }
+    _syncAppActions();
+    if (_ready) {
+      unawaited(_maybeHandleFriendInvite());
+      unawaited(_maybeHandleFamilyTransfer());
+    }
+  }
+
+  Future<void> _showLogin() async {
+    if (!mounted) return;
+    setState(() {
+      _checking = false;
+      _loggedIn = false;
+      _ready = false;
+      _status = null;
+      _bootError = null;
+      _transferOnboardingSession = null;
+    });
+    unawaited(_validatePendingInvitesInBackground());
+  }
+
   Future<void> _boot() async {
     setState(() {
       _checking = true;
       _bootError = null;
     });
-    await _handleWebEntry();
-    await _consumePendingInvite();
+
+    await _persistWebEntryLocal();
+    // OAuth callback — единственный случай, где сеть до login допустима.
+    await _consumeOAuthIfNeeded();
+
     if (!await _hasSession()) {
-      if (!mounted) return;
-      setState(() {
-        _checking = false;
-        _loggedIn = false;
-      });
+      await _showLogin();
       return;
     }
 
+    // Токен есть — спиннер, пока проверяем status.
     Map<String, dynamic>? st;
     Object? statusError;
     try {
@@ -207,6 +272,14 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       statusError = e;
     }
 
+    if (!mounted) return;
+
+    // Сессию могли сбросить interceptor'ом во время status/refresh.
+    if (!await _hasSession()) {
+      await _showLogin();
+      return;
+    }
+
     final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
     if (token != null && token.isNotEmpty) {
       unawaited(FamilyChatRealtime.instance.connect(token));
@@ -215,35 +288,42 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       client: ref.read(apiClientProvider),
       repository: ref.read(familychatRepositoryProvider),
     ));
+    unawaited(_validatePendingInvitesInBackground());
 
     if (!mounted) return;
-    if (st == null) {
-      final stillLoggedIn = await _hasSession();
-      if (!mounted) return;
-      setState(() {
-        _checking = false;
-        _loggedIn = stillLoggedIn;
-        _bootError = statusError is DioException
-            ? 'Ошибка загрузки (${statusError.response?.statusCode ?? 'сеть'})'
-            : 'Не удалось загрузить данные';
-      });
+
+    if (st != null) {
+      _enterWithStatus(st, fromCache: false);
       return;
     }
 
-    final status = st;
+    // Auth fail → сразу login (без экрана ошибки и без сетевого logout).
+    if (_isAuthFailure(statusError)) {
+      await ref.read(apiClientProvider).tokenStorage.clear();
+      await FamilyChatLocalCache.clearStatus();
+      await _showLogin();
+      return;
+    }
+
+    // Сеть/прочее → пробуем кэш status (офлайн-старт как в shell).
+    final cached = await FamilyChatLocalCache.readStatus();
+    if (cached != null && cached.isNotEmpty) {
+      try {
+        await ref.read(themeSeedProvider.notifier).syncFromStatus(cached);
+      } catch (_) {}
+      if (!mounted) return;
+      _enterWithStatus(cached, fromCache: true);
+      return;
+    }
+
+    // Нет кэша — оставляем retry.
     setState(() {
       _checking = false;
       _loggedIn = true;
-      _status = status;
-      _ready = status['onboarding_complete'] == true &&
-          status['has_family'] == true;
-      _bootError = null;
+      _bootError = statusError is DioException
+          ? 'Ошибка загрузки (${statusError.response?.statusCode ?? 'сеть'})'
+          : 'Не удалось загрузить данные';
     });
-    _syncAppActions();
-    if (_ready) {
-      unawaited(_maybeHandleFriendInvite());
-      unawaited(_maybeHandleFamilyTransfer());
-    }
   }
 
   Future<void> _maybeHandleFamilyTransfer() async {
@@ -345,6 +425,8 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     try {
       final st = await ref.read(familychatRepositoryProvider).status();
       await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
+      await FamilyChatLocalCache.saveStatus(st);
+      ChatOfflineSync.instance.setOnline(true);
       if (!mounted) return;
       setState(() => _status = st);
       _syncAppActions();
@@ -361,6 +443,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     PushRegistrationService.resetSession();
     await ref.read(themeSeedProvider.notifier).resetToDefault();
     await ref.read(authRepositoryProvider).logout();
+    await FamilyChatLocalCache.clearStatus();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('familychat_push_prompt_dismissed');
     await prefs.remove('familychat_web_push_registered');
@@ -372,6 +455,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       _ready = false;
       _status = null;
       _checking = false;
+      _bootError = null;
       _pendingInvite = null;
       _pendingFriendInvite = null;
       _transferOnboardingSession = null;

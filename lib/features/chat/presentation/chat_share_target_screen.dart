@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../app/shell_refresh.dart';
 import '../../../core/cache/familychat_local_cache.dart';
@@ -722,7 +723,9 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
         ],
       ),
       body: _loadingAttachments
-          ? const Center(child: CircularProgressIndicator())
+          ? const DeferredPlaceholder(
+              child: Center(child: CircularProgressIndicator()),
+            )
           : _loadError != null
               ? Center(child: Text(_loadError!))
               : !hasPayload

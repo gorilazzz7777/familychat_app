@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 
@@ -58,15 +59,23 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   Future<void> _load({bool silent = false}) async {
     final cached = await FamilyChatLocalCache.readFamilyAlbums();
     if (cached != null && mounted) {
-      setState(() {
-        final raw = (cached['albums'] as List<dynamic>? ?? [])
-            .cast<Map<String, dynamic>>();
-        _albums = _filterCommonAlbums(raw);
-        _faceHintMessage = cached['face_hint_message']?.toString() ?? '';
-        _showFaceHint = cached['show_face_hint'] == true;
-        _loading = false;
-        _error = null;
-      });
+      final raw = (cached['albums'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      final next = _filterCommonAlbums(raw);
+      final hint = cached['face_hint_message']?.toString() ?? '';
+      final showHint = cached['show_face_hint'] == true;
+      if (_albumsFingerprint(_albums) != _albumsFingerprint(next) ||
+          _faceHintMessage != hint ||
+          _showFaceHint != showHint ||
+          _loading) {
+        setState(() {
+          _albums = next;
+          _faceHintMessage = hint;
+          _showFaceHint = showHint;
+          _loading = false;
+          _error = null;
+        });
+      }
     } else if (!silent || _albums.isEmpty) {
       setState(() {
         _loading = true;
@@ -78,12 +87,21 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
           await ref.read(familychatRepositoryProvider).familyGalleryAlbums();
       await FamilyChatLocalCache.saveFamilyAlbums(data);
       if (!mounted) return;
+      final raw = (data['albums'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      final next = _filterCommonAlbums(raw);
+      final hint = data['face_hint_message']?.toString() ?? '';
+      final showHint = data['show_face_hint'] == true;
+      if (_albumsFingerprint(_albums) == _albumsFingerprint(next) &&
+          _faceHintMessage == hint &&
+          _showFaceHint == showHint &&
+          !_loading) {
+        return;
+      }
       setState(() {
-        final raw = (data['albums'] as List<dynamic>? ?? [])
-            .cast<Map<String, dynamic>>();
-        _albums = _filterCommonAlbums(raw);
-        _faceHintMessage = data['face_hint_message']?.toString() ?? '';
-        _showFaceHint = data['show_face_hint'] == true;
+        _albums = next;
+        _faceHintMessage = hint;
+        _showFaceHint = showHint;
         _loading = false;
       });
     } catch (e) {
@@ -100,6 +118,13 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
     }
   }
 
+  String _albumsFingerprint(List<Map<String, dynamic>> albums) {
+    return albums
+        .map((a) =>
+            '${a['id']}|${a['title']}|${a['cover_attachment_id']}|${a['photos_count']}')
+        .join(';');
+  }
+
   Future<void> _createAlbum() async {
     final created = await CustomAlbumDialog.show(
       context,
@@ -113,7 +138,9 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+      return const DeferredPlaceholder(
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
     if (_error != null) {
       return Center(

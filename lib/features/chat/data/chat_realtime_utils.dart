@@ -109,3 +109,77 @@ List<Map<String, dynamic>> chatMergeMessageLists(
 
   return sortChatMessages([...byId.values, ...pending]);
 }
+
+/// Стабильная сериализация вложенных map/list (порядок ключей не влияет).
+Object? _stableJsonFingerprint(dynamic value) {
+  if (value == null) return null;
+  if (value is Map) {
+    final keys = value.keys.map((k) => k.toString()).toList()..sort();
+    return [
+      for (final key in keys) [key, _stableJsonFingerprint(value[key])],
+    ];
+  }
+  if (value is List) {
+    return [for (final item in value) _stableJsonFingerprint(item)];
+  }
+  if (value is num && value is! int && value == value.roundToDouble()) {
+    return value.toInt();
+  }
+  return value;
+}
+
+/// Поля, которые влияют на отрисовку пузыря/баннера (звонки в metadata.kind=call).
+Object? _chatMessageDisplayFingerprint(Map<String, dynamic> message) {
+  final attachments = chatAttachmentsOf(message)
+      .map((a) => [chatAsInt(a['id']), a['kind'], a['file_url'], a['filename']])
+      .toList();
+  return [
+    chatAsInt(message['id']),
+    message['body']?.toString() ?? '',
+    message['is_system'] == true,
+    message['edited_at']?.toString() ?? '',
+    message['read_status']?.toString() ?? '',
+    message['sender_user_id'],
+    message['sender_name']?.toString() ?? '',
+    message['sender_avatar_url']?.toString() ?? '',
+    _stableJsonFingerprint(message['metadata']),
+    _stableJsonFingerprint(message['reactions']),
+    _stableJsonFingerprint(message['reply_to']),
+    _stableJsonFingerprint(message['forward']),
+    attachments,
+    message['_pending'] == true,
+    message['_scheduled'] == true,
+    message['schedule_id']?.toString() ?? '',
+  ];
+}
+
+bool chatMessageDisplayEquals(
+  Map<String, dynamic> a,
+  Map<String, dynamic> b,
+) {
+  return _chatMessageDisplayFingerprint(a).toString() ==
+      _chatMessageDisplayFingerprint(b).toString();
+}
+
+/// true, если списки дают одинаковую картинку (порядок + контент пузырей).
+bool chatMessageListsDisplayEqual(
+  List<Map<String, dynamic>> a,
+  List<Map<String, dynamic>> b,
+) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (!chatMessageDisplayEquals(a[i], b[i])) return false;
+  }
+  return true;
+}
+
+int? chatNewestServerMessageId(List<Map<String, dynamic>> messages) {
+  for (var i = messages.length - 1; i >= 0; i--) {
+    final id = chatAsInt(messages[i]['id']);
+    if (id != null && id > 0 && !chatMessageIsPending(messages[i])) {
+      return id;
+    }
+  }
+  return null;
+}

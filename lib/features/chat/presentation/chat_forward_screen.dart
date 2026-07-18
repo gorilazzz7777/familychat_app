@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../data/chat_realtime_utils.dart';
@@ -106,7 +107,9 @@ class _ChatForwardScreenState extends ConsumerState<ChatForwardScreen> {
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const DeferredPlaceholder(
+              child: Center(child: CircularProgressIndicator()),
+            )
           : _threads.isEmpty
               ? const Center(child: Text('Нет доступных чатов'))
               : ListView.builder(

@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/network/offline_ui.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../calendar/data/calendar_photo_sync_service.dart';
@@ -409,13 +410,52 @@ class _ProfileGalleryAlbumScreenState
   }
 
   Future<void> _load({required bool reset}) async {
+    final canCacheFirstPage = reset &&
+        _query.trim().isEmpty &&
+        _personUserId == null &&
+        !_personFilterUnidentified;
+
     if (reset) {
-      setState(() {
-        _loading = true;
-        _error = null;
-        _offset = 0;
-        _photos.clear();
-      });
+      Map<String, dynamic>? cached;
+      if (canCacheFirstPage) {
+        cached = await FamilyChatLocalCache.readAlbumPhotosPage(
+          isFamilyGallery: widget.isFamilyGallery,
+          userId: widget.userId,
+          albumId: widget.albumId,
+          query: _query,
+          personUserId: _personUserId,
+          personUnidentified: _personFilterUnidentified,
+        );
+      }
+      if (cached != null && mounted) {
+        final cachedPage = cached;
+        final rawBatch = (cachedPage['photos'] as List<dynamic>? ?? [])
+            .cast<Map<String, dynamic>>();
+        final batch = _applyUploadOwnerFilter(rawBatch);
+        setState(() {
+          _photos
+            ..clear()
+            ..addAll(batch);
+          _total = cachedPage['total'] is int
+              ? cachedPage['total'] as int
+              : int.tryParse('${cachedPage['total']}') ?? batch.length;
+          _offset = rawBatch.length;
+          _searchPeople = (cachedPage['search_people'] as List<dynamic>? ?? [])
+              .cast<Map<String, dynamic>>();
+          _unidentifiedCount = cachedPage['unidentified_count'] is int
+              ? cachedPage['unidentified_count'] as int
+              : int.tryParse('${cachedPage['unidentified_count']}') ?? 0;
+          _loading = false;
+          _error = null;
+        });
+      } else {
+        setState(() {
+          _loading = true;
+          _error = null;
+          _offset = 0;
+          _photos.clear();
+        });
+      }
     } else {
       setState(() => _loadingMore = true);
     }
@@ -424,7 +464,7 @@ class _ProfileGalleryAlbumScreenState
       final data = widget.isFamilyGallery
           ? await repo.familyGalleryPhotos(
               widget.albumId,
-              offset: _offset,
+              offset: reset ? 0 : _offset,
               limit: _pageSize,
               query: _query,
               personUserId: _personUserId,
@@ -433,7 +473,7 @@ class _ProfileGalleryAlbumScreenState
           : await repo.memberGalleryPhotos(
               widget.userId,
               widget.albumId,
-              offset: _offset,
+              offset: reset ? 0 : _offset,
               limit: _pageSize,
               query: _query,
               personUserId: _personUserId,
@@ -447,11 +487,23 @@ class _ProfileGalleryAlbumScreenState
         _total = data['total'] is int
             ? data['total'] as int
             : int.tryParse('${data['total']}') ?? 0;
-        if (rawBatch.isEmpty && widget.excludeUploadedByUserId != null) {
+        if (reset) {
+          _photos
+            ..clear()
+            ..addAll(batch);
+          _offset = rawBatch.length;
+        } else {
+          if (rawBatch.isEmpty && widget.excludeUploadedByUserId != null) {
+            _total = _photos.length;
+          }
+          _photos.addAll(batch);
+          _offset += rawBatch.length;
+        }
+        if (rawBatch.isEmpty &&
+            widget.excludeUploadedByUserId != null &&
+            reset) {
           _total = _photos.length;
         }
-        _photos.addAll(batch);
-        _offset += rawBatch.length;
         _searchPeople = (data['search_people'] as List<dynamic>? ?? [])
             .cast<Map<String, dynamic>>();
         _unidentifiedCount = data['unidentified_count'] is int
@@ -459,16 +511,35 @@ class _ProfileGalleryAlbumScreenState
             : int.tryParse('${data['unidentified_count']}') ?? 0;
         _loading = false;
         _loadingMore = false;
+        _error = null;
       });
+      if (canCacheFirstPage) {
+        await FamilyChatLocalCache.saveAlbumPhotosPage(
+          isFamilyGallery: widget.isFamilyGallery,
+          userId: widget.userId,
+          albumId: widget.albumId,
+          query: _query,
+          personUserId: _personUserId,
+          personUnidentified: _personFilterUnidentified,
+          data: {
+            'photos': rawBatch,
+            'total': data['total'],
+            'search_people': data['search_people'],
+            'unidentified_count': data['unidentified_count'],
+          },
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
         _loadingMore = false;
-        _error = OfflineUi.loadErrorMessage(
-          e,
-          fallback: 'Не удалось загрузить фото',
-        );
+        if (_photos.isEmpty) {
+          _error = OfflineUi.loadErrorMessage(
+            e,
+            fallback: 'Не удалось загрузить фото',
+          );
+        }
       });
     }
   }
@@ -1439,7 +1510,9 @@ class _ProfileGalleryAlbumScreenState
               _buildCalendarSyncBanner(),
               Expanded(
                 child: _loading
-                    ? const Center(child: CircularProgressIndicator())
+                    ? const DeferredPlaceholder(
+                        child: Center(child: CircularProgressIndicator()),
+                      )
                     : _error != null
                         ? Center(
                             child: Padding(

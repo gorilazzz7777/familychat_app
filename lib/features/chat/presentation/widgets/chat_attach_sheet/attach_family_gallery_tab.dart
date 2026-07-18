@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../../core/providers/app_providers.dart';
+import '../../../../../core/widgets/app_skeletons.dart';
 import '../chat_network_image.dart';
 
 /// Выбор уже загруженных фото семьи (для альбома).
@@ -142,7 +143,9 @@ class _AttachFamilyGalleryTabState
         ),
         Expanded(
           child: _loading
-              ? const Center(child: CircularProgressIndicator())
+              ? const DeferredPlaceholder(
+                  child: Center(child: CircularProgressIndicator()),
+                )
               : _error != null
                   ? Center(child: Text(_error!))
                   : _photos.isEmpty

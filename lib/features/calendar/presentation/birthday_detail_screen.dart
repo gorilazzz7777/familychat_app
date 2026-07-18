@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/network/offline_ui.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
@@ -128,7 +129,9 @@ class _BirthdayDetailScreenState extends ConsumerState<BirthdayDetailScreen> {
     return Scaffold(
       appBar: FamilyAppBar.build(title: 'День рождения'),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const DeferredPlaceholder(
+              child: Center(child: CircularProgressIndicator()),
+            )
           : _error != null
               ? Center(
                   child: Padding(

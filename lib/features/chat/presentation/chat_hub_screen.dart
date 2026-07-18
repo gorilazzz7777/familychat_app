@@ -199,8 +199,17 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       await FamilyChatLocalCache.saveChatThreads(list);
       await FamilyChatLocalCache.saveChatMembers(members);
       if (!mounted) return;
+      final sorted = _sortedThreads(list);
+      final sameThreads = _threadsFingerprint(_threads) ==
+          _threadsFingerprint(sorted);
+      if (sameThreads && !_loading) {
+        setState(() => _applyMembers(members));
+        invalidateChatUnreadTotal(ref);
+        unawaited(ChatOfflineSync.instance.refreshOnline(repo));
+        return;
+      }
       setState(() {
-        _threads = _sortedThreads(list);
+        _threads = sorted;
         _applyMembers(members);
         _loading = false;
       });
@@ -215,6 +224,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         _loading = false;
       });
     }
+  }
+
+  String _threadsFingerprint(List<Map<String, dynamic>> threads) {
+    return threads.map((t) {
+      final last = t['last_message'] as Map<String, dynamic>?;
+      return '${t['id']}|${t['unread_count']}|${last?['id']}|${t['title']}|${t['custom_title']}';
+    }).join(';');
   }
 
   int? _dmPeerUserId(Map<String, dynamic> thread) {
@@ -329,6 +345,15 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           initialIsBirthdayCelebration: thread['is_birthday_celebration'] == true,
           initialPeerAvatarUrl: _dmAvatarUrl(thread),
           initialCanSend: thread['can_send'] != false,
+          expectedLastMessageId: () {
+            final last = thread['last_message'];
+            if (last is Map) {
+              final id = last['id'];
+              if (id is int) return id;
+              return int.tryParse('$id');
+            }
+            return null;
+          }(),
         ),
       ),
     );
@@ -399,7 +424,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     final filtered = _filteredBy(filter);
 
     if (_loading) {
-      return const ChatHubListSkeleton();
+      return const DeferredPlaceholder(child: ChatHubListSkeleton());
     }
 
     return RefreshIndicator(

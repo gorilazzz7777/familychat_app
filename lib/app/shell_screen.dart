@@ -9,6 +9,7 @@ import '../core/notifications/familychat_notifications.dart';
 import '../core/push/push_navigation.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
+import '../core/widgets/app_skeletons.dart';
 import '../core/widgets/family_app_bar.dart';
 import '../core/providers/app_providers.dart';
 import '../core/theme/theme_seed_controller.dart';
@@ -22,6 +23,7 @@ import '../features/chat/data/active_chat_context.dart';
 import '../features/chat/data/chat_unread_providers.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
+import '../features/chat/data/chat_offline_prefetch.dart';
 import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/chat_voice_transcription_prefs.dart';
@@ -53,11 +55,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     with WidgetsBindingObserver {
   static const _galleryTabIndex = 3;
   static const _calendarTabIndex = 4;
+  static const _tabRefreshTtl = Duration(seconds: 45);
 
   int _index = 0;
   late Map<String, dynamic> _status;
   final _feedKey = GlobalKey<FeedScreenState>();
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
+  final _tabRefreshedAt = <int, DateTime>{};
+  /// Главная + Чаты сразу; остальные — при первом заходе.
+  final _visitedTabs = <int>{0, 1};
   Timer? _webPollTimer;
   Timer? _presenceTimer;
 
@@ -86,6 +92,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       }
       unawaited(
         ChatOfflineSync.instance.run(ref.read(familychatRepositoryProvider)),
+      );
+      unawaited(
+        ChatOfflinePrefetch.scheduleSecondary(
+          ref.read(familychatRepositoryProvider),
+          currentUserId: _currentUserId,
+        ),
       );
       // Распаковка Vosk RU из assets (без интернета).
       ref.read(voskModelPreloadProvider);
@@ -318,6 +330,13 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       default:
         break;
     }
+    _tabRefreshedAt[tabIndex] = DateTime.now();
+  }
+
+  bool _shouldRefreshTab(int tabIndex) {
+    final last = _tabRefreshedAt[tabIndex];
+    if (last == null) return true;
+    return DateTime.now().difference(last) > _tabRefreshTtl;
   }
 
   @override
@@ -348,9 +367,42 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   void _onDestinationSelected(int i) {
     final previous = _index;
-    setState(() => _index = i);
-    if (previous != i) {
+    final needsBuild = !_visitedTabs.contains(i);
+    setState(() {
+      _index = i;
+      if (needsBuild) _visitedTabs.add(i);
+    });
+    if (previous != i && _shouldRefreshTab(i)) {
       unawaited(_refreshTab(i, silent: true));
+    }
+  }
+
+  Widget _buildTab(int i) {
+    if (!_visitedTabs.contains(i)) {
+      return const SizedBox.shrink();
+    }
+    final userId = _currentUserId;
+    switch (i) {
+      case 0:
+        return FeedScreen(key: _feedKey);
+      case 1:
+        return ChatHubScreen(key: _chatHubKey);
+      case 2:
+        return MembersScreen(
+          currentUserId: userId,
+          onOpenOwnProfile: _openProfile,
+          showAppBar: false,
+        );
+      case 3:
+        return userId == null
+            ? const DeferredPlaceholder(
+                child: Center(child: CircularProgressIndicator()),
+              )
+            : GalleryMenuScreen(currentUserId: userId);
+      case 4:
+        return const CalendarScreen();
+      default:
+        return const SizedBox.shrink();
     }
   }
 
@@ -388,7 +440,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   @override
   Widget build(BuildContext context) {
-    final userId = _currentUserId;
     final chatUnread = ref.watch(chatUnreadTotalProvider).value ?? 0;
     final chatBadgeLabel = chatUnread > 99 ? '99+' : '$chatUnread';
     final showingNestedScreen = _hideShellAppBar;
@@ -442,19 +493,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           : null,
       body: IndexedStack(
         index: _index,
-        children: [
-          FeedScreen(key: _feedKey),
-          ChatHubScreen(key: _chatHubKey),
-          MembersScreen(
-            currentUserId: _currentUserId,
-            onOpenOwnProfile: _openProfile,
-            showAppBar: false,
-          ),
-          userId == null
-              ? const Center(child: CircularProgressIndicator())
-              : GalleryMenuScreen(currentUserId: userId),
-          const CalendarScreen(),
-        ],
+        children: List<Widget>.generate(5, _buildTab),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,

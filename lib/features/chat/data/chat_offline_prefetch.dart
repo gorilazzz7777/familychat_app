@@ -11,6 +11,7 @@ import 'chat_realtime_utils.dart';
 abstract final class ChatOfflinePrefetch {
   /// На web полный файл тяжёлый — не выкачиваем всю ленту заранее.
   static const int _maxPrefetchImagesPerThread = kIsWeb ? 4 : 12;
+  static const _secondaryDelay = Duration(seconds: 3);
 
   static Future<void> run(FamilyChatRepository repo) async {
     try {
@@ -29,21 +30,75 @@ abstract final class ChatOfflinePrefetch {
         try {
           final page = await repo.threadMessages(
             threadId,
-            limit: FamilyChatLocalCache.initialMessagesPageSize,
+            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
           );
-          await FamilyChatLocalCache.saveThreadMessages(threadId, page.messages);
-          await _prefetchMessageMedia(repo, threadId, page.messages);
+          await FamilyChatLocalCache.saveThreadMessages(
+            threadId,
+            page.messages,
+          );
+          await prefetchThreadMedia(repo, threadId, page.messages);
         } catch (_) {}
       }
     } catch (_) {}
   }
 
+  /// Галерея + текущий месяц календаря — после паузы, чтобы не мешать старту.
+  static Future<void> scheduleSecondary(
+    FamilyChatRepository repo, {
+    int? currentUserId,
+  }) async {
+    await Future<void>.delayed(_secondaryDelay);
+    await runSecondary(repo, currentUserId: currentUserId);
+  }
+
+  static Future<void> runSecondary(
+    FamilyChatRepository repo, {
+    int? currentUserId,
+  }) async {
+    try {
+      final familyAlbums = await repo.familyGalleryAlbums();
+      await FamilyChatLocalCache.saveFamilyAlbums(familyAlbums);
+    } catch (_) {}
+
+    if (currentUserId != null) {
+      try {
+        final mine = await repo.memberGalleryAlbums(currentUserId);
+        await FamilyChatLocalCache.saveMemberAlbums(currentUserId, mine);
+      } catch (_) {}
+    }
+
+    try {
+      final now = DateTime.now();
+      final month = await repo.calendar(year: now.year, month: now.month);
+      await FamilyChatLocalCache.saveCalendarMonth(
+        year: now.year,
+        month: now.month,
+        data: month,
+      );
+    } catch (_) {}
+  }
+
+  /// Кладёт превью картинок (входящих и своих) в bin-кэш / MediaCache.
+  static Future<void> prefetchThreadMedia(
+    FamilyChatRepository repo,
+    int threadId,
+    List<Map<String, dynamic>> messages, {
+    int? maxImages,
+  }) =>
+      _prefetchMessageMedia(
+        repo,
+        threadId,
+        messages,
+        maxImages: maxImages ?? _maxPrefetchImagesPerThread,
+      );
+
   static Future<void> _prefetchMessageMedia(
     FamilyChatRepository repo,
     int threadId,
-    List<Map<String, dynamic>> messages,
-  ) async {
-    var remaining = _maxPrefetchImagesPerThread;
+    List<Map<String, dynamic>> messages, {
+    required int maxImages,
+  }) async {
+    var remaining = maxImages;
     // Свежие сообщения важнее — идём с конца.
     for (final message in messages.reversed) {
       if (remaining <= 0) break;
@@ -53,34 +108,34 @@ abstract final class ChatOfflinePrefetch {
         final attachmentId = chatAsInt(attachment['id']);
         if (attachmentId == null) continue;
 
-        if (kIsWeb) {
-          try {
-            final existing = await FamilyChatLocalCache.readAttachmentBytes(
-              threadId,
-              attachmentId,
-            );
-            if (existing != null && existing.isNotEmpty) {
-              remaining--;
-              continue;
-            }
-            final bytes =
-                await repo.fetchChatAttachmentBytes(threadId, attachmentId);
-            await FamilyChatLocalCache.saveAttachmentBytes(
-              threadId,
-              attachmentId,
-              bytes,
-            );
-            remaining--;
-          } catch (_) {}
-          continue;
-        }
-
-        final url = attachment['file_url']?.toString() ?? '';
-        if (url.isEmpty) continue;
         try {
-          await FamilyChatMediaCache.preview.downloadFile(url);
+          final existing = await FamilyChatLocalCache.readAttachmentBytes(
+            threadId,
+            attachmentId,
+          );
+          if (existing != null && existing.isNotEmpty) {
+            remaining--;
+            continue;
+          }
+          final bytes =
+              await repo.fetchChatAttachmentBytes(threadId, attachmentId);
+          await FamilyChatLocalCache.saveAttachmentBytes(
+            threadId,
+            attachmentId,
+            bytes,
+          );
           remaining--;
         } catch (_) {}
+
+        // Native: дополнительно греем URL-кэш превью для CachedNetworkImage.
+        if (!kIsWeb) {
+          final url = attachment['file_url']?.toString() ?? '';
+          if (url.isNotEmpty) {
+            try {
+              await FamilyChatMediaCache.preview.downloadFile(url);
+            } catch (_) {}
+          }
+        }
       }
     }
     if (!kIsWeb) {

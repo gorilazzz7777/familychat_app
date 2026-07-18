@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import 'widgets/album_access_fields.dart';
@@ -271,7 +272,9 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
         ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const DeferredPlaceholder(
+              child: Center(child: CircularProgressIndicator()),
+            )
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               children: [
@@ -368,9 +371,11 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                     ),
                     const SizedBox(height: 12),
                     if (_loadingMembers)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 24),
-                        child: Center(child: CircularProgressIndicator()),
+                      const DeferredPlaceholder(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 24),
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
                       )
                     else if (_members.isEmpty)
                       Text(

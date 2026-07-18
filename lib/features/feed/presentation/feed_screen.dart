@@ -216,6 +216,21 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
         .cast<Map<String, dynamic>>();
   }
 
+  String _filterPeopleFingerprint(List<Map<String, dynamic>> people) {
+    return people.map((p) => '${p['user_id']}').join(',');
+  }
+
+  bool _feedEventsSameIds(
+    List<Map<String, dynamic>> a,
+    List<Map<String, dynamic>> b,
+  ) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (_eventId(a[i]) != _eventId(b[i])) return false;
+    }
+    return true;
+  }
+
   Future<void> _persistCache() async {
     final slice = _events.length > FamilyChatLocalCache.maxCachedFeedEvents
         ? _events.sublist(0, FamilyChatLocalCache.maxCachedFeedEvents)
@@ -231,18 +246,22 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     );
   }
 
-  void _prependUnique(List<Map<String, dynamic>> incoming) {
-    if (incoming.isEmpty) return;
+  /// Возвращает true, если список событий изменился.
+  bool _prependUnique(List<Map<String, dynamic>> incoming) {
+    if (incoming.isEmpty) return false;
+    var changed = false;
     for (final event in incoming) {
       if (!_isAggregatedEngagementEvent(event)) continue;
       final kind = event['kind']?.toString();
       final attachmentId = _eventAttachmentId(event);
       if (kind == null || attachmentId == null) continue;
+      final before = _events.length;
       _events.removeWhere((existing) {
         if (!_isAggregatedEngagementEvent(existing)) return false;
         if (existing['kind']?.toString() != kind) return false;
         return _eventAttachmentId(existing) == attachmentId;
       });
+      if (_events.length != before) changed = true;
     }
     // Убираем optimistic-дубликаты, когда пришёл реальный пост.
     final hasRealPhotoBatch = incoming.any(
@@ -251,15 +270,18 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           e['kind']?.toString() == 'photo_batch_uploaded',
     );
     if (hasRealPhotoBatch) {
+      final before = _events.length;
       _events.removeWhere((existing) => existing['_optimistic'] == true);
+      if (_events.length != before) changed = true;
     }
     final ids = _events.map(_eventId).whereType<int>().toSet();
     final fresh = _visibleFeedEvents(incoming.where((event) {
       final id = _eventId(event);
       return id != null && !ids.contains(id);
     }));
-    if (fresh.isEmpty) return;
+    if (fresh.isEmpty) return changed;
     _events.insertAll(0, fresh);
+    return true;
   }
 
   void prependOptimisticEvent(Map<String, dynamic> event) {
@@ -281,11 +303,14 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   }
 
   Future<void> _markFeedRead() async {
+    final hadNew = _events.any((e) => e['is_new'] == true);
     try {
       final data = await ref.read(familychatRepositoryProvider).markFeedRead();
       if (!mounted) return;
+      final newLastRead = data['last_read_at']?.toString();
+      if (!hadNew && newLastRead == _lastReadAt) return;
       setState(() {
-        _lastReadAt = data['last_read_at']?.toString();
+        _lastReadAt = newLastRead;
         for (final event in _events) {
           event['is_new'] = false;
         }
@@ -326,12 +351,46 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       final batch = _visibleFeedEvents(
         (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
       );
+      final newLastRead = data['last_read_at']?.toString();
+      final newFilter = (data['filter_people'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      final newHasMore = _parseHasMore(data, batchLength: batch.length);
+
+      // Silent reload: не затираем более длинный кэш первой страницей API,
+      // если id свежих совпадают — только обновляем meta / хвост.
+      final sameHead = _events.length >= batch.length &&
+          _feedEventsSameIds(_events.take(batch.length).toList(), batch);
+      final metaChanged = newLastRead != _lastReadAt ||
+          _filterPeopleFingerprint(newFilter) !=
+              _filterPeopleFingerprint(_filterPeople) ||
+          newHasMore != _hasMore;
+
+      if (!showSpinner && sameHead && !metaChanged && !_loading && _error == null) {
+        await _maybeMarkRead();
+        return;
+      }
+
       setState(() {
-        _events
-          ..clear()
-          ..addAll(batch);
-        _applyMetadata(data, batchLength: batch.length);
+        if (!sameHead) {
+          if (_events.length > batch.length &&
+              batch.isNotEmpty &&
+              _feedEventsSameIds(
+                _events.take(batch.length).toList(),
+                batch,
+              )) {
+            // Заменяем только голову, хвост кэша оставляем.
+            _events.replaceRange(0, batch.length, batch);
+          } else {
+            _events
+              ..clear()
+              ..addAll(batch);
+          }
+        }
+        _lastReadAt = newLastRead;
+        _filterPeople = newFilter;
+        _hasMore = newHasMore;
         _loading = false;
+        _error = null;
       });
       await _persistCache();
       await _maybeMarkRead();
@@ -359,24 +418,60 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       final batch = _visibleFeedEvents(
         (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
       );
+      final newLastRead = data['last_read_at']?.toString();
+      final newFilter = (data['filter_people'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      final metaChanged = newLastRead != _lastReadAt ||
+          _filterPeopleFingerprint(newFilter) !=
+              _filterPeopleFingerprint(_filterPeople);
+
+      var eventsChanged = false;
+      if (afterId == null) {
+        if (batch.isNotEmpty) {
+          eventsChanged = !_feedEventsSameIds(_events, batch);
+        }
+      } else {
+        // Предварительно оценим, есть ли новые id.
+        final ids = _events.map(_eventId).whereType<int>().toSet();
+        eventsChanged = batch.any((e) {
+          final id = _eventId(e);
+          return id != null && !ids.contains(id);
+        });
+        // Агрегированные engagement тоже могут заменить карточки.
+        if (!eventsChanged) {
+          eventsChanged = batch.any(_isAggregatedEngagementEvent);
+        }
+      }
+
+      if (!eventsChanged &&
+          !metaChanged &&
+          !_loading &&
+          _error == null) {
+        await _maybeMarkRead();
+        return;
+      }
+
       setState(() {
         if (afterId == null) {
-          if (batch.isNotEmpty) {
+          if (batch.isNotEmpty && eventsChanged) {
             _events
               ..clear()
               ..addAll(batch);
           }
           _applyMetadata(data, batchLength: batch.length);
         } else {
-          _prependUnique(batch);
-          _lastReadAt = data['last_read_at']?.toString();
-          _filterPeople = (data['filter_people'] as List<dynamic>? ?? [])
-              .cast<Map<String, dynamic>>();
+          if (eventsChanged) {
+            _prependUnique(batch);
+          }
+          _lastReadAt = newLastRead;
+          _filterPeople = newFilter;
         }
         _loading = false;
         _error = null;
       });
-      await _persistCache();
+      if (eventsChanged || metaChanged) {
+        await _persistCache();
+      }
       await _maybeMarkRead();
       WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
     } catch (e) {
@@ -632,7 +727,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       case _FeedEntryKind.event:
         final index = entry.eventIndex!;
         final event = _events[index];
+        final eventKey = _eventId(event);
         return Padding(
+          key: ValueKey(eventKey ?? 'feed_idx_$index'),
           padding: const EdgeInsets.only(bottom: 12),
           child: FeedEventCard(
             event: event,
@@ -679,7 +776,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const FeedListSkeleton();
+      return const DeferredPlaceholder(child: FeedListSkeleton());
     }
     if (_error != null) {
       return Center(

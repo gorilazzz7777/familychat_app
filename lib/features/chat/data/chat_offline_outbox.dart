@@ -151,11 +151,10 @@ class ChatOfflineOutbox {
         .where((m) => chatAsInt(m['id']) != tempMessageId)
         .toList();
     withoutTemp.add(msg);
-    final max = FamilyChatLocalCache.maxCachedMessagesPerThread;
-    final slice = withoutTemp.length > max
-        ? withoutTemp.sublist(withoutTemp.length - max)
-        : withoutTemp;
-    await FamilyChatLocalCache.saveThreadMessages(threadId, slice);
+    await FamilyChatLocalCache.saveThreadMessages(
+      threadId,
+      withoutTemp,
+    );
 
     return ChatOutboxDelivery(
       threadId: threadId,

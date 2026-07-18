@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_compose_input.dart';
 import '../data/familychat_realtime.dart';
 
@@ -81,7 +82,9 @@ class _FamilyChatScreenState extends ConsumerState<FamilyChatScreen> {
       children: [
         Expanded(
           child: _loading
-              ? const Center(child: CircularProgressIndicator())
+              ? const DeferredPlaceholder(
+                  child: Center(child: CircularProgressIndicator()),
+                )
               : RefreshIndicator(
                   onRefresh: _load,
                   child: ListView.builder(

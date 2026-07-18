@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'family_tree_graph.dart';
@@ -441,7 +442,11 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading) {
+      return const DeferredPlaceholder(
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
     if (_error != null) {
       return Center(
         child: Padding(

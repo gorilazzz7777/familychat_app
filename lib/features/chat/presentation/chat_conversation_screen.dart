@@ -26,6 +26,7 @@ import '../data/chat_location_utils.dart';
 import '../data/active_chat_context.dart';
 import '../data/chat_network_status.dart';
 import '../data/chat_offline_outbox.dart';
+import '../data/chat_offline_prefetch.dart';
 import '../data/chat_offline_sync.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/chat_scheduled_send_service.dart';
@@ -110,6 +111,7 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
     this.initialIsBirthdayCelebration = false,
     this.initialPeerAvatarUrl,
     this.initialCanSend = true,
+    this.expectedLastMessageId,
   });
 
   final int threadId;
@@ -126,6 +128,8 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
   final bool initialIsBirthdayCelebration;
   final String? initialPeerAvatarUrl;
   final bool initialCanSend;
+  /// Id последнего сообщения из списка чатов — чтобы не показывать устаревший кэш.
+  final int? expectedLastMessageId;
 
   @override
   ConsumerState<ChatConversationScreen> createState() =>
@@ -316,7 +320,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   Future<void> _init() async {
     try {
       final st = await ref.read(familychatRepositoryProvider).status();
-      _currentUserId = st['user_id'] as int?;
+      _currentUserId = chatAsInt(st['user_id']);
       final entitlements = st['entitlements'];
       if (entitlements is Map) {
         _viewerIndividualPremium = entitlements['individual_premium'] == true;
@@ -325,25 +329,65 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     // Модель Vosk заранее (без сети) — на случай отправки в premium-треде.
     unawaited(ChatVoiceTranscription.instance.preloadModelToDisk());
     final skipCache = widget.initialMessageId != null;
-    List<Map<String, dynamic>>? cached;
+    var showedCache = false;
     if (!skipCache) {
-      cached = await FamilyChatLocalCache.readThreadMessages(widget.threadId);
-      if (cached != null && cached.isNotEmpty && mounted) {
+      final cached = await FamilyChatLocalCache.readThreadMessages(widget.threadId);
+      if (cached != null &&
+          cached.isNotEmpty &&
+          mounted &&
+          await _cacheIsFreshEnough(cached)) {
+        final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
+          widget.threadId,
+          cached,
+        );
+        if (!mounted) return;
         setState(() {
-          _messages = sortChatMessages(cached!);
+          _messages = sortChatMessages(hydrated);
           _loading = false;
         });
+        showedCache = true;
         _scrollToBottom(jump: true, settle: true);
       }
     }
-    await _load(silent: !skipCache && cached != null && cached.isNotEmpty);
+    await _load(silent: showedCache);
     await _injectScheduledMessages();
     final targetId = widget.initialMessageId;
     if (targetId != null) {
       await _ensureMessageLoaded(targetId);
       await _scrollToMessage(targetId);
-    } else {
+    } else if (!showedCache) {
+      // Кэш уже проскроллил вниз; повторный settle после сети даёт мигание.
       _scrollToBottom(jump: true, settle: true);
+    }
+  }
+
+  /// Не показываем кэш, если он отстаёт от last_message в списке чатов
+  /// (иначе первый кадр — окно на ~20 сообщений выше актуального хвоста).
+  Future<bool> _cacheIsFreshEnough(List<Map<String, dynamic>> cached) async {
+    final cacheNewest = chatNewestServerMessageId(cached);
+    if (cacheNewest == null) return false;
+
+    final expected = widget.expectedLastMessageId;
+    if (expected != null) {
+      return cacheNewest >= expected;
+    }
+
+    try {
+      final threads = await FamilyChatLocalCache.readChatThreads();
+      if (threads == null) return true;
+      Map<String, dynamic>? thread;
+      for (final t in threads) {
+        if (chatAsInt(t['id']) == widget.threadId) {
+          thread = t;
+          break;
+        }
+      }
+      final last = thread?['last_message'];
+      final lastId = last is Map ? chatAsInt(last['id']) : null;
+      if (lastId == null) return true;
+      return cacheNewest >= lastId;
+    } catch (_) {
+      return true;
     }
   }
 
@@ -388,26 +432,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   void _onScroll() {
-    if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder)
+    if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder) {
       return;
-    if (_scrollController.position.pixels <= 72) {
+    }
+    // reverse: true — верх истории (старые) у maxScrollExtent.
+    final pos = _scrollController.position;
+    if (pos.pixels >= pos.maxScrollExtent - 72) {
       unawaited(_loadOlder());
     }
   }
 
-  Future<void> _persistMessageCache() async {
-    if (_messages.isEmpty) return;
-    final kept = _messages.where((m) {
-      final id = chatAsInt(m['id']);
-      if (id == null) return false;
-      if (id > 0) return true;
-      return m['_pending'] == true || m['read_status'] == 'queued';
-    }).toList();
-    if (kept.isEmpty) return;
-    final slice = kept.length > FamilyChatLocalCache.maxCachedMessagesPerThread
-        ? kept.sublist(kept.length - FamilyChatLocalCache.maxCachedMessagesPerThread)
-        : kept;
-    await FamilyChatLocalCache.saveThreadMessages(widget.threadId, slice);
+  Future<void> _persistMessageCache([List<Map<String, dynamic>>? messages]) async {
+    final source = messages ?? _messages;
+    if (source.isEmpty) return;
+    try {
+      // Всегда пишем актуальное окно целиком (replace), без merge со старым файлом.
+      await FamilyChatLocalCache.saveThreadMessages(widget.threadId, source);
+    } catch (_) {
+      // Квота/IO: не роняем UI; следующий успешный persist восстановит.
+    }
   }
 
   @override
@@ -557,7 +600,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   void _scrollToBottom({bool jump = false, bool settle = false}) {
     void apply() {
       if (!_scrollController.hasClients) return;
-      final target = _scrollController.position.maxScrollExtent;
+      // reverse: true — низ чата (новые) на offset 0.
+      const target = 0.0;
       if (jump) {
         _scrollController.jumpTo(target);
       } else {
@@ -569,32 +613,17 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
     }
 
-    void scheduleSettle(int framesLeft, double? previousExtent) {
+    void scheduleSettle(int framesLeft) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_scrollController.hasClients) return;
-        final extent = _scrollController.position.maxScrollExtent;
         apply();
         if (framesLeft <= 0) return;
-        if (previousExtent != null && (extent - previousExtent).abs() < 1) {
-          if (framesLeft > 1) {
-            scheduleSettle(1, extent);
-          }
-          return;
-        }
-        scheduleSettle(framesLeft - 1, extent);
+        scheduleSettle(framesLeft - 1);
       });
     }
 
     if (settle) {
-      scheduleSettle(8, null);
-      Future<void>.delayed(const Duration(milliseconds: 120), () {
-        if (!mounted) return;
-        apply();
-      });
-      Future<void>.delayed(const Duration(milliseconds: 320), () {
-        if (!mounted) return;
-        apply();
-      });
+      scheduleSettle(4);
       return;
     }
 
@@ -767,41 +796,92 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       });
     }
     try {
-      // Сначала 10 — быстрая отрисовка текста/рамок; ещё 20 — в фоне.
+      // Одно окно = размер кэша: меньше расхождений кэш↔API и фоновых «дорисовок».
+      final beforeNewestId = chatNewestServerMessageId(_messages);
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
             widget.threadId,
-            limit: FamilyChatLocalCache.initialMessagesPageSize,
+            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
           );
       if (!mounted || generation != _loadGeneration) return;
-      setState(() {
-        if (silent &&
-            _messages.length > FamilyChatLocalCache.maxCachedMessagesPerThread) {
-          _messages = _mergeLatestMessages(_messages, page.messages);
-        } else if (silent) {
-          _messages = chatMergeMessageLists(_messages, page.messages);
-        } else {
-          _messages = sortChatMessages(page.messages);
-        }
-        _hasMoreOlder = page.hasMore ||
-            (silent &&
-                _messages.length >
-                    FamilyChatLocalCache.initialMessagesPageSize);
-        _voiceTranscriptionEnabled = page.voiceTranscriptionEnabled;
-        _loading = false;
-        _loadError = null;
-        if (_isBirthdayCelebration) {
-          _birthdayScheduled = page.birthdayScheduled;
-        }
-      });
-      unawaited(_persistMessageCache());
-      unawaited(_markLatestRead());
-      for (final message in _messages) {
-        _maybeScheduleVoiceTranscriptPoll(message);
+
+      final List<Map<String, dynamic>> nextMessages;
+      final apiOldest =
+          page.messages.isEmpty ? null : chatAsInt(page.messages.first['id']);
+      final cacheNewest = chatNewestServerMessageId(_messages);
+      // Старое окно кэша не пересекается с API — replace, не merge
+      // (иначе на экране сначала «сообщения на 20 выше», потом скачок).
+      final cacheBehindApi = silent &&
+          cacheNewest != null &&
+          apiOldest != null &&
+          cacheNewest < apiOldest;
+      if (cacheBehindApi || !silent) {
+        nextMessages = sortChatMessages(page.messages);
+      } else if (_messages.length >
+          FamilyChatLocalCache.maxCachedMessagesPerThread) {
+        nextMessages = _mergeLatestMessages(_messages, page.messages);
+      } else {
+        nextMessages = chatMergeMessageLists(_messages, page.messages);
       }
-      if (silent || widget.initialMessageId == null) {
+
+      final messagesChanged =
+          !chatMessageListsDisplayEqual(_messages, nextMessages);
+      final afterNewestId = chatNewestServerMessageId(nextMessages);
+      final hasNewTail = afterNewestId != null &&
+          (beforeNewestId == null || afterNewestId > beforeNewestId);
+      final nextHasMore = page.hasMore;
+      final voiceChanged =
+          _voiceTranscriptionEnabled != page.voiceTranscriptionEnabled;
+      final birthdayChanged = _isBirthdayCelebration &&
+          !mapEquals(_birthdayScheduled, page.birthdayScheduled);
+
+      if (messagesChanged ||
+          voiceChanged ||
+          birthdayChanged ||
+          _loading ||
+          _loadError != null ||
+          _hasMoreOlder != nextHasMore) {
+        setState(() {
+          if (messagesChanged) {
+            _messages = nextMessages;
+          }
+          _hasMoreOlder = nextHasMore;
+          _voiceTranscriptionEnabled = page.voiceTranscriptionEnabled;
+          _loading = false;
+          _loadError = null;
+          if (_isBirthdayCelebration) {
+            _birthdayScheduled = page.birthdayScheduled;
+          }
+        });
+      }
+
+      // Авторитетный хвост с API — в кэш всегда (со звонками и чужими фото).
+      unawaited(_persistMessageCache(page.messages));
+      if (messagesChanged) {
+        for (final message in nextMessages) {
+          _maybeScheduleVoiceTranscriptPoll(message);
+        }
+      }
+      // Подтянуть превью входящих фото в bin-кэш (не только своих).
+      unawaited(
+        ChatOfflinePrefetch.prefetchThreadMedia(
+          ref.read(familychatRepositoryProvider),
+          widget.threadId,
+          page.messages,
+          maxImages: 20,
+        ),
+      );
+      unawaited(_markLatestRead());
+
+      // Скролл: при замене устаревшего кэша всегда вниз с settle.
+      if ((!silent || cacheBehindApi) && widget.initialMessageId == null) {
+        _scrollToBottom(jump: true, settle: true);
+      } else if (silent && messagesChanged && hasNewTail) {
         _scrollToBottom(jump: true, settle: true);
       }
-      unawaited(_backfillOlderMessages(generation));
+
+      if (nextMessages.length < FamilyChatLocalCache.maxCachedMessagesPerThread) {
+        unawaited(_backfillOlderMessages(generation));
+      }
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
       if (_messages.isNotEmpty) {
@@ -853,15 +933,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
       if (older.isEmpty) return;
 
-      final previousExtent = _scrollController.hasClients
-          ? _scrollController.position.maxScrollExtent
-          : 0.0;
-      final previousPixels = _scrollController.hasClients
-          ? _scrollController.position.pixels
-          : 0.0;
-      final anchorPixels = previousPixels;
-      final anchorExtent = previousExtent;
-
+      // reverse-list: догрузка сверху не сбивает низ (offset 0).
       setState(() {
         _messages = sortChatMessages([...older, ..._messages]);
         if (_messages.length > target) {
@@ -872,26 +944,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       unawaited(_persistMessageCache());
       for (final message in older) {
         _maybeScheduleVoiceTranscriptPoll(message);
-      }
-
-      // Внизу чата — остаёмся внизу; иначе компенсируем рост списка сверху.
-      if (_scrollController.hasClients) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_scrollController.hasClients) return;
-          final nearBottom =
-              anchorExtent <= 0 || anchorPixels >= anchorExtent - 80;
-          if (nearBottom) {
-            _scrollToBottom(jump: true);
-            return;
-          }
-          final newExtent = _scrollController.position.maxScrollExtent;
-          final delta = newExtent - anchorExtent;
-          if (delta > 0) {
-            _scrollController.jumpTo(
-              (anchorPixels + delta).clamp(0.0, newExtent),
-            );
-          }
-        });
       }
     } catch (_) {
       // Фоновая догрузка не блокирует чат.
@@ -1007,11 +1059,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (firstId == null || firstId <= 0) return;
 
     setState(() => _loadingOlder = true);
-    final previousExtent = _scrollController.hasClients
-        ? _scrollController.position.maxScrollExtent
-        : 0.0;
-    final previousPixels =
-        _scrollController.hasClients ? _scrollController.position.pixels : 0.0;
 
     try {
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
@@ -1031,11 +1078,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _hasMoreOlder = page.hasMore;
         _loadingOlder = false;
       });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_scrollController.hasClients) return;
-        final newExtent = _scrollController.position.maxScrollExtent;
-        _scrollController.jumpTo(previousPixels + (newExtent - previousExtent));
-      });
+      // reverse: true — низ остаётся на offset 0, компенсация не нужна.
     } catch (_) {
       if (mounted) setState(() => _loadingOlder = false);
     }
@@ -2400,11 +2443,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   bool _isMine(Map<String, dynamic> m) {
-    final senderId = m['sender_user_id'] as int?;
+    final senderId = chatAsInt(m['sender_user_id']);
     return _currentUserId != null && senderId == _currentUserId;
   }
 
-  int? _senderId(Map<String, dynamic> m) => m['sender_user_id'] as int?;
+  int? _senderId(Map<String, dynamic> m) => chatAsInt(m['sender_user_id']);
 
   bool _showSenderAvatar(int index) {
     if (_isDm || _isMine(_messages[index])) return false;
@@ -2574,7 +2617,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             else ...[
               Expanded(
                 child: _loading
-                    ? const ChatMessagesSkeleton()
+                    ? const DeferredPlaceholder(child: ChatMessagesSkeleton())
                     : _loadError != null && _messages.isEmpty
                         ? Center(
                             child: Padding(
@@ -2597,17 +2640,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                           )
                         : RefreshIndicator(
                             onRefresh: _load,
+                            // reverse-list: жест обновления у верхнего края истории.
+                            edgeOffset: 12,
                             child: ListView.builder(
                               controller: _scrollController,
+                              reverse: true,
                               // Меньше оффскрин-префетча медиа — видимые грузятся первыми.
                               cacheExtent: 180,
+                              physics: const AlwaysScrollableScrollPhysics(),
                               keyboardDismissBehavior:
                                   ScrollViewKeyboardDismissBehavior.onDrag,
                               padding: const EdgeInsets.symmetric(vertical: 8),
                               itemCount:
                                   _messages.length + (_loadingOlder ? 1 : 0),
                               itemBuilder: (context, i) {
-                                if (_loadingOlder && i == 0) {
+                                // reverse: index 0 = низ (новые), последний = верх (старые).
+                                if (_loadingOlder && i == _messages.length) {
                                   return const Padding(
                                     padding: EdgeInsets.symmetric(vertical: 12),
                                     child: Center(
@@ -2620,7 +2668,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     ),
                                   );
                                 }
-                                final msgIndex = _loadingOlder ? i - 1 : i;
+                                final msgIndex = _messages.length - 1 - i;
                                 final m = _messages[msgIndex];
                                 final msgId = chatAsInt(m['id']) ?? 0;
                                 _messageKeys.putIfAbsent(msgId, GlobalKey.new);
@@ -2727,15 +2775,17 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                           )
                                         : null,
                                     showGroupAvatarColumn:
-                                        _showGroupAvatarColumn(i),
-                                    showSenderAvatar: _showSenderAvatar(i),
+                                        _showGroupAvatarColumn(msgIndex),
+                                    showSenderAvatar:
+                                        _showSenderAvatar(msgIndex),
                                     senderName: m['sender_name']?.toString(),
                                     senderAvatarUrl:
                                         m['sender_avatar_url']?.toString(),
                                     onSenderAvatarTap: senderUserId != null
                                         ? () => _openSenderProfile(senderUserId)
                                         : null,
-                                    compactWithNext: _clusteredWithNext(i),
+                                    compactWithNext:
+                                        _clusteredWithNext(msgIndex),
                                     highlighted: _highlightMessageId == msgId,
                                     selectionMode: _selectionMode,
                                     selected:

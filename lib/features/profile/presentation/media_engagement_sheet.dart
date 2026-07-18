@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_compose_input.dart';
 import 'widgets/chat_avatar.dart';
 
@@ -163,7 +164,9 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
           const Divider(height: 1),
           Expanded(
             child: _loading
-                ? const Center(child: CircularProgressIndicator())
+                ? const DeferredPlaceholder(
+                    child: Center(child: CircularProgressIndicator()),
+                  )
                 : _comments.isEmpty
                     ? Center(
                         child: Text(

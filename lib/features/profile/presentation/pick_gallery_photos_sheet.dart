@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 
 /// Выбор фото из галереи для добавления в пользовательский альбом.
@@ -153,7 +154,9 @@ class _PickGalleryPhotosSheetState extends ConsumerState<PickGalleryPhotosSheet>
         ),
         Expanded(
           child: _loading
-              ? const Center(child: CircularProgressIndicator())
+              ? const DeferredPlaceholder(
+                  child: Center(child: CircularProgressIndicator()),
+                )
               : _error != null
                   ? Center(child: Text(_error!))
                   : _photos.isEmpty

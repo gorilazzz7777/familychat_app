@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/cache/familychat_media_cache.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
@@ -1327,7 +1328,9 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                       ),
                       if (_loading)
                         const SliverFillRemaining(
-                          child: Center(child: CircularProgressIndicator()),
+                          child: DeferredPlaceholder(
+                            child: Center(child: CircularProgressIndicator()),
+                          ),
                         )
                       else
                         ..._tabContentSlivers(),
