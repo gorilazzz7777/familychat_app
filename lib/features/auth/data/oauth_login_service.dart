@@ -1,14 +1,12 @@
 import 'dart:async';
 
-import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+/// OAuth на мобильных через ASWebAuthenticationSession / Chrome Custom Tabs,
+/// чтобы callback `familychat://` закрывал браузер автоматически.
 class OAuthLoginService {
-  OAuthLoginService({AppLinks? appLinks}) : _appLinks = appLinks ?? AppLinks();
-
-  final AppLinks _appLinks;
-
   Future<Map<String, String>> run({
     required String provider,
     required Uri startUri,
@@ -27,58 +25,57 @@ class OAuthLoginService {
     required String provider,
     required Uri startUri,
   }) async {
-    final completer = Completer<Map<String, String>>();
-    StreamSubscription<Uri>? sub;
-
-    bool handleUri(Uri uri) {
-      if (uri.scheme != 'familychat' || uri.host != 'auth') return false;
-      final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-      if (segments.isEmpty || segments.first != provider) return false;
-
-      final status = uri.queryParameters['status'];
-      if (status != null && status != 'ok') {
-        if (!completer.isCompleted) {
-          completer.complete({
-            'status': status,
-            'error': uri.queryParameters['error_description'] ?? status,
-            'error_code': uri.queryParameters['error_code'] ?? '',
-          });
-        }
-        return true;
-      }
-      final code = uri.queryParameters['session_code'];
-      if (code != null && code.isNotEmpty) {
-        if (!completer.isCompleted) {
-          completer.complete({
-            'status': 'ok',
-            'session_code': code.replaceAll(RegExp(r'\\+$'), ''),
-          });
-        }
-        return true;
-      }
-      return false;
-    }
-
-    sub = _appLinks.uriLinkStream.listen((uri) {
-      if (handleUri(uri)) sub?.cancel();
-    });
-
-    final launched = await launchUrl(startUri, mode: LaunchMode.inAppBrowserView);
-    if (!launched) {
-      final external = await launchUrl(startUri, mode: LaunchMode.externalApplication);
-      if (!external) {
-        await sub.cancel();
-        throw StateError('Не удалось открыть браузер для входа.');
-      }
-    }
-
+    late final String resultUrl;
     try {
-      return await completer.future.timeout(
-        const Duration(minutes: 8),
-        onTimeout: () => throw TimeoutException('Вход не завершён'),
+      resultUrl = await FlutterWebAuth2.authenticate(
+        url: startUri.toString(),
+        callbackUrlScheme: 'familychat',
+        options: const FlutterWebAuth2Options(
+          // Без ephemeral Google/VK могут требовать повторный логин каждый раз —
+          // оставляем общий Safari-сессионный cookie-jar.
+          preferEphemeral: false,
+        ),
       );
-    } finally {
-      await sub.cancel();
+    } on Exception catch (e) {
+      final msg = '$e';
+      if (msg.contains('CANCELED') ||
+          msg.contains('canceled') ||
+          msg.contains('cancelled')) {
+        return {
+          'status': 'canceled',
+          'error': 'Вход отменён',
+          'error_code': '',
+        };
+      }
+      rethrow;
     }
+
+    final uri = Uri.parse(resultUrl);
+    if (uri.scheme != 'familychat' || uri.host != 'auth') {
+      throw StateError('Неожиданный ответ входа');
+    }
+    final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segments.isEmpty || segments.first != provider) {
+      throw StateError('Неожиданный провайдер входа');
+    }
+
+    final status = uri.queryParameters['status'];
+    if (status != null && status != 'ok') {
+      return {
+        'status': status,
+        'error': uri.queryParameters['error_description'] ?? status,
+        'error_code': uri.queryParameters['error_code'] ?? '',
+      };
+    }
+
+    final code = uri.queryParameters['session_code'];
+    if (code == null || code.isEmpty) {
+      throw StateError('Сервер не вернул код сессии');
+    }
+
+    return {
+      'status': 'ok',
+      'session_code': code.replaceAll(RegExp(r'\\+$'), ''),
+    };
   }
 }
