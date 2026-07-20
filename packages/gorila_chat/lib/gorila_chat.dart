@@ -21,3 +21,5 @@ export 'src/ui/conversation/chat_info_sheet.dart';
 export 'src/ui/conversation/gorila_conversation_screen.dart';
 export 'src/ui/widgets/chat_avatar.dart';
 export 'src/ui/widgets/chat_compose_input.dart';
+export 'src/ui/widgets/chat_message_actions_sheet.dart';
+export 'src/ui/widgets/chat_pinned_bar.dart';

@@ -102,52 +102,42 @@ class ChatMessageBubble extends StatelessWidget {
         ? theme.colorScheme.onPrimary.withValues(alpha: 0.75)
         : theme.colorScheme.onSurfaceVariant;
     final quoteAccent = isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary;
+    final rowTint = (highlighted || selected)
+        ? theme.colorScheme.primary.withValues(alpha: 0.12)
+        : Colors.transparent;
 
-    Widget bubble = AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: highlighted
-              ? theme.colorScheme.tertiary
-              : selected
-                  ? theme.colorScheme.tertiary
-                  : Colors.transparent,
-          width: highlighted || selected ? 2 : 0,
-        ),
+    Widget bubble = Material(
+      color: bubbleColor,
+      elevation: 0,
+      borderRadius: BorderRadius.only(
+        topLeft: const Radius.circular(16),
+        topRight: const Radius.circular(16),
+        bottomLeft: Radius.circular(isMine ? 16 : 4),
+        bottomRight: Radius.circular(isMine ? 4 : 16),
       ),
-      child: Material(
-        color: bubbleColor,
-        elevation: 0,
-        borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(16),
-          topRight: const Radius.circular(16),
-          bottomLeft: Radius.circular(isMine ? 16 : 4),
-          bottomRight: Radius.circular(isMine ? 4 : 16),
-        ),
-        child: ChatMessageTapTarget(
-          onTap: onTap,
-          onLongPress: onLongPress,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (forward != null)
-                  _buildForwardQuote(forward!, quoteAccent, textColor),
-                if (replyTo != null)
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: onReplyTap,
-                    child: _buildReplyQuote(replyTo!, quoteAccent, textColor),
-                  ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (_showBody(body, forward))
-                      ChatMentionText(
-                        body: body,
-                        mentions: mentions,
+      child: ChatMessageTapTarget(
+        onTap: onTap,
+        onLongPress: selectionMode ? null : onLongPress,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (forward != null)
+                _buildForwardQuote(forward!, quoteAccent, textColor),
+              if (replyTo != null)
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: selectionMode ? onTap : onReplyTap,
+                  child: _buildReplyQuote(replyTo!, quoteAccent, textColor),
+                ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_showBody(body, forward))
+                    ChatMentionText(
+                      body: body,
+                      mentions: mentions,
                         style: theme.textTheme.bodyMedium
                                 ?.copyWith(color: textColor) ??
                             TextStyle(color: textColor),
@@ -216,85 +206,109 @@ class ChatMessageBubble extends StatelessWidget {
             ),
           ),
         ),
-      ),
     );
 
     return ChatSwipeToReply(
       onReply: selectionMode ? null : onSwipeReply,
-      child: Padding(
-        padding: EdgeInsets.only(
-          left: 8,
-          right: 8,
-          bottom: reactions.isNotEmpty
-              ? (compactWithNext ? 14 : 18)
-              : (compactWithNext ? 1 : 6),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          mainAxisAlignment:
-              isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
-          children: [
-            if (selectionMode)
-              Padding(
-                padding: EdgeInsets.only(right: isMine ? 6 : 6),
-                child: Icon(
-                  selected ? Icons.check_circle : Icons.circle_outlined,
-                  color: selected
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.outline,
-                ),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        width: double.infinity,
+        color: rowTint,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: selectionMode ? onTap : null,
+            onLongPress: selectionMode ? onTap : null,
+            child: Padding(
+              padding: EdgeInsets.only(
+                left: 8,
+                right: 8,
+                bottom: reactions.isNotEmpty
+                    ? (compactWithNext ? 14 : 18)
+                    : (compactWithNext ? 1 : 6),
               ),
-            if (showGroupAvatarColumn) ...[
-              SizedBox(
-                width: _avatarSize,
-                height: _avatarSize,
-                child: showSenderAvatar
-                    ? GestureDetector(
-                        onTap: onSenderAvatarTap,
-                        child: ChatAvatar(
-                          name: senderName ?? '',
-                          avatarUrl: senderAvatarUrl,
-                          radius: _avatarSize / 2,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisAlignment:
+                    isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
+                children: [
+                  if (selectionMode)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6, bottom: 4),
+                      child: IconButton(
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 36,
+                          minHeight: 36,
                         ),
-                      )
-                    : null,
-              ),
-              const SizedBox(width: 6),
-            ],
-            Flexible(
-              child: Align(
-                alignment:
-                    isMine ? Alignment.centerRight : Alignment.centerLeft,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: maxBubbleWidth),
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      bubble,
-                      if (reactions.isNotEmpty)
-                        Positioned(
-                          left: isMine ? 20 : 6,
-                          right: isMine ? 6 : 20,
-                          // Наезжает на нижний край пузыря ~на половину чипа.
-                          bottom: -11,
-                          child: Align(
-                            alignment: isMine
-                                ? Alignment.centerRight
-                                : Alignment.centerLeft,
-                            child: ChatMessageReactionsRow(
-                              reactions: reactions,
-                              alignEnd: isMine,
-                              onReactionTap: onReactionTap,
-                              overlapStyle: true,
-                            ),
-                          ),
+                        onPressed: onTap,
+                        icon: Icon(
+                          selected
+                              ? Icons.check_circle
+                              : Icons.circle_outlined,
+                          color: selected
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.outline,
                         ),
-                    ],
+                      ),
+                    ),
+                  if (showGroupAvatarColumn) ...[
+                    SizedBox(
+                      width: _avatarSize,
+                      height: _avatarSize,
+                      child: showSenderAvatar
+                          ? GestureDetector(
+                              onTap: selectionMode ? onTap : onSenderAvatarTap,
+                              child: ChatAvatar(
+                                name: senderName ?? '',
+                                avatarUrl: senderAvatarUrl,
+                                radius: _avatarSize / 2,
+                              ),
+                            )
+                          : null,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Flexible(
+                    child: Align(
+                      alignment: isMine
+                          ? Alignment.centerRight
+                          : Alignment.centerLeft,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            bubble,
+                            if (reactions.isNotEmpty)
+                              Positioned(
+                                left: isMine ? 20 : 6,
+                                right: isMine ? 6 : 20,
+                                // Наезжает на нижний край пузыря ~на половину чипа.
+                                bottom: -11,
+                                child: Align(
+                                  alignment: isMine
+                                      ? Alignment.centerRight
+                                      : Alignment.centerLeft,
+                                  child: ChatMessageReactionsRow(
+                                    reactions: reactions,
+                                    alignEnd: isMine,
+                                    onReactionTap:
+                                        selectionMode ? null : onReactionTap,
+                                    overlapStyle: true,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ),
             ),
-          ],
+          ),
         ),
       ),
     );

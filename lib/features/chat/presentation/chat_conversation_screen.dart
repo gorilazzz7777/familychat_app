@@ -634,35 +634,78 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _scrollToMessage(int messageId) async {
-    final exists = _messages.any((m) => chatAsInt(m['id']) == messageId);
-    if (!exists) {
+    final msgIndex =
+        _messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
+    if (msgIndex < 0) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text('Сообщение не найдено в загруженной истории')),
+          content: Text('Сообщение не найдено в загруженной истории'),
+        ),
       );
       return;
     }
 
     setState(() => _highlightMessageId = messageId);
+
+    // reverse ListView: index 0 = самые новые. Сначала прыгаем примерно
+    // к позиции, чтобы элемент успел построиться, затем ensureVisible.
+    if (_scrollController.hasClients) {
+      final listIndex = _messages.length - 1 - msgIndex;
+      final max = _scrollController.position.maxScrollExtent;
+      // Средняя высота строки чата — грубая оценка для первичного jump.
+      const avgItemExtent = 88.0;
+      final estimated = (listIndex * avgItemExtent).clamp(0.0, max);
+      _scrollController.jumpTo(estimated);
+    }
+
     await Future<void>.delayed(const Duration(milliseconds: 50));
     if (!mounted) return;
 
-    final key = _messageKeys[messageId];
-    final ctx = key?.currentContext;
-    if (ctx != null && ctx.mounted) {
-      await Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOut,
-        alignment: 0.35,
-      );
+    for (var attempt = 0; attempt < 8; attempt++) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      final key = _messageKeys.putIfAbsent(messageId, GlobalKey.new);
+      final ctx = key.currentContext;
+      if (ctx != null && ctx.mounted) {
+        await Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 350),
+          curve: Curves.easeInOut,
+          alignment: 0.35,
+        );
+        break;
+      }
+      // Ещё не в дереве — подтянуть соседнюю область.
+      if (_scrollController.hasClients) {
+        final pos = _scrollController.position;
+        final step = 240.0 * (attempt.isEven ? 1 : -1);
+        final next = (pos.pixels + step).clamp(0.0, pos.maxScrollExtent);
+        _scrollController.jumpTo(next);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 40));
     }
 
     Future<void>.delayed(const Duration(seconds: 2), () {
       if (mounted && _highlightMessageId == messageId) {
         setState(() => _highlightMessageId = null);
       }
+    });
+  }
+
+  Future<void> _cyclePinnedOrScroll() async {
+    if (_pinnedMessages.isEmpty) return;
+    final current = _pinnedIndex.clamp(0, _pinnedMessages.length - 1);
+    final id = chatAsInt(_pinnedMessages[current]['id']);
+    if (id != null) {
+      await _ensureMessageLoaded(id);
+      if (!mounted) return;
+      await _scrollToMessage(id);
+    }
+    // После перехода к текущему — показать следующий в панели (как в TG).
+    if (!mounted || _pinnedMessages.length <= 1) return;
+    setState(() {
+      _pinnedIndex = (current + 1) % _pinnedMessages.length;
     });
   }
 
@@ -2083,7 +2126,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final msgId = chatAsInt(message['id']);
     final result = await ChatMessageActionsSheet.show(
       context,
+      showReactions: true,
+      canReply: true,
       canEdit: _canEditMessage(message),
+      canCopy: true,
+      canForward: true,
+      canSelect: true,
       canPin: _canPinMessage(message),
       isPinned: _isMessagePinned(msgId),
       canDeleteForEveryone: _canDeleteMessage(message),
@@ -2161,20 +2209,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Не удалось открепить')),
       );
-    }
-  }
-
-  Future<void> _cyclePinnedOrScroll() async {
-    if (_pinnedMessages.isEmpty) return;
-    if (_pinnedMessages.length > 1) {
-      setState(() {
-        _pinnedIndex = (_pinnedIndex + 1) % _pinnedMessages.length;
-      });
-    }
-    final id = chatAsInt(_pinnedMessages[_pinnedIndex]['id']);
-    if (id != null) {
-      await _ensureMessageLoaded(id);
-      await _scrollToMessage(id);
     }
   }
 
@@ -3018,9 +3052,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         ? null
                                         : (emoji) =>
                                             _toggleReaction(msgId, emoji),
-                                    onImageTap: (a) => _openImageFromAttachment(
-                                        a,
-                                        messageId: msgId),
+                                    onImageTap: _selectionMode
+                                        ? (_) => _toggleSelection(msgId)
+                                        : (a) => _openImageFromAttachment(
+                                              a,
+                                              messageId: msgId,
+                                            ),
                                   ),
                                 );
                               },

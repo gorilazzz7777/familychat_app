@@ -56,4 +56,34 @@ abstract class ChatRepository {
       enabled;
 
   Future<Map<String, dynamic>?> resolvePeerProfile(int userId) async => null;
+
+  /// Pinned messages for the thread (Telegram-style bar).
+  Future<List<Map<String, dynamic>>> loadPinnedMessages(int threadId) async =>
+      const [];
+
+  Future<List<Map<String, dynamic>>> pinMessage({
+    required int threadId,
+    required int messageId,
+  }) async =>
+      loadPinnedMessages(threadId);
+
+  Future<List<Map<String, dynamic>>> unpinMessage({
+    required int threadId,
+    required int messageId,
+  }) async =>
+      loadPinnedMessages(threadId);
+
+  /// Hard-delete own messages for everyone.
+  Future<List<int>> deleteMessages({
+    required int threadId,
+    required List<int> messageIds,
+  }) async =>
+      messageIds;
+
+  /// Remove messages only from the current user's history.
+  Future<List<int>> hideMessagesForMe({
+    required int threadId,
+    required List<int> messageIds,
+  }) async =>
+      messageIds;
 }

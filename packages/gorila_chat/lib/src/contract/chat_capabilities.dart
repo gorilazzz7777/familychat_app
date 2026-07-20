@@ -6,6 +6,7 @@ class ChatCapabilities {
     this.supportsReply = false,
     this.supportsEdit = false,
     this.supportsDelete = false,
+    this.supportsDeleteForMe = false,
     this.supportsForward = false,
     this.supportsMentions = false,
     this.supportsVoice = false,
@@ -16,6 +17,8 @@ class ChatCapabilities {
     this.supportsReadReceipts = false,
     this.supportsScheduledSend = false,
     this.supportsOfflineOutbox = false,
+    this.supportsPin = false,
+    this.supportsSelect = false,
   });
 
   /// Family Chat reference feature set.
@@ -25,6 +28,7 @@ class ChatCapabilities {
     supportsReply: true,
     supportsEdit: true,
     supportsDelete: true,
+    supportsDeleteForMe: true,
     supportsForward: true,
     supportsMentions: true,
     supportsVoice: true,
@@ -35,6 +39,8 @@ class ChatCapabilities {
     supportsReadReceipts: true,
     supportsScheduledSend: true,
     supportsOfflineOutbox: true,
+    supportsPin: true,
+    supportsSelect: true,
   );
 
   /// TeamCoach current API surface (smaller than Family Chat).
@@ -44,6 +50,7 @@ class ChatCapabilities {
     supportsReply: false,
     supportsEdit: false,
     supportsDelete: false,
+    supportsDeleteForMe: false,
     supportsForward: false,
     supportsMentions: false,
     supportsVoice: false,
@@ -54,6 +61,8 @@ class ChatCapabilities {
     supportsReadReceipts: true,
     supportsScheduledSend: false,
     supportsOfflineOutbox: false,
+    supportsPin: false,
+    supportsSelect: false,
   );
 
   final bool supportsTyping;
@@ -61,6 +70,8 @@ class ChatCapabilities {
   final bool supportsReply;
   final bool supportsEdit;
   final bool supportsDelete;
+  /// Hide message only for current user.
+  final bool supportsDeleteForMe;
   final bool supportsForward;
   final bool supportsMentions;
   final bool supportsVoice;
@@ -71,4 +82,6 @@ class ChatCapabilities {
   final bool supportsReadReceipts;
   final bool supportsScheduledSend;
   final bool supportsOfflineOutbox;
+  final bool supportsPin;
+  final bool supportsSelect;
 }
