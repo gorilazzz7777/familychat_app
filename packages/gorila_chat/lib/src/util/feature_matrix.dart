@@ -20,7 +20,7 @@
 /// | Family albums attach    | yes             | no             | no        |
 /// | Offline outbox          | yes             | no             | no        |
 /// | Scheduled send          | yes             | yes*           | gated off |
-/// | AI compose assist       | yes             | yes            | gated off |
+/// | AI compose assist       | yes (inline)    | yes (inline)   | gated off |
 /// | In-thread search        | yes             | no             | no        |
 /// | Birthday / system cards | yes             | hook only      | app card  |
 /// | Friends premium hub     | yes             | n/a            | n/a       |

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-/// Экран задания для AI-составления сообщения (без привязки к конкретному API-клиенту).
+/// Optional task screen for AI compose (hosts that want a custom prompt UI).
+/// Default conversation flow calls [ChatRepository.aiComposeMessage] inline.
 class ChatAiComposeScreen extends StatefulWidget {
   const ChatAiComposeScreen({
     super.key,

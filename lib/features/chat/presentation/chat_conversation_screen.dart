@@ -36,7 +36,6 @@ import '../data/chat_voice_transcription.dart';
 import '../data/chat_voice_utils.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_thread_avatars.dart';
-import 'chat_ai_compose_screen.dart';
 import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
 import 'chat_call_screen.dart';
@@ -174,6 +173,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   List<ChatMentionParticipant> _mentionParticipants = [];
   bool _voiceTranscriptionEnabled = false;
   bool _viewerIndividualPremium = false;
+  bool _aiComposing = false;
   bool _canSend = true;
   double _lastKeyboardInset = 0;
   final Map<int, String> _typingNames = {};
@@ -1874,26 +1874,33 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
   }
 
-  Future<void> _openAiAssistCompose() async {
-    final initial = _controller.text.trim();
-    final suggestion = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => ChatAiComposeScreen(
-          threadId: widget.threadId,
-          initialTask: initial,
-          peerTitle: _title,
+  Future<void> _runAiAssistCompose() async {
+    final draft = _controller.text.trim();
+    if (draft.isEmpty || _aiComposing) return;
+    setState(() => _aiComposing = true);
+    try {
+      final suggestion = await ref
+          .read(familychatRepositoryProvider)
+          .aiComposeMessage(widget.threadId, task: draft);
+      if (!mounted) return;
+      final text = suggestion.trim();
+      if (text.isEmpty) return;
+      setState(() {
+        _controller
+          ..text = text
+          ..selection = TextSelection.collapsed(offset: text.length);
+      });
+      _inputFocus.requestFocus();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Не удалось составить сообщение. Попробуйте ещё раз.'),
         ),
-      ),
-    );
-    if (!mounted || suggestion == null) return;
-    final text = suggestion.trim();
-    if (text.isEmpty) return;
-    setState(() {
-      _controller
-        ..text = text
-        ..selection = TextSelection.collapsed(offset: text.length);
-    });
-    _inputFocus.requestFocus();
+      );
+    } finally {
+      if (mounted) setState(() => _aiComposing = false);
+    }
   }
 
   Future<void> _handleComposeSend({
@@ -1901,7 +1908,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     ChatSendOptions options = ChatSendOptions.normal,
   }) async {
     if (options.aiAssist) {
-      await _openAiAssistCompose();
+      await _runAiAssistCompose();
       return;
     }
     await _send(mentionedUserIds: mentionedUserIds, options: options);
@@ -3196,41 +3203,65 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                       if (_canSend)
                         Padding(
                           padding: const EdgeInsets.all(8),
-                          child: _isGroupLike
-                              ? ChatMentionComposeInput(
-                                  controller: _controller,
-                                  focusNode: _inputFocus,
-                                  onAttach: _pickAttachment,
-                                  onSend: (options, mentionedUserIds) =>
-                                      unawaited(
-                                    _handleComposeSend(
-                                      mentionedUserIds: mentionedUserIds,
-                                      options: options,
-                                    ),
-                                  ),
-                                  onVoiceComplete: _sendVoiceMessage,
-                                  forceSendButton: _pendingFileDraft != null ||
-                                      _editingMessageId != null,
-                                  voiceTranscriptionEnabled:
-                                      _voiceTranscriptionEnabled,
-                                  showAiAssist: _viewerIndividualPremium,
-                                  participants: _mentionParticipants,
-                                  currentUserId: _currentUserId,
-                                )
-                              : ChatComposeInput(
-                                  controller: _controller,
-                                  focusNode: _inputFocus,
-                                  onAttach: _pickAttachment,
-                                  onSend: (options) => unawaited(
-                                    _handleComposeSend(options: options),
-                                  ),
-                                  onVoiceComplete: _sendVoiceMessage,
-                                  forceSendButton: _pendingFileDraft != null ||
-                                      _editingMessageId != null,
-                                  voiceTranscriptionEnabled:
-                                      _voiceTranscriptionEnabled,
-                                  showAiAssist: _viewerIndividualPremium,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_aiComposing)
+                                const Padding(
+                                  padding: EdgeInsets.only(bottom: 8),
+                                  child: LinearProgressIndicator(),
                                 ),
+                              IgnorePointer(
+                                ignoring: _aiComposing,
+                                child: Opacity(
+                                  opacity: _aiComposing ? 0.55 : 1,
+                                  child: _isGroupLike
+                                      ? ChatMentionComposeInput(
+                                          controller: _controller,
+                                          focusNode: _inputFocus,
+                                          onAttach: _pickAttachment,
+                                          onSend:
+                                              (options, mentionedUserIds) =>
+                                                  unawaited(
+                                            _handleComposeSend(
+                                              mentionedUserIds:
+                                                  mentionedUserIds,
+                                              options: options,
+                                            ),
+                                          ),
+                                          onVoiceComplete: _sendVoiceMessage,
+                                          forceSendButton:
+                                              _pendingFileDraft != null ||
+                                                  _editingMessageId != null,
+                                          voiceTranscriptionEnabled:
+                                              _voiceTranscriptionEnabled,
+                                          showAiAssist:
+                                              _viewerIndividualPremium,
+                                          participants: _mentionParticipants,
+                                          currentUserId: _currentUserId,
+                                        )
+                                      : ChatComposeInput(
+                                          controller: _controller,
+                                          focusNode: _inputFocus,
+                                          onAttach: _pickAttachment,
+                                          onSend: (options) => unawaited(
+                                            _handleComposeSend(
+                                              options: options,
+                                            ),
+                                          ),
+                                          onVoiceComplete: _sendVoiceMessage,
+                                          forceSendButton:
+                                              _pendingFileDraft != null ||
+                                                  _editingMessageId != null,
+                                          voiceTranscriptionEnabled:
+                                              _voiceTranscriptionEnabled,
+                                          showAiAssist:
+                                              _viewerIndividualPremium,
+                                        ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                     ],
                   ),

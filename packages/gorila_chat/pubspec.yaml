@@ -1,7 +1,7 @@
 name: gorila_chat
 description: Shared chat module — UI, realtime, contracts. Family Chat is the reference.
 publish_to: "none"
-version: 0.4.0
+version: 0.4.1
 
 environment:
   sdk: ^3.5.0

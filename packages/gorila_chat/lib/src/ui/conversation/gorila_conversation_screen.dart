@@ -20,7 +20,6 @@ import '../widgets/chat_avatar.dart';
 import '../widgets/chat_compose_input.dart';
 import '../widgets/chat_message_actions_sheet.dart';
 import '../widgets/chat_pinned_bar.dart';
-import 'chat_ai_compose_screen.dart';
 import 'chat_info_sheet.dart';
 
 typedef GorilaSystemMessageBuilder = Widget? Function(
@@ -469,35 +468,40 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
     }
   }
 
-  Future<void> _openAiAssistCompose() async {
-    final initial = _ctrl.text.trim();
-    final suggestion = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => ChatAiComposeScreen(
-          initialTask: initial,
-          peerTitle: widget.title,
-          onCompose: (task) => widget.repository.aiComposeMessage(
-            threadId: widget.threadId,
-            task: task,
-          ),
+  Future<void> _runAiAssistCompose() async {
+    final draft = _ctrl.text.trim();
+    if (draft.isEmpty || _sending) return;
+    setState(() => _sending = true);
+    try {
+      final suggestion = await widget.repository.aiComposeMessage(
+        threadId: widget.threadId,
+        task: draft,
+      );
+      if (!mounted) return;
+      final text = suggestion.trim();
+      if (text.isEmpty) return;
+      setState(() {
+        _ctrl
+          ..text = text
+          ..selection = TextSelection.collapsed(offset: text.length);
+      });
+      _focus.requestFocus();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Не удалось составить сообщение. Попробуйте ещё раз.'),
         ),
-      ),
-    );
-    if (!mounted || suggestion == null) return;
-    final text = suggestion.trim();
-    if (text.isEmpty) return;
-    setState(() {
-      _ctrl
-        ..text = text
-        ..selection = TextSelection.collapsed(offset: text.length);
-    });
-    _focus.requestFocus();
+      );
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   Future<void> _handleComposeSend(ChatSendOptions options) async {
     if (options.aiAssist) {
       if (!_caps.supportsAiAssist) return;
-      await _openAiAssistCompose();
+      await _runAiAssistCompose();
       return;
     }
     if (options.silent || options.isScheduled) {

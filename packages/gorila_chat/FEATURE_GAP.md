@@ -4,9 +4,11 @@ Shared package now includes:
 - message actions sheet (Select / Pin / Delete / Delete-for-me)
 - pinned bar + cycle scroll
 - multi-select with row highlight
-- AI compose screen + long-press send option (`supportsAiAssist`)
+- AI assist: long-press send → inline compose (draft from input → API → replace input; no intermediate screen)
 - repository hooks: `pin` / `unpin` / `hideMessagesForMe` / `deleteMessages` / `aiComposeMessage`
 - capability flags: `supportsPin`, `supportsSelect`, `supportsDeleteForMe`, `supportsAiAssist`
+
+Optional: `ChatAiComposeScreen` still exported for hosts that want a custom task UI.
 
 ## Still only in Family Chat app (not fully in shared UI)
 
