@@ -10,6 +10,7 @@ import '../../contract/chat_call_repository.dart';
 import '../../contract/chat_capabilities.dart';
 import '../../contract/chat_host.dart';
 import '../../contract/chat_repository.dart';
+import '../../contract/chat_send_options.dart';
 import '../../realtime/gorila_chat_realtime.dart';
 import '../../util/active_chat_context.dart';
 import '../../util/chat_realtime_utils.dart';
@@ -19,6 +20,7 @@ import '../widgets/chat_avatar.dart';
 import '../widgets/chat_compose_input.dart';
 import '../widgets/chat_message_actions_sheet.dart';
 import '../widgets/chat_pinned_bar.dart';
+import 'chat_ai_compose_screen.dart';
 import 'chat_info_sheet.dart';
 
 typedef GorilaSystemMessageBuilder = Widget? Function(
@@ -467,6 +469,43 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
     }
   }
 
+  Future<void> _openAiAssistCompose() async {
+    final initial = _ctrl.text.trim();
+    final suggestion = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => ChatAiComposeScreen(
+          initialTask: initial,
+          peerTitle: widget.title,
+          onCompose: (task) => widget.repository.aiComposeMessage(
+            threadId: widget.threadId,
+            task: task,
+          ),
+        ),
+      ),
+    );
+    if (!mounted || suggestion == null) return;
+    final text = suggestion.trim();
+    if (text.isEmpty) return;
+    setState(() {
+      _ctrl
+        ..text = text
+        ..selection = TextSelection.collapsed(offset: text.length);
+    });
+    _focus.requestFocus();
+  }
+
+  Future<void> _handleComposeSend(ChatSendOptions options) async {
+    if (options.aiAssist) {
+      if (!_caps.supportsAiAssist) return;
+      await _openAiAssistCompose();
+      return;
+    }
+    if (options.silent || options.isScheduled) {
+      // Silent / schedule: Family Chat owns full flows; shared screen sends normally.
+    }
+    await _send();
+  }
+
   Future<void> _send({List<int>? attachmentIds}) async {
     final text = _ctrl.text.trim();
     if (text.isEmpty && (attachmentIds == null || attachmentIds.isEmpty)) {
@@ -756,8 +795,11 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
                     focusNode: _focus,
                     sending: _sending,
                     showAttach: _caps.supportsAttachments,
+                    showAiAssist: _caps.supportsAiAssist,
+                    showSilent: false,
+                    showSchedule: _caps.supportsScheduledSend,
                     onAttach: () => unawaited(_showAttach()),
-                    onSend: () => unawaited(_send()),
+                    onSend: (options) => unawaited(_handleComposeSend(options)),
                   ),
                 ),
               ),

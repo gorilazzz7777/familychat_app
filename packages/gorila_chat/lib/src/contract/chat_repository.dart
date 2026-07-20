@@ -86,4 +86,12 @@ abstract class ChatRepository {
     required List<int> messageIds,
   }) async =>
       messageIds;
+
+  /// Compose a message draft with AI (task + thread context on server).
+  Future<String> aiComposeMessage({
+    required int threadId,
+    required String task,
+  }) async {
+    throw UnimplementedError('aiComposeMessage');
+  }
 }

@@ -19,6 +19,7 @@ class ChatCapabilities {
     this.supportsOfflineOutbox = false,
     this.supportsPin = false,
     this.supportsSelect = false,
+    this.supportsAiAssist = false,
   });
 
   /// Family Chat reference feature set.
@@ -41,6 +42,7 @@ class ChatCapabilities {
     supportsOfflineOutbox: true,
     supportsPin: true,
     supportsSelect: true,
+    supportsAiAssist: true,
   );
 
   /// TeamCoach current API surface (smaller than Family Chat).
@@ -63,6 +65,7 @@ class ChatCapabilities {
     supportsOfflineOutbox: false,
     supportsPin: false,
     supportsSelect: false,
+    supportsAiAssist: false,
   );
 
   final bool supportsTyping;
@@ -84,4 +87,6 @@ class ChatCapabilities {
   final bool supportsOfflineOutbox;
   final bool supportsPin;
   final bool supportsSelect;
+  /// Compose draft via AI (Premium on Family Chat backend).
+  final bool supportsAiAssist;
 }
