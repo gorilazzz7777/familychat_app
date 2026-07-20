@@ -15,12 +15,14 @@ class ThreadMessagesPage {
     required this.hasMore,
     this.birthdayScheduled,
     this.voiceTranscriptionEnabled = false,
+    this.pinnedMessages = const [],
   });
 
   final List<Map<String, dynamic>> messages;
   final bool hasMore;
   final Map<String, dynamic>? birthdayScheduled;
   final bool voiceTranscriptionEnabled;
+  final List<Map<String, dynamic>> pinnedMessages;
 }
 
 class FamilyChatRepository {
@@ -507,6 +509,7 @@ class FamilyChatRepository {
         ? raw.map((e) => Map<String, dynamic>.from(e as Map)).toList()
         : <Map<String, dynamic>>[];
     final scheduledRaw = map['birthday_scheduled'];
+    final pinnedRaw = map['pinned_messages'];
     return ThreadMessagesPage(
       messages: messages,
       hasMore: map['has_more'] == true,
@@ -514,6 +517,9 @@ class FamilyChatRepository {
           ? Map<String, dynamic>.from(scheduledRaw)
           : null,
       voiceTranscriptionEnabled: map['voice_transcription_enabled'] == true,
+      pinnedMessages: pinnedRaw is List
+          ? pinnedRaw.map((e) => Map<String, dynamic>.from(e as Map)).toList()
+          : const [],
     );
   }
 
@@ -749,6 +755,44 @@ class FamilyChatRepository {
         .map((e) => e is int ? e : int.tryParse('$e'))
         .whereType<int>()
         .toList();
+  }
+
+  Future<List<int>> hideMessagesForMe(int threadId, List<int> messageIds) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/messages/hide/',
+      data: {'message_ids': messageIds},
+    );
+    final ids = res.data?['hidden_ids'];
+    if (ids is! List) return messageIds;
+    return ids
+        .map((e) => e is int ? e : int.tryParse('$e'))
+        .whereType<int>()
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> pinMessage(
+    int threadId,
+    int messageId,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/pins/',
+      data: {'message_id': messageId},
+    );
+    final raw = res.data?['pinned_messages'];
+    if (raw is! List) return const [];
+    return raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> unpinMessage(
+    int threadId,
+    int messageId,
+  ) async {
+    final res = await _dio.delete<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/pins/$messageId/',
+    );
+    final raw = res.data?['pinned_messages'];
+    if (raw is! List) return const [];
+    return raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
   Future<List<dynamic>> toggleMessageReaction(

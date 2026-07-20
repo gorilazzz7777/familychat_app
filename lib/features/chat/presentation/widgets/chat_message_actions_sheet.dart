@@ -13,19 +13,25 @@ class ChatMessageMenuResult {
   final String? reactionEmoji;
 }
 
-/// Меню действий над сообщением (короткий тап) с лентой реакций сверху.
+/// Меню действий над сообщением (тап / long-press) с лентой реакций сверху.
 class ChatMessageActionsSheet {
   static Future<ChatMessageMenuResult?> show(
     BuildContext context, {
-    required bool canDelete,
     required bool canEdit,
+    required bool canPin,
+    required bool isPinned,
+    required bool canDeleteForEveryone,
+    required bool canDeleteForMe,
   }) {
     return showModalBottomSheet<ChatMessageMenuResult>(
       context: context,
       isScrollControlled: true,
       builder: (ctx) => _ChatMessageActionsSheetBody(
-        canDelete: canDelete,
         canEdit: canEdit,
+        canPin: canPin,
+        isPinned: isPinned,
+        canDeleteForEveryone: canDeleteForEveryone,
+        canDeleteForMe: canDeleteForMe,
       ),
     );
   }
@@ -33,12 +39,18 @@ class ChatMessageActionsSheet {
 
 class _ChatMessageActionsSheetBody extends StatefulWidget {
   const _ChatMessageActionsSheetBody({
-    required this.canDelete,
     required this.canEdit,
+    required this.canPin,
+    required this.isPinned,
+    required this.canDeleteForEveryone,
+    required this.canDeleteForMe,
   });
 
-  final bool canDelete;
   final bool canEdit;
+  final bool canPin;
+  final bool isPinned;
+  final bool canDeleteForEveryone;
+  final bool canDeleteForMe;
 
   @override
   State<_ChatMessageActionsSheetBody> createState() =>
@@ -56,6 +68,7 @@ class _ChatMessageActionsSheetBodyState extends State<_ChatMessageActionsSheetBo
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    final showDelete = widget.canDeleteForEveryone || widget.canDeleteForMe;
 
     return SafeArea(
       child: Padding(
@@ -134,7 +147,28 @@ class _ChatMessageActionsSheetBodyState extends State<_ChatMessageActionsSheetBo
                 const ChatMessageMenuResult.action('forward'),
               ),
             ),
-            if (widget.canDelete)
+            ListTile(
+              leading: const Icon(Icons.checklist_outlined),
+              title: const Text('Выбрать'),
+              onTap: () => Navigator.pop(
+                context,
+                const ChatMessageMenuResult.action('select'),
+              ),
+            ),
+            if (widget.canPin)
+              ListTile(
+                leading: Icon(
+                  widget.isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                ),
+                title: Text(widget.isPinned ? 'Открепить' : 'Закрепить'),
+                onTap: () => Navigator.pop(
+                  context,
+                  ChatMessageMenuResult.action(
+                    widget.isPinned ? 'unpin' : 'pin',
+                  ),
+                ),
+              ),
+            if (showDelete)
               ListTile(
                 leading: Icon(Icons.delete_outline, color: theme.colorScheme.error),
                 title: Text(
@@ -143,7 +177,11 @@ class _ChatMessageActionsSheetBodyState extends State<_ChatMessageActionsSheetBo
                 ),
                 onTap: () => Navigator.pop(
                   context,
-                  const ChatMessageMenuResult.action('delete'),
+                  ChatMessageMenuResult.action(
+                    widget.canDeleteForEveryone
+                        ? 'delete'
+                        : 'delete_for_me',
+                  ),
                 ),
               ),
           ],

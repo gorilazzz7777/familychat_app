@@ -353,6 +353,11 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   String get _displayName => _status['display_name']?.toString() ?? '';
   String get _avatarUrl => _status['avatar_url']?.toString() ?? '';
 
+  bool get _hasIndividualPremium {
+    final entitlements = _status['entitlements'];
+    return entitlements is Map && entitlements['individual_premium'] == true;
+  }
+
   String get _title => switch (_index) {
         0 => 'Главная',
         1 => 'Семейный чат',
@@ -386,7 +391,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       case 0:
         return FeedScreen(key: _feedKey);
       case 1:
-        return ChatHubScreen(key: _chatHubKey);
+        return ChatHubScreen(
+          key: _chatHubKey,
+          hasIndividualPremium: _hasIndividualPremium,
+        );
       case 2:
         return MembersScreen(
           currentUserId: userId,
@@ -463,13 +471,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                     icon: const Icon(Icons.add),
                     tooltip: 'Создать',
                     onPressed: () {
-                      final entitlements =
-                          widget.status['entitlements'] as Map?;
-                      final premium =
-                          entitlements?['individual_premium'] == true;
-                      _chatHubKey.currentState?.openCreateMenu(
-                        hasIndividualPremium: premium,
-                      );
+                      final hub = _chatHubKey.currentState;
+                      if (_hasIndividualPremium) {
+                        hub?.openCreateMenu(hasIndividualPremium: true);
+                      } else {
+                        hub?.createGroup();
+                      }
                     },
                   ),
                 ],

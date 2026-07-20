@@ -21,7 +21,13 @@ import 'widgets/chat_message_read_status_icon.dart';
 enum _ChatFilter { all, family, dm, group, friends }
 
 class ChatHubScreen extends ConsumerStatefulWidget {
-  const ChatHubScreen({super.key});
+  const ChatHubScreen({
+    super.key,
+    this.hasIndividualPremium = false,
+  });
+
+  /// Вкладка «Друзья» и создание контакта — только с Individual Premium.
+  final bool hasIndividualPremium;
 
   @override
   ConsumerState<ChatHubScreen> createState() => ChatHubScreenState();
@@ -29,16 +35,18 @@ class ChatHubScreen extends ConsumerStatefulWidget {
 
 class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     with SingleTickerProviderStateMixin {
-  static const _defaultFilters = <_ChatFilter>[
-    _ChatFilter.all,
-    _ChatFilter.family,
-    _ChatFilter.dm,
-    _ChatFilter.group,
-    _ChatFilter.friends,
-  ];
+  static List<_ChatFilter> _filtersFor({required bool hasIndividualPremium}) {
+    return [
+      _ChatFilter.all,
+      _ChatFilter.family,
+      _ChatFilter.dm,
+      _ChatFilter.group,
+      if (hasIndividualPremium) _ChatFilter.friends,
+    ];
+  }
 
-  late final TabController _tabController;
-  List<_ChatFilter> _filters = List<_ChatFilter>.of(_defaultFilters);
+  late TabController _tabController;
+  late List<_ChatFilter> _filters;
   List<Map<String, dynamic>> _threads = [];
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
   bool _loading = true;
@@ -62,11 +70,22 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   @override
   void initState() {
     super.initState();
+    _filters = _filtersFor(
+      hasIndividualPremium: widget.hasIndividualPremium,
+    );
     _tabController = TabController(length: _filters.length, vsync: this);
     FamilyChatRealtime.instance.addListener(_onRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineSync);
     unawaited(_restoreTabOrder());
     _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatHubScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.hasIndividualPremium != widget.hasIndividualPremium) {
+      _syncFiltersWithPremium();
+    }
   }
 
   @override
@@ -76,6 +95,46 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _syncFiltersWithPremium() {
+    final available = _filtersFor(
+      hasIndividualPremium: widget.hasIndividualPremium,
+    );
+    final next = <_ChatFilter>[];
+    for (final f in _filters) {
+      if (available.contains(f)) next.add(f);
+    }
+    for (final f in available) {
+      if (!next.contains(f)) next.add(f);
+    }
+    _replaceFilters(next);
+  }
+
+  void _replaceFilters(List<_ChatFilter> next) {
+    final same = next.length == _filters.length &&
+        List.generate(next.length, (i) => next[i] == _filters[i])
+            .every((ok) => ok);
+    if (same) return;
+
+    final selected = _tabController.index >= 0 &&
+            _tabController.index < _filters.length
+        ? _filters[_tabController.index]
+        : next.first;
+    final oldController = _tabController;
+    final initialIndex =
+        next.contains(selected) ? next.indexOf(selected) : 0;
+    setState(() {
+      _filters = next;
+      _tabController = TabController(
+        length: next.length,
+        vsync: this,
+        initialIndex: initialIndex.clamp(0, next.length - 1),
+      );
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      oldController.dispose();
+    });
   }
 
   String _filterLabel(_ChatFilter filter) {
@@ -100,22 +159,23 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Future<void> _restoreTabOrder() async {
     final saved = await ChatHubTabOrderStorage.load();
     if (!mounted || saved == null || saved.isEmpty) return;
+    final available = _filtersFor(
+      hasIndividualPremium: widget.hasIndividualPremium,
+    );
     final restored = <_ChatFilter>[];
     for (final key in saved) {
       final filter = _filterFromKey(key);
-      if (filter != null && !restored.contains(filter)) {
+      if (filter != null &&
+          available.contains(filter) &&
+          !restored.contains(filter)) {
         restored.add(filter);
       }
     }
-    for (final filter in _defaultFilters) {
+    for (final filter in available) {
       if (!restored.contains(filter)) restored.add(filter);
     }
-    if (restored.length != _defaultFilters.length) return;
-    final same = restored.length == _filters.length &&
-        List.generate(restored.length, (i) => restored[i] == _filters[i])
-            .every((ok) => ok);
-    if (same) return;
-    setState(() => _filters = restored);
+    if (restored.length != available.length) return;
+    _replaceFilters(restored);
   }
 
   Future<void> _persistTabOrder() async {
@@ -371,6 +431,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   Future<void> openCreateMenu({required bool hasIndividualPremium}) async {
+    // Без Premium сразу создаём группу — меню с «Контакт» не показываем.
+    if (!hasIndividualPremium) {
+      await createGroup();
+      return;
+    }
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -385,11 +450,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
             ListTile(
               leading: const Icon(Icons.person_add_alt_1_outlined),
               title: const Text('Контакт'),
-              subtitle: Text(
-                hasIndividualPremium
-                    ? 'Личный чат вне семьи'
-                    : 'Нужен Individual Premium',
-              ),
+              subtitle: const Text('Личный чат вне семьи'),
               onTap: () => Navigator.pop(ctx, 'contact'),
             ),
           ],

@@ -51,6 +51,7 @@ import 'widgets/chat_message_reactions.dart';
 import 'widgets/chat_message_search_sheet.dart';
 import 'widgets/chat_network_image.dart';
 import 'widgets/chat_pending_file_chip.dart';
+import 'widgets/chat_pinned_bar.dart';
 import 'widgets/chat_reply_compose_bar.dart';
 import 'widgets/chat_call_history_banner.dart';
 import 'widgets/chat_birthday_welcome_banner.dart';
@@ -155,6 +156,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   int _loadGeneration = 0;
   bool _selectionMode = false;
   final Set<int> _selectedMessageIds = {};
+  List<Map<String, dynamic>> _pinnedMessages = [];
+  int _pinnedIndex = 0;
   Map<String, dynamic>? _replyTo;
   int? _editingMessageId;
   late String _title;
@@ -734,6 +737,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       return;
     }
 
+    if (event['event'] == 'chat_pins_updated') {
+      if (eventThreadId != widget.threadId) return;
+      final raw = event['pinned_messages'];
+      if (raw is! List || !mounted) return;
+      _setPinnedMessages(
+        raw.map((e) => Map<String, dynamic>.from(e as Map)).toList(),
+      );
+      return;
+    }
+
     if (event['event'] == 'chat_message_reactions') {
       if (eventThreadId != widget.threadId) return;
       final messageId = chatAsInt(event['message_id']);
@@ -769,7 +782,28 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }).toList();
       _selectedMessageIds.removeWhere(ids.contains);
       if (_selectedMessageIds.isEmpty) _selectionMode = false;
+      _pinnedMessages = _pinnedMessages.where((m) {
+        final id = chatAsInt(m['id']);
+        return id == null || !ids.contains(id);
+      }).toList();
+      if (_pinnedIndex >= _pinnedMessages.length) {
+        _pinnedIndex = _pinnedMessages.isEmpty ? 0 : _pinnedMessages.length - 1;
+      }
     });
+  }
+
+  void _setPinnedMessages(List<Map<String, dynamic>> pins) {
+    setState(() {
+      _pinnedMessages = pins;
+      if (_pinnedIndex >= _pinnedMessages.length) {
+        _pinnedIndex = _pinnedMessages.isEmpty ? 0 : _pinnedMessages.length - 1;
+      }
+    });
+  }
+
+  bool _isMessagePinned(int? messageId) {
+    if (messageId == null) return false;
+    return _pinnedMessages.any((m) => chatAsInt(m['id']) == messageId);
   }
 
   Future<void> _markLatestRead() async {
@@ -833,10 +867,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           _voiceTranscriptionEnabled != page.voiceTranscriptionEnabled;
       final birthdayChanged = _isBirthdayCelebration &&
           !mapEquals(_birthdayScheduled, page.birthdayScheduled);
+      final pinsChanged = !_pinnedListsEqual(_pinnedMessages, page.pinnedMessages);
 
       if (messagesChanged ||
           voiceChanged ||
           birthdayChanged ||
+          pinsChanged ||
           _loading ||
           _loadError != null ||
           _hasMoreOlder != nextHasMore) {
@@ -850,6 +886,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           _loadError = null;
           if (_isBirthdayCelebration) {
             _birthdayScheduled = page.birthdayScheduled;
+          }
+          if (pinsChanged) {
+            _pinnedMessages = page.pinnedMessages;
+            if (_pinnedIndex >= _pinnedMessages.length) {
+              _pinnedIndex =
+                  _pinnedMessages.isEmpty ? 0 : _pinnedMessages.length - 1;
+            }
           }
         });
       }
@@ -1993,6 +2036,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     return _isMine(message) && message['_pending'] != true;
   }
 
+  bool _canDeleteMessageForMe(Map<String, dynamic> message) {
+    if (message['_pending'] == true) return false;
+    if (message['_scheduled'] == true) return false;
+    // Свои — через delete for everyone; чужие/системные — hide for me.
+    return !_isMine(message);
+  }
+
+  bool _canPinMessage(Map<String, dynamic> message) {
+    if (message['_pending'] == true) return false;
+    if (message['_scheduled'] == true) return false;
+    if (message['is_system'] == true) return false;
+    return chatAsInt(message['id']) != null;
+  }
+
   bool _canEditMessage(Map<String, dynamic> message) {
     if (!_isMine(message)) return false;
     if (message['_pending'] == true) return false;
@@ -2009,12 +2066,28 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _selectedMessageIds.isNotEmpty &&
       _selectedMessageIds.every(_canDeleteMessageId);
 
+  bool _pinnedListsEqual(
+    List<Map<String, dynamic>> a,
+    List<Map<String, dynamic>> b,
+  ) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (chatAsInt(a[i]['id']) != chatAsInt(b[i]['id'])) return false;
+    }
+    return true;
+  }
+
   Future<void> _openMessageMenu(Map<String, dynamic> message) async {
     if (message['_pending'] == true) return;
+    if (message['_scheduled'] == true) return;
+    final msgId = chatAsInt(message['id']);
     final result = await ChatMessageActionsSheet.show(
       context,
-      canDelete: _canDeleteMessage(message),
       canEdit: _canEditMessage(message),
+      canPin: _canPinMessage(message),
+      isPinned: _isMessagePinned(msgId),
+      canDeleteForEveryone: _canDeleteMessage(message),
+      canDeleteForMe: _canDeleteMessageForMe(message),
     );
     if (!mounted || result == null) return;
 
@@ -2036,9 +2109,117 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       case 'forward':
         final id = chatAsInt(message['id']);
         if (id != null) await _forwardMessageIds([id]);
+      case 'select':
+        final id = chatAsInt(message['id']);
+        if (id != null) _enterSelection(id);
+      case 'pin':
+        final id = chatAsInt(message['id']);
+        if (id != null) await _pinMessage(id);
+      case 'unpin':
+        final id = chatAsInt(message['id']);
+        if (id != null) await _unpinMessage(id);
       case 'delete':
         final id = chatAsInt(message['id']);
         if (id != null) await _deleteMessages([id]);
+      case 'delete_for_me':
+        final id = chatAsInt(message['id']);
+        if (id != null) await _hideMessagesForMe([id]);
+    }
+  }
+
+  Future<void> _pinMessage(int messageId) async {
+    try {
+      final pins = await ref
+          .read(familychatRepositoryProvider)
+          .pinMessage(widget.threadId, messageId);
+      if (!mounted) return;
+      _setPinnedMessages(pins);
+      // Показать только что закреплённое.
+      final idx = _pinnedMessages.indexWhere(
+        (m) => chatAsInt(m['id']) == messageId,
+      );
+      if (idx >= 0) {
+        setState(() => _pinnedIndex = idx);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось закрепить')),
+      );
+    }
+  }
+
+  Future<void> _unpinMessage(int messageId) async {
+    try {
+      final pins = await ref
+          .read(familychatRepositoryProvider)
+          .unpinMessage(widget.threadId, messageId);
+      if (!mounted) return;
+      _setPinnedMessages(pins);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось открепить')),
+      );
+    }
+  }
+
+  Future<void> _cyclePinnedOrScroll() async {
+    if (_pinnedMessages.isEmpty) return;
+    if (_pinnedMessages.length > 1) {
+      setState(() {
+        _pinnedIndex = (_pinnedIndex + 1) % _pinnedMessages.length;
+      });
+    }
+    final id = chatAsInt(_pinnedMessages[_pinnedIndex]['id']);
+    if (id != null) {
+      await _ensureMessageLoaded(id);
+      await _scrollToMessage(id);
+    }
+  }
+
+  Future<void> _hideMessagesForMe(List<int> messageIds) async {
+    if (messageIds.isEmpty) return;
+    final count = messageIds.length;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить сообщения?'),
+        content: Text(
+          count == 1
+              ? 'Сообщение будет удалено только из вашей истории.'
+              : 'Выбранные сообщения ($count) будут удалены только из вашей истории.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    try {
+      final hidden =
+          await ref.read(familychatRepositoryProvider).hideMessagesForMe(
+                widget.threadId,
+                messageIds,
+              );
+      if (!mounted) return;
+      _removeMessagesLocally(hidden);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сообщение удалено')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось удалить')),
+      );
     }
   }
 
@@ -2615,6 +2796,30 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                 ),
               )
             else ...[
+              if (!_selectionMode && _pinnedMessages.isNotEmpty)
+                ChatPinnedBar(
+                  message: _pinnedMessages[_pinnedIndex.clamp(
+                    0,
+                    _pinnedMessages.length - 1,
+                  )],
+                  index: _pinnedIndex.clamp(0, _pinnedMessages.length - 1),
+                  total: _pinnedMessages.length,
+                  previewText: _messagePreviewText(
+                    _pinnedMessages[_pinnedIndex.clamp(
+                      0,
+                      _pinnedMessages.length - 1,
+                    )],
+                  ),
+                  onTap: () => unawaited(_cyclePinnedOrScroll()),
+                  onClose: () {
+                    final pin = _pinnedMessages[_pinnedIndex.clamp(
+                      0,
+                      _pinnedMessages.length - 1,
+                    )];
+                    final id = chatAsInt(pin['id']);
+                    if (id != null) unawaited(_unpinMessage(id));
+                  },
+                ),
               Expanded(
                 child: _loading
                     ? const DeferredPlaceholder(child: ChatMessagesSkeleton())
@@ -2795,9 +3000,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         : m['_scheduled'] == true
                                             ? null
                                             : () => _openMessageMenu(m),
-                                    onLongPress: m['_pending'] == true
-                                        ? null
-                                        : () => _enterSelection(msgId),
+                                    onLongPress: _selectionMode
+                                        ? () => _toggleSelection(msgId)
+                                        : m['_pending'] == true ||
+                                                m['_scheduled'] == true
+                                            ? null
+                                            : () => _openMessageMenu(m),
                                     onReplyTap: replyMessageId != null
                                         ? () => _scrollToMessage(replyMessageId)
                                         : null,
