@@ -1,12 +1,23 @@
 import 'dart:async';
 
+import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/platform/app_foreground.dart';
+import '../../../core/routing/app_uri_parser.dart';
+
 /// OAuth на мобильных через ASWebAuthenticationSession / Chrome Custom Tabs,
 /// чтобы callback `familychat://` закрывал браузер автоматически.
 class OAuthLoginService {
+  static const _callbackScheme = 'familychat';
+
+  /// Пока идёт вход с LoginScreen — bootstrap не должен забирать session_code.
+  static String? activeProvider;
+
+  static bool get isFlowActive => activeProvider != null;
+
   Future<Map<String, String>> run({
     required String provider,
     required Uri startUri,
@@ -25,33 +36,67 @@ class OAuthLoginService {
     required String provider,
     required Uri startUri,
   }) async {
-    late final String resultUrl;
-    try {
-      resultUrl = await FlutterWebAuth2.authenticate(
-        url: startUri.toString(),
-        callbackUrlScheme: 'familychat',
-        options: const FlutterWebAuth2Options(
-          // Без ephemeral Google/VK могут требовать повторный логин каждый раз —
-          // оставляем общий Safari-сессионный cookie-jar.
-          preferEphemeral: false,
-        ),
-      );
-    } on Exception catch (e) {
-      final msg = '$e';
-      if (msg.contains('CANCELED') ||
-          msg.contains('canceled') ||
-          msg.contains('cancelled')) {
-        return {
-          'status': 'canceled',
-          'error': 'Вход отменён',
-          'error_code': '',
-        };
-      }
-      rethrow;
+    final appLinks = AppLinks();
+    StreamSubscription<Uri>? linkSub;
+    final linkCompleter = Completer<String>();
+
+    void onAuthUri(Uri uri) {
+      if (linkCompleter.isCompleted) return;
+      final parsed = parseOAuthCallback(uri);
+      if (parsed == null || parsed.provider != provider) return;
+      linkCompleter.complete(uri.toString());
     }
 
+    activeProvider = provider;
+    linkSub = appLinks.uriLinkStream.listen(onAuthUri);
+
+    try {
+      late final String resultUrl;
+      try {
+        resultUrl = await Future.any<String>([
+          FlutterWebAuth2.authenticate(
+            url: startUri.toString(),
+            callbackUrlScheme: _callbackScheme,
+            options: const FlutterWebAuth2Options(
+              // NO_HISTORY — Custom Tab закрывается после deep link callback.
+              intentFlags: ephemeralIntentFlags,
+            ),
+          ),
+          linkCompleter.future,
+        ]);
+      } on Exception catch (e) {
+        if (!_isUserCanceled(e)) rethrow;
+        try {
+          resultUrl = await linkCompleter.future.timeout(
+            const Duration(seconds: 5),
+          );
+        } on TimeoutException {
+          return const {
+            'status': 'canceled',
+            'error': 'Вход отменён',
+            'error_code': '',
+          };
+        }
+      }
+
+      await bringAppToForeground();
+      return _parseResultUrl(resultUrl, provider);
+    } finally {
+      activeProvider = null;
+      await linkSub.cancel();
+    }
+  }
+
+  bool _isUserCanceled(Object e) {
+    final msg = '$e';
+    return msg.contains('CANCELED') ||
+        msg.contains('canceled') ||
+        msg.contains('cancelled');
+  }
+
+  Map<String, String> _parseResultUrl(String resultUrl, String provider) {
     final uri = Uri.parse(resultUrl);
-    if (uri.scheme != 'familychat' || uri.host != 'auth') {
+    if (uri.scheme != _callbackScheme || uri.host != 'auth') {
       throw StateError('Неожиданный ответ входа');
     }
     final segments = uri.pathSegments.where((s) => s.isNotEmpty).toList();

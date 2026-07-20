@@ -31,10 +31,23 @@ abstract final class Env {
     defaultValue: '',
   );
 
+  /// Базовый домен Yandex OAuth (ru — для пользователей из РФ).
+  static const String yandexOAuthHost = String.fromEnvironment(
+    'FAMILYCHAT_YANDEX_OAUTH_HOST',
+    defaultValue: 'oauth.yandex.ru',
+  );
+
   static Uri oauthStartUri(String provider, String nextUrl) {
     final base = apiBaseUrl.endsWith('/') ? apiBaseUrl : '$apiBaseUrl/';
+    final params = <String, String>{
+      'mode': 'login',
+      'next': nextUrl,
+    };
+    if (provider == 'yandex') {
+      params['authorize_host'] = yandexOAuthHost.contains('.ru') ? 'ru' : 'com';
+    }
     return Uri.parse('${base}auth/$provider/start/').replace(
-      queryParameters: {'mode': 'login', 'next': nextUrl},
+      queryParameters: params,
     );
   }
 

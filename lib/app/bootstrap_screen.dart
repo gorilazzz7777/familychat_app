@@ -8,10 +8,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/cache/familychat_local_cache.dart';
+import '../core/platform/app_foreground.dart';
 import '../core/providers/app_providers.dart';
 import '../core/routing/app_uri_parser.dart';
 import '../core/push/push_navigation.dart';
 import '../core/session/auth_session_bus.dart';
+import '../features/auth/data/oauth_login_service.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
@@ -87,6 +89,31 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   }
 
   Future<void> _handleInviteUri(Uri uri) async {
+    final oauth = parseOAuthCallback(uri);
+    if (oauth != null) {
+      // LoginScreen / OAuthLoginService сами consume-ят session_code.
+      if (OAuthLoginService.isFlowActive) {
+        await bringAppToForeground();
+        return;
+      }
+      if (oauth.isOk && oauth.sessionCode != null) {
+        final auth = ref.read(authRepositoryProvider);
+        if (!await auth.hasSession()) {
+          try {
+            await auth.consumeSession(
+              provider: oauth.provider,
+              sessionCode: oauth.sessionCode!,
+            );
+          } catch (_) {}
+        }
+        await bringAppToForeground();
+        if (mounted && !_loggedIn) {
+          unawaited(_boot());
+        }
+      }
+      return;
+    }
+
     final friendToken = extractFriendInviteToken(uri);
     if (friendToken != null) {
       final prefs = await SharedPreferences.getInstance();
@@ -158,10 +185,6 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     if (mounted) setState(() => _pendingFriendInvite = null);
   }
 
-  OAuthCallbackResult? _readOAuthCallback() {
-    return parseOAuthCallback(Uri.base);
-  }
-
   /// Локальная часть web-entry: invite из URL, pending call. Без сети.
   Future<void> _persistWebEntryLocal() async {
     if (!kIsWeb) return;
@@ -185,9 +208,11 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
   /// OAuth return: consume session (нужен спиннер).
   Future<void> _consumeOAuthIfNeeded() async {
-    if (!kIsWeb) return;
-    final oauth = _readOAuthCallback();
+    final Uri? uri = kIsWeb ? Uri.base : await _appLinks.getInitialLink();
+    if (uri == null) return;
+    final oauth = parseOAuthCallback(uri);
     if (oauth == null || !oauth.isOk || oauth.sessionCode == null) return;
+    if (await ref.read(authRepositoryProvider).hasSession()) return;
     try {
       await ref.read(authRepositoryProvider).consumeSession(
             provider: oauth.provider,

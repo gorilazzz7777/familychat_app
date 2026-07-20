@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +9,7 @@ import '../../../core/constants/api_error_messages.dart';
 import '../../../core/legal/legal_page_launcher.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/routing/app_uri_parser.dart';
+import '../data/auth_repository.dart';
 import '../data/oauth_login_service.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -53,6 +55,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
   }
 
+  Future<void> _consumeOAuthSession({
+    required AuthRepository auth,
+    required String provider,
+    required String sessionCode,
+  }) async {
+    try {
+      await auth.consumeSession(
+        provider: provider,
+        sessionCode: sessionCode,
+      );
+    } on DioException {
+      if (!await auth.hasSession()) rethrow;
+    }
+  }
+
   Future<void> _login(String provider) async {
     setState(() {
       _error = null;
@@ -81,7 +98,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         });
         return;
       }
-      await auth.consumeSession(
+      await _consumeOAuthSession(
+        auth: auth,
         provider: provider,
         sessionCode: result['session_code']!,
       );
