@@ -747,7 +747,7 @@ packages:
       path: "packages/gorila_chat"
       relative: true
     source: path
-    version: "0.1.0"
+    version: "0.2.0"
   gtk:
     dependency: transitive
     description:
