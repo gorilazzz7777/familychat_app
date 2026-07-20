@@ -94,4 +94,12 @@ abstract class ChatRepository {
   }) async {
     throw UnimplementedError('aiComposeMessage');
   }
+
+  /// Server TTS for message body / voice transcript. Returns WAV bytes.
+  Future<List<int>> speakMessages({
+    required int threadId,
+    required List<int> messageIds,
+  }) async {
+    throw UnimplementedError('speakMessages');
+  }
 }

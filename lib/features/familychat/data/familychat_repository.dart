@@ -786,6 +786,24 @@ class FamilyChatRepository {
     return suggestion;
   }
 
+  /// Озвучка сообщений (WAV). Только Premium + DM на бэкенде.
+  Future<List<int>> speakMessages(int threadId, List<int> messageIds) async {
+    final res = await _dio.post<List<int>>(
+      'familychat/chat/threads/$threadId/messages/speak/',
+      data: {'message_ids': messageIds},
+      options: Options(
+        responseType: ResponseType.bytes,
+        receiveTimeout: const Duration(seconds: 180),
+        sendTimeout: const Duration(seconds: 30),
+      ),
+    );
+    final data = res.data;
+    if (data == null || data.isEmpty) {
+      throw StateError('empty speak audio');
+    }
+    return data is Uint8List ? data : Uint8List.fromList(data);
+  }
+
   Future<List<Map<String, dynamic>>> pinMessage(
     int threadId,
     int messageId,

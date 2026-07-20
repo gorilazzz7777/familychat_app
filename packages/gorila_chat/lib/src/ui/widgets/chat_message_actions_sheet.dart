@@ -32,6 +32,7 @@ class ChatMessageActionsSheet {
     bool canSelect = true,
     bool canPin = false,
     bool isPinned = false,
+    bool canSpeak = false,
     bool canDeleteForEveryone = false,
     bool canDeleteForMe = false,
   }) {
@@ -47,6 +48,7 @@ class ChatMessageActionsSheet {
         canSelect: canSelect,
         canPin: canPin,
         isPinned: isPinned,
+        canSpeak: canSpeak,
         canDeleteForEveryone: canDeleteForEveryone,
         canDeleteForMe: canDeleteForMe,
       ),
@@ -64,6 +66,7 @@ class _ChatMessageActionsSheetBody extends StatefulWidget {
     required this.canSelect,
     required this.canPin,
     required this.isPinned,
+    required this.canSpeak,
     required this.canDeleteForEveryone,
     required this.canDeleteForMe,
   });
@@ -76,6 +79,7 @@ class _ChatMessageActionsSheetBody extends StatefulWidget {
   final bool canSelect;
   final bool canPin;
   final bool isPinned;
+  final bool canSpeak;
   final bool canDeleteForEveryone;
   final bool canDeleteForMe;
 
@@ -203,6 +207,15 @@ class _ChatMessageActionsSheetBodyState
                   ChatMessageMenuResult.action(
                     widget.isPinned ? 'unpin' : 'pin',
                   ),
+                ),
+              ),
+            if (widget.canSpeak)
+              ListTile(
+                leading: const Icon(Icons.record_voice_over_outlined),
+                title: const Text('Озвучить'),
+                onTap: () => Navigator.pop(
+                  context,
+                  const ChatMessageMenuResult.action('speak'),
                 ),
               ),
             if (showDelete)

@@ -20,6 +20,7 @@ class ChatCapabilities {
     this.supportsPin = false,
     this.supportsSelect = false,
     this.supportsAiAssist = false,
+    this.supportsSpeak = false,
   });
 
   /// Family Chat reference feature set.
@@ -43,6 +44,7 @@ class ChatCapabilities {
     supportsPin: true,
     supportsSelect: true,
     supportsAiAssist: true,
+    supportsSpeak: true,
   );
 
   /// TeamCoach current API surface (smaller than Family Chat).
@@ -66,6 +68,7 @@ class ChatCapabilities {
     supportsPin: false,
     supportsSelect: false,
     supportsAiAssist: false,
+    supportsSpeak: false,
   );
 
   final bool supportsTyping;
@@ -89,4 +92,6 @@ class ChatCapabilities {
   final bool supportsSelect;
   /// Compose draft via AI (Premium on Family Chat backend).
   final bool supportsAiAssist;
+  /// Speak message text / voice transcript via server TTS (Premium + DM).
+  final bool supportsSpeak;
 }

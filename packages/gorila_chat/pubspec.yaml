@@ -1,7 +1,7 @@
 name: gorila_chat
 description: Shared chat module — UI, realtime, contracts. Family Chat is the reference.
 publish_to: "none"
-version: 0.4.1
+version: 0.5.0
 
 environment:
   sdk: ^3.5.0
@@ -21,6 +21,7 @@ dependencies:
   emoji_picker_flutter: ^4.3.0
   intl: ^0.20.2
   url_launcher: ^6.3.1
+  audioplayers: ^6.1.0
 
 dev_dependencies:
   flutter_test:

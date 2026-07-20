@@ -5,8 +5,9 @@ Shared package now includes:
 - pinned bar + cycle scroll
 - multi-select with row highlight
 - AI assist: long-press send → inline compose (draft from input → API → replace input; no intermediate screen)
-- repository hooks: `pin` / `unpin` / `hideMessagesForMe` / `deleteMessages` / `aiComposeMessage`
-- capability flags: `supportsPin`, `supportsSelect`, `supportsDeleteForMe`, `supportsAiAssist`
+- Speak («Озвучить»): Premium + DM; server Piper TTS; male/female by sender gender; play-only; multi-select up to 30
+- repository hooks: `pin` / `unpin` / `hideMessagesForMe` / `deleteMessages` / `aiComposeMessage` / `speakMessages`
+- capability flags: `supportsPin`, `supportsSelect`, `supportsDeleteForMe`, `supportsAiAssist`, `supportsSpeak`
 
 Optional: `ChatAiComposeScreen` still exported for hosts that want a custom task UI.
 
@@ -30,4 +31,4 @@ Optional: `ChatAiComposeScreen` still exported for hosts that want a custom task
 16. **Share-into-chat** target screen
 17. **Leave / rejoin / rename / hide friend** in info sheet (Family-specific)
 
-TeamCoach keeps using `GorilaConversationScreen` with `ChatCapabilities.teamCoach` (AI/pin/select off until backend exists).
+TeamCoach keeps using `GorilaConversationScreen` with `ChatCapabilities.teamCoach` (AI/pin/select/speak off until backend exists).

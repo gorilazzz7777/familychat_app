@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -81,12 +82,19 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
   int? _highlightMessageId;
   bool _loading = true;
   bool _sending = false;
+  bool _speaking = false;
   bool _notificationsEnabled = true;
   bool _selectionMode = false;
   final Set<int> _selectedIds = {};
   String? _headerAvatarUrl;
+  AudioPlayer? _speakPlayer;
 
   ChatCapabilities get _caps => widget.capabilities;
+
+  bool get _isDmLike =>
+      widget.threadKind == 'dm' || widget.threadKind == 'friend_dm';
+
+  static const _maxSpeakMessages = 30;
 
   @override
   void initState() {
@@ -106,6 +114,7 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
     _ctrl.dispose();
     _focus.dispose();
     _scroll.dispose();
+    unawaited(_speakPlayer?.dispose() ?? Future<void>.value());
     super.dispose();
   }
 
@@ -329,6 +338,58 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
   bool _isPinned(int? id) =>
       id != null && _pinnedMessages.any((m) => chatAsInt(m['id']) == id);
 
+  bool _messageHasSpeakableText(Map<String, dynamic> message) {
+    if (message['is_system'] == true) return false;
+    final body = message['body']?.toString().trim() ?? '';
+    if (body.isNotEmpty) return true;
+    final meta = message['metadata'];
+    if (meta is! Map) return false;
+    final voice = meta['voice'];
+    if (voice is! Map) return false;
+    return (voice['transcript']?.toString().trim() ?? '').isNotEmpty;
+  }
+
+  bool _canSpeakMessage(Map<String, dynamic> message) {
+    return _caps.supportsSpeak &&
+        _isDmLike &&
+        !_speaking &&
+        _messageHasSpeakableText(message);
+  }
+
+  Future<void> _speakMessageIds(List<int> messageIds) async {
+    if (!_caps.supportsSpeak || !_isDmLike || _speaking) return;
+    final ids = messageIds.take(_maxSpeakMessages).toList();
+    if (ids.isEmpty) return;
+    setState(() => _speaking = true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(
+        canPop: false,
+        child: Center(child: CircularProgressIndicator()),
+      ),
+    );
+    try {
+      final bytes = await widget.repository.speakMessages(
+        threadId: widget.threadId,
+        messageIds: ids,
+      );
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      _speakPlayer ??= AudioPlayer();
+      await _speakPlayer!.stop();
+      await _speakPlayer!.play(BytesSource(Uint8List.fromList(bytes)));
+    } catch (_) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось озвучить')),
+      );
+    } finally {
+      if (mounted) setState(() => _speaking = false);
+    }
+  }
+
   Future<void> _openMessageMenu(Map<String, dynamic> message) async {
     if (message['is_system'] == true) return;
     final id = chatAsInt(message['id']);
@@ -342,6 +403,7 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
       canSelect: _caps.supportsSelect,
       canPin: _caps.supportsPin && id != null,
       isPinned: _isPinned(id),
+      canSpeak: _canSpeakMessage(message),
       canDeleteForEveryone: _caps.supportsDelete && mine,
       canDeleteForMe: _caps.supportsDeleteForMe && !mine,
     );
@@ -368,6 +430,8 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
         if (id != null) await _pinMessage(id);
       case 'unpin':
         if (id != null) await _unpinMessage(id);
+      case 'speak':
+        if (id != null) await _speakMessageIds([id]);
       case 'delete':
         if (id != null) await _deleteMessages([id], forEveryone: true);
       case 'delete_for_me':
@@ -680,6 +744,27 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
                 ),
                 title: Text('${_selectedIds.length} выбрано'),
                 actions: [
+                  if (_caps.supportsSpeak && _isDmLike)
+                    IconButton(
+                      tooltip: 'Озвучить',
+                      onPressed: _selectedIds.isEmpty || _speaking
+                          ? null
+                          : () {
+                              final ordered = <int>[];
+                              for (final m in _messages) {
+                                final id = chatAsInt(m['id']);
+                                if (id != null &&
+                                    _selectedIds.contains(id) &&
+                                    _messageHasSpeakableText(m)) {
+                                  ordered.add(id);
+                                }
+                              }
+                              ordered.sort();
+                              if (ordered.isEmpty) return;
+                              unawaited(_speakMessageIds(ordered));
+                            },
+                      icon: const Icon(Icons.record_voice_over_outlined),
+                    ),
                   if (_caps.supportsDelete || _caps.supportsDeleteForMe)
                     IconButton(
                       tooltip: 'Удалить',

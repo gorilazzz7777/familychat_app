@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -174,6 +175,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _voiceTranscriptionEnabled = false;
   bool _viewerIndividualPremium = false;
   bool _aiComposing = false;
+  bool _speaking = false;
   bool _canSend = true;
   double _lastKeyboardInset = 0;
   final Map<int, String> _typingNames = {};
@@ -184,12 +186,17 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   final Map<int, int> _transcriptPollAttempts = {};
   bool _typingEmitted = false;
   DateTime? _lastTypingEmitAt;
+  AudioPlayer? _speakPlayer;
+
+  static const _maxSpeakMessages = 30;
 
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
 
   bool get _isDm => widget.kind == 'dm' || widget.kind == 'friend_dm';
 
   bool get _isFriendDm => widget.kind == 'friend_dm';
+
+  bool get _canUseSpeak => _viewerIndividualPremium && _isDm;
 
   void _startOutgoingCall() {
     unawaited(
@@ -473,6 +480,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
     ChatScheduledSendService.instance.removeListener(_onScheduledSend);
     _transcriptPollTimer?.cancel();
+    unawaited(_speakPlayer?.dispose() ?? Future<void>.value());
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -2175,6 +2183,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       canSelect: true,
       canPin: _canPinMessage(message),
       isPinned: _isMessagePinned(msgId),
+      canSpeak: _canSpeakMessage(message),
       canDeleteForEveryone: _canDeleteMessage(message),
       canDeleteForMe: _canDeleteMessageForMe(message),
     );
@@ -2207,6 +2216,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       case 'unpin':
         final id = chatAsInt(message['id']);
         if (id != null) await _unpinMessage(id);
+      case 'speak':
+        final id = chatAsInt(message['id']);
+        if (id != null) await _speakMessageIds([id]);
       case 'delete':
         final id = chatAsInt(message['id']);
         if (id != null) await _deleteMessages([id]);
@@ -2214,6 +2226,84 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         final id = chatAsInt(message['id']);
         if (id != null) await _hideMessagesForMe([id]);
     }
+  }
+
+  bool _messageHasSpeakableText(Map<String, dynamic> message) {
+    if (message['is_system'] == true) return false;
+    if (message['_pending'] == true || message['_scheduled'] == true) {
+      return false;
+    }
+    final body = message['body']?.toString().trim() ?? '';
+    if (body.isNotEmpty) return true;
+    final meta = message['metadata'];
+    if (meta is! Map) return false;
+    final voice = meta['voice'];
+    if (voice is! Map) return false;
+    return (voice['transcript']?.toString().trim() ?? '').isNotEmpty;
+  }
+
+  bool _canSpeakMessage(Map<String, dynamic> message) {
+    return _canUseSpeak && !_speaking && _messageHasSpeakableText(message);
+  }
+
+  List<int> _speakableSelectedIds() {
+    final ordered = <int>[];
+    for (final m in _messages) {
+      final id = chatAsInt(m['id']);
+      if (id != null &&
+          _selectedMessageIds.contains(id) &&
+          _messageHasSpeakableText(m)) {
+        ordered.add(id);
+      }
+    }
+    ordered.sort();
+    return ordered;
+  }
+
+  Future<void> _speakMessageIds(List<int> messageIds) async {
+    if (!_canUseSpeak || _speaking) return;
+    final ids = messageIds.take(_maxSpeakMessages).toList();
+    if (ids.isEmpty) return;
+    setState(() => _speaking = true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PopScope(
+        canPop: false,
+        child: Center(child: CircularProgressIndicator()),
+      ),
+    );
+    try {
+      final bytes = await ref
+          .read(familychatRepositoryProvider)
+          .speakMessages(widget.threadId, ids);
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      _speakPlayer ??= AudioPlayer();
+      await _speakPlayer!.stop();
+      await _speakPlayer!.play(
+        BytesSource(bytes is Uint8List ? bytes : Uint8List.fromList(bytes)),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось озвучить')),
+      );
+    } finally {
+      if (mounted) setState(() => _speaking = false);
+    }
+  }
+
+  Future<void> _speakSelected() async {
+    final ids = _speakableSelectedIds();
+    if (ids.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Нет текста для озвучки')),
+      );
+      return;
+    }
+    await _speakMessageIds(ids);
   }
 
   Future<void> _pinMessage(int messageId) async {
@@ -2761,6 +2851,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                     child: Text(
                         _allMessagesSelected ? 'Снять все' : 'Выбрать все'),
                   ),
+                  if (_canUseSpeak)
+                    IconButton(
+                      tooltip: 'Озвучить',
+                      onPressed: _selectedMessageIds.isEmpty || _speaking
+                          ? null
+                          : () => unawaited(_speakSelected()),
+                      icon: const Icon(Icons.record_voice_over_outlined),
+                    ),
                   if (_canDeleteSelection)
                     IconButton(
                       tooltip: 'Удалить',
@@ -3111,6 +3209,21 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                     padding: const EdgeInsets.all(12),
                     child: Row(
                       children: [
+                        if (_canUseSpeak) ...[
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed:
+                                  _selectedMessageIds.isEmpty || _speaking
+                                      ? null
+                                      : () => unawaited(_speakSelected()),
+                              icon: const Icon(
+                                Icons.record_voice_over_outlined,
+                              ),
+                              label: const Text('Озвучить'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                        ],
                         if (_selectedMessageIds.length == 1) ...[
                           Expanded(
                             child: OutlinedButton.icon(
