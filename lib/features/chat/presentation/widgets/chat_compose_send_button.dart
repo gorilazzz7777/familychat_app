@@ -8,9 +8,11 @@ class ChatComposeSendButton extends StatelessWidget {
   const ChatComposeSendButton({
     super.key,
     required this.onSend,
+    this.showAiAssist = false,
   });
 
   final void Function(ChatSendOptions options) onSend;
+  final bool showAiAssist;
 
   @override
   Widget build(BuildContext context) {
@@ -20,7 +22,10 @@ class ChatComposeSendButton extends StatelessWidget {
       child: InkWell(
         onTap: () => onSend(ChatSendOptions.normal),
         onLongPress: () async {
-          final options = await ChatSendOptionsSheet.show(context);
+          final options = await ChatSendOptionsSheet.show(
+            context,
+            showAiAssist: showAiAssist,
+          );
           if (options == null) return;
           onSend(options);
         },

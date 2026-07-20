@@ -33,6 +33,7 @@ class ChatMentionComposeInput extends StatefulWidget {
     required this.onVoiceComplete,
     this.forceSendButton = false,
     this.voiceTranscriptionEnabled = false,
+    this.showAiAssist = false,
     required this.participants,
     this.currentUserId,
     this.hintText = 'Сообщение...',
@@ -49,6 +50,7 @@ class ChatMentionComposeInput extends StatefulWidget {
   }) onVoiceComplete;
   final bool forceSendButton;
   final bool voiceTranscriptionEnabled;
+  final bool showAiAssist;
   final List<ChatMentionParticipant> participants;
   final int? currentUserId;
   final String hintText;
@@ -263,6 +265,7 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                   onVoiceComplete: widget.onVoiceComplete,
                   forceSendButton: widget.forceSendButton,
                   voiceTranscriptionEnabled: widget.voiceTranscriptionEnabled,
+                  showAiAssist: widget.showAiAssist,
                   onRecordingChanged: _onRecordingChanged,
                 ),
               ],

@@ -36,6 +36,7 @@ import '../data/chat_voice_transcription.dart';
 import '../data/chat_voice_utils.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_thread_avatars.dart';
+import 'chat_ai_compose_screen.dart';
 import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
 import 'chat_call_screen.dart';
@@ -1873,6 +1874,39 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
   }
 
+  Future<void> _openAiAssistCompose() async {
+    final initial = _controller.text.trim();
+    final suggestion = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => ChatAiComposeScreen(
+          threadId: widget.threadId,
+          initialTask: initial,
+          peerTitle: _title,
+        ),
+      ),
+    );
+    if (!mounted || suggestion == null) return;
+    final text = suggestion.trim();
+    if (text.isEmpty) return;
+    setState(() {
+      _controller
+        ..text = text
+        ..selection = TextSelection.collapsed(offset: text.length);
+    });
+    _inputFocus.requestFocus();
+  }
+
+  Future<void> _handleComposeSend({
+    List<int> mentionedUserIds = const [],
+    ChatSendOptions options = ChatSendOptions.normal,
+  }) async {
+    if (options.aiAssist) {
+      await _openAiAssistCompose();
+      return;
+    }
+    await _send(mentionedUserIds: mentionedUserIds, options: options);
+  }
+
   Future<void> _send({
     List<int> mentionedUserIds = const [],
     ChatSendOptions options = ChatSendOptions.normal,
@@ -3169,7 +3203,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                   onAttach: _pickAttachment,
                                   onSend: (options, mentionedUserIds) =>
                                       unawaited(
-                                    _send(
+                                    _handleComposeSend(
                                       mentionedUserIds: mentionedUserIds,
                                       options: options,
                                     ),
@@ -3179,6 +3213,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                       _editingMessageId != null,
                                   voiceTranscriptionEnabled:
                                       _voiceTranscriptionEnabled,
+                                  showAiAssist: _viewerIndividualPremium,
                                   participants: _mentionParticipants,
                                   currentUserId: _currentUserId,
                                 )
@@ -3186,13 +3221,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                   controller: _controller,
                                   focusNode: _inputFocus,
                                   onAttach: _pickAttachment,
-                                  onSend: (options) =>
-                                      unawaited(_send(options: options)),
+                                  onSend: (options) => unawaited(
+                                    _handleComposeSend(options: options),
+                                  ),
                                   onVoiceComplete: _sendVoiceMessage,
                                   forceSendButton: _pendingFileDraft != null ||
                                       _editingMessageId != null,
                                   voiceTranscriptionEnabled:
                                       _voiceTranscriptionEnabled,
+                                  showAiAssist: _viewerIndividualPremium,
                                 ),
                         ),
                     ],

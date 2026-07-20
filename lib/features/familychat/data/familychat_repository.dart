@@ -770,6 +770,22 @@ class FamilyChatRepository {
         .toList();
   }
 
+  Future<String> aiComposeMessage(int threadId, {required String task}) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/ai-compose/',
+      data: {'task': task},
+      options: Options(
+        receiveTimeout: const Duration(seconds: 100),
+        sendTimeout: const Duration(seconds: 30),
+      ),
+    );
+    final suggestion = res.data?['suggestion']?.toString().trim() ?? '';
+    if (suggestion.isEmpty) {
+      throw StateError('empty ai suggestion');
+    }
+    return suggestion;
+  }
+
   Future<List<Map<String, dynamic>>> pinMessage(
     int threadId,
     int messageId,

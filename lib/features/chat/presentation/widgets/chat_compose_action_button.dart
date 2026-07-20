@@ -31,6 +31,7 @@ class ChatComposeActionButton extends StatefulWidget {
     required this.onVoiceComplete,
     this.forceSendButton = false,
     this.voiceTranscriptionEnabled = false,
+    this.showAiAssist = false,
     this.onRecordingChanged,
   });
 
@@ -43,6 +44,7 @@ class ChatComposeActionButton extends StatefulWidget {
   }) onVoiceComplete;
   final bool forceSendButton;
   final bool voiceTranscriptionEnabled;
+  final bool showAiAssist;
   final void Function(ChatVoiceRecordingChange change)? onRecordingChanged;
 
   @override
@@ -313,7 +315,10 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
         icon: Icons.send_rounded,
         onTap: () => widget.onSend(ChatSendOptions.normal),
         onLongPress: () async {
-          final options = await ChatSendOptionsSheet.show(context);
+          final options = await ChatSendOptionsSheet.show(
+            context,
+            showAiAssist: widget.showAiAssist,
+          );
           if (options == null) return;
           widget.onSend(options);
         },

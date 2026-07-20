@@ -4,7 +4,10 @@ import '../../data/chat_send_options.dart';
 
 /// Меню режимов отправки по долгому нажатию на кнопку «Отправить».
 class ChatSendOptionsSheet {
-  static Future<ChatSendOptions?> show(BuildContext context) {
+  static Future<ChatSendOptions?> show(
+    BuildContext context, {
+    bool showAiAssist = false,
+  }) {
     return showModalBottomSheet<ChatSendOptions>(
       context: context,
       showDragHandle: true,
@@ -15,7 +18,9 @@ class ChatSendOptionsSheet {
             ListTile(
               leading: const Icon(Icons.notifications_off_outlined),
               title: const Text('Отправить без звука'),
-              subtitle: const Text('Получатель увидит сообщение без звука уведомления'),
+              subtitle: const Text(
+                'Получатель увидит сообщение без звука уведомления',
+              ),
               onTap: () => Navigator.pop(
                 ctx,
                 const ChatSendOptions(silent: true),
@@ -31,6 +36,13 @@ class ChatSendOptionsSheet {
                 Navigator.pop(ctx, ChatSendOptions(scheduledAt: scheduledAt));
               },
             ),
+            if (showAiAssist)
+              ListTile(
+                leading: const Icon(Icons.auto_awesome_outlined),
+                title: const Text('С помощью AI'),
+                subtitle: const Text('Составить текст сообщения по заданию'),
+                onTap: () => Navigator.pop(ctx, ChatSendOptions.ai),
+              ),
             const SizedBox(height: 8),
           ],
         ),
