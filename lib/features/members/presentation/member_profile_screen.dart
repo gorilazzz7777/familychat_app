@@ -45,6 +45,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
   bool _openingChat = false;
   bool _openingCall = false;
   String? _error;
+  bool _viewerIndividualPremium = false;
 
   @override
   void initState() {
@@ -65,12 +66,20 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
       _error = null;
     });
     try {
-      final data = await ref
-          .read(familychatRepositoryProvider)
-          .memberProfile(widget.userId);
+      final repo = ref.read(familychatRepositoryProvider);
+      final results = await Future.wait([
+        repo.memberProfile(widget.userId),
+        repo.status(),
+      ]);
+      final data = Map<String, dynamic>.from(results[0] as Map);
+      final status = Map<String, dynamic>.from(results[1] as Map);
+      final entitlements = status['entitlements'];
+      final premium = entitlements is Map &&
+          entitlements['individual_premium'] == true;
       if (!mounted) return;
       setState(() {
         _profile = data;
+        _viewerIndividualPremium = premium;
         _loading = false;
       });
     } catch (e) {
@@ -254,7 +263,10 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
     final name = p['display_name']?.toString() ?? '';
     final avatarUrl = p['avatar_url']?.toString();
     final birthday = p['birthday_display']?.toString();
-    final status = userPresenceFromProfile(p).label;
+    final status = userPresenceFromProfile(
+      p,
+      preciseLastSeen: _viewerIndividualPremium,
+    ).label;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),

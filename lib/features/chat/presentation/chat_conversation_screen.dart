@@ -321,11 +321,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _loadPeerStatus(int userId) async {
     try {
-      final profile =
-          await ref.read(familychatRepositoryProvider).memberProfile(userId);
+      final repo = ref.read(familychatRepositoryProvider);
+      final profile = await repo.memberProfile(userId);
+      // Prefer freshly known flag; fall back to status if init race.
+      var precise = _viewerIndividualPremium;
+      if (!precise) {
+        try {
+          final st = await repo.status();
+          final entitlements = st['entitlements'];
+          precise = entitlements is Map &&
+              entitlements['individual_premium'] == true;
+          if (precise) _viewerIndividualPremium = true;
+        } catch (_) {}
+      }
       if (!mounted) return;
       setState(() {
-        _peerStatusLabel = userPresenceFromProfile(profile).label;
+        _peerStatusLabel = userPresenceFromProfile(
+          profile,
+          preciseLastSeen: precise,
+        ).label;
         final url = profile['avatar_url']?.toString().trim();
         _headerAvatarUrl = url != null && url.isNotEmpty ? url : _headerAvatarUrl;
       });
@@ -2776,6 +2790,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         participantUserIds: _participantUserIds,
         peerUserId: widget.peerUserId,
         isBirthdayCelebration: _isBirthdayCelebration,
+        viewerIndividualPremium: _viewerIndividualPremium,
         initialHeaderAvatarUrl: _headerAvatarUrl,
         onFriendHidden: () {
           if (!mounted) return;

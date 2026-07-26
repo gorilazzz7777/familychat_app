@@ -56,6 +56,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
     this.onGoToMessage,
     this.onOpenImage,
     this.onFriendHidden,
+    this.viewerIndividualPremium = false,
   });
 
   final int threadId;
@@ -75,6 +76,8 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
   final ChatGoToMessage? onGoToMessage;
   final ChatOpenImage? onOpenImage;
   final VoidCallback? onFriendHidden;
+  /// Viewer has Individual Premium — show exact last-seen time.
+  final bool viewerIndividualPremium;
 
   @override
   ConsumerState<ChatInfoSheet> createState() => _ChatInfoSheetState();
@@ -276,7 +279,10 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         }
         if (peerProfile != null) {
           _headerAvatarUrl = peerProfile['avatar_url']?.toString();
-          _headerSubtitle = userPresenceFromProfile(peerProfile).label;
+          _headerSubtitle = userPresenceFromProfile(
+            peerProfile,
+            preciseLastSeen: widget.viewerIndividualPremium,
+          ).label;
         } else if (_showParticipants && participants.isNotEmpty) {
           _headerSubtitle = chatParticipantCountLabel(participants.length);
         }
