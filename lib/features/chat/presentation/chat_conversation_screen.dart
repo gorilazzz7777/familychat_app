@@ -12,6 +12,8 @@ import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/local_db/chat_local_store.dart';
+import '../data/chat_sync_service.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/notifications/familychat_notifications.dart';
 import '../../../core/widgets/gallery_video_player.dart';
@@ -146,6 +148,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   final _messageKeys = <int, GlobalKey>{};
   List<Map<String, dynamic>> _messages = [];
   bool _loading = true;
+  StreamSubscription<List<Map<String, dynamic>>>? _messagesSub;
+  bool get _localFirst => ChatSyncService.isSupported;
   bool _loadingOlder = false;
   bool _hasMoreOlder = false;
   String? _loadError;
@@ -339,6 +343,21 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     } catch (_) {}
     // Модель Vosk заранее (без сети) — на случай отправки в premium-треде.
     unawaited(ChatVoiceTranscription.instance.preloadModelToDisk());
+
+    if (_localFirst) {
+      await _bindLocalMessages();
+      unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      await _injectScheduledMessages();
+      final targetId = widget.initialMessageId;
+      if (targetId != null) {
+        await _ensureMessageLoaded(targetId);
+        await _scrollToMessage(targetId);
+      } else if (_messages.isNotEmpty) {
+        _scrollToBottom(jump: true, settle: true);
+      }
+      return;
+    }
+
     final skipCache = widget.initialMessageId != null;
     var showedCache = false;
     if (!skipCache) {
@@ -370,6 +389,55 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       // Кэш уже проскроллил вниз; повторный settle после сети даёт мигание.
       _scrollToBottom(jump: true, settle: true);
     }
+  }
+
+  Future<void> _bindLocalMessages() async {
+    // Instant paint from SQLite, then keep watching.
+    final initial = await ChatLocalStore.instance.readMessages(widget.threadId);
+    if (!mounted) return;
+    if (initial.isNotEmpty) {
+      final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
+        widget.threadId,
+        initial,
+      );
+      if (!mounted) return;
+      setState(() {
+        _messages = sortChatMessages(hydrated);
+        _loading = false;
+      });
+    } else {
+      setState(() => _loading = false);
+    }
+
+    await _messagesSub?.cancel();
+    _messagesSub =
+        ChatLocalStore.instance.watchMessages(widget.threadId).listen((rows) async {
+      if (!mounted) return;
+      final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
+        widget.threadId,
+        rows,
+      );
+      if (!mounted) return;
+      // Keep in-flight optimistic rows until they land in SQLite.
+      final pendingLocal = _messages.where(chatMessageIsPending).toList();
+      final next = sortChatMessages(
+        pendingLocal.isEmpty
+            ? hydrated
+            : chatMergeMessageLists(hydrated, pendingLocal),
+      );
+      if (chatMessageListsDisplayEqual(_messages, next) && !_loading) return;
+      final wasEmpty = _messages.isEmpty;
+      final oldNewest = chatNewestServerMessageId(_messages);
+      final newNewest = chatNewestServerMessageId(next);
+      setState(() {
+        _messages = next;
+        _loading = false;
+      });
+      if (wasEmpty ||
+          (newNewest != null && (oldNewest == null || newNewest > oldNewest))) {
+        _scrollToBottom();
+      }
+    });
   }
 
   /// Не показываем кэш, если он отстаёт от last_message в списке чатов
@@ -457,6 +525,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final source = messages ?? _messages;
     if (source.isEmpty) return;
     try {
+      if (_localFirst) {
+        await ChatLocalStore.instance.upsertMessages(widget.threadId, source);
+        return;
+      }
       // Всегда пишем актуальное окно целиком (replace), без merge со старым файлом.
       await FamilyChatLocalCache.saveThreadMessages(widget.threadId, source);
     } catch (_) {
@@ -476,6 +548,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (ActiveChatContext.instance.openThreadId == widget.threadId) {
       ActiveChatContext.instance.setOpenThread(null);
     }
+    unawaited(_messagesSub?.cancel() ?? Future<void>.value());
     FamilyChatRealtime.instance.removeListener(_onRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
     ChatScheduledSendService.instance.removeListener(_onScheduledSend);
@@ -737,6 +810,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (event['event'] == 'chat_refresh') {
       // Без thread_id — глобальный refresh (web poll / reconnect).
       if (eventThreadId != null && eventThreadId != widget.threadId) return;
+      if (_localFirst) {
+        unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+        return;
+      }
       unawaited(_load(silent: true));
       return;
     }
@@ -749,6 +826,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final senderId = chatAsInt(map['sender_user_id']);
       if (senderId != null) {
         _onRemoteTyping(userId: senderId, displayName: '', isTyping: false);
+      }
+      if (_localFirst) {
+        // ChatSyncService already upserts SQLite; watchMessages updates UI.
+        if (_currentUserId != null && senderId == _currentUserId) {
+          unawaited(ChatLocalStore.instance.clearPendingForThread(widget.threadId));
+        }
+        _maybeScheduleVoiceTranscriptPoll(map);
+        unawaited(_markLatestRead());
+        return;
       }
       if (!mounted) return;
       setState(() {
@@ -768,7 +854,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (event['event'] == 'chat_messages_read') {
       if (eventThreadId != null && eventThreadId != widget.threadId) return;
       final ids = chatAsIntList(event['message_ids']);
-      if (ids.isEmpty || !mounted) return;
+      if (ids.isEmpty) return;
+      if (_localFirst) {
+        // Synced to DB by ChatSyncService.
+        return;
+      }
+      if (!mounted) return;
       setState(() {
         _messages = _messages.map((m) {
           final id = chatAsInt(m['id']);
@@ -784,7 +875,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (event['event'] == 'chat_messages_deleted') {
       if (eventThreadId != widget.threadId) return;
       final ids = chatAsIntList(event['message_ids']);
-      if (ids.isEmpty || !mounted) return;
+      if (ids.isEmpty) return;
+      if (_localFirst) {
+        // ChatSyncService deletes from SQLite; watchMessages refreshes UI.
+        return;
+      }
+      if (!mounted) return;
       _removeMessagesLocally(ids);
       return;
     }
@@ -802,7 +898,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (event['event'] == 'chat_message_reactions') {
       if (eventThreadId != widget.threadId) return;
       final messageId = chatAsInt(event['message_id']);
-      if (messageId == null || !mounted) return;
+      if (messageId == null) return;
+      if (_localFirst) {
+        // ChatSyncService patches SQLite reactions.
+        return;
+      }
+      if (!mounted) return;
       final reactions = chatParseReactions(
         event['reactions'],
         currentUserId: _currentUserId,
@@ -874,6 +975,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _load({bool silent = false}) async {
+    if (_localFirst) {
+      unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      if (mounted && _loading) {
+        setState(() => _loading = false);
+      }
+      return;
+    }
     final generation = ++_loadGeneration;
     if (!silent && _messages.isEmpty) {
       setState(() {
@@ -1152,6 +1260,29 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_loadingOlder || !_hasMoreOlder || _messages.isEmpty) return;
     final firstId = chatAsInt(_messages.first['id']);
     if (firstId == null || firstId <= 0) return;
+
+    if (_localFirst) {
+      setState(() => _loadingOlder = true);
+      try {
+        final beforeCount = _messages.length;
+        await ChatSyncService.instance.syncThreadOlder(
+          widget.threadId,
+          beforeId: firstId,
+        );
+        // watchMessages will merge; if nothing new arrived, stop paging.
+        if (mounted) {
+          setState(() {
+            if (_messages.length <= beforeCount) {
+              _hasMoreOlder = false;
+            }
+            _loadingOlder = false;
+          });
+        }
+      } catch (_) {
+        if (mounted) setState(() => _loadingOlder = false);
+      }
+      return;
+    }
 
     setState(() => _loadingOlder = true);
 

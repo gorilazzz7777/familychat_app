@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/cache/familychat_media_cache.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_realtime_utils.dart';
@@ -23,6 +24,10 @@ abstract final class ChatOfflinePrefetch {
       final members = (results[1] as List).cast<Map<String, dynamic>>();
       await FamilyChatLocalCache.saveChatThreads(threads);
       await FamilyChatLocalCache.saveChatMembers(members);
+      if (ChatLocalStore.isSupported) {
+        await ChatLocalStore.instance.replaceThreads(threads);
+        await ChatLocalStore.instance.replaceMembers(members);
+      }
 
       for (final thread in threads) {
         final threadId = chatAsInt(thread['id']);
@@ -36,6 +41,12 @@ abstract final class ChatOfflinePrefetch {
             threadId,
             page.messages,
           );
+          if (ChatLocalStore.isSupported) {
+            await ChatLocalStore.instance.upsertMessages(
+              threadId,
+              page.messages,
+            );
+          }
           await prefetchThreadMedia(repo, threadId, page.messages);
         } catch (_) {}
       }

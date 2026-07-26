@@ -7,6 +7,7 @@ import '../notifications/familychat_notifications.dart';
 import '../notifications/familychat_foreground_bridge.dart';
 import '../../features/chat/data/active_chat_context.dart';
 import '../../features/chat/data/familychat_realtime.dart';
+import '../../features/chat/data/chat_sync_service.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import 'push_navigation.dart';
 
@@ -30,6 +31,9 @@ void handleFamilyChatRemoteMessage(
       'thread_id': threadId,
       'message_id': messageId,
     });
+    if (threadId != null && ChatSyncService.isSupported) {
+      unawaited(ChatSyncService.instance.syncThreadFromPush(threadId));
+    }
 
     if (threadId != null &&
         ActiveChatContext.instance.isViewingThread(threadId)) {

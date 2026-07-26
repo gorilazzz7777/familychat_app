@@ -12,6 +12,8 @@ import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../data/chat_hub_tab_order_storage.dart';
 import '../data/chat_unread_providers.dart';
 import '../data/familychat_realtime.dart';
+import '../data/chat_sync_service.dart';
+import '../../../core/local_db/chat_local_store.dart';
 import 'chat_conversation_screen.dart';
 import 'chat_thread_avatars.dart';
 import 'create_group_screen.dart';
@@ -53,6 +55,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   bool _searchVisible = false;
   String _searchQuery = '';
   final _searchController = TextEditingController();
+  StreamSubscription<List<Map<String, dynamic>>>? _threadsSub;
+  StreamSubscription<List<Map<String, dynamic>>>? _membersSub;
+  bool get _localFirst => ChatSyncService.isSupported;
 
   void toggleSearch() {
     setState(() {
@@ -65,7 +70,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   /// Обновить список чатов (например при возврате на вкладку).
-  Future<void> refresh({bool silent = true}) => _load(silent: silent);
+  Future<void> refresh({bool silent = true}) {
+    if (_localFirst) {
+      return ChatSyncService.instance.syncHub(prefetchMessages: true);
+    }
+    return _load(silent: silent);
+  }
 
   @override
   void initState() {
@@ -77,7 +87,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     FamilyChatRealtime.instance.addListener(_onRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineSync);
     unawaited(_restoreTabOrder());
-    _load();
+    if (_localFirst) {
+      _bindLocalStore();
+      unawaited(ChatSyncService.instance.syncHub(prefetchMessages: true));
+    } else {
+      _load();
+    }
   }
 
   @override
@@ -93,6 +108,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     _tabController.dispose();
     FamilyChatRealtime.instance.removeListener(_onRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
+    unawaited(_threadsSub?.cancel() ?? Future<void>.value());
+    unawaited(_membersSub?.cancel() ?? Future<void>.value());
     _searchController.dispose();
     super.dispose();
   }
@@ -200,8 +217,27 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   void _onOfflineSync() {
     if (!mounted) return;
     if (ChatOfflineSync.instance.isOnline) {
-      unawaited(_load(silent: true));
+      if (_localFirst) {
+        unawaited(ChatSyncService.instance.syncHub(prefetchMessages: true));
+      } else {
+        unawaited(_load(silent: true));
+      }
     }
+  }
+
+  void _bindLocalStore() {
+    _threadsSub = ChatLocalStore.instance.watchThreads().listen((threads) {
+      if (!mounted) return;
+      setState(() {
+        _threads = _sortedThreads(threads);
+        _loading = false;
+      });
+      invalidateChatUnreadTotal(ref);
+    });
+    _membersSub = ChatLocalStore.instance.watchMembers().listen((members) {
+      if (!mounted) return;
+      setState(() => _applyMembers(members));
+    });
   }
 
   void _applyMembers(List<Map<String, dynamic>> members) {
@@ -237,6 +273,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         ev == 'chat_refresh' ||
         ev == 'chat_messages_deleted' ||
         ev == 'chat_message_reactions') {
+      if (_localFirst) {
+        // DB already updated by ChatSyncService; hub watches SQLite.
+        if (ev == 'chat_refresh') {
+          unawaited(ChatSyncService.instance.syncHub());
+        }
+        return;
+      }
       unawaited(_load(silent: true));
     }
   }

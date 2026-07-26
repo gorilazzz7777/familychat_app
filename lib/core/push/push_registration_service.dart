@@ -16,12 +16,14 @@ import 'web_fcm_service_worker.dart';
 import 'web_fcm_token.dart';
 import 'web_push_bridge.dart';
 import 'push_message_handler.dart';
+import '../../features/chat/data/chat_background_sync.dart';
 
 @pragma('vm:entry-point')
 Future<void> familychatFirebaseBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
   await PushRegistrationService.ensureFirebaseInitialized();
   await FamilyChatNotifications.handleBackgroundRemoteMessage(message);
+  await ChatBackgroundSync.handleRemoteMessage(message);
 }
 
 enum WebPushRegistrationResult {

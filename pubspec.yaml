@@ -1,7 +1,7 @@
 name: familychat_app
 description: Family Chat — семейный мессенджер с родством.
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.3+4
 
 environment:
   sdk: ^3.5.0
@@ -52,6 +52,9 @@ dependencies:
   video_compress: ^3.1.4
   camera: ^0.12.0+2
   flutter_image_compress: ^2.4.0
+  drift: ^2.34.2
+  sqlite3_flutter_libs: ^0.6.0+eol
+  path: ^1.9.1
 
 dependency_overrides:
   # Upstream vosk_flutter_service has a web plugin manifest issue that makes
@@ -65,6 +68,8 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^5.0.0
   flutter_launcher_icons: ^0.14.3
+  drift_dev: ^2.34.0
+  build_runner: ^2.15.1
 
 flutter:
   uses-material-design: true

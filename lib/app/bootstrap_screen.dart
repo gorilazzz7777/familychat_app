@@ -16,6 +16,7 @@ import '../core/session/auth_session_bus.dart';
 import '../features/auth/data/oauth_login_service.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/chat/data/chat_offline_sync.dart';
+import '../features/chat/data/chat_sync_service.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_conversation_screen.dart';
@@ -146,6 +147,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     } catch (_) {}
   }
 
+
   /// Фоновая проверка invite; невалидные токены убираем.
   Future<void> _validatePendingInvitesInBackground() async {
     await _hydratePendingInvitesFromPrefs();
@@ -250,6 +252,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       ChatOfflineSync.instance.setOnline(true);
       unawaited(FamilyChatLocalCache.saveStatus(status));
     }
+    unawaited(
+      ChatSyncService.instance.start(ref.read(familychatRepositoryProvider)),
+    );
     _syncAppActions();
     if (_ready) {
       unawaited(_maybeHandleFriendInvite());
@@ -464,6 +469,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       nav.popUntil((route) => route.isFirst);
     }
     await FamilyChatRealtime.instance.disconnect();
+    await ChatSyncService.instance.stop();
     ChatScheduledSendService.instance.stop();
     PushRegistrationService.resetSession();
     await ref.read(themeSeedProvider.notifier).resetToDefault();
