@@ -22,9 +22,16 @@ void handleFamilyChatRemoteMessage(
   final type = data['type']?.toString() ?? '';
   final isForeground = FamilyChatForegroundBridge.isAppInForeground();
 
-  if (type == 'familychat_chat') {
-    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
-    final messageId = int.tryParse(data['message_id']?.toString() ?? '');
+  if (type == 'familychat_chat' ||
+      (data['deeplink']?.toString() == 'chat' &&
+          (data['thread_id']?.toString() ?? '').isNotEmpty)) {
+    final payload = Map<String, dynamic>.from(data);
+    final rawType = payload['type']?.toString() ?? '';
+    if (rawType.isEmpty) {
+      payload['type'] = 'familychat_chat';
+    }
+    final threadId = int.tryParse(payload['thread_id']?.toString() ?? '');
+    final messageId = int.tryParse(payload['message_id']?.toString() ?? '');
 
     FamilyChatRealtime.instance.emitSyntheticEvent({
       'event': 'chat_refresh',
@@ -35,13 +42,13 @@ void handleFamilyChatRemoteMessage(
       unawaited(ChatSyncService.instance.syncThreadFromPush(threadId));
     }
 
-    if (threadId != null &&
-        ActiveChatContext.instance.isViewingThread(threadId)) {
+    if (openedFromTap) {
+      openChatFromPushData(payload);
       return;
     }
 
-    if (openedFromTap) {
-      openChatFromPushData(data);
+    if (threadId != null &&
+        ActiveChatContext.instance.isViewingThread(threadId)) {
       return;
     }
 

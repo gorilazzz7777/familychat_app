@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,10 @@ import '../../../app/shell_refresh.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/push/push_navigation.dart';
+import '../../../core/push/push_message_handler.dart';
+import '../../../core/local_db/chat_local_store.dart';
+import '../data/chat_sync_service.dart';
+import 'chat_conversation_screen.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../feed/data/feed_post_uploader.dart';
 import '../../profile/data/album_upload_coordinator.dart';
@@ -400,11 +405,19 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
             final id = chatAsInt(uploaded['id']);
             if (id != null) attachmentIds.add(id);
           }
-          await repo.sendThreadMessage(
+          final sent = await repo.sendThreadMessage(
             threadId,
             body: caption.isEmpty ? null : caption,
             attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
           );
+          if (ChatLocalStore.isSupported) {
+            final map = Map<String, dynamic>.from(sent);
+            map['thread_id'] ??= threadId;
+            await ChatLocalStore.instance.upsertMessage(map);
+          }
+          if (ChatSyncService.isSupported) {
+            unawaited(ChatSyncService.instance.syncThread(threadId));
+          }
         }
         sentAny = true;
       }
@@ -427,17 +440,52 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
 
       if (!mounted) return;
       if (sentAny) {
+        // After share-into-chat, land in that conversation (first if several).
+        final openThreadId = threadIds.isNotEmpty ? threadIds.first : null;
+        Map<String, dynamic>? openThread;
+        if (openThreadId != null) {
+          for (final t in _threads) {
+            if (chatAsInt(t['id']) == openThreadId) {
+              openThread = t;
+              break;
+            }
+          }
+        }
+
+        final messenger = familyChatScaffoldMessengerKey.currentState;
+        final nav = familyChatNavigatorKey.currentState;
         Navigator.of(context).pop(true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _shareToFeed && threadIds.isEmpty && albumPks.isEmpty
-                  ? 'Опубликовано в ленту'
-                  : 'Отправлено',
-            ),
-          ),
-        );
         await ShellRefresh.instance.refreshMainTabs();
+
+        if (openThreadId != null && nav != null) {
+          await nav.push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => ChatConversationScreen(
+                threadId: openThreadId,
+                title: openThread?['title']?.toString() ?? 'Чат',
+                defaultTitle: openThread?['default_title']?.toString() ??
+                    openThread?['title']?.toString() ??
+                    'Чат',
+                customTitle: openThread?['custom_title']?.toString() ?? '',
+                kind: openThread?['kind']?.toString() ?? 'family',
+                peerUserId: chatAsInt(openThread?['peer_user_id']),
+                initialPeerAvatarUrl:
+                    openThread?['peer_avatar_url']?.toString(),
+                initialCanSend: openThread?['can_send'] != false,
+              ),
+            ),
+          );
+        } else {
+          messenger?.showSnackBar(
+            SnackBar(
+              content: Text(
+                _shareToFeed && threadIds.isEmpty
+                    ? 'Опубликовано в ленту'
+                    : 'Отправлено',
+              ),
+            ),
+          );
+        }
       }
     } catch (_) {
       if (!mounted) return;

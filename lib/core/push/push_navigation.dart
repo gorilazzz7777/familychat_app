@@ -13,6 +13,7 @@ final familyChatNavigatorKey = GlobalKey<NavigatorState>();
 Map<String, dynamic>? pendingChatPushData;
 Map<String, dynamic>? pendingCalendarPushData;
 Map<String, dynamic>? pendingCallPushData;
+bool _chatPushRetryScheduled = false;
 
 void flushPendingChatPush() {
   final data = pendingChatPushData;
@@ -32,38 +33,69 @@ void flushPendingChatPush() {
   }
 }
 
-void openChatFromPushData(Map<String, dynamic> data) {
-  if (data['type']?.toString() != 'familychat_chat') return;
+bool _isChatPushData(Map<String, dynamic> data) {
+  final type = data['type']?.toString() ?? '';
+  if (type == 'familychat_chat') return true;
+  // Some OEMs drop custom type but keep deeplink/thread_id.
+  final deeplink = data['deeplink']?.toString() ?? '';
+  final threadId = data['thread_id']?.toString() ?? '';
+  return deeplink == 'chat' && threadId.isNotEmpty;
+}
 
-  final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+void openChatFromPushData(Map<String, dynamic> data) {
+  final payload = Map<String, dynamic>.from(data);
+  if (!_isChatPushData(payload)) return;
+
+  final threadId = int.tryParse(payload['thread_id']?.toString() ?? '');
   if (threadId == null) return;
 
   unawaited(
     FamilyChatNotifications.clearChatNotifications(threadId: threadId),
   );
 
+  void pushRoute(NavigatorState nav) {
+    final title = payload['thread_title']?.toString().trim();
+    final kind = payload['thread_kind']?.toString() ?? 'family';
+    final peerUserId = int.tryParse(payload['peer_user_id']?.toString() ?? '');
+    final messageId = int.tryParse(payload['message_id']?.toString() ?? '');
+
+    nav.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatConversationScreen(
+          threadId: threadId,
+          title: title != null && title.isNotEmpty ? title : 'Чат',
+          kind: kind,
+          peerUserId: peerUserId,
+          initialMessageId: messageId,
+        ),
+      ),
+    );
+  }
+
   final nav = familyChatNavigatorKey.currentState;
   if (nav == null) {
-    pendingChatPushData = Map<String, dynamic>.from(data);
+    pendingChatPushData = payload;
+    // Retry shortly — share/bootstrap may mount navigator a tick later.
+    if (!_chatPushRetryScheduled) {
+      _chatPushRetryScheduled = true;
+      Future<void>.delayed(const Duration(milliseconds: 400), () {
+        _chatPushRetryScheduled = false;
+        if (pendingChatPushData == null) return;
+        flushPendingChatPush();
+      });
+    }
     return;
   }
 
-  final title = data['thread_title']?.toString().trim();
-  final kind = data['thread_kind']?.toString() ?? 'family';
-  final peerUserId = int.tryParse(data['peer_user_id']?.toString() ?? '');
-  final messageId = int.tryParse(data['message_id']?.toString() ?? '');
-
-  nav.push<void>(
-    MaterialPageRoute<void>(
-      builder: (_) => ChatConversationScreen(
-        threadId: threadId,
-        title: title != null && title.isNotEmpty ? title : 'Чат',
-        kind: kind,
-        peerUserId: peerUserId,
-        initialMessageId: messageId,
-      ),
-    ),
-  );
+  // Defer to next frame so we don't push during build/transition (e.g. after share).
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final current = familyChatNavigatorKey.currentState;
+    if (current == null) {
+      pendingChatPushData = payload;
+      return;
+    }
+    pushRoute(current);
+  });
 }
 
 void openCalendarFromPushData(Map<String, dynamic> data) {

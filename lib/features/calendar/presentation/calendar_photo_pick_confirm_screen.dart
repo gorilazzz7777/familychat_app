@@ -44,7 +44,7 @@ class _CalendarPhotoPickConfirmScreenState extends State<CalendarPhotoPickConfir
   @override
   Widget build(BuildContext context) {
     final period =
-        '${_dateFmt.format(widget.info.startDate)} – ${_dateFmt.format(widget.info.syncUntil)}';
+        '${_dateFmt.format(widget.info.startDate)} – ${_dateFmt.format(widget.info.endDate)}';
     final matching = widget.photos.where(_matchesEventDates).length;
 
     return Scaffold(

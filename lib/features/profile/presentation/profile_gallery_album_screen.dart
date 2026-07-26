@@ -323,7 +323,7 @@ class _ProfileGalleryAlbumScreenState
     }
 
     final isAndroid = CalendarPhotoSyncService.isAndroidNative;
-    final showWebUpload = kIsWeb;
+    final showWebUpload = kIsWeb && info.syncActive;
     final showAndroidSync = isAndroid && info.syncActive;
     final pending = info.pendingReviewCount;
 

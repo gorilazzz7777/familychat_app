@@ -319,6 +319,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       await _refreshTab(0, silent: true);
       await _refreshTab(1, silent: true);
     }
+    // Share flow can race with cold-start push pending navigation.
+    flushPendingChatPush();
   }
 
   Future<void> _refreshTab(int tabIndex, {bool silent = true}) async {

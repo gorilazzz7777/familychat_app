@@ -61,8 +61,11 @@ class CalendarPhotoSyncInfo {
   bool containsDate(DateTime day) {
     final d = DateTime(day.year, day.month, day.day);
     final start = DateTime(startDate.year, startDate.month, startDate.day);
+    // Never accept photos after the event end date (grace is server-side only).
+    final end = DateTime(endDate.year, endDate.month, endDate.day);
     final until = DateTime(syncUntil.year, syncUntil.month, syncUntil.day);
-    return !d.isBefore(start) && !d.isAfter(until);
+    final hardUntil = end.isBefore(until) ? end : until;
+    return !d.isBefore(start) && !d.isAfter(hardUntil);
   }
 }
 
@@ -152,10 +155,13 @@ class CalendarPhotoSyncService {
     if (count == 0) return 0;
 
     final start = DateTime(info.startDate.year, info.startDate.month, info.startDate.day);
+    final hardEnd = info.endDate.isBefore(info.syncUntil)
+        ? info.endDate
+        : info.syncUntil;
     final until = DateTime(
-      info.syncUntil.year,
-      info.syncUntil.month,
-      info.syncUntil.day,
+      hardEnd.year,
+      hardEnd.month,
+      hardEnd.day,
       23,
       59,
       59,
