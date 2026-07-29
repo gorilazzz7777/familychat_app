@@ -4,9 +4,9 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/media/gallery_media_export.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
@@ -1151,35 +1151,30 @@ class _ProfileGalleryAlbumScreenState
         return id != null && _selectedPhotoIds.contains(id);
       }).toList();
 
-  Future<List<XFile>> _loadSelectedPhotoFiles() async {
-    final repo = ref.read(familychatRepositoryProvider);
-    final files = <XFile>[];
-    for (final photo in _selectedPhotos) {
-      final threadId = photo['thread_id'];
-      final attachmentId = _photoId(photo);
-      if (threadId is! int || attachmentId == null) continue;
-      final bytes = await repo.fetchChatAttachmentBytes(threadId, attachmentId);
-      final rawName = photo['filename']?.toString().trim() ?? '';
-      final name = rawName.isNotEmpty ? rawName : 'photo_$attachmentId.jpg';
-      files.add(XFile.fromData(bytes, name: name));
-    }
-    return files;
-  }
-
   Future<void> _downloadSelectedPhotos() async {
     final selected = _selectedPhotos;
     if (selected.isEmpty || _bulkActionRunning) return;
     setState(() => _bulkActionRunning = true);
     try {
-      final files = await _loadSelectedPhotoFiles();
-      if (files.isEmpty) {
-        throw StateError('Не удалось загрузить файлы');
-      }
-      // ignore: deprecated_member_use
-      await Share.shareXFiles(files);
+      final repo = ref.read(familychatRepositoryProvider);
+      await GalleryMediaExport.saveAttachmentsToGallery(
+        attachments: selected,
+        fetchBytes: (photo) async {
+          final threadId = photo['thread_id'];
+          final attachmentId = _photoId(photo);
+          if (threadId is! int || attachmentId == null) {
+            throw StateError('Нет id вложения');
+          }
+          return repo.fetchChatAttachmentBytes(threadId, attachmentId);
+        },
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Готово: ${files.length} фото')),
+        SnackBar(
+          content: Text(
+            'Сохранено: ${selected.length} · «${GalleryMediaExport.appAlbumName}»',
+          ),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1196,12 +1191,23 @@ class _ProfileGalleryAlbumScreenState
     if (selected.isEmpty || _bulkActionRunning) return;
     setState(() => _bulkActionRunning = true);
     try {
-      final files = await _loadSelectedPhotoFiles();
-      if (files.isEmpty) {
-        throw StateError('Не удалось подготовить файлы');
-      }
-      // ignore: deprecated_member_use
-      await Share.shareXFiles(files);
+      final repo = ref.read(familychatRepositoryProvider);
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null
+          ? null
+          : box.localToGlobal(Offset.zero) & box.size;
+      await GalleryMediaExport.shareAttachments(
+        attachments: selected,
+        fetchBytes: (photo) async {
+          final threadId = photo['thread_id'];
+          final attachmentId = _photoId(photo);
+          if (threadId is! int || attachmentId == null) {
+            throw StateError('Нет id вложения');
+          }
+          return repo.fetchChatAttachmentBytes(threadId, attachmentId);
+        },
+        sharePositionOrigin: origin,
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

@@ -22,12 +22,14 @@ class FeedEventMediaBlock extends ConsumerStatefulWidget {
     required this.onPhotoTap,
     this.initialIndex = 0,
     this.onIndexChanged,
+    this.onPlaySlideshow,
   });
 
   final List<Map<String, dynamic>> photos;
   final void Function(int index) onPhotoTap;
   final int initialIndex;
   final ValueChanged<int>? onIndexChanged;
+  final void Function(int startIndex)? onPlaySlideshow;
 
   static const double minAspect = 0.8;
   static const double maxAspect = 1.91;
@@ -306,6 +308,26 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
                                   color: Colors.white,
                                   fontWeight: FontWeight.w600,
                                 ),
+                      ),
+                    ),
+                  ),
+                ),
+              if (showCounter &&
+                  widget.onPlaySlideshow != null &&
+                  _index < widget.photos.length - 1)
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: Material(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    shape: const CircleBorder(),
+                    clipBehavior: Clip.antiAlias,
+                    child: IconButton(
+                      tooltip: 'Диафильм',
+                      onPressed: () => widget.onPlaySlideshow!(_index),
+                      icon: const Icon(
+                        Icons.play_arrow_rounded,
+                        color: Colors.white,
                       ),
                     ),
                   ),

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 
 import '../config/env.dart';
+import '../client/app_client.dart';
 import '../session/auth_session_bus.dart';
 import '../storage/token_storage.dart';
 import 'dio_jwt_error.dart';
@@ -28,6 +29,7 @@ class ApiClient {
                 headers: {
                   'Accept': 'application/json',
                   'Content-Type': 'application/json',
+                  ...AppClient.extraHeaders,
                 },
               ),
             ) {

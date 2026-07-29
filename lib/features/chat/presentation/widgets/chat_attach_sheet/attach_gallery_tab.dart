@@ -148,13 +148,16 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   }
 
   /// Android 14 «только выбранные» часто выглядит как Recent+Pictures с одинаковым count.
+  ///
+  /// Важно: OS/`photo_manager` иногда отдают [PermissionState.limited], хотя
+  /// фактически видны Camera/WhatsApp/скриншоты. Тогда баннер не показываем.
   bool _detectLimitedAccess({
     required PermissionState perm,
     required List<AssetPathEntity> albums,
   }) {
-    if (perm == PermissionState.limited) return true;
     if (perm.isAuth) return false;
-    if (albums.length > 3) return false;
+    if (_looksLikeFullPhotoLibrary(albums)) return false;
+    if (perm == PermissionState.limited) return true;
     bool isGeneric(String raw) {
       final n = raw.toLowerCase().trim();
       return n.isEmpty ||
@@ -172,6 +175,27 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     }
 
     return albums.isNotEmpty && albums.every((a) => a.isAll || isGeneric(a.name));
+  }
+
+  bool _looksLikeFullPhotoLibrary(List<AssetPathEntity> albums) {
+    if (albums.length > 3) return true;
+    for (final album in albums) {
+      final n = album.name.toLowerCase().trim();
+      if (n.contains('whatsapp') ||
+          n.contains('telegram') ||
+          n.contains('camera') ||
+          n.contains('камер') ||
+          n.contains('screenshot') ||
+          n.contains('скрин') ||
+          n.contains('download') ||
+          n.contains('загруз') ||
+          n == 'dcim' ||
+          n.contains('instagram') ||
+          n.contains('bluetooth')) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _openFullAccessSettings() async {

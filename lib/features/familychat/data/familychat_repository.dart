@@ -180,6 +180,14 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> resolveDeferredInvite() async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/deferred-invite/resolve/',
+      data: const <String, dynamic>{},
+    );
+    return res.data ?? {};
+  }
+
   Future<Map<String, dynamic>> createFamily({String? name}) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/onboarding/create-family/',

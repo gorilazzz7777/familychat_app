@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/media/gallery_media_export.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
-import '../../chat/presentation/widgets/chat_image_viewer.dart';
+import '../../../core/widgets/zoom_aware_page_view.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import 'face_tagging_sheet.dart';
 import 'media_engagement_inline.dart';
+import 'photo_slideshow_screen.dart';
 import 'widgets/photo_people_on_photo_bar.dart';
 
 /// Полноэкранный просмотр фото из галереи с меню действий.
@@ -65,8 +67,11 @@ class _GalleryPhotoViewerScreenState
   late final List<Map<String, dynamic>> _photos;
   late int _index;
   late final PageController _pageController;
+  final _zoomPageKey = GlobalKey<ZoomAwarePageViewState>();
   bool _commentsExpanded = false;
   bool _likeBusy = false;
+  int? _highlightUserId;
+  List<PhotoFaceBox> _highlightBoxes = const [];
 
   @override
   void initState() {
@@ -85,22 +90,6 @@ class _GalleryPhotoViewerScreenState
   }
 
   Map<String, dynamic> get _photo => _photos[_index];
-
-  List<String> get _photoTags {
-    final raw = _photo['photo_tags'] ?? _photo['tags'];
-    if (raw is! List) return const [];
-    final out = <String>[];
-    for (final item in raw) {
-      if (item is Map) {
-        final label = item['tag_label']?.toString().trim() ?? '';
-        if (label.isNotEmpty && !out.contains(label)) out.add(label);
-      } else {
-        final text = item?.toString().trim() ?? '';
-        if (text.isNotEmpty && !out.contains(text)) out.add(text);
-      }
-    }
-    return out;
-  }
 
   int get _commentsCount {
     final raw = _photo['comments_count'];
@@ -246,23 +235,59 @@ class _GalleryPhotoViewerScreenState
     }
   }
 
-  Future<void> _openShare(BuildContext context, WidgetRef ref) async {
+  Future<void> _shareCurrent(BuildContext context) async {
+    final photo = _photo;
     final threadId = _threadId;
     final attachmentId = _attachmentId;
-    if (threadId == null || attachmentId == null) return;
-    final repo = ref.read(familychatRepositoryProvider);
-    final url = chatAttachmentImageUrl(
-      repo: repo,
-      threadId: threadId,
-      attachment: _photo,
-    );
-    await ChatImageViewer.open(
-      context,
-      imageUrl: url,
-      threadId: threadId,
-      attachmentId: attachmentId,
-      filename: _photo['filename']?.toString(),
-    );
+    try {
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null
+          ? null
+          : box.localToGlobal(Offset.zero) & box.size;
+      await GalleryMediaExport.shareAttachments(
+        attachments: [photo],
+        fetchBytes: threadId == null || attachmentId == null
+            ? null
+            : (_) => ref
+                .read(familychatRepositoryProvider)
+                .fetchChatAttachmentBytes(threadId, attachmentId),
+        sharePositionOrigin: origin,
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось поделиться: $e')),
+      );
+    }
+  }
+
+  Future<void> _downloadCurrent(BuildContext context) async {
+    final photo = _photo;
+    final threadId = _threadId;
+    final attachmentId = _attachmentId;
+    try {
+      await GalleryMediaExport.saveAttachmentsToGallery(
+        attachments: [photo],
+        fetchBytes: threadId == null || attachmentId == null
+            ? null
+            : (_) => ref
+                .read(familychatRepositoryProvider)
+                .fetchChatAttachmentBytes(threadId, attachmentId),
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Сохранено в галерею («${GalleryMediaExport.appAlbumName}»)',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось скачать: $e')),
+      );
+    }
   }
 
   @override
@@ -276,6 +301,24 @@ class _GalleryPhotoViewerScreenState
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         actions: [
+          if (_photos.length - _index >= 2)
+            IconButton(
+              tooltip: 'Диафильм',
+              onPressed: () {
+                PhotoSlideshowScreen.open(
+                  context,
+                  photos: _photos,
+                  startIndex: _index,
+                );
+              },
+              icon: const Icon(Icons.play_arrow_rounded),
+            ),
+          if (attachmentId != null)
+            IconButton(
+              tooltip: 'Поделиться',
+              onPressed: () => _shareCurrent(context),
+              icon: const Icon(Icons.ios_share),
+            ),
           if (threadId != null && attachmentId != null)
             IconButton(
               tooltip: 'Кто на фото',
@@ -292,8 +335,8 @@ class _GalleryPhotoViewerScreenState
                   if (_isOwnGallery || _isOwnUpload) {
                     await _confirmDelete(context, ref);
                   }
-                case 'share':
-                  await _openShare(context, ref);
+                case 'download':
+                  await _downloadCurrent(context);
               }
             },
             itemBuilder: (context) => [
@@ -306,7 +349,7 @@ class _GalleryPhotoViewerScreenState
                 const PopupMenuItem(
                     value: 'delete', child: Text('Удалить фото')),
               const PopupMenuItem(
-                  value: 'share', child: Text('Поделиться / скачать')),
+                  value: 'download', child: Text('Скачать')),
             ],
           ),
         ],
@@ -315,9 +358,15 @@ class _GalleryPhotoViewerScreenState
         children: [
           Expanded(
             flex: 3,
-            child: PageView.builder(
+            child: ZoomAwarePageView(
+              key: _zoomPageKey,
               controller: _pageController,
-              onPageChanged: (i) => setState(() => _index = i),
+              onPageChanged: (i) => setState(() {
+                _index = i;
+                _commentsExpanded = false;
+                _highlightUserId = null;
+                _highlightBoxes = const [];
+              }),
               itemCount: _photos.length,
               itemBuilder: (_, i) {
                 final p = _photos[i];
@@ -326,21 +375,38 @@ class _GalleryPhotoViewerScreenState
                   return const Icon(Icons.broken_image_outlined,
                       color: Colors.white54, size: 48);
                 }
+                final showHighlight =
+                    i == _index && _highlightBoxes.isNotEmpty;
                 return Center(
                   child: LayoutBuilder(
-                    builder: (context, constraints) => InteractiveViewer(
-                      minScale: 0.2,
-                      maxScale: 5,
-                      constrained: false,
-                      clipBehavior: Clip.none,
-                      child: SizedBox(
-                        width: constraints.maxWidth,
-                        height: constraints.maxHeight,
-                        child: ChatNetworkImage(
-                          threadId: tid,
-                          attachment: p,
-                          fit: BoxFit.contain,
-                        ),
+                    builder: (context, constraints) => SizedBox(
+                      width: constraints.maxWidth,
+                      height: constraints.maxHeight,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          ScaleReportingInteractiveViewer(
+                            minScale: 0.8,
+                            maxScale: 5,
+                            constrained: false,
+                            clipBehavior: Clip.none,
+                            onScaleChanged: i == _index
+                                ? (scale) =>
+                                    _zoomPageKey.currentState?.reportScale(scale)
+                                : null,
+                            child: SizedBox(
+                              width: constraints.maxWidth,
+                              height: constraints.maxHeight,
+                              child: ChatNetworkImage(
+                                threadId: tid,
+                                attachment: p,
+                                fit: BoxFit.contain,
+                              ),
+                            ),
+                          ),
+                          if (showHighlight)
+                            PhotoFaceHighlightOverlay(boxes: _highlightBoxes),
+                        ],
                       ),
                     ),
                   ),
@@ -351,6 +417,7 @@ class _GalleryPhotoViewerScreenState
           if (attachmentId != null)
             SafeArea(
               top: false,
+              bottom: false,
               child: Container(
                 color: Colors.grey.shade900,
                 child: AnimatedSize(
@@ -390,20 +457,21 @@ class _GalleryPhotoViewerScreenState
                                       : Colors.white70,
                                 ),
                               ),
-                              if (_likesCount > 0)
-                                Padding(
-                                  padding: const EdgeInsets.only(right: 8),
-                                  child: Text(
-                                    '$_likesCount',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
-                                          color: Colors.white70,
-                                          fontSize: 12,
-                                        ),
-                                  ),
-                                ),
+                              SizedBox(
+                                width: 36,
+                                child: _likesCount > 0
+                                    ? Text(
+                                        '$_likesCount',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              color: Colors.white70,
+                                              fontSize: 12,
+                                            ),
+                                      )
+                                    : null,
+                              ),
                               const SizedBox(width: 6),
                               Expanded(
                                 child: Text(
@@ -464,47 +532,25 @@ class _GalleryPhotoViewerScreenState
               ),
             ),
           if (attachmentId != null)
-            PhotoPeopleOnPhotoBar(
-              key: ValueKey<int>(attachmentId),
-              attachmentId: attachmentId,
-              profileUserId: widget.profileUserId,
-              threadId: threadId,
-            ),
-          if (_photoTags.isNotEmpty)
-            Container(
-              width: double.infinity,
-              color: Colors.black,
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-              child: Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Text(
-                    'Теги:',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.white70,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                  ),
-                  for (final tag in _photoTags.take(12))
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.white10,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        tag,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Colors.white70,
-                              fontSize: 11,
-                            ),
-                      ),
-                    ),
-                ],
+            SafeArea(
+              top: false,
+              child: PhotoPeopleOnPhotoBar(
+                key: ValueKey<int>(attachmentId),
+                attachmentId: attachmentId,
+                profileUserId: widget.profileUserId,
+                threadId: threadId,
+                selectedUserId: _highlightUserId,
+                onHighlightChanged: (highlight) {
+                  setState(() {
+                    if (highlight == null) {
+                      _highlightUserId = null;
+                      _highlightBoxes = const [];
+                    } else {
+                      _highlightUserId = highlight.userId;
+                      _highlightBoxes = highlight.boxes;
+                    }
+                  });
+                },
               ),
             ),
         ],

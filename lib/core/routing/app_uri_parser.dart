@@ -22,7 +22,7 @@ String? extractInviteToken(Uri uri) {
   for (var i = 0; i < segments.length - 1; i++) {
     if (segments[i] == 'invite') {
       final token = segments[i + 1].trim();
-      if (token.isNotEmpty) return token;
+      if (token.isNotEmpty && token != 'get-app') return token;
     }
   }
   if (uri.scheme == 'familychat' && uri.host == 'invite') {
@@ -37,7 +37,7 @@ String? extractFriendInviteToken(Uri uri) {
   for (var i = 0; i < segments.length - 1; i++) {
     if (segments[i] == 'friend-invite') {
       final token = segments[i + 1].trim();
-      if (token.isNotEmpty) return token;
+      if (token.isNotEmpty && token != 'get-app') return token;
     }
   }
   if (uri.scheme == 'familychat' && uri.host == 'friend-invite') {
@@ -45,6 +45,39 @@ String? extractFriendInviteToken(Uri uri) {
     if (token != null && token.isNotEmpty) return token;
   }
   return null;
+}
+
+String? extractInviteTokenFromText(String? raw) {
+  if (raw == null) return null;
+  final text = raw.trim();
+  if (text.isEmpty) return null;
+  if (extractFriendInviteTokenFromText(text) != null) return null;
+  final uri = Uri.tryParse(text);
+  if (uri != null && (uri.hasScheme || text.contains('/invite/'))) {
+    final fromUri = extractInviteToken(uri);
+    if (fromUri != null) return fromUri;
+  }
+  final match = RegExp(
+    r'(?:https?://[^\s]+/(?:familychat/)?invite/|familychat://invite/)([A-Za-z0-9_-]{8,128})',
+    caseSensitive: false,
+  ).firstMatch(text);
+  return match?.group(1)?.trim();
+}
+
+String? extractFriendInviteTokenFromText(String? raw) {
+  if (raw == null) return null;
+  final text = raw.trim();
+  if (text.isEmpty) return null;
+  final uri = Uri.tryParse(text);
+  if (uri != null && (uri.hasScheme || text.contains('/friend-invite/'))) {
+    final fromUri = extractFriendInviteToken(uri);
+    if (fromUri != null) return fromUri;
+  }
+  final match = RegExp(
+    r'(?:https?://[^\s]+/friend-invite/|familychat://friend-invite/)([A-Za-z0-9_-]{8,128})',
+    caseSensitive: false,
+  ).firstMatch(text);
+  return match?.group(1)?.trim();
 }
 
 OAuthCallbackResult? parseOAuthCallback(Uri uri) {

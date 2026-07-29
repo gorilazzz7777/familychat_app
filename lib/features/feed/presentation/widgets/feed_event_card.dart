@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/i18n/gender_verbs.dart';
+import '../../../profile/presentation/photo_slideshow_screen.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import 'feed_birthday_event_card.dart';
 import 'feed_holiday_event_card.dart';
@@ -302,6 +303,15 @@ class _FeedEventCardState extends State<FeedEventCard> {
               onPhotoTap: (index) => _openPhoto(index, photos),
               onIndexChanged: _kind == 'photo_batch_uploaded'
                   ? (index) => setState(() => _batchIndex = index)
+                  : null,
+              onPlaySlideshow: photos.length > 1
+                  ? (startIndex) {
+                      PhotoSlideshowScreen.open(
+                        context,
+                        photos: photos,
+                        startIndex: startIndex,
+                      );
+                    }
                   : null,
             ),
           if (caption != null) FeedExpandableCaption(text: caption),

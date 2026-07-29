@@ -37,7 +37,11 @@ abstract final class Env {
     defaultValue: 'oauth.yandex.ru',
   );
 
-  static Uri oauthStartUri(String provider, String nextUrl) {
+  static Uri oauthStartUri(
+    String provider,
+    String nextUrl, {
+    String? deviceId,
+  }) {
     final base = apiBaseUrl.endsWith('/') ? apiBaseUrl : '$apiBaseUrl/';
     final params = <String, String>{
       'mode': 'login',
@@ -45,6 +49,10 @@ abstract final class Env {
     };
     if (provider == 'yandex') {
       params['authorize_host'] = yandexOAuthHost.contains('.ru') ? 'ru' : 'com';
+    }
+    final id = (deviceId ?? '').trim();
+    if (id.isNotEmpty) {
+      params['device_id'] = id;
     }
     return Uri.parse('${base}auth/$provider/start/').replace(
       queryParameters: params,
