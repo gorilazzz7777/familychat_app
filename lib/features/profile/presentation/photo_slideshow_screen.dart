@@ -168,18 +168,18 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
     if (isVideoAttachment(photo)) {
       return GalleryVideoPlayer(
         url: galleryAttachmentUrl(photo),
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         autoplay: true,
         showControls: false,
       );
     }
     final local = photo['local_bytes'];
     if (local is Uint8List && local.isNotEmpty) {
-      return Image.memory(local, fit: BoxFit.cover, gaplessPlayback: true);
+      return Image.memory(local, fit: BoxFit.contain, gaplessPlayback: true);
     }
     return FamilyPublicImage(
       url: galleryAttachmentUrl(photo),
-      fit: BoxFit.cover,
+      fit: BoxFit.contain,
       placeholder: const ColoredBox(
         color: Colors.black,
         child: Center(

@@ -14,7 +14,12 @@ import '../../../core/widgets/share_to_diary_checkbox.dart';
 import '../data/feed_post_uploader.dart';
 
 class FeedPostComposeScreen extends ConsumerStatefulWidget {
-  const FeedPostComposeScreen({super.key});
+  const FeedPostComposeScreen({
+    super.key,
+    this.initialPhotos = const [],
+  });
+
+  final List<FeedPostPhoto> initialPhotos;
 
   @override
   ConsumerState<FeedPostComposeScreen> createState() =>
@@ -31,6 +36,14 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialPhotos.isNotEmpty) {
+      _photos.addAll(
+        widget.initialPhotos.take(FeedPostUploader.maxPhotos),
+      );
+      for (final photo in _photos) {
+        unawaited(FeedPostUploader.cacheLocally(photo));
+      }
+    }
     unawaited(_loadUserId());
   }
 

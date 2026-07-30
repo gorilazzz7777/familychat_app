@@ -10,7 +10,6 @@ import '../core/push/push_navigation.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
 import '../core/services/rustore_review_prompt_service.dart';
-import '../core/share/share_to_diary_prefs.dart';
 import '../core/updates/app_update_service.dart';
 import '../core/widgets/app_skeletons.dart';
 import '../core/widgets/family_app_bar.dart';
@@ -32,14 +31,14 @@ import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/chat_voice_transcription_prefs.dart';
 import '../features/chat/data/incoming_call_coordinator.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
+import '../core/media/gallery_media_utils.dart';
 import '../features/chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
+import '../features/feed/data/feed_post_uploader.dart';
 import '../features/feed/presentation/feed_screen.dart';
 import '../features/feed/presentation/feed_post_compose_screen.dart';
 import '../features/gallery/presentation/gallery_menu_screen.dart';
 import '../features/members/presentation/family_invite_flow.dart';
 import '../features/members/presentation/members_screen.dart';
-import '../features/profile/presentation/custom_album_dialog.dart';
-
 class ShellScreen extends ConsumerStatefulWidget {
   const ShellScreen({
     super.key,
@@ -393,7 +392,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       };
 
   bool get _hideShellAppBar =>
-      _index == _galleryTabIndex || _index == _calendarTabIndex;
+      _index == 1 ||
+      _index == _galleryTabIndex ||
+      _index == _calendarTabIndex;
 
   void _onDestinationSelected(int i) {
     final previous = _index;
@@ -419,6 +420,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         return ChatHubScreen(
           key: _chatHubKey,
           hasIndividualPremium: _hasIndividualPremium,
+          profileName: _displayName,
+          profileAvatarUrl: _avatarUrl,
+          onProfileTap: _openProfile,
         );
       case 2:
         return MembersScreen(
@@ -449,108 +453,116 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     } catch (_) {}
   }
 
-  Future<void> _openProfile() async {
-    await AppActions.openProfile(context);
-    if (!mounted) return;
-    await _handleStatusChanged();
-  }
-
   Future<void> _openFeedPost() async {
-    final posted = await Navigator.of(context).push<Object?>(
-      MaterialPageRoute<Object?>(
-        builder: (_) => const FeedPostComposeScreen(),
-      ),
-    );
-    if (!mounted || posted == null) return;
-    if (posted is Map<String, dynamic>) {
-      _feedKey.currentState?.prependOptimisticEvent(posted);
-      return;
-    }
-    if (posted == true) {
-      await _refreshTab(0, silent: true);
-    }
-  }
-
-  Future<void> _openCreateAlbum() async {
     final userId = _currentUserId;
     if (userId == null) return;
-    final created = await CustomAlbumDialog.show(context, userId: userId);
-    if (!mounted || created != true) return;
-    setState(() => _index = _galleryTabIndex);
-    _visitedTabs.add(_galleryTabIndex);
-    unawaited(_refreshTab(_galleryTabIndex, silent: true));
-  }
 
-  Future<void> _openAddPhotos() async {
-    final userId = _currentUserId;
-    if (userId == null) return;
+    Future<void> openCompose(List<FeedPostPhoto> photos) async {
+      if (photos.isEmpty || !mounted) return;
+      final posted = await Navigator.of(context).push<Object?>(
+        MaterialPageRoute<Object?>(
+          builder: (_) => FeedPostComposeScreen(initialPhotos: photos),
+        ),
+      );
+      if (!mounted) return;
+      if (posted is Map<String, dynamic>) {
+        _feedKey.currentState?.prependOptimisticEvent(posted);
+        return;
+      }
+      if (posted == true) {
+        await _refreshTab(0, silent: true);
+      }
+    }
+
     await ChatAttachSheet.show(
       context,
-      style: ChatAttachSheetStyle.phoneMedia,
-      onSendMedia: (caption, items) async {
-        final repo = ref.read(familychatRepositoryProvider);
-        final shareToDiary = ref.read(shareToDiaryPrefsProvider);
+      style: ChatAttachSheetStyle.albumMedia,
+      familyGalleryUserId: userId,
+      onSendMedia: (_, items) async {
+        if (items.isEmpty || !mounted) return;
+        final photos = <FeedPostPhoto>[];
         for (final item in items) {
-          await repo.familyGalleryUpload(
-            bytes: item.bytes,
-            filename: item.filename,
-            contentType: item.contentType,
-            destination: 'my_gallery',
-            shareToDiary: shareToDiary,
+          if (item.kind != 'image' && item.kind != 'video') continue;
+          photos.add(
+            FeedPostPhoto(
+              bytes: item.bytes,
+              filename: item.filename,
+              contentType:
+                  item.contentType ?? contentTypeForFilename(item.filename),
+              kind: item.kind,
+              localPath: item.localPath,
+              thumbnailBytes: item.thumbnailBytes,
+              cacheId: item.id,
+            ),
           );
         }
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              items.length == 1
-                  ? 'Фото добавлено в галерею'
-                  : 'Добавлено в галерею: ${items.length}',
-            ),
-          ),
-        );
-        setState(() => _index = _galleryTabIndex);
-        _visitedTabs.add(_galleryTabIndex);
-        unawaited(_refreshTab(_galleryTabIndex, silent: true));
+        await openCompose(photos);
+      },
+      onAddFromFamilyGallery: (ids) async {
+        if (ids.isEmpty || !mounted) return;
+        final repo = ref.read(familychatRepositoryProvider);
+        final wanted = ids.toSet();
+        final found = <int, Map<String, dynamic>>{};
+        var offset = 0;
+        while (found.length < wanted.length && offset < 600) {
+          final data = await repo.memberGalleryPickablePhotos(
+            userId,
+            offset: offset,
+            limit: 60,
+          );
+          final batch = (data['photos'] as List<dynamic>? ?? [])
+              .cast<Map<String, dynamic>>();
+          if (batch.isEmpty) break;
+          for (final photo in batch) {
+            final id = photo['id'];
+            final aid = id is int ? id : int.tryParse('$id');
+            if (aid != null && wanted.contains(aid)) {
+              found[aid] = photo;
+            }
+          }
+          offset += batch.length;
+          final total = data['total'] is int
+              ? data['total'] as int
+              : int.tryParse('${data['total']}') ?? 0;
+          if (offset >= total) break;
+        }
+
+        final photos = <FeedPostPhoto>[];
+        for (final id in ids) {
+          if (photos.length >= FeedPostUploader.maxPhotos) break;
+          final meta = found[id];
+          if (meta == null) continue;
+          final threadId = meta['thread_id'] is int
+              ? meta['thread_id'] as int
+              : int.tryParse('${meta['thread_id']}');
+          if (threadId == null) continue;
+          try {
+            final bytes = await repo.fetchChatAttachmentBytes(threadId, id);
+            if (bytes.isEmpty) continue;
+            final filename = meta['filename']?.toString() ?? 'photo_$id.jpg';
+            final kind =
+                meta['kind']?.toString() == 'video' ? 'video' : 'image';
+            photos.add(
+              FeedPostPhoto(
+                bytes: bytes,
+                filename: filename,
+                contentType: meta['content_type']?.toString() ??
+                    contentTypeForFilename(filename),
+                kind: kind,
+                cacheId: 'gallery_$id',
+              ),
+            );
+          } catch (_) {}
+        }
+        await openCompose(photos);
       },
     );
   }
 
-  Future<void> _showHomeCreateMenu() async {
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.post_add_outlined),
-              title: const Text('Пост'),
-              onTap: () => Navigator.pop(ctx, 'post'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_album_outlined),
-              title: const Text('Альбом'),
-              onTap: () => Navigator.pop(ctx, 'album'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.add_photo_alternate_outlined),
-              title: const Text('Фото'),
-              onTap: () => Navigator.pop(ctx, 'photo'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted || choice == null) return;
-    switch (choice) {
-      case 'post':
-        await _openFeedPost();
-      case 'album':
-        await _openCreateAlbum();
-      case 'photo':
-        await _openAddPhotos();
-    }
+  Future<void> _openProfile() async {
+    await AppActions.openProfile(context);
+    if (!mounted) return;
+    await _handleStatusChanged();
   }
 
   @override
@@ -571,28 +583,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                 if (_index == 0)
                   IconButton(
                     icon: const Icon(Icons.add),
-                    tooltip: 'Добавить',
-                    onPressed: _showHomeCreateMenu,
+                    tooltip: 'Новый пост',
+                    onPressed: _openFeedPost,
                   ),
-                if (_index == 1) ...[
-                  IconButton(
-                    icon: const Icon(Icons.search),
-                    tooltip: 'Поиск',
-                    onPressed: () => _chatHubKey.currentState?.toggleSearch(),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.add),
-                    tooltip: 'Создать',
-                    onPressed: () {
-                      final hub = _chatHubKey.currentState;
-                      if (_hasIndividualPremium) {
-                        hub?.openCreateMenu(hasIndividualPremium: true);
-                      } else {
-                        hub?.createGroup();
-                      }
-                    },
-                  ),
-                ],
                 if (_index == 2)
                   IconButton(
                     icon: const Icon(Icons.person_add_outlined),

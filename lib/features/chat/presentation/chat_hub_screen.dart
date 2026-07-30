@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
+import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../data/chat_hub_tab_order_storage.dart';
@@ -26,10 +27,16 @@ class ChatHubScreen extends ConsumerStatefulWidget {
   const ChatHubScreen({
     super.key,
     this.hasIndividualPremium = false,
+    this.profileName = '',
+    this.profileAvatarUrl = '',
+    this.onProfileTap,
   });
 
   /// Вкладка «Друзья» и создание контакта — только с Individual Premium.
   final bool hasIndividualPremium;
+  final String profileName;
+  final String profileAvatarUrl;
+  final VoidCallback? onProfileTap;
 
   @override
   ConsumerState<ChatHubScreen> createState() => ChatHubScreenState();
@@ -642,57 +649,85 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     );
   }
 
+  void _onCreatePressed() {
+    if (widget.hasIndividualPremium) {
+      unawaited(openCreateMenu(hasIndividualPremium: true));
+    } else {
+      unawaited(createGroup());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
 
-    return Column(
-      children: [
-        if (_searchVisible)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: TextField(
-              controller: _searchController,
-              autofocus: true,
-              decoration: InputDecoration(
-                hintText: 'Поиск по названию чата',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: _searchQuery.isNotEmpty
-                    ? IconButton(
-                        onPressed: () {
-                          _searchController.clear();
-                          setState(() => _searchQuery = '');
-                        },
-                        icon: const Icon(Icons.clear),
-                      )
-                    : null,
-                isDense: true,
+    return Scaffold(
+      appBar: FamilyAppBar.build(
+        title: 'Семейный чат',
+        profileName: widget.profileName,
+        profileAvatarUrl: widget.profileAvatarUrl,
+        onProfileTap: widget.onProfileTap,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: 'Поиск',
+            onPressed: toggleSearch,
+          ),
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'Создать',
+            onPressed: _onCreatePressed,
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (_searchVisible)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+              child: TextField(
+                controller: _searchController,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: 'Поиск по названию чата',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _searchQuery.isNotEmpty
+                      ? IconButton(
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _searchQuery = '');
+                          },
+                          icon: const Icon(Icons.clear),
+                        )
+                      : null,
+                  isDense: true,
+                ),
+                onChanged: (v) => setState(() => _searchQuery = v),
               ),
-              onChanged: (v) => setState(() => _searchQuery = v),
+            ),
+          Material(
+            color: scheme.surface,
+            child: _ChatFilterTabBar(
+              filters: _filters,
+              controller: _tabController,
+              labelOf: _filterLabel,
+              onReorder: _onReorderTabs,
+              labelStyle: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+              unselectedLabelStyle: theme.textTheme.titleSmall,
+              dividerColor: scheme.outlineVariant.withValues(alpha: 0.45),
             ),
           ),
-        Material(
-          color: scheme.surface,
-          child: _ChatFilterTabBar(
-            filters: _filters,
-            controller: _tabController,
-            labelOf: _filterLabel,
-            onReorder: _onReorderTabs,
-            labelStyle: theme.textTheme.titleSmall?.copyWith(
-              fontWeight: FontWeight.w700,
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: _filters.map(_buildThreadList).toList(),
             ),
-            unselectedLabelStyle: theme.textTheme.titleSmall,
-            dividerColor: scheme.outlineVariant.withValues(alpha: 0.45),
           ),
-        ),
-        Expanded(
-          child: TabBarView(
-            controller: _tabController,
-            children: _filters.map(_buildThreadList).toList(),
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

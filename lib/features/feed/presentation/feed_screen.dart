@@ -152,15 +152,24 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
 
   int? _eventId(Map<String, dynamic> event) {
     final id = event['id'];
-    return id is int ? id : int.tryParse('$id');
+    if (id is int) return id;
+    if (id is num) return id.toInt();
+    return int.tryParse('$id');
   }
 
+  /// Watermark для `after_id`: максимальный server id в списке.
+  /// Нельзя брать id первой карточки — порядок ленты по `created_at`, а sync
+  /// фильтрует по `id__gt`; иначе в delta попадают уже показанные посты и
+  /// они снова prepend'ятся наверх.
   int? get _newestEventId {
+    int? maxId;
     for (final event in _events) {
+      if (event['_optimistic'] == true) continue;
       final id = _eventId(event);
-      if (id != null) return id;
+      if (id == null || id <= 0) continue;
+      if (maxId == null || id > maxId) maxId = id;
     }
-    return null;
+    return maxId;
   }
 
   DateTime? get _lastReadDateTime {
@@ -420,6 +429,16 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       final batch = _visibleFeedEvents(
         (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
       );
+      // Большой catch-up (протухший кэш / дырка в id): prepend истории наверх
+      // даёт дубли и «старые посты сверху». Безопаснее полная первая страница.
+      final deltaHasMore = data['has_more'] == true;
+      if (afterId != null &&
+          batch.isNotEmpty &&
+          (deltaHasMore || batch.length >= _deltaLimit)) {
+        await _loadFull(showSpinner: false);
+        return;
+      }
+
       final newLastRead = data['last_read_at']?.toString();
       final newFilter = (data['filter_people'] as List<dynamic>? ?? [])
           .cast<Map<String, dynamic>>();
@@ -822,7 +841,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                 )
               else
                 RefreshIndicator(
-                  onRefresh: () => refresh(),
+                  onRefresh: () => refresh(forceFull: true),
                   child: ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
