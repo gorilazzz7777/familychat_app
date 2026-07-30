@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
-import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_compose_input.dart';
+import '../../feed/presentation/widgets/feed_reactions.dart';
 import 'widgets/chat_avatar.dart';
 
 class MediaEngagementSheet extends ConsumerStatefulWidget {
@@ -48,9 +48,9 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
   final _commentFocus = FocusNode();
   bool _loading = true;
   bool _sending = false;
-  int _likesCount = 0;
+  bool _reactBusy = false;
   int _commentsCount = 0;
-  bool _likedByMe = false;
+  List<Map<String, dynamic>> _reactions = const [];
   List<Map<String, dynamic>> _comments = [];
 
   @override
@@ -69,15 +69,19 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
     super.dispose();
   }
 
+  int _asInt(Object? value) {
+    if (value is int) return value;
+    return int.tryParse('$value') ?? 0;
+  }
+
   Future<void> _load() async {
     setState(() => _loading = true);
     try {
       final data = await ref.read(familychatRepositoryProvider).mediaEngagement(widget.attachmentId);
       if (!mounted) return;
       setState(() {
-        _likesCount = data['likes_count'] is int ? data['likes_count'] as int : int.tryParse('${data['likes_count']}') ?? 0;
-        _commentsCount = data['comments_count'] is int ? data['comments_count'] as int : int.tryParse('${data['comments_count']}') ?? 0;
-        _likedByMe = data['liked_by_me'] == true;
+        _commentsCount = _asInt(data['comments_count']);
+        _reactions = parseMediaReactions(data['reactions']);
         _comments = (data['comments'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
         _loading = false;
       });
@@ -87,15 +91,30 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
     }
   }
 
-  Future<void> _toggleLike() async {
+  Future<void> _toggleReaction(String emoji) async {
+    if (_reactBusy || emoji.trim().isEmpty) return;
+    setState(() => _reactBusy = true);
     try {
-      final data = await ref.read(familychatRepositoryProvider).toggleMediaLike(widget.attachmentId);
+      final data = await ref.read(familychatRepositoryProvider).toggleMediaReaction(
+            widget.attachmentId,
+            emoji: emoji,
+          );
       if (!mounted) return;
       setState(() {
-        _likesCount = data['likes_count'] is int ? data['likes_count'] as int : int.tryParse('${data['likes_count']}') ?? 0;
-        _likedByMe = data['liked_by_me'] == true;
+        _commentsCount = _asInt(data['comments_count']);
+        _reactions = parseMediaReactions(data['reactions']);
+        _reactBusy = false;
       });
-    } catch (_) {}
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _reactBusy = false);
+    }
+  }
+
+  Future<void> _openPicker() async {
+    final emoji = await showFeedReactionPicker(context);
+    if (emoji == null || emoji.isEmpty || !mounted) return;
+    await _toggleReaction(emoji);
   }
 
   Future<void> _sendComment() async {
@@ -140,37 +159,35 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
             child: Row(
               children: [
                 Text(
-                  'Комментарии',
+                  '\u041A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0438',
                   style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 if (!commentsOnly) ...[
-                  IconButton(
-                    onPressed: _toggleLike,
-                    icon: Icon(_likedByMe ? Icons.favorite : Icons.favorite_border),
-                    color: _likedByMe ? Colors.red : null,
-                  ),
-                  Text('$_likesCount'),
-                  const SizedBox(width: 16),
-                ],
-                if (!commentsOnly) ...[
                   const Icon(Icons.chat_bubble_outline, size: 20),
                   const SizedBox(width: 6),
+                  Text('$_commentsCount'),
                 ],
-                if (!commentsOnly) Text('$_commentsCount'),
               ],
             ),
           ),
+          if (!commentsOnly)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: FeedReactionsRow(
+                reactions: _reactions,
+                onReactionTap: _reactBusy ? null : _toggleReaction,
+                onAddPressed: _reactBusy ? null : _openPicker,
+              ),
+            ),
           const Divider(height: 1),
           Expanded(
             child: _loading
-                ? const DeferredPlaceholder(
-                    child: Center(child: CircularProgressIndicator()),
-                  )
+                ? const Center(child: CircularProgressIndicator())
                 : _comments.isEmpty
                     ? Center(
                         child: Text(
-                          'Пока нет комментариев',
+                          '\u041F\u043E\u043A\u0430 \u043D\u0435\u0442 \u043A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0435\u0432',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
                           ),
@@ -216,7 +233,7 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
               child: FamilyComposeInput(
                 controller: _commentController,
                 focusNode: _commentFocus,
-                hintText: 'Комментарий...',
+                hintText: '\u041A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439...',
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
                 onSend: _sending ? null : _sendComment,

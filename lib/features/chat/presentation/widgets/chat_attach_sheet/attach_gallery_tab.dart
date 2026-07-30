@@ -23,12 +23,14 @@ class AttachGalleryTab extends StatefulWidget {
     required this.onSelectedChanged,
     required this.scrollController,
     required this.expanded,
+    this.onRecordVideoCircle,
   });
 
   final List<ChatAttachSelectionItem> selected;
   final AttachItemsChanged onSelectedChanged;
   final ScrollController scrollController;
   final bool expanded;
+  final VoidCallback? onRecordVideoCircle;
 
   @override
   State<AttachGalleryTab> createState() => _AttachGalleryTabState();
@@ -482,11 +484,20 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
               title: const Text('Видео'),
               onTap: () => Navigator.pop(ctx, 'video'),
             ),
+            ListTile(
+              leading: const Icon(Icons.radio_button_checked),
+              title: const Text('Кружок'),
+              onTap: () => Navigator.pop(ctx, 'circle'),
+            ),
           ],
         ),
       ),
     );
     if (mode == null || !mounted) return;
+    if (mode == 'circle') {
+      widget.onRecordVideoCircle?.call();
+      return;
+    }
     final picker = ImagePicker();
     if (mode == 'video') {
       final picked = await picker.pickVideo(

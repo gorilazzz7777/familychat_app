@@ -23,6 +23,9 @@ dependencies:
   path_provider: ^2.1.5
   app_links: ^6.4.0
   url_launcher: ^6.3.1
+  in_app_update: ^4.2.5
+  package_info_plus: ^9.0.1
+  flutter_rustore_update: ^10.5.0
   flutter_web_auth_2: ^4.1.0
   firebase_core: ^3.8.0
   firebase_messaging: ^15.1.3
@@ -55,6 +58,7 @@ dependencies:
   drift: ^2.34.2
   sqlite3_flutter_libs: ^0.6.0+eol
   path: ^1.9.1
+  wakelock_plus: ^1.5.2
 
 dependency_overrides:
   # Upstream vosk_flutter_service has a web plugin manifest issue that makes

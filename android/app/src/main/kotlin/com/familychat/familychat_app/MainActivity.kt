@@ -25,6 +25,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private var proximityWakeLock: PowerManager.WakeLock? = null
+    private val rustoreReviewPlugin = RustoreReviewPlugin()
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +41,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        flutterEngine.plugins.add(rustoreReviewPlugin)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "com.familychat/lifecycle",
@@ -57,6 +59,28 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.familychat.familychat_app/install_source",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getInstallerPackageName" -> {
+                    try {
+                        val pkg = packageName
+                        val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            packageManager.getInstallSourceInfo(pkg).installingPackageName
+                        } else {
+                            @Suppress("DEPRECATION")
+                            packageManager.getInstallerPackageName(pkg)
+                        }
+                        result.success(installer)
+                    } catch (_: Throwable) {
+                        result.success(null)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

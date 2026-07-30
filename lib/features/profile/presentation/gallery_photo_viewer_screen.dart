@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/media/gallery_media_export.dart';
+import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/zoom_aware_page_view.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
+import '../../feed/presentation/widgets/feed_reactions.dart';
 import 'face_tagging_sheet.dart';
 import 'media_engagement_inline.dart';
 import 'photo_slideshow_screen.dart';
@@ -69,16 +71,22 @@ class _GalleryPhotoViewerScreenState
   late final PageController _pageController;
   final _zoomPageKey = GlobalKey<ZoomAwarePageViewState>();
   bool _commentsExpanded = false;
-  bool _likeBusy = false;
+  bool _reactBusy = false;
   int? _highlightUserId;
   List<PhotoFaceBox> _highlightBoxes = const [];
 
   @override
   void initState() {
     super.initState();
-    _photos = (widget.photos == null || widget.photos!.isEmpty)
-        ? [widget.photo]
-        : widget.photos!;
+    // Копия: альбом может мутировать свой список пока открыт просмотрщик.
+    final source = (widget.photos == null || widget.photos!.isEmpty)
+        ? <Map<String, dynamic>>[Map<String, dynamic>.from(widget.photo)]
+        : widget.photos!
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList(growable: false);
+    _photos = source.isEmpty
+        ? <Map<String, dynamic>>[Map<String, dynamic>.from(widget.photo)]
+        : source;
     _index = widget.initialIndex.clamp(0, _photos.length - 1);
     _pageController = PageController(initialPage: _index);
   }
@@ -89,7 +97,13 @@ class _GalleryPhotoViewerScreenState
     super.dispose();
   }
 
-  Map<String, dynamic> get _photo => _photos[_index];
+  Map<String, dynamic> get _photo {
+    if (_photos.isEmpty) return widget.photo;
+    final i = _index.clamp(0, _photos.length - 1);
+    return _photos[i];
+  }
+
+  bool get _isVideo => isVideoAttachment(_photo);
 
   int get _commentsCount {
     final raw = _photo['comments_count'];
@@ -97,53 +111,48 @@ class _GalleryPhotoViewerScreenState
     return int.tryParse('$raw') ?? 0;
   }
 
-  int get _likesCount {
-    final raw = _photo['likes_count'];
+  int get _reactionsCount {
+    final raw = _photo['reactions_count'] ?? _photo['likes_count'];
     if (raw is int) return raw;
     return int.tryParse('$raw') ?? 0;
   }
 
-  bool get _likedByMe => _photo['liked_by_me'] == true;
+  String get _myReaction => _photo['my_reaction']?.toString() ?? '';
 
-  Future<void> _toggleLikeQuick() async {
+  Future<void> _openReactionPicker() async {
     final attachmentId = _attachmentId;
-    if (attachmentId == null || _likeBusy) return;
-    final wasLiked = _likedByMe;
-    final prevCount = _likesCount;
-    setState(() {
-      _likeBusy = true;
-      _photos[_index] = {
-        ..._photo,
-        'liked_by_me': !wasLiked,
-        'likes_count':
-            wasLiked ? (prevCount > 0 ? prevCount - 1 : 0) : prevCount + 1,
-      };
-    });
+    if (attachmentId == null || _reactBusy || _photos.isEmpty) return;
+    final emoji = await showFeedReactionPicker(context);
+    if (emoji == null || emoji.isEmpty || !mounted) return;
+    final index = _index.clamp(0, _photos.length - 1);
+    setState(() => _reactBusy = true);
     try {
       final data = await ref
           .read(familychatRepositoryProvider)
-          .toggleMediaLike(attachmentId);
+          .toggleMediaReaction(attachmentId, emoji: emoji);
       if (!mounted) return;
+      if (index >= _photos.length) return;
+      final reactions = parseMediaReactions(data['reactions']);
+      final total = reactions.fold<int>(
+        0,
+        (sum, r) => sum + ((r['count'] as int?) ?? 0),
+      );
       setState(() {
-        _photos[_index] = {
-          ..._photo,
+        _photos[index] = {
+          ..._photos[index],
+          'reactions': reactions,
+          'reactions_count': total,
+          'my_reaction': data['my_reaction']?.toString() ?? '',
           'liked_by_me': data['liked_by_me'] == true,
           'likes_count': data['likes_count'] is int
               ? data['likes_count'] as int
-              : int.tryParse('${data['likes_count']}') ?? _likesCount,
+              : int.tryParse('${data['likes_count']}') ?? 0,
         };
-        _likeBusy = false;
+        _reactBusy = false;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() {
-        _photos[_index] = {
-          ..._photo,
-          'liked_by_me': wasLiked,
-          'likes_count': prevCount,
-        };
-        _likeBusy = false;
-      });
+      setState(() => _reactBusy = false);
     }
   }
 
@@ -297,7 +306,7 @@ class _GalleryPhotoViewerScreenState
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: FamilyAppBar.build(
-        title: 'Фото',
+        title: _isVideo ? 'Видео' : 'Фото',
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         actions: [
@@ -317,9 +326,9 @@ class _GalleryPhotoViewerScreenState
             IconButton(
               tooltip: 'Поделиться',
               onPressed: () => _shareCurrent(context),
-              icon: const Icon(Icons.ios_share),
+              icon: const Icon(Icons.share),
             ),
-          if (threadId != null && attachmentId != null)
+          if (threadId != null && attachmentId != null && !_isVideo)
             IconButton(
               tooltip: 'Кто на фото',
               onPressed: () => _openFaceTagging(context, ref),
@@ -340,8 +349,9 @@ class _GalleryPhotoViewerScreenState
               }
             },
             itemBuilder: (context) => [
-              const PopupMenuItem(
-                  value: 'faces', child: Text('Указать, кто на фото')),
+              if (!_isVideo)
+                const PopupMenuItem(
+                    value: 'faces', child: Text('Указать, кто на фото')),
               if (_isOwnGallery && !_isOwnUpload)
                 const PopupMenuItem(
                     value: 'delete', child: Text('Убрать из моей галереи')),
@@ -445,23 +455,25 @@ class _GalleryPhotoViewerScreenState
                                 padding: EdgeInsets.zero,
                                 constraints: const BoxConstraints(
                                     minWidth: 24, minHeight: 24),
-                                tooltip: _likedByMe ? 'Убрать лайк' : 'Лайк',
-                                onPressed: _likeBusy ? null : _toggleLikeQuick,
-                                icon: Icon(
-                                  _likedByMe
-                                      ? Icons.favorite
-                                      : Icons.favorite_border,
-                                  size: 18,
-                                  color: _likedByMe
-                                      ? Colors.redAccent
-                                      : Colors.white70,
-                                ),
+                                tooltip: 'Реакция',
+                                onPressed:
+                                    _reactBusy ? null : _openReactionPicker,
+                                icon: _myReaction.isNotEmpty
+                                    ? Text(
+                                        _myReaction,
+                                        style: const TextStyle(fontSize: 16),
+                                      )
+                                    : const Icon(
+                                        Icons.add_reaction_outlined,
+                                        size: 18,
+                                        color: Colors.white70,
+                                      ),
                               ),
                               SizedBox(
                                 width: 36,
-                                child: _likesCount > 0
+                                child: _reactionsCount > 0
                                     ? Text(
-                                        '$_likesCount',
+                                        '$_reactionsCount',
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodySmall

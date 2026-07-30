@@ -28,7 +28,25 @@ abstract final class Env {
 
   static const String rustoreAppUrl = String.fromEnvironment(
     'FAMILYCHAT_RUSTORE_APP_URL',
-    defaultValue: '',
+    defaultValue:
+        'https://www.rustore.ru/catalog/app/com.familychat.familychat_app',
+  );
+
+  /// Канал дистрибуции при сборке: auto | play | rustore | appstore.
+  static const String storeTarget = String.fromEnvironment(
+    'STORE',
+    defaultValue: 'auto',
+  );
+
+  static const String playStoreAppUrl = String.fromEnvironment(
+    'FAMILYCHAT_PLAY_STORE_URL',
+    defaultValue:
+        'https://play.google.com/store/apps/details?id=com.familychat.familychat_app',
+  );
+
+  static const String appStoreAppUrl = String.fromEnvironment(
+    'FAMILYCHAT_APP_STORE_URL',
+    defaultValue: 'https://apps.apple.com/app/id000000000',
   );
 
   /// Базовый домен Yandex OAuth (ru — для пользователей из РФ).

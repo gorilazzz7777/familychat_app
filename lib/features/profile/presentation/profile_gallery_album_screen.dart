@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/share/share_to_diary_prefs.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/media/gallery_media_export.dart';
 import '../../../core/network/offline_ui.dart';
@@ -202,6 +203,7 @@ class _ProfileGalleryAlbumScreenState
       albumId: widget.albumId,
       title: widget.title,
       photos: photos,
+      shareToDiary: ref.read(shareToDiaryPrefsProvider),
     );
     _ensureUploadPollTimer();
     _syncFromCoordinator();
@@ -803,7 +805,12 @@ class _ProfileGalleryAlbumScreenState
         final chunk =
             ids.sublist(i, math.min(i + _galleryAddChunkSize, ids.length));
         try {
-          await repo.addPhotosToCustomAlbum(widget.userId, albumPk, chunk);
+          await repo.addPhotosToCustomAlbum(
+            widget.userId,
+            albumPk,
+            chunk,
+            shareToDiary: ref.read(shareToDiaryPrefsProvider),
+          );
           for (var j = 0; j < chunk.length; j++) {
             _onUploadProgress(success: true);
           }

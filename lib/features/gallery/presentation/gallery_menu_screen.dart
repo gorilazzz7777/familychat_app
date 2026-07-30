@@ -7,13 +7,28 @@ import '../../../app/app_actions_scope.dart';
 import '../../profile/presentation/profile_gallery_tab.dart';
 import 'family_gallery_tab.dart';
 
-class GalleryMenuScreen extends StatelessWidget {
+class GalleryMenuScreen extends StatefulWidget {
   const GalleryMenuScreen({
     super.key,
     required this.currentUserId,
   });
 
   final int currentUserId;
+
+  @override
+  State<GalleryMenuScreen> createState() => _GalleryMenuScreenState();
+}
+
+class _GalleryMenuScreenState extends State<GalleryMenuScreen> {
+  final _mineKey = GlobalKey<ProfileGalleryTabState>();
+  final _familyKey = GlobalKey<FamilyGalleryTabState>();
+
+  Future<void> _createAlbum() async {
+    final created = await _mineKey.currentState?.createAlbum();
+    if (created == true) {
+      await _familyKey.currentState?.refresh(silent: true);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -26,6 +41,13 @@ class GalleryMenuScreen extends StatelessWidget {
           profileName: AppActions.displayName,
           profileAvatarUrl: AppActions.avatarUrl,
           onProfileTap: () => AppActions.openProfile(context),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.add),
+              tooltip: 'Новый альбом',
+              onPressed: _createAlbum,
+            ),
+          ],
           bottom: FamilyTabBar.build(
             tabs: const [
               Tab(text: 'Мои'),
@@ -36,11 +58,13 @@ class GalleryMenuScreen extends StatelessWidget {
         body: TabBarView(
           children: [
             ProfileGalleryTab(
-              userId: currentUserId,
+              key: _mineKey,
+              userId: widget.currentUserId,
               isOwnGallery: true,
             ),
             FamilyGalleryTab(
-              currentUserId: currentUserId,
+              key: _familyKey,
+              currentUserId: widget.currentUserId,
               allowCreateAlbum: false,
             ),
           ],

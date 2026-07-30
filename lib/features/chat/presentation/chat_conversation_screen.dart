@@ -42,6 +42,7 @@ import 'chat_thread_avatars.dart';
 import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
 import 'chat_call_screen.dart';
+import 'record_video_circle_screen.dart';
 import 'widgets/chat_attach_sheet/chat_attach_models.dart';
 import 'widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import 'widgets/chat_compose_input.dart';
@@ -1585,6 +1586,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     bool notifySilent = false,
     int? voiceDurationMs,
     String? voiceTranscript,
+    int? videoNoteDurationMs,
   }) async {
     final repo = ref.read(familychatRepositoryProvider);
     final online = await ChatOfflineSync.instance.refreshOnline(repo);
@@ -1621,6 +1623,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         notifySilent: notifySilent,
         voiceDurationMs: voiceDurationMs,
         voiceTranscript: voiceTranscript,
+        videoNoteDurationMs: videoNoteDurationMs,
       );
       if (!mounted) return true;
       _replaceOptimisticMessage(tempId, msg);
@@ -2024,6 +2027,56 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       context,
       onSendMedia: _sendAttachItems,
       onSendLocation: _sendLocationMessage,
+      onRecordVideoCircle: () => unawaited(_recordAndSendVideoCircle()),
+    );
+  }
+
+  Future<void> _recordAndSendVideoCircle() async {
+    final result = await RecordVideoCircleScreen.open(context);
+    if (result == null || !mounted) return;
+    await _sendVideoCircleMessage(result);
+  }
+
+  Future<void> _sendVideoCircleMessage(VideoCircleRecording recording) async {
+    if (recording.durationMs < 400) return;
+    final tempId = _nextTempId();
+    final replySnapshot = _replyTo;
+    final replyId = chatAsInt(replySnapshot?['message_id']);
+    final metadata = {
+      'video_note': {'duration_ms': recording.durationMs},
+    };
+    _addOptimisticMessage(
+      tempId,
+      body: '',
+      attachments: [
+        {
+          'kind': 'video',
+          'filename': recording.filename,
+          'content_type': recording.contentType,
+          'local_bytes': recording.bytes,
+          'is_video_note': true,
+        },
+      ],
+      replyTo: replySnapshot,
+      metadata: metadata,
+    );
+    if (_replyTo != null) {
+      setState(() => _replyTo = null);
+    }
+
+    await _uploadAndSend(
+      tempId,
+      caption: '',
+      attachments: [
+        _OutgoingAttachment(
+          bytes: recording.bytes,
+          filename: recording.filename,
+          contentType: recording.contentType,
+          kind: 'video',
+        ),
+      ],
+      replyToMessageId: replyId,
+      videoNoteDurationMs: recording.durationMs,
     );
   }
 

@@ -657,6 +657,7 @@ class FamilyChatRepository {
     Map<String, dynamic>? location,
     int? voiceDurationMs,
     String? voiceTranscript,
+    int? videoNoteDurationMs,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/',
@@ -672,6 +673,8 @@ class FamilyChatRepository {
         if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
         if (voiceTranscript != null && voiceTranscript.trim().isNotEmpty)
           'voice_transcript': voiceTranscript.trim(),
+        if (videoNoteDurationMs != null)
+          'video_note_duration_ms': videoNoteDurationMs,
       },
     );
     return res.data!;
@@ -1196,11 +1199,15 @@ class FamilyChatRepository {
   Future<int> addPhotosToCustomAlbum(
     int userId,
     int albumPk,
-    List<int> attachmentIds,
-  ) async {
+    List<int> attachmentIds, {
+    bool shareToDiary = false,
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/custom-albums/$albumPk/photos/',
-      data: {'attachment_ids': attachmentIds},
+      data: {
+        'attachment_ids': attachmentIds,
+        if (shareToDiary) 'share_to_diary': true,
+      },
     );
     final added = res.data?['added'];
     if (added is int) return added;
@@ -1214,6 +1221,7 @@ class FamilyChatRepository {
     required String filename,
     String? contentType,
     String? batchId,
+    bool shareToDiary = false,
     Map<String, dynamic>? photoExif,
     void Function(int sent, int total)? onSendProgress,
   }) async {
@@ -1230,6 +1238,7 @@ class FamilyChatRepository {
             contentType != null ? DioMediaType.parse(contentType) : null,
       ),
       if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
+      if (shareToDiary) 'share_to_diary': '1',
       if (photoExif != null && photoExif.isNotEmpty)
         'photo_exif': jsonEncode(photoExif),
     });
@@ -1317,6 +1326,12 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<Map<String, dynamic>> diaryShareStatus() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/diary-share/status/',
+    );
+    return res.data ?? {};
+  }
   Future<Map<String, dynamic>> familyGalleryUpload({
     required Uint8List bytes,
     required String filename,
@@ -1324,6 +1339,7 @@ class FamilyChatRepository {
     required String destination,
     int? albumPk,
     String? batchId,
+    bool shareToDiary = false,
     Map<String, dynamic>? photoExif,
     void Function(int sent, int total)? onSendProgress,
   }) async {
@@ -1337,6 +1353,7 @@ class FamilyChatRepository {
       'destination': destination,
       if (albumPk != null) 'album_pk': albumPk,
       if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
+      if (shareToDiary) 'share_to_diary': '1',
       if (photoExif != null && photoExif.isNotEmpty)
         'photo_exif': jsonEncode(photoExif),
     });
@@ -1355,12 +1372,14 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> completeFeedPhotoBatch(
     String batchId, {
     String? caption,
+    bool shareToDiary = false,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/feed/photo-batch/complete/',
       data: {
         'batch_id': batchId,
         if (caption != null && caption.trim().isNotEmpty) 'caption': caption.trim(),
+        if (shareToDiary) 'share_to_diary': true,
       },
     );
     return res.data ?? {};
@@ -1378,6 +1397,59 @@ class FamilyChatRepository {
       'familychat/media/$attachmentId/engagement/',
     );
     return res.data!;
+  }
+
+  Future<Map<String, dynamic>> toggleMediaReaction(
+    int attachmentId, {
+    required String emoji,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/media/$attachmentId/engagement/',
+      data: {'emoji': emoji},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> markFeedEventViewed(int eventId) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/feed/events/$eventId/view/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> submitAppRating(int stars) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/app-rating/',
+      data: {
+        'stars': stars,
+        'source': 'rustore_prompt',
+        'app_name': 'familychat',
+      },
+    );
+    return res.data ?? {};
+  }
+
+  Future<void> reportRustoreReviewError({
+    required String stage,
+    required String errorCode,
+    String? errorMessage,
+    String? reason,
+    String? details,
+  }) async {
+    try {
+      await _dio.post(
+        'familychat/app-rating/rustore-error/',
+        data: {
+          'app_name': 'familychat',
+          'stage': stage,
+          'error_code': errorCode,
+          if (errorMessage != null && errorMessage.isNotEmpty)
+            'error_message': errorMessage,
+          if (reason != null && reason.isNotEmpty) 'reason': reason,
+          if (details != null && details.isNotEmpty) 'details': details,
+        },
+      );
+    } catch (_) {}
   }
 
   Future<List<Map<String, dynamic>>> mediaComments(int attachmentId) async {

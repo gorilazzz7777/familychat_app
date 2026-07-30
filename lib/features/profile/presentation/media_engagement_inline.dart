@@ -3,9 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_compose_input.dart';
+import '../../feed/presentation/widgets/feed_reactions.dart';
 import 'widgets/chat_avatar.dart';
 
-/// Лайки и комментарии прямо в ленте / под фото без bottom sheet.
+/// Реакции и комментарии прямо в ленте / под фото без bottom sheet.
 class MediaEngagementInline extends ConsumerStatefulWidget {
   const MediaEngagementInline({
     super.key,
@@ -16,10 +17,7 @@ class MediaEngagementInline extends ConsumerStatefulWidget {
   });
 
   final int attachmentId;
-
-  /// Если задано — показываем только последние N комментариев.
   final int? maxComments;
-
   final bool dense;
   final bool onDarkBackground;
 
@@ -31,9 +29,8 @@ class _MediaEngagementInlineState extends ConsumerState<MediaEngagementInline> {
   final _commentController = TextEditingController();
   bool _loading = true;
   bool _sending = false;
-  bool _likeBusy = false;
-  int _likesCount = 0;
-  bool _likedByMe = false;
+  bool _reactBusy = false;
+  List<Map<String, dynamic>> _reactions = const [];
   List<Map<String, dynamic>> _comments = [];
 
   @override
@@ -54,8 +51,7 @@ class _MediaEngagementInlineState extends ConsumerState<MediaEngagementInline> {
       final data = await ref.read(familychatRepositoryProvider).mediaEngagement(widget.attachmentId);
       if (!mounted) return;
       setState(() {
-        _likesCount = _asInt(data['likes_count']);
-        _likedByMe = data['liked_by_me'] == true;
+        _reactions = parseMediaReactions(data['reactions']);
         _comments = (data['comments'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
         _loading = false;
       });
@@ -65,42 +61,35 @@ class _MediaEngagementInlineState extends ConsumerState<MediaEngagementInline> {
     }
   }
 
-  int _asInt(Object? value) {
-    if (value is int) return value;
-    return int.tryParse('$value') ?? 0;
-  }
-
   List<Map<String, dynamic>> get _visibleComments {
     final max = widget.maxComments;
     if (max == null || _comments.length <= max) return _comments;
     return _comments.sublist(_comments.length - max);
   }
 
-  Future<void> _toggleLike() async {
-    if (_likeBusy) return;
-    final wasLiked = _likedByMe;
-    final prevCount = _likesCount;
-    setState(() {
-      _likeBusy = true;
-      _likedByMe = !wasLiked;
-      _likesCount = wasLiked ? (_likesCount > 0 ? _likesCount - 1 : 0) : _likesCount + 1;
-    });
+  Future<void> _toggleReaction(String emoji) async {
+    if (_reactBusy || emoji.trim().isEmpty) return;
+    setState(() => _reactBusy = true);
     try {
-      final data = await ref.read(familychatRepositoryProvider).toggleMediaLike(widget.attachmentId);
+      final data = await ref.read(familychatRepositoryProvider).toggleMediaReaction(
+            widget.attachmentId,
+            emoji: emoji,
+          );
       if (!mounted) return;
       setState(() {
-        _likesCount = _asInt(data['likes_count']);
-        _likedByMe = data['liked_by_me'] == true;
-        _likeBusy = false;
+        _reactions = parseMediaReactions(data['reactions']);
+        _reactBusy = false;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() {
-        _likedByMe = wasLiked;
-        _likesCount = prevCount;
-        _likeBusy = false;
-      });
+      setState(() => _reactBusy = false);
     }
+  }
+
+  Future<void> _openPicker() async {
+    final emoji = await showFeedReactionPicker(context);
+    if (emoji == null || emoji.isEmpty || !mounted) return;
+    await _toggleReaction(emoji);
   }
 
   Future<void> _sendComment() async {
@@ -131,35 +120,17 @@ class _MediaEngagementInlineState extends ConsumerState<MediaEngagementInline> {
     final onDark = widget.onDarkBackground;
     final textColor = onDark ? Colors.white : cs.onSurface;
     final hintColor = onDark ? Colors.white54 : cs.onSurfaceVariant;
-    final iconColor = onDark ? Colors.white70 : cs.onSurfaceVariant;
     final sendColor = onDark ? Colors.white : cs.primary;
-    final pad = widget.dense ? 0.0 : 0.0;
 
     return Padding(
-      padding: EdgeInsets.only(top: pad),
+      padding: EdgeInsets.zero,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                tooltip: _likedByMe ? 'Убрать лайк' : 'Лайк',
-                onPressed: _likeBusy ? null : _toggleLike,
-                icon: Icon(
-                  _likedByMe ? Icons.favorite : Icons.favorite_border,
-                  size: 22,
-                  color: _likedByMe ? Colors.red : iconColor,
-                ),
-              ),
-              if (_likesCount > 0)
-                Text(
-                  '$_likesCount',
-                  style: theme.textTheme.labelLarge?.copyWith(color: textColor),
-                ),
-            ],
+          FeedReactionsRow(
+            reactions: _reactions,
+            onReactionTap: _reactBusy ? null : _toggleReaction,
+            onAddPressed: _reactBusy ? null : _openPicker,
           ),
           if (_loading)
             Padding(
@@ -218,17 +189,21 @@ class _CommentRow extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: RichText(
-              text: TextSpan(
-                style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
-                children: [
-                  TextSpan(
-                    text: '${author['name']?.toString() ?? ''} ',
-                    style: theme.textTheme.labelLarge?.copyWith(color: textColor),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  author['name']?.toString() ?? '',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: textColor,
                   ),
-                  TextSpan(text: comment['body']?.toString() ?? ''),
-                ],
-              ),
+                ),
+                Text(
+                  comment['body']?.toString() ?? '',
+                  style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                ),
+              ],
             ),
           ),
         ],

@@ -19,10 +19,10 @@ class ProfileGalleryTab extends ConsumerStatefulWidget {
   final bool isOwnGallery;
 
   @override
-  ConsumerState<ProfileGalleryTab> createState() => _ProfileGalleryTabState();
+  ConsumerState<ProfileGalleryTab> createState() => ProfileGalleryTabState();
 }
 
-class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
+class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _albums = [];
@@ -103,14 +103,16 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
         .join(';');
   }
 
-  Future<void> _createAlbum() async {
+  Future<bool> createAlbum() async {
     final created = await CustomAlbumDialog.show(
       context,
       userId: widget.userId,
     );
     if (created == true) {
       await _load();
+      return true;
     }
+    return false;
   }
 
   int? _customAlbumPk(Map<String, dynamic> album) {
@@ -245,13 +247,6 @@ class _ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
           customTabLabel: 'Мои альбомы',
         ),
       ),
-      floatingActionButton: widget.isOwnGallery
-          ? FloatingActionButton.extended(
-              onPressed: _createAlbum,
-              icon: const Icon(Icons.create_new_folder_outlined),
-              label: const Text('Альбом'),
-            )
-          : null,
     );
   }
 }

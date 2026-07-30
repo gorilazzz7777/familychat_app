@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/providers/app_providers.dart';
+import '../../../../core/services/rustore_review_prompt_service.dart';
 import '../../../profile/presentation/media_engagement_sheet.dart';
 import 'feed_event_date_format.dart';
+import 'feed_reactions.dart';
 
 class FeedEventActionBar extends ConsumerStatefulWidget {
   const FeedEventActionBar({
@@ -25,10 +29,9 @@ class FeedEventActionBar extends ConsumerStatefulWidget {
 
 class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
   bool _loading = false;
-  bool _likeBusy = false;
-  int _likesCount = 0;
+  bool _reactBusy = false;
   int _commentsCount = 0;
-  bool _likedByMe = false;
+  List<Map<String, dynamic>> _reactions = const [];
 
   int? get _attachmentId => widget.attachmentId;
 
@@ -57,21 +60,20 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _likesCount = 0;
           _commentsCount = 0;
-          _likedByMe = false;
+          _reactions = const [];
         });
       }
       return;
     }
     setState(() => _loading = true);
     try {
-      final data = await ref.read(familychatRepositoryProvider).mediaEngagement(attachmentId);
+      final data =
+          await ref.read(familychatRepositoryProvider).mediaEngagement(attachmentId);
       if (!mounted) return;
       setState(() {
-        _likesCount = _asInt(data['likes_count']);
         _commentsCount = _asInt(data['comments_count']);
-        _likedByMe = data['liked_by_me'] == true;
+        _reactions = parseMediaReactions(data['reactions']);
         _loading = false;
       });
     } catch (_) {
@@ -80,32 +82,44 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
     }
   }
 
-  Future<void> _toggleLike() async {
+  bool get _hasMyReaction => mediaReactionsHasMine(_reactions);
+
+  int get _reactionsTotal => mediaReactionsTotalCount(_reactions);
+
+  Future<void> _toggleReaction(String emoji) async {
     final attachmentId = _attachmentId;
-    if (attachmentId == null || _likeBusy) return;
-    final wasLiked = _likedByMe;
-    final prevCount = _likesCount;
-    setState(() {
-      _likeBusy = true;
-      _likedByMe = !wasLiked;
-      _likesCount = wasLiked ? (_likesCount > 0 ? _likesCount - 1 : 0) : _likesCount + 1;
-    });
+    if (attachmentId == null || _reactBusy || emoji.trim().isEmpty) return;
+    final hadMine = _hasMyReaction;
+    setState(() => _reactBusy = true);
     try {
-      final data = await ref.read(familychatRepositoryProvider).toggleMediaLike(attachmentId);
+      final data = await ref
+          .read(familychatRepositoryProvider)
+          .toggleMediaReaction(attachmentId, emoji: emoji);
       if (!mounted) return;
+      final nextReactions = parseMediaReactions(data['reactions']);
       setState(() {
-        _likesCount = _asInt(data['likes_count']);
-        _likedByMe = data['liked_by_me'] == true;
-        _likeBusy = false;
+        _commentsCount = _asInt(data['comments_count']);
+        _reactions = nextReactions;
+        _reactBusy = false;
       });
+      if (!hadMine && mediaReactionsHasMine(nextReactions) && mounted) {
+        unawaited(
+          RuStoreReviewPromptService.onFirstFeedLike(
+            context,
+            repository: ref.read(familychatRepositoryProvider),
+          ),
+        );
+      }
     } catch (_) {
       if (!mounted) return;
-      setState(() {
-        _likedByMe = wasLiked;
-        _likesCount = prevCount;
-        _likeBusy = false;
-      });
+      setState(() => _reactBusy = false);
     }
+  }
+
+  Future<void> _openReactionSheet() async {
+    final emoji = await showFeedReactionPicker(context);
+    if (emoji == null || emoji.isEmpty || !mounted) return;
+    await _toggleReaction(emoji);
   }
 
   Future<void> _openComments() async {
@@ -129,63 +143,82 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
     final dateText = widget.createdAt != null
         ? formatFeedEventDate(widget.createdAt!)
         : '';
+    final reacted = _hasMyReaction;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (hasMedia) ...[
-            IconButton(
-              tooltip: _likedByMe ? 'Убрать лайк' : 'Лайк',
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              onPressed: _likeBusy || _loading ? null : _toggleLike,
-              icon: Icon(
-                _likedByMe ? Icons.favorite : Icons.favorite_border,
-                size: 24,
-                color: _likedByMe ? Colors.red : cs.onSurfaceVariant,
-              ),
+          if (hasMedia && _reactions.isNotEmpty) ...[
+            FeedReactionsRow(
+              reactions: _reactions,
+              onReactionTap: _reactBusy || _loading ? null : _toggleReaction,
             ),
-            if (_likesCount > 0)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Text(
-                  '$_likesCount',
-                  style: theme.textTheme.labelLarge,
-                ),
-              ),
-            IconButton(
-              tooltip: 'Комментарии',
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              onPressed: _loading ? null : _openComments,
-              icon: Icon(Icons.chat_bubble_outline, size: 22, color: cs.onSurfaceVariant),
-            ),
-            if (_commentsCount > 0)
-              Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: Text(
-                  '$_commentsCount',
-                  style: theme.textTheme.labelLarge,
-                ),
-              ),
+            const SizedBox(height: 4),
           ],
-          IconButton(
-            tooltip: widget.navigateTooltip,
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            onPressed: widget.onNavigate,
-            icon: Icon(Icons.open_in_new, size: 22, color: cs.primary),
+          Row(
+            children: [
+              if (hasMedia) ...[
+                IconButton(
+                  tooltip: 'Реакция',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  onPressed: _reactBusy || _loading ? null : _openReactionSheet,
+                  icon: Icon(
+                    reacted ? Icons.favorite : Icons.favorite_border,
+                    size: 24,
+                    color: reacted ? Colors.red : cs.onSurfaceVariant,
+                  ),
+                ),
+                if (_reactionsTotal > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Text(
+                      '$_reactionsTotal',
+                      style: theme.textTheme.labelLarge,
+                    ),
+                  ),
+                IconButton(
+                  tooltip: 'Комментарии',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  onPressed: _loading ? null : _openComments,
+                  icon: Icon(
+                    Icons.chat_bubble_outline,
+                    size: 22,
+                    color: cs.onSurfaceVariant,
+                  ),
+                ),
+                if (_commentsCount > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Text(
+                      '$_commentsCount',
+                      style: theme.textTheme.labelLarge,
+                    ),
+                  ),
+              ],
+              IconButton(
+                tooltip: widget.navigateTooltip,
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                onPressed: widget.onNavigate,
+                icon: Icon(Icons.open_in_new, size: 22, color: cs.primary),
+              ),
+              const Spacer(),
+              if (dateText.isNotEmpty)
+                Text(
+                  dateText,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: cs.onSurfaceVariant,
+                  ),
+                ),
+            ],
           ),
-          const Spacer(),
-          if (dateText.isNotEmpty)
-            Text(
-              dateText,
-              style: theme.textTheme.labelSmall?.copyWith(color: cs.onSurfaceVariant),
-            ),
         ],
       ),
     );

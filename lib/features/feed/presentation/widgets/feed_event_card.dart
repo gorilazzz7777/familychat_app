@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/i18n/gender_verbs.dart';
+import '../../../../core/providers/app_providers.dart';
 import '../../../profile/presentation/photo_slideshow_screen.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import 'feed_birthday_event_card.dart';
@@ -9,8 +11,9 @@ import 'feed_holiday_event_card.dart';
 import 'feed_event_action_bar.dart';
 import 'feed_expandable_caption.dart';
 import 'feed_event_media_block.dart';
+import 'feed_viewed_by_row.dart';
 
-class FeedEventCard extends StatefulWidget {
+class FeedEventCard extends ConsumerStatefulWidget {
   const FeedEventCard({
     super.key,
     required this.event,
@@ -27,16 +30,60 @@ class FeedEventCard extends StatefulWidget {
   final void Function(Map<String, dynamic> event, {int initialIndex})? onOpenPhotoBatch;
 
   @override
-  State<FeedEventCard> createState() => _FeedEventCardState();
+  ConsumerState<FeedEventCard> createState() => _FeedEventCardState();
 }
 
-class _FeedEventCardState extends State<FeedEventCard> {
+class _FeedEventCardState extends ConsumerState<FeedEventCard> {
   int _batchIndex = 0;
+  List<Map<String, dynamic>> _viewedBy = const [];
+  bool _viewMarked = false;
 
   Map<String, dynamic> get _event => widget.event;
   Map<String, dynamic> get _actor => (_event['actor'] as Map<String, dynamic>?) ?? {};
   Map<String, dynamic> get _payload => (_event['payload'] as Map<String, dynamic>?) ?? {};
   String get _kind => _event['kind']?.toString() ?? '';
+
+  @override
+  void initState() {
+    super.initState();
+    _viewedBy = _parseViewedBy(_event['viewed_by']);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _markViewed());
+  }
+
+  @override
+  void didUpdateWidget(covariant FeedEventCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.event['id'] != widget.event['id']) {
+      _viewMarked = false;
+      _viewedBy = _parseViewedBy(widget.event['viewed_by']);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _markViewed());
+    }
+  }
+
+  List<Map<String, dynamic>> _parseViewedBy(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => e.cast<String, dynamic>())
+        .toList();
+  }
+
+  Future<void> _markViewed() async {
+    if (_viewMarked || !mounted) return;
+    final eventId = _event['id'];
+    final id = eventId is int ? eventId : int.tryParse('$eventId');
+    if (id == null) return;
+    _viewMarked = true;
+    try {
+      final data =
+          await ref.read(familychatRepositoryProvider).markFeedEventViewed(id);
+      if (!mounted) return;
+      final next = _parseViewedBy(data['viewed_by']);
+      if (next.isNotEmpty) {
+        setState(() => _viewedBy = next);
+      }
+    } catch (_) {}
+  }
 
   bool get _isBirthdayEvent =>
       _kind == 'calendar_event' && _payload['event_kind']?.toString() == 'birthday';
@@ -217,27 +264,39 @@ class _FeedEventCardState extends State<FeedEventCard> {
     final createdAt = DateTime.tryParse(_event['created_at']?.toString() ?? '');
 
     if (_isBirthdayEvent) {
-      return FeedBirthdayEventCard(
-        honoreeName: _honoreeName(),
-        honoreeAvatarUrl: _actor['avatar_url']?.toString(),
-        eventDate: _payload['date']?.toString(),
-        createdAt: createdAt,
-        onOpenChat: widget.onOpenSource,
-        onOpenProfile: widget.onOpenProfile,
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          FeedBirthdayEventCard(
+            honoreeName: _honoreeName(),
+            honoreeAvatarUrl: _actor['avatar_url']?.toString(),
+            eventDate: _payload['date']?.toString(),
+            createdAt: createdAt,
+            onOpenChat: widget.onOpenSource,
+            onOpenProfile: widget.onOpenProfile,
+          ),
+          FeedViewedByRow(viewedBy: _viewedBy),
+        ],
       );
     }
 
     if (_isHolidayEvent) {
       final description = _payload['description']?.toString().trim() ?? '';
-      return FeedHolidayEventCard(
-        title: _payload['title']?.toString() ?? 'Праздник',
-        description: description.isNotEmpty
-            ? description
-            : 'Сегодня в семейном календаре отмечен праздник.',
-        holidayCode: _payload['code']?.toString() ?? '',
-        eventDate: _payload['date']?.toString(),
-        createdAt: createdAt,
-        onOpenCalendar: widget.onOpenSource,
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          FeedHolidayEventCard(
+            title: _payload['title']?.toString() ?? 'Праздник',
+            description: description.isNotEmpty
+                ? description
+                : 'Сегодня в семейном календаре отмечен праздник.',
+            holidayCode: _payload['code']?.toString() ?? '',
+            eventDate: _payload['date']?.toString(),
+            createdAt: createdAt,
+            onOpenCalendar: widget.onOpenSource,
+          ),
+          FeedViewedByRow(viewedBy: _viewedBy),
+        ],
       );
     }
 
@@ -322,6 +381,7 @@ class _FeedEventCardState extends State<FeedEventCard> {
             onNavigate: widget.onOpenSource,
             navigateTooltip: _navigateTooltip(),
           ),
+          FeedViewedByRow(viewedBy: _viewedBy),
         ],
       ),
     );

@@ -9,6 +9,9 @@ import '../core/notifications/familychat_notifications.dart';
 import '../core/push/push_navigation.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
+import '../core/services/rustore_review_prompt_service.dart';
+import '../core/share/share_to_diary_prefs.dart';
+import '../core/updates/app_update_service.dart';
 import '../core/widgets/app_skeletons.dart';
 import '../core/widgets/family_app_bar.dart';
 import '../core/providers/app_providers.dart';
@@ -29,11 +32,13 @@ import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/chat_voice_transcription_prefs.dart';
 import '../features/chat/data/incoming_call_coordinator.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
+import '../features/chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../features/feed/presentation/feed_screen.dart';
 import '../features/feed/presentation/feed_post_compose_screen.dart';
 import '../features/gallery/presentation/gallery_menu_screen.dart';
 import '../features/members/presentation/family_invite_flow.dart';
 import '../features/members/presentation/members_screen.dart';
+import '../features/profile/presentation/custom_album_dialog.dart';
 
 class ShellScreen extends ConsumerStatefulWidget {
   const ShellScreen({
@@ -104,6 +109,14 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       ChatScheduledSendService.instance.start(
         ref.read(familychatRepositoryProvider),
       );
+      unawaited(
+        RuStoreReviewPromptService.onAppSessionOpened(
+          context,
+          repository: ref.read(familychatRepositoryProvider),
+          fromColdStart: true,
+        ),
+      );
+      unawaited(AppUpdateService.checkAndPrompt(context));
     });
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
@@ -276,9 +289,19 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       if (userId != null) {
         unawaited(_runCalendarSyncAndMaybeReview(userId));
       }
+      unawaited(
+        RuStoreReviewPromptService.onAppSessionOpened(
+          context,
+          repository: ref.read(familychatRepositoryProvider),
+        ),
+      );
     } else if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
+      if (state == AppLifecycleState.paused ||
+          state == AppLifecycleState.hidden) {
+        RuStoreReviewPromptService.onAppPaused();
+      }
       unawaited(_reportAppBackground());
     }
   }
@@ -361,7 +384,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   }
 
   String get _title => switch (_index) {
-        0 => 'Главная',
+        0 => 'Лента',
         1 => 'Семейный чат',
         2 => 'Семья',
         3 => 'Галерея',
@@ -448,6 +471,88 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     }
   }
 
+  Future<void> _openCreateAlbum() async {
+    final userId = _currentUserId;
+    if (userId == null) return;
+    final created = await CustomAlbumDialog.show(context, userId: userId);
+    if (!mounted || created != true) return;
+    setState(() => _index = _galleryTabIndex);
+    _visitedTabs.add(_galleryTabIndex);
+    unawaited(_refreshTab(_galleryTabIndex, silent: true));
+  }
+
+  Future<void> _openAddPhotos() async {
+    final userId = _currentUserId;
+    if (userId == null) return;
+    await ChatAttachSheet.show(
+      context,
+      style: ChatAttachSheetStyle.phoneMedia,
+      onSendMedia: (caption, items) async {
+        final repo = ref.read(familychatRepositoryProvider);
+        final shareToDiary = ref.read(shareToDiaryPrefsProvider);
+        for (final item in items) {
+          await repo.familyGalleryUpload(
+            bytes: item.bytes,
+            filename: item.filename,
+            contentType: item.contentType,
+            destination: 'my_gallery',
+            shareToDiary: shareToDiary,
+          );
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              items.length == 1
+                  ? 'Фото добавлено в галерею'
+                  : 'Добавлено в галерею: ${items.length}',
+            ),
+          ),
+        );
+        setState(() => _index = _galleryTabIndex);
+        _visitedTabs.add(_galleryTabIndex);
+        unawaited(_refreshTab(_galleryTabIndex, silent: true));
+      },
+    );
+  }
+
+  Future<void> _showHomeCreateMenu() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.post_add_outlined),
+              title: const Text('Пост'),
+              onTap: () => Navigator.pop(ctx, 'post'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_album_outlined),
+              title: const Text('Альбом'),
+              onTap: () => Navigator.pop(ctx, 'album'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.add_photo_alternate_outlined),
+              title: const Text('Фото'),
+              onTap: () => Navigator.pop(ctx, 'photo'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case 'post':
+        await _openFeedPost();
+      case 'album':
+        await _openCreateAlbum();
+      case 'photo':
+        await _openAddPhotos();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final chatUnread = ref.watch(chatUnreadTotalProvider).value ?? 0;
@@ -463,6 +568,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
               profileAvatarUrl: _avatarUrl,
               onProfileTap: _openProfile,
               actions: [
+                if (_index == 0)
+                  IconButton(
+                    icon: const Icon(Icons.add),
+                    tooltip: 'Добавить',
+                    onPressed: _showHomeCreateMenu,
+                  ),
                 if (_index == 1) ...[
                   IconButton(
                     icon: const Icon(Icons.search),
@@ -493,13 +604,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                   ),
               ],
             ),
-      floatingActionButton: _index == 0 && !showingNestedScreen
-          ? FloatingActionButton(
-              onPressed: _openFeedPost,
-              tooltip: 'В ленту',
-              child: const Icon(Icons.add),
-            )
-          : null,
+      floatingActionButton: null,
       body: IndexedStack(
         index: _index,
         children: List<Widget>.generate(5, _buildTab),
@@ -511,7 +616,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           const NavigationDestination(
             icon: Icon(Icons.home_outlined),
             selectedIcon: Icon(Icons.home),
-            label: 'Главная',
+            label: 'Лента',
           ),
           NavigationDestination(
             icon: Badge(

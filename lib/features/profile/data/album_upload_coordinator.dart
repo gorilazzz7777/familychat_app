@@ -40,6 +40,7 @@ class AlbumUploadSession {
     required this.albumId,
     required this.title,
     required this.batchSession,
+    this.shareToDiary = false,
   });
 
   final int userId;
@@ -47,6 +48,7 @@ class AlbumUploadSession {
   final String albumId;
   final String title;
   final FeedPhotoBatchSession batchSession;
+  final bool shareToDiary;
   int total = 0;
   int done = 0;
   int failed = 0;
@@ -96,6 +98,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
     required String title,
     required List<AlbumUploadPhoto> photos,
     FeedPhotoBatchSession? batchSession,
+    bool shareToDiary = false,
   }) {
     if (photos.isEmpty) return;
 
@@ -107,7 +110,10 @@ class AlbumUploadCoordinator extends ChangeNotifier {
       batch = existing.batchSession;
       batch.addTasks(photos.length);
     } else {
-      batch = FeedPhotoBatchSession(totalTasks: photos.length);
+      batch = FeedPhotoBatchSession(
+        totalTasks: photos.length,
+        shareToDiary: shareToDiary,
+      );
     }
 
     if (existing == null || !existing.active) {
@@ -117,6 +123,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
         albumId: albumId,
         title: title,
         batchSession: batch,
+        shareToDiary: shareToDiary,
       );
       _sessions[albumPk]!.total = photos.length;
     } else {
@@ -158,6 +165,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
               filename: prepared.filename,
               contentType: prepared.contentType ?? 'image/jpeg',
               batchId: session.batchSession.batchId,
+              shareToDiary: session.shareToDiary,
               photoExif: prepared.photoExif,
             );
             if (photo.optimisticKey != null) {

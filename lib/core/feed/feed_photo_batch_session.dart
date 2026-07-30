@@ -16,11 +16,12 @@ String createFeedPhotoBatchId() {
 
 /// Одна пользовательская сессия загрузки фото → одно событие ленты.
 class FeedPhotoBatchSession {
-  FeedPhotoBatchSession({int totalTasks = 0})
+  FeedPhotoBatchSession({int totalTasks = 0, this.shareToDiary = false})
       : batchId = createFeedPhotoBatchId(),
         _remaining = totalTasks;
 
   final String batchId;
+  final bool shareToDiary;
   int _remaining;
   bool _completed = false;
 
@@ -34,7 +35,10 @@ class FeedPhotoBatchSession {
 
     for (var attempt = 0; attempt < 4; attempt++) {
       try {
-        final result = await repo.completeFeedPhotoBatch(batchId);
+        final result = await repo.completeFeedPhotoBatch(
+          batchId,
+          shareToDiary: shareToDiary,
+        );
         final created = result['created'] == true;
         if (created || attempt == 3) {
           _completed = true;

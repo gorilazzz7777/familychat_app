@@ -190,14 +190,17 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
                 height: 20,
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: Text(
-                    'Кто на фото',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          height: 1.1,
-                        ),
-                  ),
+                  child: (!_loading && _people.isNotEmpty)
+                      ? Text(
+                          'Кто на фото',
+                          style:
+                              Theme.of(context).textTheme.titleSmall?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    height: 1.1,
+                                  ),
+                        )
+                      : null,
                 ),
               ),
               const SizedBox(height: 10),

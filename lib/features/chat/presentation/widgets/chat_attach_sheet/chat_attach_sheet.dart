@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/chat_location_utils.dart';
 import 'attach_family_gallery_tab.dart';
@@ -7,6 +8,7 @@ import 'attach_gallery_tab.dart';
 import 'attach_location_tab.dart';
 import 'attach_selection_bar.dart';
 import 'chat_attach_models.dart';
+import '../../../../../core/widgets/share_to_diary_checkbox.dart';
 
 /// Режим шторки: полный чат, только телефон, или альбом (телефон + галерея семьи).
 enum ChatAttachSheetStyle {
@@ -16,11 +18,11 @@ enum ChatAttachSheetStyle {
   /// Только галерея с live-камерой (лента).
   phoneMedia,
 
-  /// С телефона · Из галереи (пользовательский альбом).
+  /// С телефона · Галерея семьи (альбом / лента).
   albumMedia,
 }
 
-class ChatAttachSheet extends StatefulWidget {
+class ChatAttachSheet extends ConsumerStatefulWidget {
   const ChatAttachSheet({
     super.key,
     required this.onSendMedia,
@@ -29,6 +31,7 @@ class ChatAttachSheet extends StatefulWidget {
     this.familyGalleryUserId,
     this.excludeFamilyAttachmentIds = const {},
     this.style = ChatAttachSheetStyle.chat,
+    this.onRecordVideoCircle,
   });
 
   final Future<void> Function(
@@ -40,6 +43,7 @@ class ChatAttachSheet extends StatefulWidget {
   final int? familyGalleryUserId;
   final Set<int> excludeFamilyAttachmentIds;
   final ChatAttachSheetStyle style;
+  final VoidCallback? onRecordVideoCircle;
 
   static Future<void> show(
     BuildContext context, {
@@ -52,6 +56,7 @@ class ChatAttachSheet extends StatefulWidget {
     int? familyGalleryUserId,
     Set<int> excludeFamilyAttachmentIds = const {},
     ChatAttachSheetStyle style = ChatAttachSheetStyle.chat,
+    VoidCallback? onRecordVideoCircle,
   }) {
     assert(
       style != ChatAttachSheetStyle.chat || onSendLocation != null,
@@ -74,15 +79,16 @@ class ChatAttachSheet extends StatefulWidget {
         familyGalleryUserId: familyGalleryUserId,
         excludeFamilyAttachmentIds: excludeFamilyAttachmentIds,
         style: style,
+        onRecordVideoCircle: onRecordVideoCircle,
       ),
     );
   }
 
   @override
-  State<ChatAttachSheet> createState() => _ChatAttachSheetState();
+  ConsumerState<ChatAttachSheet> createState() => _ChatAttachSheetState();
 }
 
-class _ChatAttachSheetState extends State<ChatAttachSheet> {
+class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
   late ChatAttachMode _mode;
   final List<ChatAttachSelectionItem> _selected = [];
   final Set<int> _familySelected = {};
@@ -234,6 +240,12 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
                         onSelectedChanged: _setSelected,
                         scrollController: scrollController,
                         expanded: _expanded,
+                        onRecordVideoCircle: widget.onRecordVideoCircle == null
+                            ? null
+                            : () {
+                                Navigator.of(context).pop();
+                                widget.onRecordVideoCircle!();
+                              },
                       ),
                     ChatAttachMode.file => AttachFileTab(
                         selected: _selected,
@@ -270,11 +282,20 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
 
   Widget _buildBottomChrome(ColorScheme scheme) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final showDiaryShare = _phoneOnly || _albumMode;
     return Material(
       color: scheme.surface,
       child: Padding(
         padding: EdgeInsets.only(bottom: bottomInset),
-        child: SizedBox(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (showDiaryShare && _hasSendSelection)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(8, 0, 8, 0),
+                child: ShareToDiaryCheckbox(dense: true),
+              ),
+            SizedBox(
           height: kChatAttachBottomChromeHeight,
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
@@ -312,6 +333,8 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
                           ),
                   ),
           ),
+            ),
+          ],
         ),
       ),
     );
@@ -379,10 +402,10 @@ class _ModeBar extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final chips = switch (style) {
       ChatAttachSheetStyle.albumMedia => const [
-          (ChatAttachMode.gallery, 'С телефона', Icons.phone_android_outlined),
+          (ChatAttachMode.gallery, 'Телефон', Icons.phone_android_outlined),
           (
             ChatAttachMode.familyGallery,
-            'Из галереи',
+            'Галерея семьи',
             Icons.collections_outlined
           ),
         ],

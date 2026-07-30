@@ -434,11 +434,16 @@ class ChatMessageBubble extends StatelessWidget {
           ),
         );
       } else if (a['kind'] == 'video' || isVideoAttachment(a)) {
+        final videoNote = messageMetadata['video_note'];
+        final isCircle = a['is_video_note'] == true ||
+            videoNote is Map ||
+            a['is_video_note'] == 'true';
         out.add(
           _ChatVideoAttachmentPreview(
             threadId: threadId,
             attachment: a,
             maxWidth: maxWidth,
+            circular: isCircle,
             onOpen: onImageTap != null ? () => onImageTap!(a) : null,
           ),
         );
@@ -476,62 +481,69 @@ class _ChatVideoAttachmentPreview extends StatelessWidget {
     required this.threadId,
     required this.attachment,
     required this.maxWidth,
+    this.circular = false,
     this.onOpen,
   });
 
   final int threadId;
   final Map<String, dynamic> attachment;
   final double maxWidth;
+  final bool circular;
   final VoidCallback? onOpen;
 
   @override
   Widget build(BuildContext context) {
     final local = attachment['local_bytes'];
     final url = galleryAttachmentUrl(attachment);
+    final size = circular ? (maxWidth * 0.72).clamp(160.0, 220.0) : maxWidth;
+    final height = circular ? size : 180.0;
+
+    final content = SizedBox(
+      width: size,
+      height: height,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (local is Uint8List && local.isNotEmpty)
+            Image.memory(local, fit: BoxFit.cover)
+          else if (url.isNotEmpty)
+            GalleryVideoPlayer(
+              url: url,
+              autoplay: false,
+              showControls: false,
+            )
+          else
+            const ColoredBox(
+              color: Colors.black26,
+              child: Center(
+                child: Icon(Icons.videocam_outlined, color: Colors.white54),
+              ),
+            ),
+          if (!circular)
+            const Center(
+              child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 48),
+            )
+          else
+            const Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: EdgeInsets.only(bottom: 10),
+                child: Icon(Icons.play_arrow_rounded, color: Colors.white70, size: 28),
+              ),
+            ),
+        ],
+      ),
+    );
 
     return GestureDetector(
       onTap: onOpen,
       behavior: HitTestBehavior.opaque,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: SizedBox(
-          width: maxWidth,
-          height: 180,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (local is Uint8List)
-                Image.memory(
-                  local,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const ColoredBox(
-                    color: Colors.black26,
-                    child: Icon(Icons.videocam_outlined, color: Colors.white54),
-                  ),
-                )
-              else if (url.isNotEmpty)
-                GalleryVideoPlayer(
-                  url: url,
-                  autoplay: false,
-                  showControls: false,
-                )
-              else
-                const ColoredBox(
-                  color: Colors.black26,
-                  child: Icon(Icons.videocam_outlined, color: Colors.white54),
-                ),
-              const Align(
-                alignment: Alignment.center,
-                child: Icon(
-                  Icons.play_circle_fill,
-                  color: Colors.white70,
-                  size: 48,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      child: circular
+          ? ClipOval(child: content)
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: content,
+            ),
     );
   }
 }

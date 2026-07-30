@@ -42,6 +42,7 @@ abstract final class FeedPostUploader {
     required FamilyChatRepository repo,
     required List<FeedPostPhoto> photos,
     String caption = '',
+    bool shareToDiary = false,
     void Function(int index, int total, int sent, int totalBytes)?
         onUploadProgress,
   }) async {
@@ -62,6 +63,7 @@ abstract final class FeedPostUploader {
         contentType: prepared.contentType,
         destination: 'family_feed',
         batchId: batchId,
+        shareToDiary: shareToDiary,
         photoExif: prepared.photoExif,
         onSendProgress: onUploadProgress == null
             ? null
@@ -71,6 +73,7 @@ abstract final class FeedPostUploader {
     await repo.completeFeedPhotoBatch(
       batchId,
       caption: trimmedCaption.isEmpty ? null : trimmedCaption,
+      shareToDiary: shareToDiary,
     );
     await ShellRefresh.instance.refreshMainTabs();
   }
@@ -80,10 +83,16 @@ abstract final class FeedPostUploader {
     required FamilyChatRepository repo,
     required List<FeedPostPhoto> photos,
     String caption = '',
+    bool shareToDiary = false,
   }) {
     unawaited(() async {
       try {
-        await publish(repo: repo, photos: photos, caption: caption);
+        await publish(
+          repo: repo,
+          photos: photos,
+          caption: caption,
+          shareToDiary: shareToDiary,
+        );
       } catch (_) {
         // Ошибки не блокируют UI; лента обновится при следующем refresh.
       }
