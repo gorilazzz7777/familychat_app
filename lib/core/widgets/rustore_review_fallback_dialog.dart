@@ -56,7 +56,7 @@ class _RustoreReviewFallbackDialogState
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            'Вам нравится Family Chat? '
+            'Вам нравится Family Space? '
             'Выберите оценку — после отправки откроется RuStore.',
             style: Theme.of(context).textTheme.bodyMedium,
           ),

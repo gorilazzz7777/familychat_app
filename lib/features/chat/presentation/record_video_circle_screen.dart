@@ -23,7 +23,7 @@ class VideoCircleRecording {
   final String contentType;
 }
 
-/// Запись видео-кружка: запись → предпросмотр → перезаписать / отправить.
+/// Запись видео-кружка — та же схема превью, что в Diary (milestone wish).
 class RecordVideoCircleScreen extends StatefulWidget {
   const RecordVideoCircleScreen({super.key});
 
@@ -85,36 +85,47 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
     }
   }
 
+  /// Как в Diary [RecordMilestoneWishScreen._initCamera], с retry —
+  /// камера шторки вложений может ещё не отпустить сессию.
   Future<void> _initCamera() async {
-    try {
-      await _ensureCameraPermission();
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) throw Exception('Камера недоступна');
-      final front = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
-      );
-      final controller = CameraController(
-        front,
-        ResolutionPreset.medium,
-        enableAudio: true,
-        imageFormatGroup: ImageFormatGroup.jpeg,
-      );
-      await controller.initialize();
-      if (!mounted) {
-        await controller.dispose();
-        return;
+    if (_cameraReady && _camera != null) return;
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(Duration(milliseconds: 250 * attempt));
       }
-      setState(() {
-        _camera = controller;
-        _cameraReady = true;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$e')),
-      );
+      try {
+        await _ensureCameraPermission();
+        final cameras = await availableCameras();
+        if (cameras.isEmpty) throw Exception('Камера недоступна');
+        final front = cameras.firstWhere(
+          (c) => c.lensDirection == CameraLensDirection.front,
+          orElse: () => cameras.first,
+        );
+        final controller = CameraController(
+          front,
+          ResolutionPreset.medium,
+          enableAudio: true,
+          imageFormatGroup: ImageFormatGroup.jpeg,
+        );
+        await controller.initialize();
+        if (!mounted) {
+          await controller.dispose();
+          return;
+        }
+        setState(() {
+          _camera = controller;
+          _cameraReady = true;
+        });
+        return;
+      } catch (e) {
+        lastError = e;
+      }
     }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$lastError')),
+    );
   }
 
   void _startTick() {
@@ -132,9 +143,7 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
   Future<void> _startRecording() async {
     if (_recording || _submitting) return;
     try {
-      if (!_cameraReady || _camera == null) {
-        await _initCamera();
-      }
+      await _initCamera();
       final cam = _camera;
       if (cam == null || !cam.value.isInitialized) {
         throw Exception('Камера не готова');
@@ -157,27 +166,24 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
   Future<void> _stopRecording() async {
     if (!_recording) return;
     _tick?.cancel();
-    final cam = _camera;
+    final elapsed = _elapsedMs.clamp(1, _maxVideoMs);
     try {
-      final file = await cam?.stopVideoRecording();
-      final path = file?.path;
-      if (path == null || path.isEmpty) {
-        throw Exception('Не удалось сохранить видео');
-      }
-      final preview = VideoPlayerController.file(File(path));
+      final file = await _camera!.stopVideoRecording();
+      await _videoPreview?.dispose();
+      final preview = VideoPlayerController.file(File(file.path));
       await preview.initialize();
       await preview.setLooping(true);
-      await preview.play();
       if (!mounted) {
         await preview.dispose();
         return;
       }
       setState(() {
         _recording = false;
-        _videoPath = path;
-        _videoDurationMs = _elapsedMs;
+        _videoPath = file.path;
+        _videoDurationMs = elapsed;
         _videoPreview = preview;
       });
+      unawaited(preview.play());
     } catch (e) {
       if (!mounted) return;
       setState(() => _recording = false);
@@ -207,8 +213,7 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
         VideoCircleRecording(
           bytes: bytes,
           durationMs: _videoDurationMs > 0 ? _videoDurationMs : _elapsedMs,
-          filename:
-              'circle_${DateTime.now().millisecondsSinceEpoch}.mp4',
+          filename: 'circle_${DateTime.now().millisecondsSinceEpoch}.mp4',
         ),
       );
     } catch (e) {
@@ -230,11 +235,10 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Светлый scaffold как в Diary — на чёрном фоне Texture камеры
+    // на части Android остаётся чёрным.
     return Scaffold(
-      backgroundColor: Colors.black,
       appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
         title: const Text('Кружок'),
       ),
       body: SafeArea(
@@ -244,27 +248,30 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
             Text(
               'До 30 секунд',
               style: theme.textTheme.bodySmall?.copyWith(
-                color: Colors.white70,
+                color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
-            Expanded(
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: 1,
-                  child: ClipOval(
-                    child: ColoredBox(
-                      color: Colors.black,
-                      child: _buildVideoStage(),
-                    ),
-                  ),
-                ),
-              ),
-            ),
+            Expanded(child: _buildStage()),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
               child: _buildControls(theme),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// Как в Diary: ClipOval → FittedBox → CameraPreview.
+  Widget _buildStage() {
+    return Center(
+      child: AspectRatio(
+        aspectRatio: 1,
+        child: ClipOval(
+          child: ColoredBox(
+            color: Colors.black,
+            child: _buildVideoStage(),
+          ),
         ),
       ),
     );
@@ -310,10 +317,6 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
           Expanded(
             child: OutlinedButton(
               onPressed: _clearPreview,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.white,
-                side: const BorderSide(color: Colors.white54),
-              ),
               child: const Text('Перезаписать'),
             ),
           ),
@@ -332,7 +335,7 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
         if (_recording)
           Text(
             _formatMs(_elapsedMs),
-            style: theme.textTheme.titleLarge?.copyWith(color: Colors.white),
+            style: theme.textTheme.titleLarge,
           ),
         const SizedBox(height: 8),
         FilledButton.tonalIcon(

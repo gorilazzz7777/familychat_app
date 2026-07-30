@@ -659,7 +659,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                   Text(
                     'Виден ограниченный доступ (${_albums.length} альбома). '
                     '${defaultTargetPlatform == TargetPlatform.iOS
-                        ? 'Откройте Настройки → Family Chat → Фото и выберите «Все фото».'
+                        ? 'Откройте Настройки → Family Space → Фото и выберите «Все фото».'
                         : 'Камера, WhatsApp, скриншоты появятся после «Разрешить все фото» в настройках Android.'}',
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontWeight: FontWeight.w600,

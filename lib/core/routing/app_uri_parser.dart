@@ -149,6 +149,6 @@ Map<String, dynamic>? parseIncomingCallPushFromUri(Uri uri) {
     'session_id': sessionId,
     'thread_id': threadId,
     'caller_user_id': uri.queryParameters['caller_user_id'] ?? '0',
-    'caller_name': uri.queryParameters['caller_name'] ?? 'Family Chat',
+    'caller_name': uri.queryParameters['caller_name'] ?? 'Family Space',
   };
 }

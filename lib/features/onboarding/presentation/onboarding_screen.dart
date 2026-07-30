@@ -305,7 +305,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       final inv = await ref.read(familychatRepositoryProvider).createInvite(_selectedKinship!);
       final url = inv['invite_url'] as String? ??
           '${Env.inviteBaseUrl}${inv['invite_url_path']}';
-      await Share.share('Приглашение в Family Chat: $url');
+      await Share.share('Приглашение в Family Space: $url');
       if (!mounted) return;
       setState(() => _loading = false);
       widget.onComplete();

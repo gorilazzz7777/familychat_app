@@ -224,7 +224,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       final callerUserId = event['caller_user_id'] is int
           ? event['caller_user_id'] as int
           : int.tryParse('${event['caller_user_id']}') ?? 0;
-      final callerName = event['caller_name']?.toString() ?? 'Family Chat';
+      final callerName = event['caller_name']?.toString() ?? 'Family Space';
       IncomingCallCoordinator.instance.present(
         callId: callId,
         threadId: threadId,
@@ -384,11 +384,11 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   String get _title => switch (_index) {
         0 => 'Лента',
-        1 => 'Семейный чат',
+        1 => 'Family Space',
         2 => 'Семья',
         3 => 'Галерея',
         4 => 'Календарь',
-        _ => 'Family Chat',
+        _ => 'Family Space',
       };
 
   bool get _hideShellAppBar =>

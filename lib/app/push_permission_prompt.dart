@@ -156,7 +156,7 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
     if (kIsWeb) {
       if (status == PushPermissionStatus.denied) {
         return 'Уведомления запрещены. Откройте Настройки iPhone → '
-            'Уведомления → Family Chat и включите «Разрешить уведомления», '
+            'Уведомления → Family Space и включите «Разрешить уведомления», '
             'затем нажмите «Повторить».';
       }
       return 'Разрешите уведомления, чтобы получать новые сообщения из чатов, '
@@ -165,11 +165,11 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
 
     if (permanentlyDenied) {
       if (defaultTargetPlatform == TargetPlatform.iOS) {
-        return 'Уведомления отключены. Откройте Настройки → Family Chat → '
+        return 'Уведомления отключены. Откройте Настройки → Family Space → '
             'Уведомления и включите «Разрешить уведомления».';
       }
       return 'Уведомления отключены в настройках. Откройте настройки '
-          'приложения Family Chat и включите уведомления.';
+          'приложения Family Space и включите уведомления.';
     }
 
     return 'Разрешите уведомления, чтобы не пропускать новые сообщения в семейных '

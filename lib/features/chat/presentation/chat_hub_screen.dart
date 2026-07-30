@@ -664,7 +664,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
     return Scaffold(
       appBar: FamilyAppBar.build(
-        title: 'Семейный чат',
+        title: 'Family Space',
         profileName: widget.profileName,
         profileAvatarUrl: widget.profileAvatarUrl,
         onProfileTap: widget.onProfileTap,

@@ -6,6 +6,6 @@ import 'package:familychat_app/main.dart';
 void main() {
   testWidgets('App boots', (WidgetTester tester) async {
     await tester.pumpWidget(const ProviderScope(child: FamilyChatApp()));
-    expect(find.text('Family Chat'), findsOneWidget);
+    expect(find.text('Family Space'), findsOneWidget);
   });
 }

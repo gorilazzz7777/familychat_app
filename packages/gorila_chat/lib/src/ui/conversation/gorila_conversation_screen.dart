@@ -439,11 +439,11 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
       case 'reply':
       case 'edit':
       case 'forward':
-        // Full flows live in Family Chat; stubs until repository expands.
+        // Full flows live in Family Space; stubs until repository expands.
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Действие пока доступно в Family Chat'),
+            content: Text('Действие пока доступно в Family Space'),
           ),
         );
     }
@@ -569,7 +569,7 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
       return;
     }
     if (options.silent || options.isScheduled) {
-      // Silent / schedule: Family Chat owns full flows; shared screen sends normally.
+      // Silent / schedule: Family Space owns full flows; shared screen sends normally.
     }
     await _send();
   }

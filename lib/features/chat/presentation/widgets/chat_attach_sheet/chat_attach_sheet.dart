@@ -45,6 +45,9 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
   final ChatAttachSheetStyle style;
   final VoidCallback? onRecordVideoCircle;
 
+  /// Sentinel: закрыть шторку и открыть запись кружка после release камеры.
+  static const videoCircleResult = 'video_circle';
+
   static Future<void> show(
     BuildContext context, {
     required Future<void> Function(
@@ -57,7 +60,7 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
     Set<int> excludeFamilyAttachmentIds = const {},
     ChatAttachSheetStyle style = ChatAttachSheetStyle.chat,
     VoidCallback? onRecordVideoCircle,
-  }) {
+  }) async {
     assert(
       style != ChatAttachSheetStyle.chat || onSendLocation != null,
       'ChatAttachSheetStyle.chat requires onSendLocation',
@@ -67,21 +70,29 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
           (onAddFromFamilyGallery != null && familyGalleryUserId != null),
       'ChatAttachSheetStyle.albumMedia requires family gallery callbacks',
     );
-    return showModalBottomSheet<void>(
+    final result = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => ChatAttachSheet(
+      builder: (sheetContext) => ChatAttachSheet(
         onSendMedia: onSendMedia,
         onSendLocation: onSendLocation,
         onAddFromFamilyGallery: onAddFromFamilyGallery,
         familyGalleryUserId: familyGalleryUserId,
         excludeFamilyAttachmentIds: excludeFamilyAttachmentIds,
         style: style,
-        onRecordVideoCircle: onRecordVideoCircle,
+        // Не открываем кружок сразу: live-preview шторки держит CameraController.
+        onRecordVideoCircle: onRecordVideoCircle == null
+            ? null
+            : () => Navigator.of(sheetContext).pop(videoCircleResult),
       ),
     );
+    if (result == videoCircleResult && onRecordVideoCircle != null) {
+      // Android не отпускает камеру мгновенно после dispose превью в шторке.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      onRecordVideoCircle();
+    }
   }
 
   @override
@@ -240,12 +251,7 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
                         onSelectedChanged: _setSelected,
                         scrollController: scrollController,
                         expanded: _expanded,
-                        onRecordVideoCircle: widget.onRecordVideoCircle == null
-                            ? null
-                            : () {
-                                Navigator.of(context).pop();
-                                widget.onRecordVideoCircle!();
-                              },
+                        onRecordVideoCircle: widget.onRecordVideoCircle,
                       ),
                     ChatAttachMode.file => AttachFileTab(
                         selected: _selected,

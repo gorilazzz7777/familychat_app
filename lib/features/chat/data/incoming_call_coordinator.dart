@@ -35,7 +35,7 @@ class IncomingCallCoordinator {
       callerUserId: callerUserId,
       callerName: callerName != null && callerName.isNotEmpty
           ? callerName
-          : 'Family Chat',
+          : 'Family Space',
     );
   }
 

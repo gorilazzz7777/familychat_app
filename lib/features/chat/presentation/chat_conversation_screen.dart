@@ -348,14 +348,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _init() async {
-    try {
-      final st = await ref.read(familychatRepositoryProvider).status();
-      _currentUserId = chatAsInt(st['user_id']);
-      final entitlements = st['entitlements'];
-      if (entitlements is Map) {
-        _viewerIndividualPremium = entitlements['individual_premium'] == true;
-      }
-    } catch (_) {}
+    // Сначала кэш статуса с диска (<50ms), сеть — в фоне.
+    // Иначе local-first чат ждёт HTTP status 1–3с до первого кадра из SQLite.
+    await _applyViewerIdentity(fromCache: true);
+    unawaited(_applyViewerIdentity(fromCache: false));
     // Модель Vosk заранее (без сети) — на случай отправки в premium-треде.
     unawaited(ChatVoiceTranscription.instance.preloadModelToDisk());
 
@@ -404,6 +400,29 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       // Кэш уже проскроллил вниз; повторный settle после сети даёт мигание.
       _scrollToBottom(jump: true, settle: true);
     }
+  }
+
+  Future<void> _applyViewerIdentity({required bool fromCache}) async {
+    try {
+      final Map<String, dynamic>? st;
+      if (fromCache) {
+        st = await FamilyChatLocalCache.readStatus();
+      } else {
+        st = await ref.read(familychatRepositoryProvider).status();
+      }
+      if (st == null || !mounted) return;
+      final uid = chatAsInt(st['user_id']);
+      var premium = _viewerIndividualPremium;
+      final entitlements = st['entitlements'];
+      if (entitlements is Map) {
+        premium = entitlements['individual_premium'] == true;
+      }
+      final changed =
+          uid != _currentUserId || premium != _viewerIndividualPremium;
+      _currentUserId = uid;
+      _viewerIndividualPremium = premium;
+      if (!fromCache && changed && mounted) setState(() {});
+    } catch (_) {}
   }
 
   Future<void> _bindLocalMessages() async {
@@ -1328,32 +1347,55 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   Future<void> _openBirthdayCongratulationDialog() async {
     final mine = (_birthdayScheduled?['mine'] as Map<String, dynamic>?) ?? {};
     final initial = mine['body']?.toString() ?? '';
+    final initialAttachments = (mine['attachments'] as List<dynamic>? ?? [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    final meta = mine['message_metadata'];
+    int? videoNoteMs;
+    if (meta is Map) {
+      final vn = meta['video_note'];
+      if (vn is Map) {
+        final raw = vn['duration_ms'];
+        videoNoteMs = raw is int ? raw : int.tryParse('$raw');
+      }
+    }
+    final hadContent =
+        initial.trim().isNotEmpty || initialAttachments.isNotEmpty;
+    final repo = ref.read(familychatRepositoryProvider);
     await showBirthdayScheduledCongratulationDialog(
       context: context,
+      threadId: widget.threadId,
       initialText: initial,
-      onSave: (body) async {
+      initialAttachments: initialAttachments,
+      initialVideoNoteDurationMs: videoNoteMs,
+      repository: repo,
+      onSave: ({
+        required body,
+        required attachmentIds,
+        videoNoteDurationMs,
+      }) async {
         setState(() => _birthdayScheduledSaving = true);
         try {
-          final data = await ref
-              .read(familychatRepositoryProvider)
-              .saveBirthdayScheduledCongratulation(
-                widget.threadId,
-                body: body,
-              );
+          final data = await repo.saveBirthdayScheduledCongratulation(
+            widget.threadId,
+            body: body,
+            attachmentIds: attachmentIds,
+            videoNoteDurationMs: videoNoteDurationMs,
+          );
           if (!mounted) return;
           setState(() => _birthdayScheduled = data);
         } finally {
           if (mounted) setState(() => _birthdayScheduledSaving = false);
         }
       },
-      onDelete: initial.trim().isEmpty
+      onDelete: !hadContent
           ? null
           : () async {
               setState(() => _birthdayScheduledSaving = true);
               try {
-                final data = await ref
-                    .read(familychatRepositoryProvider)
-                    .deleteBirthdayScheduledCongratulation(widget.threadId);
+                final data =
+                    await repo.deleteBirthdayScheduledCongratulation(widget.threadId);
                 if (!mounted) return;
                 setState(() => _birthdayScheduled = data);
               } finally {

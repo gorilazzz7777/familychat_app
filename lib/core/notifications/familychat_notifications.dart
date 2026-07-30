@@ -120,7 +120,7 @@ class FamilyChatNotifications {
         message.notification?.body?.trim();
     await showIncomingCallWakeUp(
       title: title != null && title.isNotEmpty ? title : 'Входящий звонок',
-      body: body != null && body.isNotEmpty ? body : 'Family Chat',
+      body: body != null && body.isNotEmpty ? body : 'Family Space',
       data: data,
     );
   }

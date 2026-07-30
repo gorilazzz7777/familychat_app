@@ -35,7 +35,7 @@ Future<void> runFriendInviteFlow(
     if (!context.mounted) return;
     final url = inv['invite_url'] as String? ??
         '${Env.inviteBaseUrl}${inv['invite_url_path']}';
-    await Share.share('Приглашение в контакты Family Chat: $url');
+    await Share.share('Приглашение в контакты Family Space: $url');
   } catch (e) {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(

@@ -46,7 +46,7 @@ class FamilyChatApp extends ConsumerWidget {
     final seedColor = ref.watch(themeSeedProvider);
 
     return MaterialApp(
-      title: 'Family Chat',
+      title: 'Family Space',
       navigatorKey: familyChatNavigatorKey,
       scaffoldMessengerKey: familyChatScaffoldMessengerKey,
       debugShowCheckedModeBanner: false,

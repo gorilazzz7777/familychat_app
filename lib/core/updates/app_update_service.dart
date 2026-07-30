@@ -97,9 +97,9 @@ class AppUpdateService {
           title: const Text('Доступно обновление'),
           content: Text(
             isIos
-                ? 'Вышла новая версия Family Chat.\n'
+                ? 'Вышла новая версия Family Space.\n'
                     'Нажмите «Обновить», чтобы открыть ${store.label}.'
-                : 'Вышла новая версия Family Chat.\n'
+                : 'Вышла новая версия Family Space.\n'
                     'Можно обновить через ${store.label} — скачивание пойдёт '
                     'в фоне, работа в приложении не прервётся.',
           ),

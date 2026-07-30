@@ -543,10 +543,20 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> saveBirthdayScheduledCongratulation(
     int threadId, {
     required String body,
+    List<int>? attachmentIds,
+    int? videoNoteDurationMs,
   }) async {
     final res = await _dio.put<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/birthday-scheduled-congratulation/',
-      data: {'body': body},
+      data: {
+        'body': body,
+        'attachment_ids': attachmentIds ?? const <int>[],
+        'message_metadata': videoNoteDurationMs != null
+            ? {
+                'video_note': {'duration_ms': videoNoteDurationMs},
+              }
+            : <String, dynamic>{},
+      },
     );
     return res.data ?? {};
   }

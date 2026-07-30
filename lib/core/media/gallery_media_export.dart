@@ -13,7 +13,7 @@ import 'gallery_media_utils.dart';
 /// Экспорт фото/видео галереи: share из кэша и сохранение в папку приложения.
 abstract final class GalleryMediaExport {
   /// Имя альбома/папки в галерее телефона.
-  static const String appAlbumName = 'Family Chat';
+  static const String appAlbumName = 'Family Space';
 
   static String filenameFor(Map<String, dynamic> attachment, {int? id}) {
     final raw = attachment['filename']?.toString().trim() ?? '';

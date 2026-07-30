@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
-import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../app/shell_refresh.dart';
 import '../../../core/cache/familychat_local_cache.dart';
@@ -59,7 +58,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     super.initState();
     _captionController = TextEditingController(text: widget.media.content ?? '');
     _albumSearchController = TextEditingController();
-    _load();
+    // Цели (чаты) — сразу из локальной БД; вложения и сеть не блокируют список.
+    unawaited(_hydrateTargetsFromLocal());
+    unawaited(_loadAttachments());
+    unawaited(_refreshTargetsFromNetwork());
   }
 
   @override
@@ -82,32 +84,199 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     return int.tryParse(idStr.substring(7));
   }
 
-  Future<void> _loadThreads(dynamic repo) async {
+  void _applyMembers(List<Map<String, dynamic>> members) {
+    final byUserId = <int, Map<String, dynamic>>{};
+    for (final member in members) {
+      final uid = member['user_id'];
+      final userId = uid is int ? uid : int.tryParse('$uid');
+      if (userId == null) continue;
+      byUserId[userId] = member;
+    }
+    _memberByUserId
+      ..clear()
+      ..addAll(byUserId);
+  }
+
+  void _applyStatusMap(Map<String, dynamic> status) {
+    final raw = status['user_id'];
+    _myUserId = raw is int ? raw : int.tryParse('$raw');
+  }
+
+  /// Быстрый путь: SQLite (+ JSON-кэш) без сети.
+  Future<void> _hydrateTargetsFromLocal() async {
     try {
-      final results = await Future.wait<dynamic>([
-        repo.chatThreads(),
-        repo.members(),
-      ]);
-      final list = (results[0] as List).cast<Map<String, dynamic>>();
-      final members = (results[1] as List).cast<Map<String, dynamic>>();
-      final byUserId = <int, Map<String, dynamic>>{};
-      for (final member in members) {
-        final uid = member['user_id'];
-        final userId = uid is int ? uid : int.tryParse('$uid');
-        if (userId == null) continue;
-        byUserId[userId] = member;
+      final cachedStatus = await FamilyChatLocalCache.readStatus();
+      if (cachedStatus != null && mounted) {
+        setState(() => _applyStatusMap(cachedStatus));
       }
+
+      var threads = <Map<String, dynamic>>[];
+      var members = <Map<String, dynamic>>[];
+
+      if (ChatLocalStore.isSupported) {
+        final results = await Future.wait([
+          ChatLocalStore.instance.readThreads(),
+          ChatLocalStore.instance.readMembers(),
+        ]);
+        threads = results[0];
+        members = results[1];
+      }
+
+      if (threads.isEmpty) {
+        final cachedThreads = await FamilyChatLocalCache.readChatThreads();
+        if (cachedThreads != null && cachedThreads.isNotEmpty) {
+          threads = cachedThreads;
+        }
+      }
+      if (members.isEmpty) {
+        final cachedMembers = await FamilyChatLocalCache.readChatMembers();
+        if (cachedMembers != null && cachedMembers.isNotEmpty) {
+          members = cachedMembers;
+        }
+      }
+
+      if (!mounted) return;
+      if (threads.isNotEmpty || members.isNotEmpty) {
+        setState(() {
+          if (threads.isNotEmpty) {
+            _threads = threads;
+            _loadingThreads = false;
+          }
+          if (members.isNotEmpty) _applyMembers(members);
+        });
+      }
+
+      final myUserId = _myUserId;
+      if (myUserId != null) {
+        final cachedAlbums =
+            await FamilyChatLocalCache.readMemberAlbums(myUserId);
+        if (cachedAlbums != null && mounted) {
+          setState(() {
+            _albums = _parseCustomAlbums(cachedAlbums);
+            _loadingAlbums = false;
+          });
+        }
+      }
+    } catch (_) {
+      // Сеть/ошибка ниже; UI может остаться в loading до refresh.
+    }
+  }
+
+  Future<void> _loadAttachments() async {
+    try {
+      final attachments = await readShareAttachments(widget.media);
       if (!mounted) return;
       setState(() {
-        _threads = list;
-        _memberByUserId
-          ..clear()
-          ..addAll(byUserId);
-        _loadingThreads = false;
+        _attachments = attachments;
+        _loadingAttachments = false;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() => _loadingThreads = false);
+      setState(() {
+        _loadError = 'Не удалось подготовить вложения';
+        _loadingAttachments = false;
+      });
+    }
+  }
+
+  Future<void> _refreshTargetsFromNetwork() async {
+    try {
+      final repo = ref.read(familychatRepositoryProvider);
+      // Не блокируем UI: status + threads параллельно.
+      final statusFuture = repo.status();
+      final threadsFuture = Future.wait<dynamic>([
+        repo.chatThreads(),
+        repo.members(),
+      ]);
+
+      final status = await statusFuture;
+      if (!mounted) return;
+      setState(() => _applyStatusMap(status));
+      unawaited(FamilyChatLocalCache.saveStatus(status));
+
+      final myUserId = _myUserId;
+      final albumsFuture = myUserId == null
+          ? Future<void>.value()
+          : _loadAlbums(repo, myUserId);
+
+      final results = await threadsFuture;
+      final list = (results[0] as List).cast<Map<String, dynamic>>();
+      final members = (results[1] as List).cast<Map<String, dynamic>>();
+
+      await FamilyChatLocalCache.saveChatThreads(list);
+      await FamilyChatLocalCache.saveChatMembers(members);
+      if (ChatLocalStore.isSupported) {
+        await ChatLocalStore.instance.replaceThreads(list);
+        await ChatLocalStore.instance.replaceMembers(members);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _threads = list;
+        _applyMembers(members);
+        _loadingThreads = false;
+      });
+
+      await albumsFuture;
+      if (mounted && _loadingAlbums) {
+        setState(() => _loadingAlbums = false);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        // Локальный список уже мог показаться — не затираем ошибкой весь экран.
+        if (_threads.isEmpty) {
+          _loadError ??= 'Не удалось загрузить чаты';
+        }
+        _loadingThreads = false;
+        _loadingAlbums = false;
+      });
+    }
+  }
+
+  Future<void> _loadAlbums(
+    dynamic repo,
+    int myUserId, {
+    bool selectNewest = false,
+    bool forceRefresh = false,
+  }) async {
+    var albums = <Map<String, dynamic>>[];
+    try {
+      if (!forceRefresh) {
+        final cached = await FamilyChatLocalCache.readMemberAlbums(myUserId);
+        if (cached != null) {
+          albums = _parseCustomAlbums(cached);
+          if (mounted) {
+            setState(() {
+              _albums = albums;
+              _loadingAlbums = false;
+            });
+          }
+        }
+      }
+      final albumsData = await repo.memberGalleryAlbums(myUserId);
+      await FamilyChatLocalCache.saveMemberAlbums(myUserId, albumsData);
+      albums = _parseCustomAlbums(albumsData);
+      if (!mounted) return;
+      setState(() {
+        _albums = albums;
+        _loadingAlbums = false;
+        if (selectNewest && albums.isNotEmpty) {
+          int? newestPk;
+          for (final album in albums) {
+            final pk = _albumPk(album);
+            if (pk == null) continue;
+            if (newestPk == null || pk > newestPk) {
+              newestPk = pk;
+            }
+          }
+          if (newestPk != null) _selectedAlbumPks.add(newestPk);
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingAlbums = false);
+      if (albums.isEmpty) rethrow;
     }
   }
 
@@ -153,80 +322,6 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     final url = _memberByUserId[peerId]?['avatar_url']?.toString().trim();
     if (url == null || url.isEmpty) return null;
     return url;
-  }
-
-  Future<void> _loadAlbums(
-    dynamic repo,
-    int myUserId, {
-    bool selectNewest = false,
-    bool forceRefresh = false,
-  }) async {
-    var albums = <Map<String, dynamic>>[];
-    try {
-      if (!forceRefresh) {
-        final cached = await FamilyChatLocalCache.readMemberAlbums(myUserId);
-        if (cached != null) {
-          albums = _parseCustomAlbums(cached);
-          if (mounted) {
-            setState(() => _albums = albums);
-          }
-        }
-      }
-      final albumsData = await repo.memberGalleryAlbums(myUserId);
-      await FamilyChatLocalCache.saveMemberAlbums(myUserId, albumsData);
-      albums = _parseCustomAlbums(albumsData);
-      if (!mounted) return;
-      setState(() {
-        _albums = albums;
-        _loadingAlbums = false;
-        if (selectNewest && albums.isNotEmpty) {
-          int? newestPk;
-          for (final album in albums) {
-            final pk = _albumPk(album);
-            if (pk == null) continue;
-            if (newestPk == null || pk > newestPk) {
-              newestPk = pk;
-            }
-          }
-          if (newestPk != null) _selectedAlbumPks.add(newestPk);
-        }
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _loadingAlbums = false);
-      if (albums.isEmpty) rethrow;
-    }
-  }
-
-  Future<void> _load() async {
-    try {
-      final attachments = await readShareAttachments(widget.media);
-      if (!mounted) return;
-      setState(() {
-        _attachments = attachments;
-        _loadingAttachments = false;
-      });
-
-      final repo = ref.read(familychatRepositoryProvider);
-      final status = await repo.status();
-      final myUserId = status['user_id'] is int
-          ? status['user_id'] as int
-          : int.tryParse('${status['user_id']}');
-      if (mounted) setState(() => _myUserId = myUserId);
-
-      await Future.wait<void>([
-        _loadThreads(repo),
-        if (myUserId != null) _loadAlbums(repo, myUserId) else Future<void>.value(),
-      ]);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _loadError = 'Не удалось подготовить отправку';
-        _loadingAttachments = false;
-        _loadingThreads = false;
-        _loadingAlbums = false;
-      });
-    }
   }
 
   Future<void> _createAlbum() async {
@@ -749,6 +844,9 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
   Widget build(BuildContext context) {
     final caption = _captionController.text.trim();
     final hasPayload = caption.isNotEmpty || _attachments.isNotEmpty;
+    // Список чатов показываем сразу из БД; вложения могут ещё читаться.
+    final showTargets = _loadError == null &&
+        (_loadingAttachments || hasPayload || _threads.isNotEmpty);
 
     return Scaffold(
       appBar: FamilyAppBar.build(
@@ -770,22 +868,29 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
           ),
         ],
       ),
-      body: _loadingAttachments
-          ? const DeferredPlaceholder(
-              child: Center(child: CircularProgressIndicator()),
-            )
-          : _loadError != null
-              ? Center(child: Text(_loadError!))
-              : !hasPayload
-                  ? const Center(child: Text('Нет данных для отправки'))
-                  : Column(
+      body: _loadError != null && _threads.isEmpty && !_loadingAttachments
+          ? Center(child: Text(_loadError!))
+          : !showTargets
+              ? const Center(child: Text('Нет данных для отправки'))
+              : Column(
                       children: [
                         Padding(
                           padding: const EdgeInsets.all(12),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              if (_attachments.isNotEmpty)
+                              if (_loadingAttachments)
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 16),
+                                  child: Center(
+                                    child: SizedBox(
+                                      width: 28,
+                                      height: 28,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    ),
+                                  ),
+                                )
+                              else if (_attachments.isNotEmpty)
                                 SizedBox(
                                   height: 88,
                                   child: ListView.separated(
@@ -832,7 +937,8 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                                     },
                                   ),
                                 ),
-                              if (_attachments.isNotEmpty) const SizedBox(height: 12),
+                              if (_attachments.isNotEmpty || _loadingAttachments)
+                                const SizedBox(height: 12),
                               TextField(
                                 controller: _captionController,
                                 minLines: 1,

@@ -292,7 +292,7 @@ class _PreviewAppBar extends StatelessWidget {
         children: [
           Expanded(
             child: Text(
-              'Семейный чат',
+              'Family Space',
               style: theme.textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.w600,
               ),

@@ -58,7 +58,7 @@ class _IosSafariInstallHintState extends State<IosSafariInstallHint> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Установите Family Chat на главный экран',
+                    'Установите Family Space на главный экран',
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),

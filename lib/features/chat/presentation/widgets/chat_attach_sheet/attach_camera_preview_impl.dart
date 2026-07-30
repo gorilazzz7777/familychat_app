@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
@@ -16,7 +18,7 @@ class _AttachCameraPreviewImplState extends State<AttachCameraPreviewImpl> {
   @override
   void initState() {
     super.initState();
-    _init();
+    unawaited(_init());
   }
 
   Future<void> _init() async {
@@ -49,7 +51,10 @@ class _AttachCameraPreviewImplState extends State<AttachCameraPreviewImpl> {
 
   @override
   void dispose() {
-    _controller?.dispose();
+    final c = _controller;
+    _controller = null;
+    // Важно await'ить Future из dispose виджета — отпускаем сессию явно.
+    unawaited(c?.dispose() ?? Future<void>.value());
     super.dispose();
   }
 

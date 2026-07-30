@@ -163,7 +163,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       colors: [Color(0xFF4A9FD4), Color(0xFFD46A9A)],
                     ).createShader(bounds),
                     child: Text(
-                      'Family Chat',
+                      'Family Space',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.headlineMedium?.copyWith(
                         fontWeight: FontWeight.w800,

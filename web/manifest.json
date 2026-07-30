@@ -1,11 +1,11 @@
 {
-    "name": "Family Chat",
-    "short_name": "Family Chat",
+    "name": "Family Space",
+    "short_name": "Family Space",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#FFFFFF",
     "theme_color": "#7EC8F0",
-    "description": "Family Chat — семейный мессенджер",
+    "description": "Family Space — семейный мессенджер",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

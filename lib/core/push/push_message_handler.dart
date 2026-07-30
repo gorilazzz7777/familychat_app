@@ -82,7 +82,7 @@ void handleFamilyChatRemoteMessage(
     if (title == null && body == null) return;
     unawaited(
       FamilyChatNotifications.showForegroundPush(
-        title: title != null && title.isNotEmpty ? title : 'Family Chat',
+        title: title != null && title.isNotEmpty ? title : 'Family Space',
         body: body != null && body.isNotEmpty ? body : 'Новое уведомление',
         data: Map<String, dynamic>.from(data),
       ),
@@ -99,7 +99,7 @@ void handleFamilyChatRemoteMessage(
   final pushData = Map<String, dynamic>.from(data);
   unawaited(
     FamilyChatNotifications.showForegroundPush(
-      title: title != null && title.isNotEmpty ? title : 'Family Chat',
+      title: title != null && title.isNotEmpty ? title : 'Family Space',
       body: body != null && body.isNotEmpty ? body : 'Новое уведомление',
       data: pushData,
     ),

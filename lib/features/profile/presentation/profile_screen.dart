@@ -278,7 +278,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         title: const Text('Удалить профиль'),
         content: const Text(
           'Это действие необратимо. Будут удалены ваш аккаунт и все данные '
-          'Family Chat, включая сообщения и связи в семье.',
+          'Family Space, включая сообщения и связи в семье.',
         ),
         actions: [
           TextButton(
