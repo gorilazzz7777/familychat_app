@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 String galleryAttachmentUrl(Map<String, dynamic> attachment) {
   return attachment['url']?.toString() ??
       attachment['file_url']?.toString() ??

@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import '../../../core/media/gallery_media_utils.dart';
+import '../../../../../core/media/gallery_media_utils.dart';
 
 enum ChatAttachMode { gallery, file, location, familyGallery }
 
