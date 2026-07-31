@@ -10,6 +10,7 @@ import 'package:photo_manager/photo_manager.dart';
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
 import '../../../../profile/presentation/read_picked_image_bytes.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
+import '../../../../../core/media/image_upload_pipeline.dart';
 import '../../../../../core/widgets/app_skeletons.dart';
 import 'attach_camera_tile.dart';
 import 'chat_attach_models.dart';
@@ -524,10 +525,17 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       if (picked == null) return;
       final bytes = await readPickedImageBytes(picked);
       if (bytes.isEmpty) return;
+      final thumb = await compressImageBytes(
+        bytes,
+        maxSide: 200,
+        quality: 55,
+        localPath: picked.path,
+      );
       final item = ChatAttachSelectionItem(
         id: 'cam_i_${DateTime.now().microsecondsSinceEpoch}',
         filename: picked.name,
         bytes: bytes,
+        thumbnailBytes: thumb,
         contentType: picked.mimeType ?? contentTypeForFilename(picked.name),
         localPath: picked.path,
         kind: 'image',
@@ -557,6 +565,13 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
           id: 'web_${f.name}_${bytes.length}_${DateTime.now().microsecondsSinceEpoch}',
           filename: f.name,
           bytes: bytes,
+          thumbnailBytes: kind == 'image'
+              ? await compressImageBytes(
+                  bytes,
+                  maxSide: 200,
+                  quality: 55,
+                )
+              : null,
           contentType: ct,
           kind: kind,
         ),

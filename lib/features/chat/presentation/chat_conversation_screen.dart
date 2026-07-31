@@ -1906,8 +1906,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             'kind': d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
             'filename': d.filename,
             'content_type': d.contentType,
-            if (d.thumbnailBytes != null) 'local_bytes': d.thumbnailBytes,
-            if (d.isImage) 'local_bytes': d.bytesForUpload,
+            if (d.thumbnailBytes != null &&
+                d.thumbnailBytes!.isNotEmpty &&
+                d.thumbnailBytes!.length <= kSafeLocalPreviewMaxBytes)
+              'local_bytes': d.thumbnailBytes,
           },
       ],
       replyTo: replySnapshot,
@@ -1955,18 +1957,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       );
     }
 
+    final previewAttachments = <Map<String, dynamic>>[];
+    for (final item in items) {
+      final preview = safeUiPreviewBytes(
+        thumbnailBytes: item.thumbnailBytes,
+        bytes: item.bytes,
+        kind: item.kind,
+      );
+      previewAttachments.add({
+        'kind': item.kind,
+        'filename': item.filename,
+        'content_type': item.contentType,
+        if (preview != null) 'local_bytes': preview,
+      });
+    }
+
     _addOptimisticMessage(
       tempId,
       body: caption,
-      attachments: [
-        for (final item in items)
-          {
-            'kind': item.kind,
-            'filename': item.filename,
-            'content_type': item.contentType,
-            'local_bytes': item.previewBytes,
-          },
-      ],
+      attachments: previewAttachments,
       replyTo: replySnapshot,
     );
     if (_replyTo != null) {
@@ -2095,7 +2104,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           'kind': 'video',
           'filename': recording.filename,
           'content_type': recording.contentType,
-          'local_bytes': recording.bytes,
+          // Не кладём сырое видео в Image.memory — только placeholder до ответа сервера.
           'is_video_note': true,
         },
       ],

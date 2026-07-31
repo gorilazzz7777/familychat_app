@@ -37,14 +37,23 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
   void initState() {
     super.initState();
     if (widget.initialPhotos.isNotEmpty) {
-      _photos.addAll(
-        widget.initialPhotos.take(FeedPostUploader.maxPhotos),
-      );
-      for (final photo in _photos) {
-        unawaited(FeedPostUploader.cacheLocally(photo));
-      }
+      unawaited(_seedInitialPhotos(widget.initialPhotos));
     }
     unawaited(_loadUserId());
+  }
+
+  Future<void> _seedInitialPhotos(List<FeedPostPhoto> initial) async {
+    final limited = initial.take(FeedPostUploader.maxPhotos).toList();
+    final normalized = await FeedPostUploader.normalizePhotos(limited);
+    if (!mounted) return;
+    setState(() {
+      _photos
+        ..clear()
+        ..addAll(normalized);
+    });
+    for (final photo in normalized) {
+      unawaited(FeedPostUploader.cacheLocally(photo));
+    }
   }
 
   Future<void> _loadUserId() async {
@@ -89,22 +98,27 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
   Future<void> _appendAttachItems(List<ChatAttachSelectionItem> items) async {
     if (items.isEmpty || !mounted) return;
 
-    final photos = <FeedPostPhoto>[];
+    final raw = <FeedPostPhoto>[];
     for (final item in items) {
       if (item.kind != 'image' && item.kind != 'video') continue;
-      final photo = FeedPostPhoto(
-        bytes: item.bytes,
-        filename: item.filename,
-        contentType: item.contentType ?? contentTypeForFilename(item.filename),
-        kind: item.kind,
-        localPath: item.localPath,
-        thumbnailBytes: item.thumbnailBytes,
-        cacheId: item.id,
+      raw.add(
+        FeedPostPhoto(
+          bytes: item.bytes,
+          filename: item.filename,
+          contentType: item.contentType ?? contentTypeForFilename(item.filename),
+          kind: item.kind,
+          localPath: item.localPath,
+          thumbnailBytes: item.thumbnailBytes,
+          cacheId: item.id,
+        ),
       );
-      unawaited(FeedPostUploader.cacheLocally(photo));
-      photos.add(photo);
     }
+    if (raw.isEmpty) return;
+    final photos = await FeedPostUploader.normalizePhotos(raw);
     if (!mounted || photos.isEmpty) return;
+    for (final photo in photos) {
+      unawaited(FeedPostUploader.cacheLocally(photo));
+    }
     _appendPhotos(photos);
   }
 
@@ -140,7 +154,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       if (offset >= total) break;
     }
 
-    final photos = <FeedPostPhoto>[];
+    final raw = <FeedPostPhoto>[];
     for (final id in attachmentIds) {
       final meta = found[id];
       if (meta == null) continue;
@@ -161,11 +175,15 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
           kind: kind,
           cacheId: 'gallery_$id',
         );
-        unawaited(FeedPostUploader.cacheLocally(photo));
-        photos.add(photo);
+        raw.add(photo);
       } catch (_) {}
     }
+    if (raw.isEmpty) return;
+    final photos = await FeedPostUploader.normalizePhotos(raw);
     if (!mounted || photos.isEmpty) return;
+    for (final photo in photos) {
+      unawaited(FeedPostUploader.cacheLocally(photo));
+    }
     _appendPhotos(photos);
   }
 
@@ -224,7 +242,16 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       }
     } catch (_) {}
 
-    final snapshot = List<FeedPostPhoto>.from(_photos);
+    // Дожимаем превью/сжатие до pop — иначе лента может декодировать
+    // полноразмерные байты и убить процесс (bootstrap с лого).
+    final snapshot = await FeedPostUploader.normalizePhotos(_photos);
+    if (!mounted) return;
+    setState(() {
+      _photos
+        ..clear()
+        ..addAll(snapshot);
+    });
+
     final optimistic = FeedPostUploader.buildOptimisticEvent(
       photos: snapshot,
       caption: caption,
@@ -312,16 +339,30 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                         );
                       }
                       final photo = _photos[index];
+                      final preview = photo.previewBytes;
                       return Stack(
                         children: [
                           ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: Image.memory(
-                              photo.previewBytes,
-                              width: 108,
-                              height: 108,
-                              fit: BoxFit.cover,
-                            ),
+                            child: preview.isEmpty
+                                ? Container(
+                                    width: 108,
+                                    height: 108,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerHighest,
+                                    child: Icon(
+                                      photo.kind == 'video'
+                                          ? Icons.videocam_outlined
+                                          : Icons.image_outlined,
+                                    ),
+                                  )
+                                : Image.memory(
+                                    preview,
+                                    width: 108,
+                                    height: 108,
+                                    fit: BoxFit.cover,
+                                  ),
                           ),
                           if (photo.kind == 'video')
                             const Positioned.fill(

@@ -144,7 +144,9 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     if (cached != null) return cached;
 
     final local = photo['local_bytes'];
-    if (local is Uint8List && local.isNotEmpty) {
+    if (local is Uint8List &&
+        local.isNotEmpty &&
+        local.length <= 400 * 1024) {
       try {
         final codec = await ui.instantiateImageCodec(local);
         final frame = await codec.getNextFrame();
@@ -225,13 +227,30 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
 
     Widget buildMedia(Map<String, dynamic> photo) {
       final local = photo['local_bytes'];
-      if (local is Uint8List && local.isNotEmpty) {
+      // Только лёгкие превью: полный кадр в Image.memory валит процесс (OOM).
+      if (local is Uint8List &&
+          local.isNotEmpty &&
+          local.length <= 400 * 1024) {
         return Image.memory(
           local,
           width: double.infinity,
           height: height,
           fit: BoxFit.cover,
           gaplessPlayback: true,
+        );
+      }
+      if (photo['_optimistic'] == true) {
+        return ColoredBox(
+          color: cs.surfaceContainerHighest,
+          child: Center(
+            child: Icon(
+              isVideoAttachment(photo)
+                  ? Icons.videocam_outlined
+                  : Icons.image_outlined,
+              size: 48,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
         );
       }
       if (isVideoAttachment(photo)) {

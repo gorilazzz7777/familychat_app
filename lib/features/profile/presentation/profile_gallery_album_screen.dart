@@ -8,6 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/share/share_to_diary_prefs.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/media/gallery_media_export.dart';
+import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/image_upload_pipeline.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
@@ -609,7 +611,7 @@ class _ProfileGalleryAlbumScreenState
       if (idx >= 0) {
         final old = _photos[idx];
         final local = old['local_bytes'];
-        if (local is Uint8List && local.isNotEmpty) {
+        if (isSafeUiPreviewBytes(local)) {
           photo = Map<String, dynamic>.from(photo)..['local_bytes'] = local;
           final threadId = photo['thread_id'] is int
               ? photo['thread_id'] as int
@@ -617,7 +619,11 @@ class _ProfileGalleryAlbumScreenState
           final id = _photoId(photo);
           if (threadId != null && id != null) {
             unawaited(
-              FamilyChatLocalCache.saveAttachmentBytes(threadId, id, local),
+              FamilyChatLocalCache.saveAttachmentBytes(
+                threadId,
+                id,
+                local as Uint8List,
+              ),
             );
           }
         }
@@ -727,9 +733,22 @@ class _ProfileGalleryAlbumScreenState
     for (final item in limited) {
       if (item.kind != 'image' && item.kind != 'video') continue;
       final key = item.id;
-      final preview = item.kind == 'video'
-          ? (item.thumbnailBytes ?? item.previewBytes)
-          : item.bytes;
+      var preview = safeUiPreviewBytes(
+        thumbnailBytes: item.thumbnailBytes,
+        bytes: item.bytes,
+        kind: item.kind,
+      );
+      if (preview == null && item.kind == 'image' && item.bytes.isNotEmpty) {
+        preview = await compressImageBytes(
+          item.bytes,
+          maxSide: 360,
+          quality: 55,
+          localPath: item.localPath,
+        );
+        if (preview.length > kSafeLocalPreviewMaxBytes) {
+          preview = null;
+        }
+      }
       unawaited(
         ChatAttachLocalCache.storeBytes(
           id: key,
@@ -743,7 +762,7 @@ class _ProfileGalleryAlbumScreenState
         'thread_id': 0,
         'kind': item.kind,
         'filename': item.filename,
-        'local_bytes': preview,
+        if (preview != null) 'local_bytes': preview,
         '_optimistic_key': key,
         '_pending': true,
       });
@@ -755,7 +774,7 @@ class _ProfileGalleryAlbumScreenState
               item.contentType ?? _imageContentTypeForFilename(item.filename),
           kind: item.kind,
           localPath: item.localPath,
-          thumbnailBytes: item.thumbnailBytes,
+          thumbnailBytes: item.thumbnailBytes ?? preview,
           optimisticKey: key,
         ),
       );

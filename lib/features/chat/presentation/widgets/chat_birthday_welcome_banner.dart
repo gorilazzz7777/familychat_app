@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../../familychat/data/familychat_repository.dart';
+import '../../../core/media/gallery_media_utils.dart';
 import '../record_video_circle_screen.dart';
 import 'chat_attach_sheet/chat_attach_sheet.dart';
 
@@ -312,7 +313,11 @@ class _BirthdayScheduledCongratulationDialogState
                       (item.kind == 'video' ? 'video' : 'image'),
                   filename: uploaded['filename']?.toString() ?? item.filename,
                   fileUrl: uploaded['file_url']?.toString(),
-                  localBytes: item.bytes,
+                  localBytes: item.thumbnailBytes ??
+                      safeUiPreviewBytes(
+                        bytes: item.bytes,
+                        kind: item.kind,
+                      ),
                 ),
               );
               if (caption.trim().isNotEmpty && _controller.text.trim().isEmpty) {
@@ -362,7 +367,6 @@ class _BirthdayScheduledCongratulationDialogState
             kind: 'video',
             filename: result.filename,
             fileUrl: uploaded['file_url']?.toString(),
-            localBytes: result.bytes,
             isVideoNote: true,
           ),
         );
@@ -485,7 +489,8 @@ class _BirthdayScheduledCongratulationDialogState
                             width: 72,
                             height: 72,
                             child: att.localBytes != null &&
-                                    (att.kind == 'image' || att.isVideoNote)
+                                    att.kind == 'image' &&
+                                    isSafeUiPreviewBytes(att.localBytes)
                                 ? Image.memory(
                                     att.localBytes!,
                                     fit: BoxFit.cover,

@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import '../../../core/media/gallery_media_utils.dart';
+
 enum ChatAttachMode { gallery, file, location, familyGallery }
 
 /// Выбранный элемент в шторке вложений (ещё до сжатия/отправки).
@@ -26,5 +28,12 @@ class ChatAttachSelectionItem {
   /// image | video | file
   final String kind;
 
-  Uint8List get previewBytes => thumbnailBytes ?? bytes;
+  /// Только лёгкое превью для UI. Никогда не отдаём сырые байты видео/полный кадр.
+  Uint8List get previewBytes =>
+      safeUiPreviewBytes(
+        thumbnailBytes: thumbnailBytes,
+        bytes: bytes,
+        kind: kind,
+      ) ??
+      Uint8List(0);
 }

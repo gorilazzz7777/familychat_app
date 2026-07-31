@@ -19,6 +19,7 @@ class FeedPostPhoto {
     this.localPath,
     this.thumbnailBytes,
     this.cacheId,
+    this.uploadReady = false,
   });
 
   final Uint8List bytes;
@@ -30,13 +31,26 @@ class FeedPostPhoto {
   final Uint8List? thumbnailBytes;
   final String? cacheId;
 
-  Uint8List get previewBytes => thumbnailBytes ?? bytes;
+  /// Уже сжато для upload — повторный prepare можно упростить.
+  final bool uploadReady;
+
+  /// Только лёгкое превью для UI. Никогда не отдаём сырые байты видео.
+  Uint8List get previewBytes {
+    final thumb = thumbnailBytes;
+    if (thumb != null && thumb.isNotEmpty) return thumb;
+    if (kind == 'video') return Uint8List(0);
+    // Защита: полный кадр только если он уже маленький (после normalize).
+    if (bytes.length <= 120 * 1024) return bytes;
+    return Uint8List(0);
+  }
 }
 
 /// Фоновая публикация поста в ленту (сжатие + upload после закрытия compose).
 abstract final class FeedPostUploader {
   static const maxPhotos = 30;
   static const maxCaptionLength = 500;
+  static const _thumbMaxSide = 360;
+  static const _thumbQuality = 55;
 
   static Future<void> publish({
     required FamilyChatRepository repo,
@@ -99,6 +113,80 @@ abstract final class FeedPostUploader {
     }());
   }
 
+  /// Сжимает фото и гарантирует лёгкий thumbnail — снижает OOM при публикации.
+  static Future<FeedPostPhoto> normalizePhoto(FeedPostPhoto photo) async {
+    if (photo.kind == 'video') {
+      var thumb = photo.thumbnailBytes;
+      if ((thumb == null || thumb.isEmpty) &&
+          photo.bytes.isNotEmpty &&
+          photo.bytes.length < 2 * 1024 * 1024) {
+        // Не пытаемся «сжать» видео как картинку; без thumb — пустое превью.
+        thumb = null;
+      }
+      return FeedPostPhoto(
+        bytes: photo.bytes,
+        filename: photo.filename,
+        contentType:
+            photo.contentType ?? contentTypeForFilename(photo.filename),
+        photoExif: photo.photoExif,
+        kind: 'video',
+        localPath: photo.localPath,
+        thumbnailBytes: thumb,
+        cacheId: photo.cacheId,
+        uploadReady: false,
+      );
+    }
+
+    if (photo.uploadReady &&
+        photo.thumbnailBytes != null &&
+        photo.thumbnailBytes!.isNotEmpty) {
+      return photo;
+    }
+
+    final draft = await prepareImageUploadDraft(
+      originalBytes: photo.bytes,
+      filename: photo.filename,
+      contentType: photo.contentType,
+      previewBytes: photo.thumbnailBytes,
+      localPath: photo.localPath,
+    );
+    if (!draft.canUpload) {
+      return photo;
+    }
+
+    var thumb = draft.thumbnailBytes;
+    if (thumb == null || thumb.isEmpty || thumb.length > 180 * 1024) {
+      thumb = await compressImageBytes(
+        draft.bytesForUpload,
+        maxSide: _thumbMaxSide,
+        quality: _thumbQuality,
+        localPath: photo.localPath,
+      );
+    }
+
+    return FeedPostPhoto(
+      bytes: draft.bytesForUpload,
+      filename: draft.filename,
+      contentType: draft.contentType,
+      photoExif: draft.geo?.toPhotoExif() ?? photo.photoExif,
+      kind: 'image',
+      localPath: photo.localPath,
+      thumbnailBytes: thumb,
+      cacheId: photo.cacheId,
+      uploadReady: true,
+    );
+  }
+
+  static Future<List<FeedPostPhoto>> normalizePhotos(
+    List<FeedPostPhoto> photos,
+  ) async {
+    final out = <FeedPostPhoto>[];
+    for (final photo in photos) {
+      out.add(await normalizePhoto(photo));
+    }
+    return out;
+  }
+
   static Future<FeedPostPhoto?> _prepare(FeedPostPhoto photo) async {
     if (photo.kind == 'video') {
       final draft = await prepareVideoUploadDraft(
@@ -116,6 +204,18 @@ abstract final class FeedPostUploader {
         photoExif: draft.geo?.toPhotoExif() ?? photo.photoExif,
         kind: 'video',
         cacheId: photo.cacheId,
+        uploadReady: true,
+      );
+    }
+    if (photo.uploadReady) {
+      return FeedPostPhoto(
+        bytes: photo.bytes,
+        filename: photo.filename,
+        contentType: photo.contentType ?? 'image/jpeg',
+        photoExif: photo.photoExif,
+        kind: 'image',
+        cacheId: photo.cacheId,
+        uploadReady: true,
       );
     }
     final draft = await prepareImageUploadDraft(
@@ -133,12 +233,14 @@ abstract final class FeedPostUploader {
       photoExif: draft.geo?.toPhotoExif() ?? photo.photoExif,
       kind: 'image',
       cacheId: photo.cacheId,
+      uploadReady: true,
     );
   }
 
   static Future<void> cacheLocally(FeedPostPhoto photo) async {
     final id = photo.cacheId;
     if (id == null || id.isEmpty) return;
+    // Кладём уже сжатые байты, если есть — иначе оригинал.
     await ChatAttachLocalCache.storeBytes(
       id: id,
       bytes: photo.bytes,
@@ -147,6 +249,7 @@ abstract final class FeedPostUploader {
   }
 
   /// Optimistic-событие для мгновенного показа у автора.
+  /// В [local_bytes] только миниатюры — иначе Image.memory роняет процесс (OOM).
   static Map<String, dynamic> buildOptimisticEvent({
     required List<FeedPostPhoto> photos,
     required String caption,
@@ -171,7 +274,9 @@ abstract final class FeedPostUploader {
               'thread_id': 0,
               'kind': photos[i].kind,
               'filename': photos[i].filename,
-              'local_bytes': photos[i].previewBytes,
+              if (photos[i].thumbnailBytes != null &&
+                  photos[i].thumbnailBytes!.isNotEmpty)
+                'local_bytes': photos[i].thumbnailBytes,
               '_optimistic': true,
             },
         ],

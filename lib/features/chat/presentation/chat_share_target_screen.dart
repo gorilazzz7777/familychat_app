@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../app/shell_refresh.dart';
 import '../../../core/cache/familychat_local_cache.dart';
@@ -900,14 +901,31 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
                                     itemBuilder: (_, i) {
                                       final att = _attachments[i];
                                       if (att.isImage) {
+                                        final preview = safeUiPreviewBytes(
+                                          bytes: Uint8List.fromList(att.bytes),
+                                          kind: 'image',
+                                        );
                                         return ClipRRect(
                                           borderRadius: BorderRadius.circular(8),
-                                          child: Image.memory(
-                                            Uint8List.fromList(att.bytes),
-                                            width: 88,
-                                            height: 88,
-                                            fit: BoxFit.cover,
-                                          ),
+                                          child: preview != null
+                                              ? Image.memory(
+                                                  preview,
+                                                  width: 88,
+                                                  height: 88,
+                                                  fit: BoxFit.cover,
+                                                )
+                                              : ColoredBox(
+                                                  color: Theme.of(context)
+                                                      .colorScheme
+                                                      .surfaceContainerHighest,
+                                                  child: const SizedBox(
+                                                    width: 88,
+                                                    height: 88,
+                                                    child: Icon(
+                                                      Icons.image_outlined,
+                                                    ),
+                                                  ),
+                                                ),
                                         );
                                       }
                                       return Container(

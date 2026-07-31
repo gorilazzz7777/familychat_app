@@ -480,10 +480,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       familyGalleryUserId: userId,
       onSendMedia: (_, items) async {
         if (items.isEmpty || !mounted) return;
-        final photos = <FeedPostPhoto>[];
+        final raw = <FeedPostPhoto>[];
         for (final item in items) {
           if (item.kind != 'image' && item.kind != 'video') continue;
-          photos.add(
+          raw.add(
             FeedPostPhoto(
               bytes: item.bytes,
               filename: item.filename,
@@ -496,6 +496,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
             ),
           );
         }
+        final photos = await FeedPostUploader.normalizePhotos(raw);
         await openCompose(photos);
       },
       onAddFromFamilyGallery: (ids) async {
@@ -527,9 +528,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           if (offset >= total) break;
         }
 
-        final photos = <FeedPostPhoto>[];
+        final raw = <FeedPostPhoto>[];
         for (final id in ids) {
-          if (photos.length >= FeedPostUploader.maxPhotos) break;
+          if (raw.length >= FeedPostUploader.maxPhotos) break;
           final meta = found[id];
           if (meta == null) continue;
           final threadId = meta['thread_id'] is int
@@ -542,7 +543,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
             final filename = meta['filename']?.toString() ?? 'photo_$id.jpg';
             final kind =
                 meta['kind']?.toString() == 'video' ? 'video' : 'image';
-            photos.add(
+            raw.add(
               FeedPostPhoto(
                 bytes: bytes,
                 filename: filename,
@@ -554,6 +555,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
             );
           } catch (_) {}
         }
+        final photos = await FeedPostUploader.normalizePhotos(raw);
         await openCompose(photos);
       },
     );

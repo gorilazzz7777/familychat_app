@@ -504,8 +504,8 @@ class _ChatVideoAttachmentPreview extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (local is Uint8List && local.isNotEmpty)
-            Image.memory(local, fit: BoxFit.cover)
+          if (isSafeUiPreviewBytes(local))
+            Image.memory(local as Uint8List, fit: BoxFit.cover)
           else if (url.isNotEmpty)
             GalleryVideoPlayer(
               url: url,

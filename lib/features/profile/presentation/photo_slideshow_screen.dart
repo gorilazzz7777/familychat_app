@@ -9,6 +9,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../../../core/widgets/gallery_video_player.dart';
+import '../../chat/presentation/widgets/chat_network_image.dart';
 
 /// Полноэкранный диафильм: автосмена фото с эффектами, пауза и скорость.
 class PhotoSlideshowScreen extends StatefulWidget {
@@ -174,22 +175,53 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
       );
     }
     final local = photo['local_bytes'];
-    if (local is Uint8List && local.isNotEmpty) {
+    // Только лёгкие превью — полный кадр на web валит память.
+    if (local is Uint8List &&
+        local.isNotEmpty &&
+        local.length <= 400 * 1024) {
       return Image.memory(local, fit: BoxFit.contain, gaplessPlayback: true);
     }
-    return FamilyPublicImage(
-      url: galleryAttachmentUrl(photo),
-      fit: BoxFit.contain,
-      placeholder: const ColoredBox(
-        color: Colors.black,
-        child: Center(
-          child: CircularProgressIndicator(color: Colors.white54),
+    final threadId = photo['thread_id'] is int
+        ? photo['thread_id'] as int
+        : int.tryParse('${photo['thread_id']}');
+    // Как в gallery viewer / ленте: на web file_url без JWT не открывается.
+    if (threadId != null && threadId > 0) {
+      return ChatNetworkImage(
+        threadId: threadId,
+        attachment: photo,
+        fit: BoxFit.contain,
+      );
+    }
+    final url = galleryAttachmentUrl(photo);
+    if (url.isNotEmpty) {
+      return FamilyPublicImage(
+        url: url,
+        fit: BoxFit.contain,
+        placeholder: const ColoredBox(
+          color: Colors.black,
+          child: Center(
+            child: CircularProgressIndicator(color: Colors.white54),
+          ),
         ),
-      ),
-      error: const ColoredBox(
-        color: Colors.black,
-        child: Center(
-          child: Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48),
+        error: const ColoredBox(
+          color: Colors.black,
+          child: Center(
+            child: Icon(
+              Icons.broken_image_outlined,
+              color: Colors.white54,
+              size: 48,
+            ),
+          ),
+        ),
+      );
+    }
+    return const ColoredBox(
+      color: Colors.black,
+      child: Center(
+        child: Icon(
+          Icons.broken_image_outlined,
+          color: Colors.white54,
+          size: 48,
         ),
       ),
     );

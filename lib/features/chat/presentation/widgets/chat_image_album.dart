@@ -2,14 +2,14 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../../../core/media/gallery_media_utils.dart';
 import 'chat_network_image.dart';
 
 bool chatAttachmentLooksLikeImage(Map<String, dynamic> attachment) {
   final kind = attachment['kind']?.toString();
   if (kind == 'image') return true;
   if (kind == 'video' || kind == 'file') return false;
-  final local = attachment['local_bytes'];
-  return local is Uint8List && local.isNotEmpty;
+  return isSafeUiPreviewBytes(attachment['local_bytes']);
 }
 
 /// Сетка фото в одном сообщении (как в мессенджерах).
@@ -163,13 +163,13 @@ class ChatImageAlbum extends StatelessWidget {
     String? overlayLabel,
   }) {
     final local = attachment['local_bytes'];
-    final hasLocal = local is Uint8List && local.isNotEmpty;
+    final hasLocal = isSafeUiPreviewBytes(local);
     final canOpen = onImageTap != null && !hasLocal;
 
     Widget image;
     if (hasLocal) {
       image = Image.memory(
-        local,
+        local as Uint8List,
         width: width,
         height: height,
         fit: BoxFit.cover,

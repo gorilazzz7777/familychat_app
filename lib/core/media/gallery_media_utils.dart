@@ -5,6 +5,36 @@ String galleryAttachmentUrl(Map<String, dynamic> attachment) {
       '';
 }
 
+/// Потолок для [Image.memory]: полный кадр/видео в UI валит процесс (OOM).
+const int kSafeLocalPreviewMaxBytes = 400 * 1024;
+
+/// Байты, безопасные для превью в UI (миниатюра или уже маленький файл).
+Uint8List? safeUiPreviewBytes({
+  Uint8List? thumbnailBytes,
+  Uint8List? bytes,
+  String kind = 'image',
+}) {
+  final thumb = thumbnailBytes;
+  if (thumb != null &&
+      thumb.isNotEmpty &&
+      thumb.length <= kSafeLocalPreviewMaxBytes) {
+    return thumb;
+  }
+  if (kind == 'video' || kind == 'file') return null;
+  if (bytes != null &&
+      bytes.isNotEmpty &&
+      bytes.length <= 120 * 1024) {
+    return bytes;
+  }
+  return null;
+}
+
+bool isSafeUiPreviewBytes(Object? value) {
+  return value is Uint8List &&
+      value.isNotEmpty &&
+      value.length <= kSafeLocalPreviewMaxBytes;
+}
+
 bool isVideoAttachment(Map<String, dynamic> attachment) {
   final mediaType = attachment['media_type']?.toString();
   if (mediaType == 'video') return true;
