@@ -78,6 +78,7 @@
 	<array>
 		<string>audio</string>
 		<string>fetch</string>
+		<string>location</string>
 		<string>remote-notification</string>
 		<string>voip</string>
 	</array>
@@ -99,7 +100,11 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Нужен доступ к геолокации, чтобы отправлять место в чате.</string>
+	<string>Нужен доступ к геолокации, чтобы отправлять место в чате и делиться им с семьёй.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Family Space обновляет вашу геолокацию примерно раз в 10–15 минут, чтобы близкие видели, где вы — только если вы это разрешили.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Family Space обновляет вашу геолокацию примерно раз в 10–15 минут, чтобы близкие видели, где вы — только если вы это разрешили.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Нужен доступ к микрофону, чтобы записывать голосовые сообщения и совершать звонки.</string>
 	<key>NSCameraUsageDescription</key>

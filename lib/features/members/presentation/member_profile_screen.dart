@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -10,6 +12,8 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../chat/presentation/chat_call_screen.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
+import '../../location/data/location_share_coordinator.dart';
+import '../../location/presentation/family_map_screen.dart';
 import '../../profile/presentation/profile_gallery_tab.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../../profile/presentation/widgets/premium_badges.dart';
@@ -46,6 +50,9 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
   bool _openingCall = false;
   String? _error;
   bool _viewerIndividualPremium = false;
+  bool _iShareWithThem = false;
+  bool _theyShareWithMe = false;
+  bool _locationBusy = false;
 
   @override
   void initState() {
@@ -76,10 +83,32 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
       final entitlements = status['entitlements'];
       final premium = entitlements is Map &&
           entitlements['individual_premium'] == true;
+      var iShare = false;
+      var theyShare = false;
+      try {
+        final sharing = await repo.locationSharingSettings();
+        for (final raw in sharing['members'] as List<dynamic>? ?? []) {
+          if (raw is! Map) continue;
+          final id = raw['user_id'];
+          final uid = id is int ? id : int.tryParse('$id');
+          if (uid == widget.userId && raw['granted'] == true) {
+            iShare = true;
+            break;
+          }
+        }
+      } catch (_) {}
+      try {
+        await repo.memberLocation(widget.userId);
+        theyShare = true;
+      } catch (_) {
+        theyShare = false;
+      }
       if (!mounted) return;
       setState(() {
         _profile = data;
         _viewerIndividualPremium = premium;
+        _iShareWithThem = iShare;
+        _theyShareWithMe = theyShare;
         _loading = false;
       });
     } catch (e) {
@@ -360,6 +389,84 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
               ),
             ],
           ),
+        if (!isSelf) ...[
+          const SizedBox(height: 16),
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            value: _iShareWithThem,
+            onChanged: _locationBusy
+                ? null
+                : (v) async {
+                    setState(() => _locationBusy = true);
+                    try {
+                      if (v) {
+                        final ok =
+                            await LocationShareCoordinator.ensurePermission(
+                          requestAlways: true,
+                        );
+                        if (!ok && mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Нужен доступ к геолокации',
+                              ),
+                            ),
+                          );
+                          return;
+                        }
+                      }
+                      await ref
+                          .read(familychatRepositoryProvider)
+                          .setLocationShareWithMember(
+                            userId: widget.userId,
+                            granted: v,
+                          );
+                      if (!mounted) return;
+                      setState(() => _iShareWithThem = v);
+                      if (v) {
+                        LocationShareCoordinator.instance.attach(
+                          ref.read(familychatRepositoryProvider),
+                        );
+                        unawaited(
+                          LocationShareCoordinator.instance
+                              .pingIfNeeded(force: true),
+                        );
+                      }
+                    } catch (_) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Не удалось изменить доступ'),
+                        ),
+                      );
+                    } finally {
+                      if (mounted) setState(() => _locationBusy = false);
+                    }
+                  },
+            title: const Text('Разрешить видеть мою геолокацию'),
+            subtitle: const Text('Обновляется раз в 10–15 минут'),
+          ),
+          if (_theyShareWithMe)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                Icons.map_outlined,
+                color: theme.colorScheme.primary,
+              ),
+              title: const Text('На карте'),
+              subtitle: const Text('Где сейчас этот человек'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => FamilyMapScreen(
+                      focusUserId: widget.userId,
+                    ),
+                  ),
+                );
+              },
+            ),
+        ],
         const SizedBox(height: 24),
         _InfoTile(
           icon: Icons.badge_outlined,

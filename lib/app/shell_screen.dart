@@ -40,8 +40,11 @@ import '../features/feed/data/feed_post_uploader.dart';
 import '../features/feed/presentation/feed_screen.dart';
 import '../features/feed/presentation/feed_post_compose_screen.dart';
 import '../features/gallery/presentation/gallery_menu_screen.dart';
+import '../features/location/data/location_share_coordinator.dart';
+import '../features/location/presentation/family_map_screen.dart';
 import '../features/members/presentation/family_invite_flow.dart';
 import '../features/members/presentation/members_screen.dart';
+
 class ShellScreen extends ConsumerStatefulWidget {
   const ShellScreen({
     super.key,
@@ -124,6 +127,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       );
       unawaited(AppUpdateService.checkAndPrompt(context));
       unawaited(ref.read(appSettingsProvider.notifier).syncFromServer());
+      LocationShareCoordinator.instance.attach(
+        ref.read(familychatRepositoryProvider),
+      );
     });
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
@@ -270,6 +276,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     FamilyChatRealtime.instance.removeListener(_onChatRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
     ChatScheduledSendService.instance.stop();
+    LocationShareCoordinator.instance.detach();
     ShellRefresh.instance.unregister();
     super.dispose();
   }
@@ -673,7 +680,18 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                     tooltip: 'Новый пост',
                     onPressed: _openFeedPost,
                   ),
-                if (_index == _familyTabIndex)
+                if (_index == _familyTabIndex) ...[
+                  IconButton(
+                    icon: const Icon(Icons.map_outlined),
+                    tooltip: 'На карте',
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const FamilyMapScreen(),
+                        ),
+                      );
+                    },
+                  ),
                   IconButton(
                     icon: const Icon(Icons.person_add_outlined),
                     tooltip: 'Добавить в семью',
@@ -682,6 +700,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                       ref.read(familychatRepositoryProvider),
                     ),
                   ),
+                ],
               ],
             ),
       floatingActionButton: null,

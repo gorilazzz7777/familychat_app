@@ -8,6 +8,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
+import '../../location/presentation/family_map_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'family_invite_flow.dart';
 import 'family_tree_tab.dart';
@@ -232,6 +233,25 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
                   children: [
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        Icons.map_outlined,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      title: const Text('На карте'),
+                      subtitle: const Text('Где сейчас члены семьи'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const FamilyMapScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                    const Divider(height: 1),
+                    const SizedBox(height: 8),
                     TextField(
                       decoration: InputDecoration(
                         hintText: 'Поиск',
@@ -294,6 +314,17 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
           ? AppBar(
               title: const Text('Семья'),
               actions: [
+                IconButton(
+                  icon: const Icon(Icons.map_outlined),
+                  tooltip: 'На карте',
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const FamilyMapScreen(),
+                      ),
+                    );
+                  },
+                ),
                 IconButton(
                   icon: const Icon(Icons.person_add_outlined),
                   tooltip: 'Добавить в семью',

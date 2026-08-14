@@ -17,6 +17,7 @@ import 'birthday_format.dart';
 import 'birthday_picker.dart';
 import 'profile_gallery_tab.dart';
 import '../../chat/presentation/widgets/chat_image_viewer.dart';
+import '../../location/presentation/location_sharing_settings_screen.dart';
 import '../../members/presentation/members_screen.dart';
 import 'widgets/chat_avatar.dart';
 
@@ -583,6 +584,23 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                 builder: (_) => ThemeAppearanceScreen(
                   onApplied: widget.onStatusChanged,
                 ),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            Icons.share_location_outlined,
+            color: theme.colorScheme.primary,
+          ),
+          title: const Text('Геолокация для семьи'),
+          subtitle: const Text('Кто может видеть, где вы'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const LocationSharingSettingsScreen(),
               ),
             );
           },

@@ -1491,6 +1491,64 @@ class FamilyChatRepository {
     } catch (_) {}
   }
 
+  Future<Map<String, dynamic>> locationSharingSettings() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/location/sharing/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> setLocationSharingViewers(
+    List<int> viewerUserIds,
+  ) async {
+    final res = await _dio.put<Map<String, dynamic>>(
+      'familychat/location/sharing/',
+      data: {'viewer_user_ids': viewerUserIds},
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> setLocationShareWithMember({
+    required int userId,
+    required bool granted,
+  }) async {
+    final res = await _dio.put<Map<String, dynamic>>(
+      'familychat/location/sharing/members/$userId/',
+      data: {'granted': granted},
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> pingLocation({
+    required double latitude,
+    required double longitude,
+    double? accuracyM,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/location/ping/',
+      data: {
+        'latitude': latitude,
+        'longitude': longitude,
+        if (accuracyM != null) 'accuracy_m': accuracyM,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> familyLocationMap() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/location/map/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> memberLocation(int userId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/location/members/$userId/',
+    );
+    return res.data ?? {};
+  }
+
   Future<List<Map<String, dynamic>>> mediaComments(int attachmentId) async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/media/$attachmentId/comments/',
