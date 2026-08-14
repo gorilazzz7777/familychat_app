@@ -14,8 +14,11 @@ class YandexTileLayer extends StatelessWidget {
     return TileLayer(
       urlTemplate: YandexMapsConfig.tileUrlTemplate(apiKey: key),
       userAgentPackageName: 'com.familychat.familychat_app',
-      retinaMode: !kIsWeb && MediaQuery.devicePixelRatioOf(context) > 1.5,
+      // retinaMode ломает первый paint с кастомным CRS / scale=1 у Яндекса.
+      retinaMode: false,
       maxNativeZoom: 19,
+      keepBuffer: 2,
+      panBuffer: 1,
       errorTileCallback: (tile, error, stackTrace) {
         if (kDebugMode) {
           debugPrint('yandex tile error: $error');

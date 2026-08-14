@@ -56,7 +56,8 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
         _members = members;
         _loading = false;
       });
-      WidgetsBinding.instance.addPostFrameCallback((_) => _fitOrFocus());
+      // Подгонка камеры — в onMapReady, иначе тайлы не грузятся
+      // (карта ещё с нулевым размером).
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -85,50 +86,71 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
     return LatLng(la, lo);
   }
 
-  void _fitOrFocus() {
-    if (!_mapController.camera.center.latitude.isFinite) {
-      // Map not ready yet.
-    }
-    final focusId = _selectedUserId ?? widget.focusUserId;
-    if (focusId != null) {
-      for (final m in _withPoints) {
-        final id = m['user_id'];
-        final uid = id is int ? id : int.tryParse('$id');
-        if (uid == focusId) {
-          final p = _pointOf(m);
-          if (p != null) {
-            _mapController.move(p, 14);
-            return;
+  void _fitOrFocus({bool forceTileRefresh = false}) {
+    try {
+      final focusId = _selectedUserId ?? widget.focusUserId;
+      if (focusId != null) {
+        for (final m in _withPoints) {
+          final id = m['user_id'];
+          final uid = id is int ? id : int.tryParse('$id');
+          if (uid == focusId) {
+            final p = _pointOf(m);
+            if (p != null) {
+              _mapController.move(p, 14);
+              return;
+            }
           }
         }
       }
+      final points = _withPoints.map(_pointOf).whereType<LatLng>().toList();
+      if (points.isEmpty) {
+        _mapController.move(const LatLng(55.751244, 37.618423), 10);
+        return;
+      }
+      if (points.length == 1) {
+        _mapController.move(points.first, 14);
+        return;
+      }
+      var minLat = points.first.latitude;
+      var maxLat = points.first.latitude;
+      var minLng = points.first.longitude;
+      var maxLng = points.first.longitude;
+      for (final p in points) {
+        if (p.latitude < minLat) minLat = p.latitude;
+        if (p.latitude > maxLat) maxLat = p.latitude;
+        if (p.longitude < minLng) minLng = p.longitude;
+        if (p.longitude > maxLng) maxLng = p.longitude;
+      }
+      final bounds = LatLngBounds(
+        LatLng(minLat, minLng),
+        LatLng(maxLat, maxLng),
+      );
+      _mapController.fitCamera(
+        CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(48)),
+      );
+    } catch (_) {
+      // MapController ещё не привязан к FlutterMap.
     }
-    final points = _withPoints.map(_pointOf).whereType<LatLng>().toList();
-    if (points.isEmpty) {
-      _mapController.move(const LatLng(55.751244, 37.618423), 10);
-      return;
+    if (forceTileRefresh) {
+      // Первый кадр иногда с нулевым size → тайлы не грузятся, пока не
+      // сдвинуть камеру. Принудительный move после layout это чинит.
+      try {
+        final cam = _mapController.camera;
+        _mapController.move(cam.center, cam.zoom);
+      } catch (_) {}
     }
-    if (points.length == 1) {
-      _mapController.move(points.first, 14);
-      return;
-    }
-    var minLat = points.first.latitude;
-    var maxLat = points.first.latitude;
-    var minLng = points.first.longitude;
-    var maxLng = points.first.longitude;
-    for (final p in points) {
-      if (p.latitude < minLat) minLat = p.latitude;
-      if (p.latitude > maxLat) maxLat = p.latitude;
-      if (p.longitude < minLng) minLng = p.longitude;
-      if (p.longitude > maxLng) maxLng = p.longitude;
-    }
-    final bounds = LatLngBounds(
-      LatLng(minLat, minLng),
-      LatLng(maxLat, maxLng),
-    );
-    _mapController.fitCamera(
-      CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(48)),
-    );
+  }
+
+  void _onMapReady() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _fitOrFocus(forceTileRefresh: true);
+      // Ещё один кадр — после того как Expanded отдал финальный размер.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _fitOrFocus(forceTileRefresh: true);
+      });
+    });
   }
 
   String _agoLabel(Map<String, dynamic> m) {
@@ -201,7 +223,15 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
                     Expanded(
                       child: withPoints.isEmpty
                           ? _emptyState(theme)
-                          : FlutterMap(
+                          : LayoutBuilder(
+                              builder: (context, constraints) {
+                                // Не монтируем карту с нулевым size — иначе
+                                // тайлы не запросятся, пока не сдвинуть камеру.
+                                if (constraints.maxWidth < 1 ||
+                                    constraints.maxHeight < 1) {
+                                  return const SizedBox.expand();
+                                }
+                                return FlutterMap(
                               mapController: _mapController,
                               options: MapOptions(
                                 crs: const Epsg3395(),
@@ -211,6 +241,7 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
                                 initialZoom: 12,
                                 backgroundColor:
                                     theme.colorScheme.surfaceContainerHighest,
+                                onMapReady: _onMapReady,
                               ),
                               children: [
                                 const YandexTileLayer(),
@@ -248,6 +279,8 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
                                 ),
                                 const YandexMapAttribution(),
                               ],
+                            );
+                              },
                             ),
                     ),
                     if (_members.isNotEmpty)
