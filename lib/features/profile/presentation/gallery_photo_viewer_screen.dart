@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/media/gallery_media_export.dart';
 import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/media_incoming_sync.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/zoom_aware_page_view.dart';
@@ -229,6 +230,7 @@ class _GalleryPhotoViewerScreenState
     try {
       final repo = ref.read(familychatRepositoryProvider);
       if (isPhysical) {
+        await MediaIncomingSync.deleteFromPhone(_photo);
         await repo.deleteChatAttachment(threadId, attachmentId);
       } else {
         await repo.hideGalleryPhoto(attachmentId);
@@ -275,14 +277,15 @@ class _GalleryPhotoViewerScreenState
     final threadId = _threadId;
     final attachmentId = _attachmentId;
     try {
-      await GalleryMediaExport.saveAttachmentsToGallery(
-        attachments: [photo],
+      await MediaIncomingSync.saveByUserDownload(
+        photo,
         fetchBytes: threadId == null || attachmentId == null
             ? null
-            : (_) => ref
+            : () => ref
                 .read(familychatRepositoryProvider)
                 .fetchChatAttachmentBytes(threadId, attachmentId),
       );
+      if (mounted) setState(() {});
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

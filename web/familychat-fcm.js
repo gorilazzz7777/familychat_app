@@ -32,6 +32,32 @@
     );
   }
 
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener('message', function (event) {
+      var data = event.data || {};
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'familychat_chat' || data.type === 'familychat_call') {
+        if (data.type === 'familychat_chat' && data.opened_from_tap) {
+          try {
+            sessionStorage.setItem(
+              'familychat_pending_chat',
+              JSON.stringify(data),
+            );
+          } catch (e) {}
+        }
+        if (data.type === 'familychat_call') {
+          try {
+            sessionStorage.setItem(
+              'familychat_pending_call',
+              JSON.stringify(data),
+            );
+          } catch (e) {}
+        }
+        postToApp(data);
+      }
+    });
+  }
+
   window.familyChatGetFcmToken = async function (vapidKey) {
     if (typeof firebase === 'undefined') {
       throw new Error('firebase JS SDK not loaded');

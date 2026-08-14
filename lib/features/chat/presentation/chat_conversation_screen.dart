@@ -10,6 +10,8 @@ import 'package:intl/intl.dart';
 
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
+import '../../../core/media/media_incoming_sync.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/local_db/chat_local_store.dart';
@@ -80,6 +82,7 @@ class _OutgoingAttachment {
     this.contentType,
     this.photoExif,
     this.kind = 'file',
+    this.localPath,
   });
 
   final Uint8List bytes;
@@ -87,6 +90,7 @@ class _OutgoingAttachment {
   final String? contentType;
   final Map<String, dynamic>? photoExif;
   final String kind;
+  final String? localPath;
 }
 
 String? _imageContentTypeForFilename(String filename) {
@@ -153,6 +157,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool get _localFirst => ChatSyncService.isSupported;
   bool _loadingOlder = false;
   bool _hasMoreOlder = false;
+  bool _showScrollToBottom = false;
+  bool _followLiveTail = true;
   String? _loadError;
   int? _currentUserId;
   int? _highlightMessageId;
@@ -292,10 +298,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _applyOfflineSyncResults() async {
-    final deliveries = ChatOfflineSync.instance.consumeDeliveries();
+    final deliveries =
+        ChatOfflineSync.instance.takeDeliveriesForThread(widget.threadId);
     var changed = false;
     for (final delivery in deliveries) {
-      if (delivery.threadId != widget.threadId) continue;
       if (delivery.tempMessageId != null && delivery.message != null) {
         _replaceOptimisticMessage(delivery.tempMessageId!, delivery.message!);
         changed = true;
@@ -357,7 +363,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
     if (_localFirst) {
       await _bindLocalMessages();
+      unawaited(_applyOfflineSyncResults());
       unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      unawaited(
+        ChatSyncService.instance.syncHistoriesInBackground(
+          prioritizeThreadId: widget.threadId,
+        ),
+      );
       await _injectScheduledMessages();
       final targetId = widget.initialMessageId;
       if (targetId != null) {
@@ -381,6 +393,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           widget.threadId,
           cached,
         );
+        for (final message in hydrated) {
+          MediaLocalIndex.hydrateMessage(message);
+        }
+        unawaited(MediaIncomingSync.ensureMessages(hydrated));
         if (!mounted) return;
         setState(() {
           _messages = sortChatMessages(hydrated);
@@ -439,9 +455,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _messages = sortChatMessages(hydrated);
         _loading = false;
       });
+      unawaited(_refreshHasMoreOlder());
     } else {
       setState(() => _loading = false);
     }
+
+    unawaited(_refreshHasMoreOlder());
 
     await _messagesSub?.cancel();
     _messagesSub =
@@ -454,11 +473,39 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (!mounted) return;
       // Keep in-flight optimistic rows until they land in SQLite.
       final pendingLocal = _messages.where(chatMessageIsPending).toList();
-      final next = sortChatMessages(
-        pendingLocal.isEmpty
-            ? hydrated
-            : chatMergeMessageLists(hydrated, pendingLocal),
+      final merged = pendingLocal.isEmpty
+          ? hydrated
+          : chatMergeMessageLists(
+              hydrated,
+              pendingLocal,
+              currentUserId: _currentUserId,
+            );
+      final next = chatReconcilePendingDuplicates(
+        merged,
+        currentUserId: _currentUserId,
       );
+      if (_localFirst && next.length < merged.length) {
+        final keptIds = <int>{
+          for (final m in next)
+            if (chatAsInt(m['id']) != null) chatAsInt(m['id'])!,
+        };
+        final dropped = <int>[];
+        for (final m in merged) {
+          final id = chatAsInt(m['id']);
+          if (id == null) continue;
+          if (chatMessageIsPending(m) &&
+              m['_scheduled'] != true &&
+              !keptIds.contains(id)) {
+            dropped.add(id);
+          }
+        }
+        if (dropped.isNotEmpty) {
+          unawaited(
+            ChatLocalStore.instance.deleteMessages(widget.threadId, dropped),
+          );
+        }
+      }
+      if (!_followLiveTail) return;
       if (chatMessageListsDisplayEqual(_messages, next) && !_loading) return;
       final wasEmpty = _messages.isEmpty;
       final oldNewest = chatNewestServerMessageId(_messages);
@@ -470,6 +517,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (wasEmpty ||
           (newNewest != null && (oldNewest == null || newNewest > oldNewest))) {
         _scrollToBottom();
+      }
+      if (newNewest != null &&
+          (oldNewest == null || newNewest > oldNewest)) {
+        unawaited(_markLatestRead(messageId: newNewest));
       }
     });
   }
@@ -506,12 +557,76 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _ensureMessageLoaded(int messageId) async {
     if (_messages.any((m) => chatAsInt(m['id']) == messageId)) return;
+
+    final repo = ref.read(familychatRepositoryProvider);
+    try {
+      final around = await repo.threadMessages(
+        widget.threadId,
+        limit: 50,
+        beforeId: messageId + 1,
+      );
+      final found =
+          around.messages.any((m) => chatAsInt(m['id']) == messageId);
+      if (found) {
+        final overlaps = _messageWindowsOverlap(_messages, around.messages);
+        if (overlaps || _messages.isEmpty) {
+          if (_localFirst) {
+            await ChatLocalStore.instance.upsertMessages(
+              widget.threadId,
+              around.messages,
+            );
+          } else if (mounted) {
+            setState(() {
+              _messages = chatMergeMessageLists(
+                _messages,
+                around.messages,
+                currentUserId: _currentUserId,
+              );
+            });
+          }
+        } else if (mounted) {
+          _followLiveTail = false;
+          setState(() {
+            _messages = sortChatMessages(around.messages);
+            _hasMoreOlder = around.hasMore;
+            _showScrollToBottom = true;
+            _loadingOlder = false;
+          });
+        }
+        if (_messages.any((m) => chatAsInt(m['id']) == messageId)) return;
+      }
+    } catch (_) {}
+
     var guard = 0;
-    while (_hasMoreOlder && guard < 30) {
+    while (_hasMoreOlder && guard < 80) {
       guard += 1;
       await _loadOlder();
       if (_messages.any((m) => chatAsInt(m['id']) == messageId)) return;
     }
+  }
+
+  bool _messageWindowsOverlap(
+    List<Map<String, dynamic>> a,
+    List<Map<String, dynamic>> b,
+  ) {
+    final aMin = _oldestServerMessageId(a);
+    final aMax = chatNewestServerMessageId(a);
+    final bMin = _oldestServerMessageId(b);
+    final bMax = chatNewestServerMessageId(b);
+    if (aMin == null || aMax == null || bMin == null || bMax == null) {
+      return false;
+    }
+    return aMin <= bMax && bMin <= aMax;
+  }
+
+  int? _oldestServerMessageId(List<Map<String, dynamic>> messages) {
+    for (final message in messages) {
+      final id = chatAsInt(message['id']);
+      if (id != null && id > 0 && !chatMessageIsPending(message)) {
+        return id;
+      }
+    }
+    return null;
   }
 
   Future<void> _refreshParticipantsMeta() async {
@@ -544,7 +659,60 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     } catch (_) {}
   }
 
+  void _updateScrollToBottomVisibility() {
+    if (!_scrollController.hasClients) return;
+    final show = _scrollController.position.pixels > 320;
+    if (show != _showScrollToBottom) {
+      setState(() => _showScrollToBottom = show);
+    }
+  }
+
+  Future<void> _scrollToLiveTail() async {
+    _followLiveTail = true;
+    if (_localFirst) {
+      final rows = await ChatLocalStore.instance.readMessages(widget.threadId);
+      if (!mounted) return;
+      final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
+        widget.threadId,
+        rows,
+      );
+      if (!mounted) return;
+      setState(() {
+        _messages = sortChatMessages(hydrated);
+        _showScrollToBottom = false;
+      });
+      unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+    } else {
+      await _load(silent: true);
+      if (!mounted) return;
+      setState(() => _showScrollToBottom = false);
+    }
+    _scrollToBottom(jump: true, settle: true);
+  }
+
+  Future<void> _refreshHasMoreOlder() async {
+    if (!_localFirst) return;
+    final complete =
+        await ChatSyncService.instance.isThreadHistoryComplete(widget.threadId);
+    if (!mounted) return;
+    final next = !complete;
+    if (next != _hasMoreOlder) {
+      setState(() => _hasMoreOlder = next);
+    }
+  }
+
+  Future<void> _onPullRefresh() async {
+    _followLiveTail = true;
+    await _load();
+    unawaited(
+      ChatSyncService.instance.syncHistoriesInBackground(
+        prioritizeThreadId: widget.threadId,
+      ),
+    );
+  }
+
   void _onScroll() {
+    _updateScrollToBottomVisibility();
     if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder) {
       return;
     }
@@ -596,6 +764,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   @override
   void didChangeMetrics() {
     _syncScrollForKeyboard();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_markLatestRead());
+    }
   }
 
   void _onInputFocusChanged() {
@@ -750,6 +925,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _scrollToMessage(int messageId) async {
+    await _ensureMessageLoaded(messageId);
+    if (!mounted) return;
     final msgIndex =
         _messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
     if (msgIndex < 0) {
@@ -856,18 +1033,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final msg = event['message'];
       if (msg is! Map) return;
       final map = chatNormalizeMap(Map<dynamic, dynamic>.from(msg));
+      map['thread_id'] ??= eventThreadId;
       if (chatAsInt(map['thread_id']) != widget.threadId) return;
       final senderId = chatAsInt(map['sender_user_id']);
       if (senderId != null) {
         _onRemoteTyping(userId: senderId, displayName: '', isTyping: false);
       }
+      final incomingId = chatAsInt(map['id']);
       if (_localFirst) {
         // ChatSyncService already upserts SQLite; watchMessages updates UI.
         if (_currentUserId != null && senderId == _currentUserId) {
           unawaited(ChatLocalStore.instance.clearPendingForThread(widget.threadId));
         }
         _maybeScheduleVoiceTranscriptPoll(map);
-        unawaited(_markLatestRead());
+        unawaited(_markLatestRead(messageId: incomingId));
         return;
       }
       if (!mounted) return;
@@ -880,7 +1059,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       });
       _maybeScheduleVoiceTranscriptPoll(map);
       _scrollToBottom();
-      unawaited(_markLatestRead());
+      unawaited(_markLatestRead(messageId: incomingId));
       unawaited(_persistMessageCache());
       return;
     }
@@ -993,10 +1172,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     return _pinnedMessages.any((m) => chatAsInt(m['id']) == messageId);
   }
 
-  Future<void> _markLatestRead() async {
-    if (_messages.isEmpty) return;
-    final lastId = chatAsInt(_messages.last['id']);
-    if (lastId == null || lastId == _lastMarkedReadId) return;
+  Future<void> _markLatestRead({int? messageId}) async {
+    final lastId = messageId != null && messageId > 0
+        ? messageId
+        : chatNewestServerMessageId(_messages);
+    if (lastId == null || lastId <= 0) return;
+    final previous = _lastMarkedReadId;
+    if (previous != null && lastId <= previous) return;
     _lastMarkedReadId = lastId;
     try {
       await ref.read(familychatRepositoryProvider).markThreadRead(
@@ -1004,13 +1186,17 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             lastMessageId: lastId,
           );
     } catch (_) {
-      _lastMarkedReadId = null;
+      if (_lastMarkedReadId == lastId) {
+        _lastMarkedReadId = previous;
+      }
     }
   }
 
   Future<void> _load({bool silent = false}) async {
     if (_localFirst) {
-      unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      _followLiveTail = true;
+      await ChatSyncService.instance.syncThread(widget.threadId, limit: 80);
+      await _refreshHasMoreOlder();
       if (mounted && _loading) {
         setState(() => _loading = false);
       }
@@ -1048,7 +1234,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           FamilyChatLocalCache.maxCachedMessagesPerThread) {
         nextMessages = _mergeLatestMessages(_messages, page.messages);
       } else {
-        nextMessages = chatMergeMessageLists(_messages, page.messages);
+        nextMessages = chatMergeMessageLists(
+          _messages,
+          page.messages,
+          currentUserId: _currentUserId,
+        );
       }
 
       final messagesChanged =
@@ -1264,7 +1454,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
       if (updated) {
         setState(() {
-          _messages = chatMergeMessageLists(_messages, page.messages);
+          _messages = chatMergeMessageLists(
+            _messages,
+            page.messages,
+            currentUserId: _currentUserId,
+          );
         });
         unawaited(_persistMessageCache());
       }
@@ -1511,7 +1705,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       } else {
         _messages = sortChatMessages(withoutTemp);
       }
+      _messages = chatReconcilePendingDuplicates(
+        _messages,
+        currentUserId: _currentUserId,
+      );
     });
+    if (_localFirst) {
+      unawaited(
+        ChatLocalStore.instance.deleteMessages(widget.threadId, [tempId]),
+      );
+    }
   }
 
   Map<String, dynamic> _mergeVoiceMessageFromOptimistic({
@@ -1688,6 +1891,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             ),
           );
           unawaited(_pollFaceTaggingPrompt(ids[i]));
+        }
+        final localPath = att.localPath?.trim() ?? '';
+        if (localPath.isNotEmpty &&
+            (att.kind == 'image' || att.kind == 'video')) {
+          unawaited(
+            MediaLocalIndex.saveOutgoing(
+              attachmentId: ids[i],
+              localPath: localPath,
+              filename: att.filename,
+              kind: att.kind,
+            ),
+          );
         }
       }
       return true;
@@ -1906,6 +2121,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             'kind': d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
             'filename': d.filename,
             'content_type': d.contentType,
+            if (d.localPath != null && d.localPath!.trim().isNotEmpty)
+              'local_device_path': d.localPath,
             if (d.thumbnailBytes != null &&
                 d.thumbnailBytes!.isNotEmpty &&
                 d.thumbnailBytes!.length <= kSafeLocalPreviewMaxBytes)
@@ -1923,13 +2140,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       caption: caption,
       attachments: [
         for (final d in uploadable)
-          _OutgoingAttachment(
-            bytes: d.bytesForUpload,
-            filename: d.filename,
-            contentType: d.contentType,
-            photoExif: d.geo?.toPhotoExif(),
-            kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
-          ),
+            _OutgoingAttachment(
+              bytes: d.bytesForUpload,
+              filename: d.filename,
+              contentType: d.contentType,
+              photoExif: d.geo?.toPhotoExif(),
+              kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
+              localPath: d.localPath,
+            ),
       ],
       replyToMessageId: replyId,
     );
@@ -1968,6 +2186,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         'kind': item.kind,
         'filename': item.filename,
         'content_type': item.contentType,
+        if (item.localPath != null && item.localPath!.trim().isNotEmpty)
+          'local_device_path': item.localPath,
         if (preview != null) 'local_bytes': preview,
       });
     }
@@ -2042,6 +2262,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               contentType: d.contentType,
               photoExif: d.geo?.toPhotoExif(),
               kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
+              localPath: d.localPath,
             ),
         ],
         replyToMessageId: replyId,
@@ -2419,8 +2640,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _openMessageMenu(Map<String, dynamic> message) async {
-    if (message['_pending'] == true) return;
     if (message['_scheduled'] == true) return;
+    if (message['_pending'] == true || chatMessageIsPending(message)) {
+      await _openPendingMessageMenu(message);
+      return;
+    }
     final msgId = chatAsInt(message['id']);
     final result = await ChatMessageActionsSheet.show(
       context,
@@ -2474,6 +2698,49 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       case 'delete_for_me':
         final id = chatAsInt(message['id']);
         if (id != null) await _hideMessagesForMe([id]);
+    }
+  }
+
+  Future<void> _openPendingMessageMenu(Map<String, dynamic> message) async {
+    final body = message['body']?.toString() ?? '';
+    final result = await ChatMessageActionsSheet.show(
+      context,
+      showReactions: false,
+      canReply: false,
+      canEdit: false,
+      canCopy: body.trim().isNotEmpty,
+      canForward: false,
+      canSelect: false,
+      canPin: false,
+      canSpeak: false,
+      canCancelSend: true,
+      canDeleteForEveryone: false,
+      canDeleteForMe: false,
+    );
+    if (!mounted || result == null) return;
+    switch (result.action) {
+      case 'copy':
+        await _copyMessages([message]);
+      case 'cancel_send':
+        await _cancelPendingMessage(message);
+    }
+  }
+
+  Future<void> _cancelPendingMessage(Map<String, dynamic> message) async {
+    final tempId = chatAsInt(message['id']);
+    if (tempId == null) return;
+    await ChatOfflineOutbox.cancelMessage(
+      threadId: widget.threadId,
+      tempMessageId: tempId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _messages = _messages.where((m) => chatAsInt(m['id']) != tempId).toList();
+    });
+    if (_localFirst) {
+      await ChatLocalStore.instance.deleteMessages(widget.threadId, [tempId]);
+    } else {
+      await _persistMessageCache();
     }
   }
 
@@ -3266,8 +3533,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               ),
                             ),
                           )
-                        : RefreshIndicator(
-                            onRefresh: _load,
+                        : Stack(
+                            children: [
+                              RefreshIndicator(
+                            onRefresh: _onPullRefresh,
                             // reverse-list: жест обновления у верхнего края истории.
                             edgeOffset: 12,
                             child: ListView.builder(
@@ -3425,8 +3694,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                             : () => _openMessageMenu(m),
                                     onLongPress: _selectionMode
                                         ? () => _toggleSelection(msgId)
-                                        : m['_pending'] == true ||
-                                                m['_scheduled'] == true
+                                        : m['_scheduled'] == true
                                             ? null
                                             : () => _openMessageMenu(m),
                                     onReplyTap: replyMessageId != null
@@ -3451,6 +3719,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 );
                               },
                             ),
+                              ),
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 12,
+                                child: IgnorePointer(
+                                  ignoring: !_showScrollToBottom,
+                                  child: AnimatedOpacity(
+                                    opacity: _showScrollToBottom ? 1 : 0,
+                                    duration:
+                                        const Duration(milliseconds: 180),
+                                    child: AnimatedSlide(
+                                      offset: _showScrollToBottom
+                                          ? Offset.zero
+                                          : const Offset(0, 0.4),
+                                      duration:
+                                          const Duration(milliseconds: 180),
+                                      curve: Curves.easeOut,
+                                      child: Center(
+                                        child: _ChatScrollToBottomButton(
+                                          onPressed: () => unawaited(
+                                            _scrollToLiveTail(),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
               ),
               if (_selectionMode)
@@ -3631,6 +3929,51 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                 ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ChatScrollToBottomButton extends StatelessWidget {
+  const _ChatScrollToBottomButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Semantics(
+      button: true,
+      label: 'Вниз',
+      child: GestureDetector(
+        onTap: onPressed,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          width: 48,
+          height: 48,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: cs.surface,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: cs.outline.withValues(alpha: 0.45),
+              width: 1.2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.1),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 30,
+            color: cs.onSurface.withValues(alpha: 0.9),
+          ),
         ),
       ),
     );

@@ -31,6 +31,7 @@ class ChatConversationSession {
     final raw = event['message'];
     if (raw is! Map) return null;
     final msg = chatNormalizeMap(Map<dynamic, dynamic>.from(raw));
+    msg['thread_id'] ??= chatAsInt(event['thread_id']);
     if (!chatMessageBelongsToThread(msg, threadId)) return null;
 
     final id = chatAsInt(msg['id']);

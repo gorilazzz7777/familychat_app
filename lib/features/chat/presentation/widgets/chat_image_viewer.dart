@@ -6,10 +6,11 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../../../../core/widgets/family_app_bar.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
+import '../../../../core/media/gallery_media_export.dart';
+import '../../../../core/media/media_incoming_sync.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
 import '../../../profile/presentation/widgets/photo_people_on_photo_bar.dart';
@@ -184,17 +185,32 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     final photo = _currentPhoto;
     setState(() => _downloading = true);
     try {
-      final bytes = await _resolveBytes(photo);
-      if (bytes == null || bytes.isEmpty) throw StateError('Пустой файл');
-
-      final name = photo.filename?.trim().isNotEmpty == true
-          ? photo.filename!.trim()
-          : _guessFilename(photo.imageUrl);
-
-      // ignore: deprecated_member_use
-      await Share.shareXFiles(
-        [XFile.fromData(bytes, name: name, mimeType: _mimeFromName(name))],
-        text: name,
+      final attachment = <String, dynamic>{
+        'id': photo.attachmentId,
+        'filename': photo.filename ?? _guessFilename(photo.imageUrl),
+        'file_url': photo.imageUrl,
+        'kind': 'image',
+        'thread_id': photo.threadId,
+      };
+      await MediaIncomingSync.saveByUserDownload(
+        attachment,
+        fetchBytes: photo.threadId == null || photo.attachmentId == null
+            ? null
+            : () async {
+                final bytes = await _resolveBytes(photo);
+                if (bytes == null || bytes.isEmpty) {
+                  throw StateError('Пустой файл');
+                }
+                return bytes;
+              },
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Сохранено в галерею («${GalleryMediaExport.appAlbumName}»)',
+          ),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -211,14 +227,6 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     final last = uri?.pathSegments.isNotEmpty == true ? uri!.pathSegments.last : '';
     if (last.contains('.')) return last;
     return 'image.jpg';
-  }
-
-  String _mimeFromName(String name) {
-    final lower = name.toLowerCase();
-    if (lower.endsWith('.png')) return 'image/png';
-    if (lower.endsWith('.webp')) return 'image/webp';
-    if (lower.endsWith('.gif')) return 'image/gif';
-    return 'image/jpeg';
   }
 
   void _goToMessage() {

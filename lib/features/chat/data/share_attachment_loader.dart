@@ -8,3 +8,12 @@ import 'share_attachment_loader_stub.dart'
 
 Future<List<ShareAttachmentData>> readShareAttachments(SharedMedia media) =>
     loadShareAttachments(media);
+
+Future<ShareAttachmentData> resolveShareAttachmentBytes(
+  ShareAttachmentData attachment, {
+  required int index,
+}) =>
+    resolveLoadedShareAttachmentBytes(attachment, index: index);
+
+Future<void> finishShareAttachmentRead() => finishLoadedShareAttachmentRead();
+

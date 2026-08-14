@@ -24,6 +24,7 @@ import '../features/chat/presentation/friend_invite_flow.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
 import '../core/theme/theme_seed_controller.dart';
+import '../core/settings/app_settings_controller.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import '../features/onboarding/presentation/family_transfer_flow.dart';
 import 'shell_screen.dart';
@@ -206,6 +207,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     if (pendingCall != null) {
       pendingCallPushData = pendingCall;
     }
+    final pendingChat = readWebPendingChatLaunch();
+    if (pendingChat != null) {
+      pendingChatPushData = pendingChat;
+    }
   }
 
   /// OAuth return: consume session (нужен спиннер).
@@ -257,6 +262,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     );
     _syncAppActions();
     if (_ready) {
+      unawaited(ref.read(appSettingsProvider.notifier).syncFromServer());
       unawaited(_maybeHandleFriendInvite());
       unawaited(_maybeHandleFamilyTransfer());
     }
@@ -473,6 +479,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     ChatScheduledSendService.instance.stop();
     PushRegistrationService.resetSession();
     await ref.read(themeSeedProvider.notifier).resetToDefault();
+    await ref.read(appSettingsProvider.notifier).resetToDefaults();
     await ref.read(authRepositoryProvider).logout();
     await FamilyChatLocalCache.clearStatus();
     final prefs = await SharedPreferences.getInstance();

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/providers/app_providers.dart';
 import '../core/push/push_registration_service.dart';
+import '../features/familychat/data/familychat_repository.dart';
 
 /// После авторизации проверяет разрешение на push и просит включить уведомления.
 class PushPermissionPrompt extends ConsumerStatefulWidget {
@@ -70,85 +71,82 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
 
     final permanentlyDenied = !kIsWeb &&
         await PushRegistrationService.isNativePermissionPermanentlyDenied();
+    if (!mounted) return;
 
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Уведомления'),
-          content: Text(_description(status, permanentlyDenied)),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setBool(_prefKey, true);
-                if (ctx.mounted) Navigator.pop(ctx);
-              },
-              child: const Text('Не сейчас'),
-            ),
-            if (permanentlyDenied)
-              FilledButton(
-                onPressed: () async {
-                  await PushRegistrationService.openNotificationSettings();
-                  if (ctx.mounted) Navigator.pop(ctx);
-                },
-                child: const Text('Настройки'),
-              )
-            else
-              FilledButton(
-                onPressed: () async {
-                  final messenger = ScaffoldMessenger.maybeOf(context);
-                  final result = await PushRegistrationService.requestPushAfterLogin(
-                    ref.read(familychatRepositoryProvider),
-                  );
-                  if (!ctx.mounted) return;
-
-                  if (result == WebPushRegistrationResult.success) {
-                    final prefs = await SharedPreferences.getInstance();
-                    if (kIsWeb) {
-                      await prefs.setBool(_registeredKey, true);
-                    }
-                    Navigator.pop(ctx);
-                    messenger?.showSnackBar(
-                      const SnackBar(content: Text('Уведомления включены')),
-                    );
-                    return;
-                  }
-
-                  if (result == WebPushRegistrationResult.permissionDenied) {
-                    messenger?.showSnackBar(
-                      const SnackBar(
-                        content: Text('Разрешение на уведомления не получено'),
-                      ),
-                    );
-                  } else if (result == WebPushRegistrationResult.notConfigured) {
-                    messenger?.showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          PushRegistrationService.lastWebPushError ??
-                              'Push временно недоступен. Попробуйте позже.',
-                        ),
-                      ),
-                    );
-                  } else {
-                    final detail = PushRegistrationService.lastWebPushError;
-                    messenger?.showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          detail != null && detail.isNotEmpty
-                              ? 'Не удалось включить уведомления: $detail'
-                              : 'Не удалось включить уведомления',
-                        ),
-                      ),
-                    );
-                  }
-                },
-                child: const Text('Разрешить'),
-              ),
-          ],
+        return _PushPermissionAskDialog(
+          description: _description(status, permanentlyDenied),
+          permanentlyDenied: permanentlyDenied,
+          onDismiss: () async {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setBool(_prefKey, true);
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          onOpenSettings: () async {
+            await PushRegistrationService.openNotificationSettings();
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          onAllow: () async {
+            final messenger = ScaffoldMessenger.maybeOf(context);
+            final repository = ref.read(familychatRepositoryProvider);
+            final granted = await PushRegistrationService.requestOsPermission();
+            if (!ctx.mounted) return false;
+            if (!granted) {
+              messenger?.showSnackBar(
+                const SnackBar(
+                  content: Text('Разрешение на уведомления не получено'),
+                ),
+              );
+              return false;
+            }
+            Navigator.pop(ctx);
+            unawaited(_registerPushInBackground(messenger, repository));
+            return true;
+          },
         );
       },
+    );
+  }
+
+  Future<void> _registerPushInBackground(
+    ScaffoldMessengerState? messenger,
+    FamilyChatRepository repository,
+  ) async {
+    final result =
+        await PushRegistrationService.registerGrantedToken(repository);
+    if (result == WebPushRegistrationResult.success) {
+      if (kIsWeb) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(_registeredKey, true);
+      }
+      messenger?.showSnackBar(
+        const SnackBar(content: Text('Уведомления включены')),
+      );
+      return;
+    }
+    if (result == WebPushRegistrationResult.notConfigured) {
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(
+            PushRegistrationService.lastWebPushError ??
+                'Push временно недоступен. Попробуйте позже.',
+          ),
+        ),
+      );
+      return;
+    }
+    final detail = PushRegistrationService.lastWebPushError;
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text(
+          detail != null && detail.isNotEmpty
+              ? 'Не удалось включить уведомления: $detail'
+              : 'Не удалось включить уведомления',
+        ),
+      ),
     );
   }
 
@@ -178,4 +176,71 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
 
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+class _PushPermissionAskDialog extends StatefulWidget {
+  const _PushPermissionAskDialog({
+    required this.description,
+    required this.permanentlyDenied,
+    required this.onDismiss,
+    required this.onOpenSettings,
+    required this.onAllow,
+  });
+
+  final String description;
+  final bool permanentlyDenied;
+  final Future<void> Function() onDismiss;
+  final Future<void> Function() onOpenSettings;
+  final Future<bool> Function() onAllow;
+
+  @override
+  State<_PushPermissionAskDialog> createState() =>
+      _PushPermissionAskDialogState();
+}
+
+class _PushPermissionAskDialogState extends State<_PushPermissionAskDialog> {
+  bool _busy = false;
+
+  Future<void> _handleAllow() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final closed = await widget.onAllow();
+    if (!closed && mounted) {
+      setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final onPrimary = Theme.of(context).colorScheme.onPrimary;
+    return AlertDialog(
+      title: const Text('Уведомления'),
+      content: Text(widget.description),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : widget.onDismiss,
+          child: const Text('Не сейчас'),
+        ),
+        if (widget.permanentlyDenied)
+          FilledButton(
+            onPressed: _busy ? null : widget.onOpenSettings,
+            child: const Text('Настройки'),
+          )
+        else
+          FilledButton(
+            onPressed: _handleAllow,
+            child: _busy
+                ? SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: onPrimary,
+                    ),
+                  )
+                : const Text('Разрешить'),
+          ),
+      ],
+    );
+  }
 }

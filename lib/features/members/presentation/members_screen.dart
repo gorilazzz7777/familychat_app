@@ -9,6 +9,7 @@ import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import 'family_invite_flow.dart';
 import 'family_tree_tab.dart';
 import 'member_profile_screen.dart';
 
@@ -292,6 +293,16 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
       appBar: widget.showAppBar
           ? AppBar(
               title: const Text('Семья'),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.person_add_outlined),
+                  tooltip: 'Добавить в семью',
+                  onPressed: () => runFamilyInviteFlow(
+                    context,
+                    ref.read(familychatRepositoryProvider),
+                  ),
+                ),
+              ],
               bottom: tabBar,
             )
           : null,

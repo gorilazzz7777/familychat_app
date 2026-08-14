@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/cache/familychat_media_cache.dart';
+import '../../../core/media/media_incoming_sync.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_realtime_utils.dart';
 
@@ -47,6 +48,7 @@ abstract final class ChatOfflinePrefetch {
               page.messages,
             );
           }
+          unawaited(MediaIncomingSync.ensureMessages(page.messages));
           await prefetchThreadMedia(repo, threadId, page.messages);
         } catch (_) {}
       }
@@ -115,7 +117,8 @@ abstract final class ChatOfflinePrefetch {
       if (remaining <= 0) break;
       for (final attachment in chatAttachmentsOf(message)) {
         if (remaining <= 0) break;
-        if (attachment['kind']?.toString() != 'image') continue;
+        if (attachment['kind']?.toString() != 'image' &&
+            attachment['kind']?.toString() != 'video') continue;
         final attachmentId = chatAsInt(attachment['id']);
         if (attachmentId == null) continue;
 

@@ -8,6 +8,7 @@ import '../../../core/config/env.dart';
 import '../../../core/debug/upload_image_exif_log.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/notifications/familychat_foreground_bridge.dart';
+import '../../../core/settings/app_settings.dart';
 
 class ThreadMessagesPage {
   const ThreadMessagesPage({
@@ -1342,6 +1343,22 @@ class FamilyChatRepository {
     );
     return res.data ?? {};
   }
+
+  Future<FamilyChatAppSettings> fetchAppSettings() async {
+    final res = await _dio.get<Map<String, dynamic>>('familychat/settings/');
+    return FamilyChatAppSettings.fromJson(res.data ?? {});
+  }
+
+  Future<FamilyChatAppSettings> updateAppSettings(
+    FamilyChatAppSettings settings,
+  ) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/settings/',
+      data: settings.toPatchJson(),
+    );
+    return FamilyChatAppSettings.fromJson(res.data ?? settings.toCacheJson());
+  }
+
   Future<Map<String, dynamic>> familyGalleryUpload({
     required Uint8List bytes,
     required String filename,

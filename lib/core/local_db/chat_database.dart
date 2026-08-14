@@ -23,7 +23,6 @@ class ChatDatabase extends _$ChatDatabase {
   @override
   int get schemaVersion => 1;
 
-  static const maxMessagesPerThread = 500;
   static const metaMigratedFromJson = 'migrated_json_v1';
 
   static bool get isSupported => !kIsWeb;
@@ -93,16 +92,20 @@ class ChatDatabase extends _$ChatDatabase {
     final pending = message['_pending'] == true ||
         message['read_status'] == 'queued' ||
         messageId <= 0;
+    final merged = await _mergePreservedMediaFields(
+      threadId: threadId,
+      messageId: messageId,
+      incoming: message,
+    );
     await into(chatMessageRows).insertOnConflictUpdate(
       ChatMessageRowsCompanion.insert(
         threadId: threadId,
         messageId: messageId,
-        payloadJson: jsonEncode(message),
-        createdAtMs: Value(_createdAtMs(message['created_at']) ?? 0),
+        payloadJson: jsonEncode(merged),
+        createdAtMs: Value(_createdAtMs(merged['created_at']) ?? 0),
         isPending: Value(pending),
       ),
     );
-    await _trimThread(threadId);
   }
 
   Future<void> upsertMessages(
@@ -119,17 +122,21 @@ class ChatDatabase extends _$ChatDatabase {
         final pending = copy['_pending'] == true ||
             copy['read_status'] == 'queued' ||
             messageId <= 0;
+        final merged = await _mergePreservedMediaFields(
+          threadId: threadId,
+          messageId: messageId,
+          incoming: copy,
+        );
         await into(chatMessageRows).insertOnConflictUpdate(
           ChatMessageRowsCompanion.insert(
             threadId: threadId,
             messageId: messageId,
-            payloadJson: jsonEncode(copy),
-            createdAtMs: Value(_createdAtMs(copy['created_at']) ?? 0),
+            payloadJson: jsonEncode(merged),
+            createdAtMs: Value(_createdAtMs(merged['created_at']) ?? 0),
             isPending: Value(pending),
           ),
         );
       }
-      await _trimThread(threadId);
     });
   }
 
@@ -139,6 +146,68 @@ class ChatDatabase extends _$ChatDatabase {
     List<Map<String, dynamic>> messages,
   ) async {
     await upsertMessages(threadId, messages);
+  }
+
+  Future<Map<String, dynamic>> _mergePreservedMediaFields({
+    required int threadId,
+    required int messageId,
+    required Map<String, dynamic> incoming,
+  }) async {
+    final existingRow = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) & t.messageId.equals(messageId),
+          ))
+        .getSingleOrNull();
+    if (existingRow == null) return incoming;
+    Map<String, dynamic> existing;
+    try {
+      existing = Map<String, dynamic>.from(
+        jsonDecode(existingRow.payloadJson) as Map,
+      );
+    } catch (_) {
+      return incoming;
+    }
+    final incomingAtts = incoming['attachments'];
+    final existingAtts = existing['attachments'];
+    if (incomingAtts is! List || existingAtts is! List) return incoming;
+    final byId = <int, Map<String, dynamic>>{};
+    for (final item in existingAtts) {
+      if (item is! Map) continue;
+      final map = Map<String, dynamic>.from(item);
+      final id = _asInt(map['id']);
+      if (id == null) continue;
+      byId[id] = map;
+    }
+    const keys = [
+      'local_device_path',
+      'local_asset_id',
+      'local_media_kind',
+      'skip_phone_album',
+      'server_url',
+      '_outgoing_original',
+    ];
+    final mergedAtts = <dynamic>[];
+    for (final item in incomingAtts) {
+      if (item is! Map) {
+        mergedAtts.add(item);
+        continue;
+      }
+      final map = Map<String, dynamic>.from(item);
+      final id = _asInt(map['id']);
+      final prev = id == null ? null : byId[id];
+      if (prev != null) {
+        for (final key in keys) {
+          final hasIncoming = map[key] != null && '${map[key]}'.trim().isNotEmpty;
+          if (!hasIncoming && prev[key] != null) {
+            map[key] = prev[key];
+          }
+        }
+      }
+      mergedAtts.add(map);
+    }
+    incoming['attachments'] = mergedAtts;
+    return incoming;
   }
 
   Future<void> deleteMessages(int threadId, List<int> messageIds) async {
@@ -243,23 +312,18 @@ class ChatDatabase extends _$ChatDatabase {
     return row?.messageId;
   }
 
-  Future<void> _trimThread(int threadId) async {
-    final server = await (select(chatMessageRows)
+  Future<int?> oldestServerMessageId(int threadId) async {
+    final row = await (select(chatMessageRows)
           ..where(
             (t) =>
-                t.threadId.equals(threadId) & t.isPending.equals(false),
+                t.threadId.equals(threadId) &
+                t.isPending.equals(false) &
+                t.messageId.isBiggerThanValue(0),
           )
-          ..orderBy([(t) => OrderingTerm.desc(t.createdAtMs)]))
-        .get();
-    if (server.length <= maxMessagesPerThread) return;
-    final drop =
-        server.skip(maxMessagesPerThread).map((r) => r.messageId).toList();
-    if (drop.isEmpty) return;
-    await (delete(chatMessageRows)
-          ..where(
-            (t) => t.threadId.equals(threadId) & t.messageId.isIn(drop),
-          ))
-        .go();
+          ..orderBy([(t) => OrderingTerm.asc(t.messageId)])
+          ..limit(1))
+        .getSingleOrNull();
+    return row?.messageId;
   }
 
   Map<String, dynamic> _decodeThread(ChatThreadRow row) {

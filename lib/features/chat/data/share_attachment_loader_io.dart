@@ -15,37 +15,66 @@ Future<List<ShareAttachmentData>> loadShareAttachments(SharedMedia media) async 
     if (path == null || path.isEmpty) continue;
     final file = File(path);
     if (!await file.exists()) continue;
-    final fallbackBytes = await file.readAsBytes();
     final filename = _filenameFromPath(path);
-    final loaded = await readShareAttachmentBytes(
-      index: i,
-      fallbackBytes: fallbackBytes,
-      filename: filename,
-    );
-    final bytes = loaded.bytes;
     final contentType = _contentTypeFor(filename, attachment?.type);
     final isImage = attachment?.type == SharedAttachmentType.image ||
         (contentType?.startsWith('image/') ?? false);
-    if (isImage) {
-      await logUploadImageExifDiagnostics(
-        bytes: bytes,
-        filename: filename,
-        sourcePath: path,
-        readVia: loaded.readVia,
-      );
-    }
+    final isVideo = attachment?.type == SharedAttachmentType.video ||
+        (contentType?.startsWith('video/') ?? false);
     result.add(
       ShareAttachmentData(
-        bytes: bytes,
         filename: filename,
         contentType: contentType,
         isImage: isImage,
+        isVideo: isVideo,
+        localPath: path,
       ),
     );
   }
-  await clearPendingShareAttachmentUris();
   return result;
 }
+
+Future<ShareAttachmentData> resolveShareAttachmentBytes(
+  ShareAttachmentData attachment, {
+  required int index,
+}) async {
+  final path = attachment.localPath;
+  if (path == null || path.isEmpty) return attachment;
+  final file = File(path);
+  if (!await file.exists()) return attachment;
+  final fallbackBytes = await file.readAsBytes();
+  final loaded = await readShareAttachmentBytes(
+    index: index,
+    fallbackBytes: fallbackBytes,
+    filename: attachment.filename,
+  );
+  if (attachment.isImage) {
+    await logUploadImageExifDiagnostics(
+      bytes: loaded.bytes,
+      filename: attachment.filename,
+      sourcePath: path,
+      readVia: loaded.readVia,
+    );
+  }
+  return ShareAttachmentData(
+    bytes: loaded.bytes,
+    filename: attachment.filename,
+    contentType: attachment.contentType,
+    isImage: attachment.isImage,
+    isVideo: attachment.isVideo,
+    localPath: attachment.localPath,
+  );
+}
+
+Future<ShareAttachmentData> resolveLoadedShareAttachmentBytes(
+  ShareAttachmentData attachment, {
+  required int index,
+}) =>
+    resolveShareAttachmentBytes(attachment, index: index);
+
+Future<void> finishLoadedShareAttachmentRead() =>
+    clearPendingShareAttachmentUris();
+
 
 String _filenameFromPath(String path) {
   final parts = path.split(RegExp(r'[\\/]'));

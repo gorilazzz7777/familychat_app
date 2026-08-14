@@ -134,6 +134,25 @@ OAuthCallbackResult? parseOAuthCallback(Uri uri) {
   );
 }
 
+Map<String, dynamic>? parseIncomingChatPushFromUri(Uri uri) {
+  if (uri.queryParameters['fc_chat'] != '1') return null;
+  final threadId = uri.queryParameters['thread_id']?.trim();
+  if (threadId == null || threadId.isEmpty) return null;
+  return {
+    'type': 'familychat_chat',
+    'deeplink': 'chat',
+    'thread_id': threadId,
+    if ((uri.queryParameters['message_id'] ?? '').isNotEmpty)
+      'message_id': uri.queryParameters['message_id'],
+    if ((uri.queryParameters['thread_title'] ?? '').isNotEmpty)
+      'thread_title': uri.queryParameters['thread_title'],
+    if ((uri.queryParameters['thread_kind'] ?? '').isNotEmpty)
+      'thread_kind': uri.queryParameters['thread_kind'],
+    if ((uri.queryParameters['peer_user_id'] ?? '').isNotEmpty)
+      'peer_user_id': uri.queryParameters['peer_user_id'],
+  };
+}
+
 Map<String, dynamic>? parseIncomingCallPushFromUri(Uri uri) {
   if (uri.queryParameters['fc_call'] != '1') return null;
   final sessionId = uri.queryParameters['session_id']?.trim();

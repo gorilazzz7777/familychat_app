@@ -28,11 +28,9 @@ class ChatMentionText extends StatelessWidget {
   Widget build(BuildContext context) {
     if (body.isEmpty) return const SizedBox.shrink();
 
-    final resolvedLinkStyle = linkStyle ??
-        style.copyWith(
-          color: Theme.of(context).colorScheme.primary,
-          decoration: TextDecoration.underline,
-        );
+    final resolvedLinkStyle = (linkStyle ??
+            style.copyWith(color: Theme.of(context).colorScheme.primary))
+        .copyWith(decoration: TextDecoration.none);
 
     if (mentions.isEmpty && !_urlPattern.hasMatch(body)) {
       return Text(body, style: style);

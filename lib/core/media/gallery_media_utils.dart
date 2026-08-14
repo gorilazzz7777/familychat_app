@@ -3,8 +3,14 @@ import 'dart:typed_data';
 String galleryAttachmentUrl(Map<String, dynamic> attachment) {
   return attachment['url']?.toString() ??
       attachment['file_url']?.toString() ??
+      attachment['server_url']?.toString() ??
       attachment['thumbnail_url']?.toString() ??
       '';
+}
+
+/// Локальный путь на телефоне (оригинал отправителя или копия FamilyChat).
+String galleryLocalDevicePath(Map<String, dynamic> attachment) {
+  return attachment['local_device_path']?.toString().trim() ?? '';
 }
 
 /// Потолок для [Image.memory]: полный кадр/видео в UI валит процесс (OOM).

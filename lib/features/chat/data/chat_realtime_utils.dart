@@ -9,6 +9,8 @@ export 'package:gorila_chat/gorila_chat.dart'
         chatNormalizeValue,
         chatAttachmentsOf,
         chatMessageIsPending,
+        chatPendingMatchesServer,
+        chatReconcilePendingDuplicates,
         sortChatMessages,
         chatUpsertMessage,
         chatMergeMessageLists,

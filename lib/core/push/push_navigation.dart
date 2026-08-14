@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../cache/familychat_local_cache.dart';
 import '../notifications/familychat_notifications.dart';
+import '../../features/chat/data/active_chat_context.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../../features/calendar/presentation/calendar_screen.dart';
 import '../../features/chat/presentation/chat_conversation_screen.dart';
@@ -14,6 +16,8 @@ Map<String, dynamic>? pendingChatPushData;
 Map<String, dynamic>? pendingCalendarPushData;
 Map<String, dynamic>? pendingCallPushData;
 bool _chatPushRetryScheduled = false;
+int? _openingThreadId;
+DateTime? _openingThreadAt;
 
 void flushPendingChatPush() {
   final data = pendingChatPushData;
@@ -33,44 +37,51 @@ void flushPendingChatPush() {
   }
 }
 
+Map<String, dynamic> _unwrapPushData(Map<String, dynamic> data) {
+  final nested = data['FCM_MSG'];
+  if (nested is! Map) return data;
+  final inner = nested['data'];
+  if (inner is! Map) return data;
+  return {
+    ...inner.map((key, value) => MapEntry(key.toString(), value)),
+    ...data,
+  };
+}
+
 bool _isChatPushData(Map<String, dynamic> data) {
   final type = data['type']?.toString() ?? '';
-  if (type == 'familychat_chat') return true;
-  // Some OEMs drop custom type but keep deeplink/thread_id.
-  final deeplink = data['deeplink']?.toString() ?? '';
+  if (type == 'familychat_call' || type == 'familychat_calendar_reminder') {
+    return false;
+  }
   final threadId = data['thread_id']?.toString() ?? '';
-  return deeplink == 'chat' && threadId.isNotEmpty;
+  if (threadId.isEmpty) return false;
+  if (type == 'familychat_chat') return true;
+  final deeplink = data['deeplink']?.toString() ?? '';
+  return deeplink == 'chat' || type.isEmpty;
 }
 
 void openChatFromPushData(Map<String, dynamic> data) {
-  final payload = Map<String, dynamic>.from(data);
+  final payload = _unwrapPushData(Map<String, dynamic>.from(data));
   if (!_isChatPushData(payload)) return;
 
   final threadId = int.tryParse(payload['thread_id']?.toString() ?? '');
   if (threadId == null) return;
+  payload['type'] = 'familychat_chat';
+
+  final now = DateTime.now();
+  if (_openingThreadId == threadId &&
+      _openingThreadAt != null &&
+      now.difference(_openingThreadAt!) < const Duration(milliseconds: 800)) {
+    return;
+  }
+  _openingThreadId = threadId;
+  _openingThreadAt = now;
 
   unawaited(
     FamilyChatNotifications.clearChatNotifications(threadId: threadId),
   );
 
-  void pushRoute(NavigatorState nav) {
-    final title = payload['thread_title']?.toString().trim();
-    final kind = payload['thread_kind']?.toString() ?? 'family';
-    final peerUserId = int.tryParse(payload['peer_user_id']?.toString() ?? '');
-    final messageId = int.tryParse(payload['message_id']?.toString() ?? '');
-
-    nav.push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => ChatConversationScreen(
-          threadId: threadId,
-          title: title != null && title.isNotEmpty ? title : 'Чат',
-          kind: kind,
-          peerUserId: peerUserId,
-          initialMessageId: messageId,
-        ),
-      ),
-    );
-  }
+  if (ActiveChatContext.instance.isViewingThread(threadId)) return;
 
   final nav = familyChatNavigatorKey.currentState;
   if (nav == null) {
@@ -89,13 +100,77 @@ void openChatFromPushData(Map<String, dynamic> data) {
 
   // Defer to next frame so we don't push during build/transition (e.g. after share).
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    final current = familyChatNavigatorKey.currentState;
-    if (current == null) {
-      pendingChatPushData = payload;
-      return;
-    }
-    pushRoute(current);
+    unawaited(_pushChatFromPayload(payload, threadId));
   });
+}
+
+Future<void> _pushChatFromPayload(
+  Map<String, dynamic> payload,
+  int threadId,
+) async {
+  if (ActiveChatContext.instance.isViewingThread(threadId)) return;
+
+  final hydrated = await _hydrateChatPushPayload(payload, threadId);
+  final current = familyChatNavigatorKey.currentState;
+  if (current == null) {
+    pendingChatPushData = hydrated;
+    return;
+  }
+  if (ActiveChatContext.instance.isViewingThread(threadId)) return;
+
+  if (current.canPop()) {
+    current.popUntil((route) => route.isFirst);
+  }
+
+  final title = hydrated['thread_title']?.toString().trim();
+  final kind = hydrated['thread_kind']?.toString().trim();
+  final peerUserId = int.tryParse(hydrated['peer_user_id']?.toString() ?? '');
+  final messageId = int.tryParse(hydrated['message_id']?.toString() ?? '');
+
+  current.push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => ChatConversationScreen(
+        threadId: threadId,
+        title: title != null && title.isNotEmpty ? title : 'Чат',
+        kind: (kind != null && kind.isNotEmpty) ? kind : 'family',
+        peerUserId: peerUserId,
+        initialMessageId: messageId,
+        expectedLastMessageId: messageId,
+      ),
+    ),
+  );
+}
+
+Future<Map<String, dynamic>> _hydrateChatPushPayload(
+  Map<String, dynamic> payload,
+  int threadId,
+) async {
+  final hasTitle =
+      (payload['thread_title']?.toString().trim() ?? '').isNotEmpty;
+  final hasKind = (payload['thread_kind']?.toString().trim() ?? '').isNotEmpty;
+  if (hasTitle && hasKind) return payload;
+  try {
+    final threads = await FamilyChatLocalCache.readChatThreads();
+    if (threads == null) return payload;
+    for (final thread in threads) {
+      final id = thread['id'];
+      final parsed = id is int ? id : int.tryParse('$id');
+      if (parsed != threadId) continue;
+      return {
+        ...payload,
+        if (!hasTitle)
+          'thread_title': thread['custom_title'] ??
+              thread['title'] ??
+              thread['default_title'] ??
+              payload['thread_title'],
+        if (!hasKind) 'thread_kind': thread['kind'] ?? payload['thread_kind'],
+        if (payload['peer_user_id'] == null ||
+            payload['peer_user_id'].toString().isEmpty)
+          'peer_user_id': thread['peer_user_id'],
+      };
+    }
+  } catch (_) {}
+  return payload;
 }
 
 void openCalendarFromPushData(Map<String, dynamic> data) {

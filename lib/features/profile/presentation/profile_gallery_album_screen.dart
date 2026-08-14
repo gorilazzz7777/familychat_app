@@ -9,6 +9,8 @@ import '../../../core/share/share_to_diary_prefs.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/media/gallery_media_export.dart';
 import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/media_incoming_sync.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/media/image_upload_pipeline.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/app_skeletons.dart';
@@ -436,6 +438,8 @@ class _ProfileGalleryAlbumScreenState
         final rawBatch = (cachedPage['photos'] as List<dynamic>? ?? [])
             .cast<Map<String, dynamic>>();
         final batch = _applyUploadOwnerFilter(rawBatch);
+        MediaLocalIndex.hydrateAttachments(batch);
+        unawaited(MediaIncomingSync.ensureGalleryPhotos(batch));
         setState(() {
           _photos
             ..clear()
@@ -487,6 +491,8 @@ class _ProfileGalleryAlbumScreenState
       final rawBatch =
           (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
       final batch = _applyUploadOwnerFilter(rawBatch);
+      MediaLocalIndex.hydrateAttachments(batch);
+      unawaited(MediaIncomingSync.ensureGalleryPhotos(batch));
       setState(() {
         _total = data['total'] is int
             ? data['total'] as int
@@ -627,6 +633,12 @@ class _ProfileGalleryAlbumScreenState
             );
           }
         }
+        final localPath = old['local_device_path'];
+        if (localPath != null && '$localPath'.trim().isNotEmpty) {
+          photo = Map<String, dynamic>.from(photo)
+            ..['local_device_path'] = localPath
+            ..['_outgoing_original'] = true;
+        }
         _photos[idx] = photo;
       } else {
         final id = _photoId(photo);
@@ -763,8 +775,11 @@ class _ProfileGalleryAlbumScreenState
         'kind': item.kind,
         'filename': item.filename,
         if (preview != null) 'local_bytes': preview,
+        if (item.localPath != null && item.localPath!.trim().isNotEmpty)
+          'local_device_path': item.localPath!.trim(),
         '_optimistic_key': key,
         '_pending': true,
+        '_outgoing_original': true,
       });
       photos.add(
         AlbumUploadPhoto(
@@ -1095,6 +1110,12 @@ class _ProfileGalleryAlbumScreenState
           : 'Удалено: ${deleted ?? 0}, пропущено: ${notOwner ?? 0}';
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(message)));
+      for (final photo in _photos) {
+        final id = _photoId(photo);
+        if (id != null && ids.contains(id)) {
+          unawaited(MediaIncomingSync.deleteFromPhone(photo));
+        }
+      }
       setState(() {
         _selectedPhotoIds.clear();
         _selectionMode = false;
@@ -1183,17 +1204,19 @@ class _ProfileGalleryAlbumScreenState
     setState(() => _bulkActionRunning = true);
     try {
       final repo = ref.read(familychatRepositoryProvider);
-      await GalleryMediaExport.saveAttachmentsToGallery(
-        attachments: selected,
-        fetchBytes: (photo) async {
-          final threadId = photo['thread_id'];
-          final attachmentId = _photoId(photo);
-          if (threadId is! int || attachmentId == null) {
-            throw StateError('Нет id вложения');
-          }
-          return repo.fetchChatAttachmentBytes(threadId, attachmentId);
-        },
-      );
+      for (final photo in selected) {
+        await MediaIncomingSync.saveByUserDownload(
+          photo,
+          fetchBytes: () async {
+            final threadId = photo['thread_id'];
+            final attachmentId = _photoId(photo);
+            if (threadId is! int || attachmentId == null) {
+              throw StateError('Нет id вложения');
+            }
+            return repo.fetchChatAttachmentBytes(threadId, attachmentId);
+          },
+        );
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

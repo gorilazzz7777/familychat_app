@@ -13,7 +13,10 @@ import 'gallery_media_utils.dart';
 /// Экспорт фото/видео галереи: share из кэша и сохранение в папку приложения.
 abstract final class GalleryMediaExport {
   /// Имя альбома/папки в галерее телефона.
-  static const String appAlbumName = 'Family Space';
+  static const String appAlbumName = 'FamilyChat';
+
+  /// Session cache: normalized filename -> MediaStore / Photos asset id.
+  static final Map<String, String> _knownAppAlbumAssetIds = {};
 
   static String filenameFor(Map<String, dynamic> attachment, {int? id}) {
     final raw = attachment['filename']?.toString().trim() ?? '';
@@ -29,6 +32,73 @@ abstract final class GalleryMediaExport {
   }
 
   static String mimeForName(String name) => contentTypeForFilename(name);
+
+  static String normalizeAlbumFilename(String name) {
+    final base = name.trim().toLowerCase();
+    if (base.isEmpty) return '';
+    return base.replaceAll(RegExp(r'\s*\(\d+\)(?=\.[^.]+$)'), '');
+  }
+
+  static void rememberAppAlbumAsset(String filename, String assetId) {
+    final key = normalizeAlbumFilename(filename);
+    if (key.isEmpty || assetId.isEmpty) return;
+    _knownAppAlbumAssetIds[key] = assetId;
+  }
+
+  /// Найти уже сохранённый файл в альбоме FamilyChat с тем же именем.
+  static Future<AssetEntity?> findExistingInAppAlbum(String filename) async {
+    final want = normalizeAlbumFilename(filename);
+    if (want.isEmpty) return null;
+
+    final cachedId = _knownAppAlbumAssetIds[want];
+    if (cachedId != null && cachedId.isNotEmpty) {
+      try {
+        final cached = await AssetEntity.fromId(cachedId);
+        if (cached != null) return cached;
+      } catch (_) {}
+      _knownAppAlbumAssetIds.remove(want);
+    }
+
+    try {
+      final filter = FilterOptionGroup(
+        imageOption: const FilterOption(needTitle: true),
+        videoOption: const FilterOption(needTitle: true),
+      );
+      final paths = await PhotoManager.getAssetPathList(
+        type: RequestType.common,
+        filterOption: filter,
+      );
+      AssetPathEntity? album;
+      for (final path in paths) {
+        if (path.name == appAlbumName) {
+          album = path;
+          break;
+        }
+      }
+      if (album == null) return null;
+
+      final count = await album.assetCountAsync;
+      const pageSize = 100;
+      for (var start = 0; start < count; start += pageSize) {
+        final end = start + pageSize > count ? count : start + pageSize;
+        final assets = await album.getAssetListRange(start: start, end: end);
+        for (final asset in assets) {
+          var title = asset.title?.trim() ?? '';
+          if (title.isEmpty) {
+            try {
+              title = (await asset.titleAsync).trim();
+            } catch (_) {}
+          }
+          if (normalizeAlbumFilename(title) != want) continue;
+          rememberAppAlbumAsset(filename, asset.id);
+          return asset;
+        }
+      }
+    } catch (e) {
+      debugPrint('[GalleryMediaExport] findExisting failed: $e');
+    }
+    return null;
+  }
 
   /// Файл из дискового кэша превью/полноэкранного просмотра (без сети).
   static Future<File?> fileFromDiskCache(String url) async {
@@ -173,6 +243,9 @@ abstract final class GalleryMediaExport {
     Uint8List bytes, {
     required String filename,
   }) async {
+    final existing = await findExistingInAppAlbum(filename);
+    if (existing != null) return;
+
     try {
       final entity = await PhotoManager.editor.saveImage(
         bytes,
@@ -180,7 +253,8 @@ abstract final class GalleryMediaExport {
         title: filename,
         relativePath: 'Pictures/$appAlbumName',
       );
-      await _tryAddToIosAlbum(entity);
+      await tryAddToIosAlbum(entity);
+      rememberAppAlbumAsset(filename, entity.id);
       return;
     } catch (_) {}
 
@@ -189,20 +263,25 @@ abstract final class GalleryMediaExport {
       filename: filename,
       title: filename,
     );
-    await _tryAddToIosAlbum(entity);
+    await tryAddToIosAlbum(entity);
+    rememberAppAlbumAsset(filename, entity.id);
   }
 
   static Future<void> _saveVideoFile(
     File file, {
     required String filename,
   }) async {
+    final existing = await findExistingInAppAlbum(filename);
+    if (existing != null) return;
+
     try {
       final entity = await PhotoManager.editor.saveVideo(
         file,
         title: filename,
         relativePath: 'Pictures/$appAlbumName',
       );
-      await _tryAddToIosAlbum(entity);
+      await tryAddToIosAlbum(entity);
+      rememberAppAlbumAsset(filename, entity.id);
       return;
     } catch (_) {}
 
@@ -210,10 +289,11 @@ abstract final class GalleryMediaExport {
       file,
       title: filename,
     );
-    await _tryAddToIosAlbum(entity);
+    await tryAddToIosAlbum(entity);
+    rememberAppAlbumAsset(filename, entity.id);
   }
 
-  static Future<void> _tryAddToIosAlbum(AssetEntity entity) async {
+  static Future<void> tryAddToIosAlbum(AssetEntity entity) async {
     if (!Platform.isIOS && !Platform.isMacOS) return;
     try {
       AssetPathEntity? album;

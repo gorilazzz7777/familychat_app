@@ -155,7 +155,7 @@ class ChatMessageBubble extends StatelessWidget {
                           color: isMine
                               ? const Color(0xFF8FD3FF)
                               : theme.colorScheme.primary,
-                          decoration: TextDecoration.underline,
+                          decoration: TextDecoration.none,
                         ),
                       ),
                     if (location != null) ...[

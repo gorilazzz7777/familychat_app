@@ -129,26 +129,129 @@ function focusClientWithCallData(data) {
     });
 }
 
+function unwrapPushData(raw) {
+  var data = Object.assign({}, raw || {});
+  var nested = data.FCM_MSG;
+  if (nested && typeof nested === 'object') {
+    var inner = nested.data;
+    if (inner && typeof inner === 'object') {
+      data = Object.assign({}, inner, data);
+    }
+  }
+  return data;
+}
+
+function isChatPush(data) {
+  var type = String(data.type || '');
+  if (type === 'familychat_call' || type === 'familychat_calendar_reminder') {
+    return false;
+  }
+  if (type === 'familychat_chat') return true;
+  var threadId = String(data.thread_id || '');
+  if (!threadId) return false;
+  return String(data.deeplink || '') === 'chat' || type === '';
+}
+
+function serializeChatData(data) {
+  return {
+    type: 'familychat_chat',
+    deeplink: 'chat',
+    thread_id: String(data.thread_id || ''),
+    message_id: String(data.message_id || ''),
+    thread_title: String(data.thread_title || ''),
+    thread_kind: String(data.thread_kind || ''),
+    peer_user_id: String(data.peer_user_id || ''),
+    title: String(data.title || ''),
+    body: String(data.body || ''),
+  };
+}
+
+function buildChatLaunchUrl(data) {
+  var d = serializeChatData(data);
+  var q = new URLSearchParams();
+  q.set('fc_chat', '1');
+  q.set('thread_id', d.thread_id);
+  if (d.message_id) q.set('message_id', d.message_id);
+  if (d.thread_title) q.set('thread_title', d.thread_title);
+  if (d.thread_kind) q.set('thread_kind', d.thread_kind);
+  if (d.peer_user_id) q.set('peer_user_id', d.peer_user_id);
+  return '/app/?' + q.toString();
+}
+
+function showChatNotification(data, notification) {
+  var d = serializeChatData(data);
+  var title =
+    (notification && notification.title) || d.title || 'Family Space';
+  var body =
+    (notification && notification.body) || d.body || 'Новое сообщение';
+  if (!d.thread_id) return Promise.resolve();
+  return self.registration.showNotification(title, {
+    body: body,
+    icon: '/app/icons/Icon-192.png',
+    badge: '/app/icons/Icon-192.png',
+    tag: 'familychat-chat-' + d.thread_id,
+    renotify: true,
+    data: d,
+  });
+}
+
+function focusClientWithChatData(data) {
+  var serialized = serializeChatData(data);
+  serialized.opened_from_tap = true;
+  return clients
+    .matchAll({ type: 'window', includeUncontrolled: true })
+    .then(function (list) {
+      if (list.length > 0) {
+        for (var i = 0; i < list.length; i++) {
+          var client = list[i];
+          client.postMessage(
+            Object.assign({ source: 'familychat-fcm-sw' }, serialized),
+          );
+          if ('focus' in client) {
+            return client.focus();
+          }
+        }
+      }
+      return clients.openWindow(buildChatLaunchUrl(serialized));
+    });
+}
+
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage(function (payload) {
-  var data = Object.assign({}, payload.data || {});
+  var data = unwrapPushData(Object.assign({}, payload.data || {}));
   if (data.type === 'familychat_call_stop') {
     return stopCallRing(data.session_id);
   }
   if (data.type === 'familychat_call') {
     return startCallRing(data, payload.notification);
   }
+  if (isChatPush(data) && !payload.notification) {
+    return showChatNotification(data, null);
+  }
 });
 
 self.addEventListener('notificationclick', function (event) {
-  var data = (event.notification && event.notification.data) || {};
-  if (data.type !== 'familychat_call') {
+  var data = unwrapPushData((event.notification && event.notification.data) || {});
+  event.notification.close();
+  if (data.type === 'familychat_call') {
+    stopCallRing(data.session_id);
+    event.waitUntil(focusClientWithCallData(data));
     return;
   }
-  event.notification.close();
-  stopCallRing(data.session_id);
-  event.waitUntil(focusClientWithCallData(data));
+  if (isChatPush(data)) {
+    event.waitUntil(focusClientWithChatData(data));
+    return;
+  }
+  var tag = event.notification && event.notification.tag;
+  if (tag && String(tag).indexOf('familychat-chat-') === 0) {
+    var id = String(tag).slice('familychat-chat-'.length);
+    if (id) {
+      event.waitUntil(
+        focusClientWithChatData({ type: 'familychat_chat', thread_id: id }),
+      );
+    }
+  }
 });
 
 self.addEventListener('message', function (event) {

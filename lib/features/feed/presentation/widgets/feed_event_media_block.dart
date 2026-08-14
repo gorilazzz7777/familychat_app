@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/media/local_device_file.dart';
+import '../../../../core/media/media_local_index.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../chat/presentation/widgets/chat_network_image.dart';
@@ -226,6 +228,23 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     final showCounter = widget.photos.length > 1;
 
     Widget buildMedia(Map<String, dynamic> photo) {
+      MediaLocalIndex.hydrateAttachment(photo);
+      final localPath = galleryLocalDevicePath(photo);
+      if (localDeviceFileExists(localPath)) {
+        if (isVideoAttachment(photo)) {
+          return GalleryVideoPlayer(
+            url: _photoUrl(photo),
+            localPath: localPath,
+            fit: BoxFit.cover,
+          );
+        }
+        return localDeviceFileImage(
+          path: localPath,
+          width: double.infinity,
+          height: height,
+          fit: BoxFit.cover,
+        );
+      }
       final local = photo['local_bytes'];
       // Только лёгкие превью: полный кадр в Image.memory валит процесс (OOM).
       if (local is Uint8List &&
@@ -256,6 +275,7 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
       if (isVideoAttachment(photo)) {
         return GalleryVideoPlayer(
           url: _photoUrl(photo),
+          localPath: galleryLocalDevicePath(photo),
           fit: BoxFit.cover,
         );
       }

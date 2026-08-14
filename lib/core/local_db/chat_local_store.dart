@@ -148,9 +148,29 @@ class ChatLocalStore {
     await db?.patchMessageFields(threadId, messageId, patch);
   }
 
+  Future<String?> metaGet(String key) async {
+    final db = await ensureOpen();
+    return db?.metaGet(key);
+  }
+
+  Future<void> metaSet(String key, String value) async {
+    final db = await ensureOpen();
+    await db?.metaSet(key, value);
+  }
+
   Future<void> clearPendingForThread(int threadId) async {
     final db = await ensureOpen();
     await db?.clearPendingForThread(threadId);
+  }
+
+  Future<int?> oldestServerMessageId(int threadId) async {
+    final db = await ensureOpen();
+    return db?.oldestServerMessageId(threadId);
+  }
+
+  Future<int?> newestServerMessageId(int threadId) async {
+    final db = await ensureOpen();
+    return db?.newestServerMessageId(threadId);
   }
 
   Future<void> close() async {

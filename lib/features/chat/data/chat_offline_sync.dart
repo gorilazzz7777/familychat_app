@@ -32,6 +32,16 @@ class ChatOfflineSync extends ChangeNotifier {
     return items;
   }
 
+  /// Take deliveries for one thread without discarding others.
+  List<ChatOutboxDelivery> takeDeliveriesForThread(int threadId) {
+    final forThread =
+        _recentDeliveries.where((d) => d.threadId == threadId).toList();
+    if (forThread.isEmpty) return const [];
+    _recentDeliveries =
+        _recentDeliveries.where((d) => d.threadId != threadId).toList();
+    return forThread;
+  }
+
   Future<bool> refreshOnline(FamilyChatRepository repo) async {
     final online = await ChatNetworkStatus.isOnline(() async {
       await repo.status();
@@ -53,7 +63,7 @@ class ChatOfflineSync extends ChangeNotifier {
 
       final deliveries = await ChatOfflineOutbox.sync(repo);
       if (deliveries.isNotEmpty) {
-        _recentDeliveries = deliveries;
+        _recentDeliveries = [..._recentDeliveries, ...deliveries];
         notifyListeners();
       }
 

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/local_db/chat_local_store.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_network_status.dart';
 import 'chat_realtime_utils.dart';
@@ -65,6 +66,37 @@ class ChatOfflineOutbox {
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
     await FamilyChatLocalCache.writeOutboxItems(items);
+  }
+
+  /// Remove a queued outgoing message (user cancelled a stuck/pending bubble).
+  static Future<void> cancelMessage({
+    required int threadId,
+    required int tempMessageId,
+  }) async {
+    final items = await FamilyChatLocalCache.readOutboxItems();
+    final remaining = <Map<String, dynamic>>[];
+    for (final item in items) {
+      if (item['kind']?.toString() != 'message') {
+        remaining.add(item);
+        continue;
+      }
+      if (chatAsInt(item['thread_id']) == threadId &&
+          chatAsInt(item['temp_message_id']) == tempMessageId) {
+        final rawAttachments = item['attachments'];
+        if (rawAttachments is List) {
+          for (final raw in rawAttachments) {
+            if (raw is! Map) continue;
+            final storageKey = raw['storage_key']?.toString();
+            if (storageKey != null && storageKey.isNotEmpty) {
+              await FamilyChatLocalCache.deleteOutboxBytes(storageKey);
+            }
+          }
+        }
+        continue;
+      }
+      remaining.add(item);
+    }
+    await FamilyChatLocalCache.writeOutboxItems(remaining);
   }
 
   static Future<int> pendingCount() async {
@@ -155,6 +187,15 @@ class ChatOfflineOutbox {
       threadId,
       withoutTemp,
     );
+
+    // Local-first SQLite: replace temp row — otherwise the optimistic
+    // "sending" bubble survives forever after outbox delivery.
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.deleteMessages(threadId, [tempMessageId]);
+      final serverMsg = Map<String, dynamic>.from(msg);
+      serverMsg['thread_id'] ??= threadId;
+      await ChatLocalStore.instance.upsertMessage(serverMsg);
+    }
 
     return ChatOutboxDelivery(
       threadId: threadId,

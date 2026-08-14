@@ -7,11 +7,14 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/theme/theme_seed_controller.dart';
 import 'theme_appearance_screen.dart';
+import 'notification_settings_screen.dart';
+import 'menu_sections_screen.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
 import 'profile_gallery_tab.dart';
 import '../../chat/presentation/widgets/chat_image_viewer.dart';
+import '../../members/presentation/members_screen.dart';
 import 'widgets/chat_avatar.dart';
 import 'widgets/premium_badges.dart';
 
@@ -46,7 +49,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 2, vsync: this);
+    _tabs = TabController(length: 3, vsync: this);
     _applyStatus(widget.status);
   }
 
@@ -319,6 +322,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           tabs: const [
             Tab(text: 'Основное'),
             Tab(text: 'Галерея'),
+            Tab(text: 'Настройки'),
           ],
         ),
       ),
@@ -330,6 +334,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             ProfileGalleryTab(userId: userId, isOwnGallery: true)
           else
             const Center(child: Text('Галерея недоступна')),
+          _buildSettingsTab(context),
         ],
       ),
     );
@@ -340,6 +345,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     final birthLabel = _birthDate == null
         ? 'Не указан'
         : formatBirthDateDisplay(_birthDate!, showYear: true);
+    final userId = widget.status['user_id'];
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
@@ -459,6 +465,25 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             );
           },
         ),
+        const SizedBox(height: 8),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.people_outline, color: theme.colorScheme.primary),
+          title: const Text('Семья'),
+          subtitle: const Text('Участники и дерево'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (ctx) => MembersScreen(
+                  currentUserId: userId is int ? userId : null,
+                  showAppBar: true,
+                  onOpenOwnProfile: () => Navigator.of(ctx).pop(),
+                ),
+              ),
+            );
+          },
+        ),
         const SizedBox(height: 16),
         FilledButton(
           onPressed: _saving ? null : _saveProfile,
@@ -484,6 +509,43 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             'Удалить профиль',
             style: TextStyle(color: theme.colorScheme.error),
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSettingsTab(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+      children: [
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.notifications_outlined, color: theme.colorScheme.primary),
+          title: const Text('Пуш-уведомления'),
+          subtitle: const Text('Типы уведомлений и тихие часы'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const NotificationSettingsScreen(),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.view_agenda_outlined, color: theme.colorScheme.primary),
+          title: const Text('Разделы меню'),
+          subtitle: const Text('Что показывать в нижней панели'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const MenuSectionsScreen(),
+              ),
+            );
+          },
         ),
       ],
     );

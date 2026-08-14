@@ -5,6 +5,7 @@ import '../../../app/shell_refresh.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../chat/data/chat_attach_local_cache.dart';
 import '../../familychat/data/familychat_repository.dart';
@@ -71,7 +72,7 @@ abstract final class FeedPostUploader {
     for (var i = 0; i < photos.length; i++) {
       final prepared = await _prepare(photos[i]);
       if (prepared == null) continue;
-      await repo.familyGalleryUpload(
+      final uploaded = await repo.familyGalleryUpload(
         bytes: prepared.bytes,
         filename: prepared.filename,
         contentType: prepared.contentType,
@@ -83,6 +84,20 @@ abstract final class FeedPostUploader {
             ? null
             : (sent, total) => onUploadProgress(i, photos.length, sent, total),
       );
+      final uploadedId = uploaded['id'] is int
+          ? uploaded['id'] as int
+          : int.tryParse('${uploaded['id']}');
+      final localPath = photos[i].localPath?.trim() ?? '';
+      if (uploadedId != null && localPath.isNotEmpty) {
+        unawaited(
+          MediaLocalIndex.saveOutgoing(
+            attachmentId: uploadedId,
+            localPath: localPath,
+            filename: prepared.filename,
+            kind: prepared.kind,
+          ),
+        );
+      }
     }
     await repo.completeFeedPhotoBatch(
       batchId,
@@ -205,6 +220,7 @@ abstract final class FeedPostUploader {
         kind: 'video',
         cacheId: photo.cacheId,
         uploadReady: true,
+        localPath: photo.localPath,
       );
     }
     if (photo.uploadReady) {
@@ -216,6 +232,7 @@ abstract final class FeedPostUploader {
         kind: 'image',
         cacheId: photo.cacheId,
         uploadReady: true,
+        localPath: photo.localPath,
       );
     }
     final draft = await prepareImageUploadDraft(
@@ -234,6 +251,7 @@ abstract final class FeedPostUploader {
       kind: 'image',
       cacheId: photo.cacheId,
       uploadReady: true,
+      localPath: photo.localPath,
     );
   }
 
@@ -274,6 +292,9 @@ abstract final class FeedPostUploader {
               'thread_id': 0,
               'kind': photos[i].kind,
               'filename': photos[i].filename,
+              if (photos[i].localPath != null &&
+                  photos[i].localPath!.trim().isNotEmpty)
+                'local_device_path': photos[i].localPath,
               if (photos[i].thumbnailBytes != null &&
                   photos[i].thumbnailBytes!.isNotEmpty)
                 'local_bytes': photos[i].thumbnailBytes,

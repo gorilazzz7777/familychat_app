@@ -191,40 +191,88 @@ class PushRegistrationService {
     await openAppSettings();
   }
 
+  /// Только системный диалог разрешения. FCM-токен сюда не входит —
+  /// его нужно регистрировать отдельно, иначе UI висит на getToken/APNs.
+  static Future<bool> requestOsPermission() async {
+    lastWebPushError = null;
+    if (!await isPushSupported()) return false;
+
+    if (kIsWeb) {
+      final permission = await requestWebNotificationPermission();
+      return permission == 'granted';
+    }
+
+    if (!_isNativeMobile) return false;
+
+    await ensureFirebaseInitialized();
+    if (Firebase.apps.isEmpty) {
+      lastWebPushError =
+          'Firebase не настроен для iOS (нужен GoogleService-Info.plist)';
+      return false;
+    }
+
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      final settings = await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+        provisional: false,
+      );
+      return settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional;
+    }
+
+    final permission = await Permission.notification.status;
+    if (!permission.isGranted && !permission.isPermanentlyDenied) {
+      await Permission.notification.request();
+    }
+    return Permission.notification.isGranted;
+  }
+
   static Future<WebPushRegistrationResult> requestPushAfterLogin(
     FamilyChatRepository repository,
   ) async {
     if (!await isPushSupported()) {
       return WebPushRegistrationResult.failed;
     }
+    if (!await requestOsPermission()) {
+      if (!kIsWeb && Firebase.apps.isEmpty) {
+        lastWebPushError ??=
+            'Firebase не настроен для iOS (нужен GoogleService-Info.plist)';
+        return WebPushRegistrationResult.notConfigured;
+      }
+      return WebPushRegistrationResult.permissionDenied;
+    }
+    return registerGrantedToken(repository);
+  }
 
+  /// Регистрация FCM после того, как OS-разрешение уже получено.
+  static Future<WebPushRegistrationResult> registerGrantedToken(
+    FamilyChatRepository repository,
+  ) async {
     if (kIsWeb) {
       return registerWebPush(repository);
     }
-
-    if (_isNativeMobile) {
-      final ok = await _registerNative(repository, requestPermission: true);
-      if (!ok) {
-        if (Firebase.apps.isEmpty) {
-          lastWebPushError ??=
-              'Firebase не настроен для iOS (нужен GoogleService-Info.plist)';
-          return WebPushRegistrationResult.notConfigured;
-        }
-        final status = await getPushPermissionStatus();
-        if (status == PushPermissionStatus.denied ||
-            status == PushPermissionStatus.notDetermined) {
-          return WebPushRegistrationResult.permissionDenied;
-        }
-        if (lastWebPushError != null &&
-            lastWebPushError!.toLowerCase().contains('apns')) {
-          return WebPushRegistrationResult.tokenFailed;
-        }
-        return WebPushRegistrationResult.serverFailed;
-      }
-      return WebPushRegistrationResult.success;
+    if (!_isNativeMobile) {
+      return WebPushRegistrationResult.failed;
     }
-
-    return WebPushRegistrationResult.failed;
+    final ok = await _registerNative(repository, requestPermission: false);
+    if (ok) return WebPushRegistrationResult.success;
+    if (Firebase.apps.isEmpty) {
+      lastWebPushError ??=
+          'Firebase не настроен для iOS (нужен GoogleService-Info.plist)';
+      return WebPushRegistrationResult.notConfigured;
+    }
+    final status = await getPushPermissionStatus();
+    if (status == PushPermissionStatus.denied ||
+        status == PushPermissionStatus.notDetermined) {
+      return WebPushRegistrationResult.permissionDenied;
+    }
+    if (lastWebPushError != null &&
+        lastWebPushError!.toLowerCase().contains('apns')) {
+      return WebPushRegistrationResult.tokenFailed;
+    }
+    return WebPushRegistrationResult.serverFailed;
   }
 
   static Future<bool> _registerGranted(FamilyChatRepository repository) async {
@@ -287,24 +335,7 @@ class PushRegistrationService {
     final platform = _nativePlatformName;
 
     if (requestPermission) {
-      if (defaultTargetPlatform == TargetPlatform.iOS) {
-        final settings = await messaging.requestPermission(
-          alert: true,
-          badge: true,
-          sound: true,
-          provisional: false,
-        );
-        final granted =
-            settings.authorizationStatus == AuthorizationStatus.authorized ||
-                settings.authorizationStatus == AuthorizationStatus.provisional;
-        if (!granted) return false;
-      } else {
-        final permission = await Permission.notification.status;
-        if (!permission.isGranted && !permission.isPermanentlyDenied) {
-          await Permission.notification.request();
-        }
-        if (!await Permission.notification.isGranted) return false;
-      }
+      if (!await requestOsPermission()) return false;
     } else if (defaultTargetPlatform == TargetPlatform.android) {
       if (!await Permission.notification.isGranted) return false;
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {

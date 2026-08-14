@@ -48,6 +48,127 @@ bool chatMessageIsPending(Map<String, dynamic> message) {
       id <= 0;
 }
 
+/// True when [pending] is an optimistic/outbox row that already landed as [server].
+///
+/// Used to drop stuck "sending" duplicates after offline delivery or WS echo.
+bool chatPendingMatchesServer(
+  Map<String, dynamic> pending,
+  Map<String, dynamic> server, {
+  int? currentUserId,
+}) {
+  if (!chatMessageIsPending(pending) || chatMessageIsPending(server)) {
+    return false;
+  }
+  if (pending['_scheduled'] == true) return false;
+
+  final serverSender = chatAsInt(server['sender_user_id']);
+  if (currentUserId != null &&
+      serverSender != null &&
+      serverSender != currentUserId) {
+    return false;
+  }
+  final pendingSender = chatAsInt(pending['sender_user_id']);
+  if (pendingSender != null &&
+      serverSender != null &&
+      pendingSender != serverSender) {
+    return false;
+  }
+
+  final pendingBody = (pending['body']?.toString() ?? '').trim();
+  final serverBody = (server['body']?.toString() ?? '').trim();
+  if (pendingBody != serverBody) return false;
+
+  final pendingReply = chatAsInt(
+    pending['reply_to'] is Map
+        ? (pending['reply_to'] as Map)['message_id']
+        : null,
+  );
+  final serverReply = chatAsInt(
+    server['reply_to'] is Map
+        ? (server['reply_to'] as Map)['message_id']
+        : null,
+  );
+  if (pendingReply != serverReply) return false;
+
+  if (chatAttachmentsOf(pending).length != chatAttachmentsOf(server).length) {
+    return false;
+  }
+
+  // Location / voice metadata fingerprint (when present on either side).
+  final pendingMeta = pending['metadata'];
+  final serverMeta = server['metadata'];
+  if (pendingMeta is Map || serverMeta is Map) {
+    final pLoc = pendingMeta is Map ? pendingMeta['location'] : null;
+    final sLoc = serverMeta is Map ? serverMeta['location'] : null;
+    if (pLoc != null || sLoc != null) {
+      if (_stableJsonFingerprint(pLoc).toString() !=
+          _stableJsonFingerprint(sLoc).toString()) {
+        return false;
+      }
+    }
+    final pVoice = pendingMeta is Map && pendingMeta['voice'] is Map;
+    final sVoice = serverMeta is Map && serverMeta['voice'] is Map;
+    if (pVoice != sVoice) return false;
+  }
+
+  return true;
+}
+
+/// Drop optimistic rows that already exist as confirmed server messages.
+List<Map<String, dynamic>> chatReconcilePendingDuplicates(
+  List<Map<String, dynamic>> messages, {
+  int? currentUserId,
+}) {
+  final server = <Map<String, dynamic>>[];
+  final pending = <Map<String, dynamic>>[];
+  for (final message in messages) {
+    if (chatMessageIsPending(message) && message['_scheduled'] != true) {
+      pending.add(message);
+    } else {
+      server.add(message);
+    }
+  }
+  if (pending.isEmpty) return sortChatMessages(messages);
+
+  final claimedServerIndexes = <int>{};
+  final keptPending = <Map<String, dynamic>>[];
+
+  for (final p in pending) {
+    var bestIndex = -1;
+    var bestDelta = 1 << 62;
+    final pendingCreated =
+        DateTime.tryParse(p['created_at']?.toString() ?? '');
+    for (var i = 0; i < server.length; i++) {
+      if (claimedServerIndexes.contains(i)) continue;
+      if (!chatPendingMatchesServer(
+        p,
+        server[i],
+        currentUserId: currentUserId,
+      )) {
+        continue;
+      }
+      final serverCreated =
+          DateTime.tryParse(server[i]['created_at']?.toString() ?? '');
+      var delta = 0;
+      if (pendingCreated != null && serverCreated != null) {
+        delta = (pendingCreated.difference(serverCreated).inMilliseconds)
+            .abs();
+      }
+      if (bestIndex < 0 || delta < bestDelta) {
+        bestIndex = i;
+        bestDelta = delta;
+      }
+    }
+    if (bestIndex >= 0) {
+      claimedServerIndexes.add(bestIndex);
+    } else {
+      keptPending.add(p);
+    }
+  }
+
+  return sortChatMessages([...server, ...keptPending]);
+}
+
 int _chatMessageSortKey(Map<String, dynamic> message) {
   final id = chatAsInt(message['id']);
   if (id != null && id > 0 && !chatMessageIsPending(message)) {
@@ -85,8 +206,9 @@ List<Map<String, dynamic>> chatUpsertMessage(
 
 List<Map<String, dynamic>> chatMergeMessageLists(
   List<Map<String, dynamic>> current,
-  List<Map<String, dynamic>> incoming,
-) {
+  List<Map<String, dynamic>> incoming, {
+  int? currentUserId,
+}) {
   final byId = <int, Map<String, dynamic>>{};
   final pending = <Map<String, dynamic>>[];
 
@@ -106,7 +228,10 @@ List<Map<String, dynamic>> chatMergeMessageLists(
     absorb(message);
   }
 
-  return sortChatMessages([...byId.values, ...pending]);
+  return chatReconcilePendingDuplicates(
+    [...byId.values, ...pending],
+    currentUserId: currentUserId,
+  );
 }
 
 Object? _stableJsonFingerprint(dynamic value) {

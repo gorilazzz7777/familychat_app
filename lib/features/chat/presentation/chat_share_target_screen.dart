@@ -5,8 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
-import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/local_device_file.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/widgets/family_app_bar.dart';
+import '../../../core/widgets/family_compose_input.dart';
+import '../../../core/widgets/family_tab_bar.dart';
 import '../../../app/shell_refresh.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
@@ -16,7 +19,6 @@ import '../../../core/local_db/chat_local_store.dart';
 import '../data/chat_sync_service.dart';
 import 'chat_conversation_screen.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
-import '../../feed/data/feed_post_uploader.dart';
 import '../../profile/data/album_upload_coordinator.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
@@ -34,14 +36,13 @@ class ChatShareTargetScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatShareTargetScreen> createState() => _ChatShareTargetScreenState();
 }
 
-class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
+class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
+    with SingleTickerProviderStateMixin {
   List<Map<String, dynamic>> _threads = [];
   List<Map<String, dynamic>> _albums = [];
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
   final _selectedThreads = <int>{};
   final _selectedAlbumPks = <int>{};
-  bool _shareToFeed = false;
-  int _tabIndex = 0;
   bool _loadingAttachments = true;
   bool _loadingThreads = true;
   bool _loadingAlbums = true;
@@ -49,6 +50,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
   bool _sending = false;
   String? _loadError;
   int? _myUserId;
+  late final TabController _tabController;
   late final TextEditingController _captionController;
   late final TextEditingController _albumSearchController;
   String _albumSearchQuery = '';
@@ -57,7 +59,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_onTabChanged);
     _captionController = TextEditingController(text: widget.media.content ?? '');
+    _captionController.addListener(_onCaptionChanged);
     _albumSearchController = TextEditingController();
     // Цели (чаты) — сразу из локальной БД; вложения и сеть не блокируют список.
     unawaited(_hydrateTargetsFromLocal());
@@ -67,10 +72,24 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
 
   @override
   void dispose() {
+    _tabController.removeListener(_onTabChanged);
+    _tabController.dispose();
+    _captionController.removeListener(_onCaptionChanged);
     _captionController.dispose();
     _albumSearchController.dispose();
     super.dispose();
   }
+
+  void _onTabChanged() {
+    if (!mounted || _tabController.indexIsChanging) return;
+    setState(() {});
+  }
+
+  void _onCaptionChanged() {
+    if (mounted) setState(() {});
+  }
+
+  int get _tabIndex => _tabController.index;
 
   List<Map<String, dynamic>> _parseCustomAlbums(Map<String, dynamic> data) {
     return (data['albums'] as List<dynamic>? ?? [])
@@ -354,56 +373,19 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     }
   }
 
-  bool get _canSend {
-    final caption = _captionController.text.trim();
-    final images = _attachments.where((a) => a.isImage).toList();
-    if (_shareToFeed && images.isNotEmpty) return true;
-    if (_selectedThreads.isNotEmpty && (caption.isNotEmpty || _attachments.isNotEmpty)) {
-      return true;
-    }
-    return _selectedAlbumPks.isNotEmpty && images.isNotEmpty;
+  bool get _canSendChats {
+    if (_selectedThreads.isEmpty) return false;
+    return _captionController.text.trim().isNotEmpty || _attachments.isNotEmpty;
   }
 
-  String get _sendButtonLabel {
-    final parts = <String>[];
-    if (_shareToFeed) parts.add('лента');
-    if (_selectedThreads.isNotEmpty) parts.add('${_selectedThreads.length} ч');
-    if (_selectedAlbumPks.isNotEmpty) parts.add('${_selectedAlbumPks.length} альб');
-    if (parts.isEmpty) return 'Отправить';
-    return 'Отправить (${parts.join(', ')})';
+  bool get _canSendAlbums {
+    return _selectedAlbumPks.isNotEmpty && _imageAttachments.isNotEmpty;
   }
+
+  bool get _canSend => _tabIndex == 0 ? _canSendChats : _canSendAlbums;
 
   List<ShareAttachmentData> get _imageAttachments =>
       _attachments.where((a) => a.isImage).toList();
-
-  Future<void> _sendToFeed({
-    required List<ShareAttachmentData> images,
-    required String caption,
-  }) async {
-    final limited = images.take(FeedPostUploader.maxPhotos).toList();
-    if (limited.length < images.length && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'В ленту можно отправить не более ${FeedPostUploader.maxPhotos} фото',
-          ),
-        ),
-      );
-    }
-    await FeedPostUploader.publish(
-      repo: ref.read(familychatRepositoryProvider),
-      photos: limited
-          .map(
-            (att) => FeedPostPhoto(
-              bytes: Uint8List.fromList(att.bytes),
-              filename: att.filename,
-              contentType: att.contentType,
-            ),
-          )
-          .toList(),
-      caption: caption,
-    );
-  }
 
   Map<String, dynamic>? _albumByPk(int pk) {
     for (final album in _albums) {
@@ -413,229 +395,167 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     return null;
   }
 
-  Future<void> _sendToAlbums({
-    required int myUserId,
-    required List<int> albumPks,
-    required List<ShareAttachmentData> images,
-  }) async {
-    final repo = ref.read(familychatRepositoryProvider);
-    final coordinator = AlbumUploadCoordinator.instance;
-    final photos = images
-        .map(
-          (att) => AlbumUploadPhoto(
-            bytes: Uint8List.fromList(att.bytes),
-            filename: att.filename,
-            contentType: att.contentType ?? 'image/jpeg',
-          ),
-        )
-        .toList();
-
-    int? navigatePk;
-    var navigateTitle = 'Альбом';
-    final batch = FeedPhotoBatchSession(
-      totalTasks: albumPks.length * photos.length,
-    );
-
-    for (final albumPk in albumPks) {
-      final album = _albumByPk(albumPk);
-      final title = album?['title']?.toString() ?? 'Альбом';
-      navigatePk ??= albumPk;
-      navigateTitle = title;
-      coordinator.startUploadToCustomAlbum(
-        repo: repo,
-        userId: myUserId,
-        albumPk: albumPk,
-        albumId: 'custom:$albumPk',
-        title: title,
-        photos: photos,
-        batchSession: batch,
-      );
-    }
-
-    if (!mounted || navigatePk == null) return;
-    final nav = familyChatNavigatorKey.currentState;
-    Navigator.of(context).pop();
-    if (nav == null) return;
-    await nav.push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => ProfileGalleryAlbumScreen(
-          userId: myUserId,
-          albumId: 'custom:$navigatePk',
-          title: navigateTitle,
-          canManage: true,
-          isOwnGallery: true,
-        ),
-      ),
-    );
-    await ShellRefresh.instance.refreshMainTabs();
-  }
-
   Future<void> _send() async {
     if (!_canSend || _sending) return;
     setState(() => _sending = true);
 
     final caption = _captionController.text.trim();
     final repo = ref.read(familychatRepositoryProvider);
-    final threadIds = _selectedThreads.toList();
-    final albumPks = _selectedAlbumPks.toList();
-    final images = _imageAttachments;
-
-    try {
-      var sentAny = false;
-
-      if (_shareToFeed && images.isNotEmpty) {
-        await _sendToFeed(images: images, caption: caption);
-        sentAny = true;
+    final threadIds = _tabIndex == 0 ? _selectedThreads.toList() : <int>[];
+    final albumPks = _tabIndex == 1 ? _selectedAlbumPks.toList() : <int>[];
+    final pending = List<ShareAttachmentData>.from(_attachments);
+    final myUserId = _myUserId;
+    final openThreadId = threadIds.isNotEmpty ? threadIds.first : null;
+    Map<String, dynamic>? openThread;
+    if (openThreadId != null) {
+      for (final t in _threads) {
+        if (chatAsInt(t['id']) == openThreadId) {
+          openThread = t;
+          break;
+        }
       }
+    }
+    int? openAlbumPk;
+    var openAlbumTitle = 'Альбом';
+    final albumTitles = <int, String>{};
+    if (albumPks.isNotEmpty) {
+      openAlbumPk = albumPks.first;
+      for (final pk in albumPks) {
+        albumTitles[pk] = _albumByPk(pk)?['title']?.toString() ?? 'Альбом';
+      }
+      openAlbumTitle = albumTitles[openAlbumPk] ?? 'Альбом';
+    }
 
-      if (threadIds.isNotEmpty) {
-        for (final threadId in threadIds) {
-          final attachmentIds = <int>[];
-          for (final att in _attachments) {
-            final uploaded = await repo.uploadChatAttachmentBytes(
+    final messenger = familyChatScaffoldMessengerKey.currentState;
+    final nav = familyChatNavigatorKey.currentState;
+    Navigator.of(context).pop(true);
+
+    unawaited(() async {
+      try {
+        final resolved = await _resolveList(pending);
+        final resolvedImages = resolved.where((a) => a.isImage).toList();
+        if (threadIds.isNotEmpty) {
+          for (final threadId in threadIds) {
+            final attachmentIds = <int>[];
+            for (final att in resolved) {
+              final uploaded = await repo.uploadChatAttachmentBytes(
+                threadId,
+                bytes: Uint8List.fromList(att.bytes),
+                filename: att.filename,
+                contentType: att.contentType,
+              );
+              final id = chatAsInt(uploaded['id']);
+              if (id == null) continue;
+              attachmentIds.add(id);
+              final path = att.localPath?.trim() ?? '';
+              if (path.isNotEmpty && (att.isImage || att.isVideo)) {
+                unawaited(
+                  MediaLocalIndex.saveOutgoing(
+                    attachmentId: id,
+                    localPath: path,
+                    filename: att.filename,
+                    kind: att.isVideo ? 'video' : 'image',
+                  ),
+                );
+              }
+            }
+            final sent = await repo.sendThreadMessage(
               threadId,
-              bytes: Uint8List.fromList(att.bytes),
-              filename: att.filename,
-              contentType: att.contentType,
+              body: caption.isEmpty ? null : caption,
+              attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
             );
-            final id = chatAsInt(uploaded['id']);
-            if (id != null) attachmentIds.add(id);
-          }
-          final sent = await repo.sendThreadMessage(
-            threadId,
-            body: caption.isEmpty ? null : caption,
-            attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
-          );
-          if (ChatLocalStore.isSupported) {
-            final map = Map<String, dynamic>.from(sent);
-            map['thread_id'] ??= threadId;
-            await ChatLocalStore.instance.upsertMessage(map);
-          }
-          if (ChatSyncService.isSupported) {
-            unawaited(ChatSyncService.instance.syncThread(threadId));
-          }
-        }
-        sentAny = true;
-      }
-
-      if (albumPks.isNotEmpty && images.isNotEmpty) {
-        final status = await repo.status();
-        final myUserId = status['user_id'] is int
-            ? status['user_id'] as int
-            : int.tryParse('${status['user_id']}');
-        if (myUserId == null) {
-          throw StateError('User id is missing');
-        }
-        await _sendToAlbums(
-          myUserId: myUserId,
-          albumPks: albumPks,
-          images: images,
-        );
-        return;
-      }
-
-      if (!mounted) return;
-      if (sentAny) {
-        // After share-into-chat, land in that conversation (first if several).
-        final openThreadId = threadIds.isNotEmpty ? threadIds.first : null;
-        Map<String, dynamic>? openThread;
-        if (openThreadId != null) {
-          for (final t in _threads) {
-            if (chatAsInt(t['id']) == openThreadId) {
-              openThread = t;
-              break;
+            if (ChatLocalStore.isSupported) {
+              final map = Map<String, dynamic>.from(sent);
+              map['thread_id'] ??= threadId;
+              await ChatLocalStore.instance.upsertMessage(map);
+            }
+            if (ChatSyncService.isSupported) {
+              unawaited(ChatSyncService.instance.syncThread(threadId));
             }
           }
         }
-
-        final messenger = familyChatScaffoldMessengerKey.currentState;
-        final nav = familyChatNavigatorKey.currentState;
-        Navigator.of(context).pop(true);
+        if (albumPks.isNotEmpty && resolvedImages.isNotEmpty && myUserId != null) {
+          final photos = resolvedImages
+              .map(
+                (att) => AlbumUploadPhoto(
+                  bytes: Uint8List.fromList(att.bytes),
+                  filename: att.filename,
+                  contentType: att.contentType ?? 'image/jpeg',
+                  localPath: att.localPath,
+                ),
+              )
+              .toList();
+          final batch = FeedPhotoBatchSession(
+            totalTasks: albumPks.length * photos.length,
+          );
+          for (final albumPk in albumPks) {
+            AlbumUploadCoordinator.instance.startUploadToCustomAlbum(
+              repo: repo,
+              userId: myUserId,
+              albumPk: albumPk,
+              albumId: 'custom:$albumPk',
+              title: albumTitles[albumPk] ?? 'Альбом',
+              photos: photos,
+              batchSession: batch,
+            );
+          }
+        }
         await ShellRefresh.instance.refreshMainTabs();
-
-        if (openThreadId != null && nav != null) {
-          await nav.push<void>(
-            MaterialPageRoute<void>(
-              builder: (_) => ChatConversationScreen(
-                threadId: openThreadId,
-                title: openThread?['title']?.toString() ?? 'Чат',
-                defaultTitle: openThread?['default_title']?.toString() ??
-                    openThread?['title']?.toString() ??
-                    'Чат',
-                customTitle: openThread?['custom_title']?.toString() ?? '',
-                kind: openThread?['kind']?.toString() ?? 'family',
-                peerUserId: chatAsInt(openThread?['peer_user_id']),
-                initialPeerAvatarUrl:
-                    openThread?['peer_avatar_url']?.toString(),
-                initialCanSend: openThread?['can_send'] != false,
-              ),
-            ),
-          );
-        } else {
-          messenger?.showSnackBar(
-            SnackBar(
-              content: Text(
-                _shareToFeed && threadIds.isEmpty
-                    ? 'Опубликовано в ленту'
-                    : 'Отправлено',
-              ),
-            ),
-          );
-        }
+      } catch (_) {
+        messenger?.showSnackBar(
+          const SnackBar(content: Text('Не удалось отправить')),
+        );
       }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _sending = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось отправить')),
+    }());
+
+    if (openAlbumPk != null && myUserId != null && nav != null) {
+      await nav.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ProfileGalleryAlbumScreen(
+            userId: myUserId,
+            albumId: 'custom:$openAlbumPk',
+            title: openAlbumTitle,
+            canManage: true,
+            isOwnGallery: true,
+          ),
+        ),
       );
-    }
-  }
-
-  List<int> get _selectableThreadIds => _threads.map(chatAsInt).whereType<int>().toList();
-
-  List<int> get _selectableAlbumPks => _albums
-      .map((a) {
-        final idStr = a['id']?.toString() ?? '';
-        if (!idStr.startsWith('custom:')) return null;
-        return int.tryParse(idStr.substring(7));
-      })
-      .whereType<int>()
-      .toList();
-
-  bool get _allThreadsSelected {
-    final ids = _selectableThreadIds;
-    return ids.isNotEmpty && ids.every(_selectedThreads.contains);
-  }
-
-  bool get _allAlbumsSelected {
-    final ids = _selectableAlbumPks;
-    return ids.isNotEmpty && ids.every(_selectedAlbumPks.contains);
-  }
-
-  void _toggleSelectAllTargets() {
-    if (_tabIndex == 0) {
-      final ids = _selectableThreadIds;
-      setState(() {
-        if (_allThreadsSelected) {
-          _selectedThreads.removeAll(ids);
-        } else {
-          _selectedThreads.addAll(ids);
-        }
-      });
       return;
     }
-    final ids = _selectableAlbumPks;
-    setState(() {
-      if (_allAlbumsSelected) {
-        _selectedAlbumPks.removeAll(ids);
-      } else {
-        _selectedAlbumPks.addAll(ids);
-      }
-    });
+    if (openThreadId != null && nav != null) {
+      await nav.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChatConversationScreen(
+            threadId: openThreadId,
+            title: openThread?['title']?.toString() ?? 'Чат',
+            defaultTitle: openThread?['default_title']?.toString() ??
+                openThread?['title']?.toString() ??
+                'Чат',
+            customTitle: openThread?['custom_title']?.toString() ?? '',
+            kind: openThread?['kind']?.toString() ?? 'family',
+            peerUserId: chatAsInt(openThread?['peer_user_id']),
+            initialPeerAvatarUrl: openThread?['peer_avatar_url']?.toString(),
+            initialCanSend: openThread?['can_send'] != false,
+          ),
+        ),
+      );
+      return;
+    }
+    messenger?.showSnackBar(
+      const SnackBar(content: Text('Отправляем…')),
+    );
   }
 
-  bool get _allTargetsSelected => _tabIndex == 0 ? _allThreadsSelected : _allAlbumsSelected;
+  Future<List<ShareAttachmentData>> _resolveList(
+    List<ShareAttachmentData> items,
+  ) async {
+    final out = <ShareAttachmentData>[];
+    for (var i = 0; i < items.length; i++) {
+      out.add(await resolveShareAttachmentBytes(items[i], index: i));
+    }
+    await finishShareAttachmentRead();
+    return out;
+  }
 
   List<Map<String, dynamic>> get _filteredAlbums {
     if (_albumSearchQuery.isEmpty) return _albums;
@@ -643,34 +563,6 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
         .where((a) =>
             (a['title']?.toString().toLowerCase() ?? '').contains(_albumSearchQuery))
         .toList();
-  }
-
-  bool get _hasSelectableTargets {
-    if (_creatingAlbum) return false;
-    if (_tabIndex == 0) {
-      return !_loadingThreads && _selectableThreadIds.isNotEmpty;
-    }
-    return !_loadingAlbums && _selectableAlbumPks.isNotEmpty;
-  }
-
-  Widget _buildFeedShareTile() {
-    final enabled = _imageAttachments.isNotEmpty;
-    return _buildSelectableTile(
-      selected: _shareToFeed,
-      onTap: () {
-        if (!enabled) return;
-        setState(() => _shareToFeed = !_shareToFeed);
-      },
-      leading: CircleAvatar(
-        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-        child: Icon(
-          Icons.home_outlined,
-          color: Theme.of(context).colorScheme.onPrimaryContainer,
-        ),
-      ),
-      title: 'Семье — в ленту',
-      subtitle: 'Все увидят на главной, фото попадёт в «Все фото»',
-    );
   }
 
   Widget _buildLoadingTargets(String label) {
@@ -770,42 +662,44 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     );
   }
 
-  Widget _buildTargetsList() {
-    if (_tabIndex == 0) {
-      if (_loadingThreads) return _buildLoadingTargets('Загрузка чатов...');
-      if (_threads.isEmpty) {
-        return const Center(child: Text('Нет доступных чатов'));
-      }
-      return ListView.builder(
-        itemCount: _threads.length,
-        itemBuilder: (_, i) {
-          final t = _threads[i];
-          final id = chatAsInt(t['id']);
-          if (id == null) return const SizedBox.shrink();
-          final selected = _selectedThreads.contains(id);
-          return _buildSelectableTile(
-            selected: selected,
-            onTap: () {
-              setState(() {
-                if (selected) {
-                  _selectedThreads.remove(id);
-                } else {
-                  _selectedThreads.add(id);
-                }
-              });
-            },
-            leading: ChatAvatar(
-              name: _threadTitle(t),
-              avatarUrl: _threadAvatarUrl(t),
-              userId: _dmPeerUserId(t),
-              radius: 24,
-            ),
-            title: _threadTitle(t),
-            subtitle: _threadSubtitle(t),
-          );
-        },
-      );
+  Widget _buildChatsList() {
+    if (_loadingThreads) return _buildLoadingTargets('Загрузка чатов...');
+    if (_threads.isEmpty) {
+      return const Center(child: Text('Нет доступных чатов'));
     }
+    return ListView.builder(
+      itemCount: _threads.length,
+      itemBuilder: (_, i) {
+        final t = _threads[i];
+        final id = chatAsInt(t['id']);
+        if (id == null) return const SizedBox.shrink();
+        final selected = _selectedThreads.contains(id);
+        return _buildSelectableTile(
+          selected: selected,
+          onTap: () {
+            setState(() {
+              if (selected) {
+                _selectedThreads.remove(id);
+              } else {
+                _selectedThreads.add(id);
+              }
+            });
+          },
+          leading: ChatAvatar(
+            name: _threadTitle(t),
+            avatarUrl: _threadAvatarUrl(t),
+            userId: _dmPeerUserId(t),
+            radius: 24,
+          ),
+          title: _threadTitle(t),
+          subtitle: _threadSubtitle(t),
+        );
+      },
+    );
+  }
+
+  Widget _buildAlbumsList() {
+    if (_creatingAlbum) return _buildLoadingTargets('Создание альбома...');
     if (_loadingAlbums && _albums.isEmpty) {
       return _buildLoadingTargets('Загрузка альбомов...');
     }
@@ -841,166 +735,182 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final caption = _captionController.text.trim();
-    final hasPayload = caption.isNotEmpty || _attachments.isNotEmpty;
-    // Список чатов показываем сразу из БД; вложения могут ещё читаться.
-    final showTargets = _loadError == null &&
-        (_loadingAttachments || hasPayload || _threads.isNotEmpty);
-
-    return Scaffold(
-      appBar: FamilyAppBar.build(
-        title: 'Поделиться',
-        actions: [
-          TextButton(
-            onPressed: _hasSelectableTargets ? _toggleSelectAllTargets : null,
-            child: Text(_allTargetsSelected ? 'Снять все' : 'Выбрать все'),
+  Widget _buildAttachmentThumb(ShareAttachmentData att) {
+    if (att.isImage || att.isVideo) {
+      final path = att.localPath;
+      final child = path != null && localDeviceFileExists(path)
+          ? localDeviceFileImage(
+              path: path,
+              width: 72,
+              height: 72,
+              fit: BoxFit.cover,
+            )
+          : ColoredBox(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: Icon(
+                att.isVideo ? Icons.videocam_outlined : Icons.image_outlined,
+              ),
+            );
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: SizedBox(
+          width: 72,
+          height: 72,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              child,
+              if (att.isVideo)
+                const ColoredBox(
+                  color: Color(0x33000000),
+                  child: Icon(Icons.play_circle_outline, color: Colors.white),
+                ),
+            ],
           ),
-          TextButton(
-            onPressed: !_canSend || _sending || _creatingAlbum ? null : _send,
+        ),
+      );
+    }
+    return Container(
+      width: 72,
+      height: 72,
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.insert_drive_file_outlined, size: 22),
+          const SizedBox(height: 4),
+          Text(
+            att.filename,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChatCompose() {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (_loadingAttachments)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  child: LinearProgressIndicator(),
+                )
+              else if (_attachments.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+                  child: SizedBox(
+                    height: 72,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _attachments.length,
+                      separatorBuilder: (_, __) => const SizedBox(width: 8),
+                      itemBuilder: (_, i) => _buildAttachmentThumb(_attachments[i]),
+                    ),
+                  ),
+                ),
+              FamilyComposeInput(
+                controller: _captionController,
+                hintText: 'Сообщение...',
+                sending: _sending,
+                onSend: !_canSendChats || _sending || _creatingAlbum
+                    ? null
+                    : () {
+                        unawaited(_send());
+                      },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAlbumSendBar() {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+          child: FilledButton(
+            onPressed: !_canSendAlbums || _sending || _creatingAlbum
+                ? null
+                : () => unawaited(_send()),
             child: _sending
                 ? const SizedBox(
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Text(_sendButtonLabel),
+                : Text(
+                    _selectedAlbumPks.length == 1
+                        ? 'Отправить в альбом'
+                        : 'Отправить в ${_selectedAlbumPks.length} альб.',
+                  ),
           ),
-        ],
+        ),
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final caption = _captionController.text.trim();
+    final hasPayload = caption.isNotEmpty || _attachments.isNotEmpty;
+    final showTargets = _loadError == null &&
+        (_loadingAttachments || hasPayload || _threads.isNotEmpty);
+    final showChatCompose = _tabIndex == 0 && _selectedThreads.isNotEmpty;
+    final showAlbumSend = _tabIndex == 1 && _selectedAlbumPks.isNotEmpty;
+
+    return Scaffold(
+      appBar: FamilyAppBar.build(title: 'Поделиться'),
       body: _loadError != null && _threads.isEmpty && !_loadingAttachments
           ? Center(child: Text(_loadError!))
           : !showTargets
               ? const Center(child: Text('Нет данных для отправки'))
               : Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              if (_loadingAttachments)
-                                const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 16),
-                                  child: Center(
-                                    child: SizedBox(
-                                      width: 28,
-                                      height: 28,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
-                                    ),
-                                  ),
-                                )
-                              else if (_attachments.isNotEmpty)
-                                SizedBox(
-                                  height: 88,
-                                  child: ListView.separated(
-                                    scrollDirection: Axis.horizontal,
-                                    itemCount: _attachments.length,
-                                    separatorBuilder: (_, __) => const SizedBox(width: 8),
-                                    itemBuilder: (_, i) {
-                                      final att = _attachments[i];
-                                      if (att.isImage) {
-                                        final preview = safeUiPreviewBytes(
-                                          bytes: Uint8List.fromList(att.bytes),
-                                          kind: 'image',
-                                        );
-                                        return ClipRRect(
-                                          borderRadius: BorderRadius.circular(8),
-                                          child: preview != null
-                                              ? Image.memory(
-                                                  preview,
-                                                  width: 88,
-                                                  height: 88,
-                                                  fit: BoxFit.cover,
-                                                )
-                                              : ColoredBox(
-                                                  color: Theme.of(context)
-                                                      .colorScheme
-                                                      .surfaceContainerHighest,
-                                                  child: const SizedBox(
-                                                    width: 88,
-                                                    height: 88,
-                                                    child: Icon(
-                                                      Icons.image_outlined,
-                                                    ),
-                                                  ),
-                                                ),
-                                        );
-                                      }
-                                      return Container(
-                                        width: 88,
-                                        padding: const EdgeInsets.all(8),
-                                        decoration: BoxDecoration(
-                                          borderRadius: BorderRadius.circular(8),
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .surfaceContainerHighest,
-                                        ),
-                                        child: Column(
-                                          mainAxisAlignment: MainAxisAlignment.center,
-                                          children: [
-                                            const Icon(Icons.insert_drive_file_outlined),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              att.filename,
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                              textAlign: TextAlign.center,
-                                              style: Theme.of(context).textTheme.labelSmall,
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ),
-                              if (_attachments.isNotEmpty || _loadingAttachments)
-                                const SizedBox(height: 12),
-                              TextField(
-                                controller: _captionController,
-                                minLines: 1,
-                                maxLines: 4,
-                                maxLength: _shareToFeed
-                                    ? FeedPostUploader.maxCaptionLength
-                                    : null,
-                                decoration: InputDecoration(
-                                  labelText: _shareToFeed
-                                      ? 'Описание для ленты'
-                                      : 'Подпись',
-                                ),
-                                onChanged: (_) => setState(() {}),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (_imageAttachments.isNotEmpty) ...[
-                          const Divider(height: 1),
-                          _buildFeedShareTile(),
-                        ],
-                        const Divider(height: 1),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                          child: SegmentedButton<int>(
-                            showSelectedIcon: false,
-                            segments: const [
-                              ButtonSegment(value: 0, label: Text('Чаты')),
-                              ButtonSegment(value: 1, label: Text('Галерея')),
-                            ],
-                            selected: {_tabIndex},
-                            onSelectionChanged: (s) {
-                              setState(() => _tabIndex = s.first);
-                            },
-                          ),
-                        ),
-                        if (_tabIndex == 1) _buildGalleryToolbar(),
-                        Expanded(
-                          child: _tabIndex == 1 && _creatingAlbum
-                              ? _buildLoadingTargets('Создание альбома...')
-                              : _buildTargetsList(),
-                        ),
+                  children: [
+                    FamilyTabBar.build(
+                      controller: _tabController,
+                      tabs: const [
+                        Tab(text: 'Чаты'),
+                        Tab(text: 'Галерея'),
                       ],
                     ),
+                    Expanded(
+                      child: TabBarView(
+                        controller: _tabController,
+                        children: [
+                          _buildChatsList(),
+                          Column(
+                            children: [
+                              _buildGalleryToolbar(),
+                              Expanded(child: _buildAlbumsList()),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (showChatCompose) _buildChatCompose(),
+                    if (showAlbumSend) _buildAlbumSendBar(),
+                  ],
+                ),
     );
   }
 }

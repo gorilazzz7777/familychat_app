@@ -8,6 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/cache/familychat_local_cache.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/media/local_device_file.dart';
+import '../../../../core/media/media_local_index.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../../core/widgets/web_image_cache_registry.dart';
 import '../../../familychat/data/familychat_repository.dart';
@@ -313,6 +315,18 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
 
   @override
   Widget build(BuildContext context) {
+    MediaLocalIndex.hydrateAttachment(widget.attachment);
+    final localPath = galleryLocalDevicePath(widget.attachment);
+    if (localDeviceFileExists(localPath)) {
+      return localDeviceFileImage(
+        path: localPath,
+        width: widget.width,
+        height: widget.height,
+        fit: widget.fit,
+        error: _errorBox(retryable: false),
+      );
+    }
+
     final local = widget.attachment['local_bytes'];
     if (isSafeUiPreviewBytes(local)) {
       return Image.memory(

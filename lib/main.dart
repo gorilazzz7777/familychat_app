@@ -14,6 +14,7 @@ import 'core/push/push_message_handler.dart';
 import 'core/push/push_navigation.dart';
 import 'core/push/push_registration_service.dart';
 import 'core/share/incoming_share_bus.dart';
+import 'core/media/media_local_index.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_seed_controller.dart';
 
@@ -35,6 +36,7 @@ Future<void> main() async {
     unawaited(FamilyChatNotifications.initialize());
     unawaited(IncomingShareBus.instance.init());
   }
+  unawaited(MediaLocalIndex.ensureLoaded());
   runApp(const ProviderScope(child: FamilyChatApp()));
 }
 

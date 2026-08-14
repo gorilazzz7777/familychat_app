@@ -6,9 +6,43 @@ import 'dart:js' as js;
 import '../../features/chat/data/familychat_realtime.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../routing/app_uri_parser.dart';
+import 'push_navigation.dart';
 
 bool _listening = false;
 StreamSubscription<html.Event>? _visibilitySub;
+
+bool _openedFromTap(Map<String, dynamic> data) {
+  final raw = data['opened_from_tap'];
+  return raw == true || raw == 1 || raw?.toString() == 'true';
+}
+
+void _applyIncomingWebPush(Map<String, dynamic> data) {
+  final type = data['type']?.toString() ?? '';
+  if (type == 'familychat_call') {
+    IncomingCallCoordinator.instance.presentFromPushData(data);
+    return;
+  }
+  final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+  final messageId = int.tryParse(data['message_id']?.toString() ?? '');
+  final isChat = type == 'familychat_chat' ||
+      (data['deeplink']?.toString() == 'chat' && threadId != null);
+  if (!isChat) return;
+
+  FamilyChatRealtime.instance.emitSyntheticEvent({
+    'event': 'chat_refresh',
+    if (threadId != null) 'thread_id': threadId,
+    if (messageId != null) 'message_id': messageId,
+  });
+  if (_openedFromTap(data)) {
+    try {
+      html.window.sessionStorage.remove('familychat_pending_chat');
+    } catch (_) {}
+    openChatFromPushData({
+      ...data,
+      'type': 'familychat_chat',
+    });
+  }
+}
 
 Map<String, dynamic>? readWebPendingCallLaunch() {
   try {
@@ -17,6 +51,21 @@ Map<String, dynamic>? readWebPendingCallLaunch() {
     final raw = html.window.sessionStorage['familychat_pending_call'];
     if (raw == null || raw.isEmpty) return null;
     html.window.sessionStorage.remove('familychat_pending_call');
+    final decoded = jsonDecode(raw);
+    if (decoded is Map) {
+      return Map<String, dynamic>.from(decoded);
+    }
+  } catch (_) {}
+  return null;
+}
+
+Map<String, dynamic>? readWebPendingChatLaunch() {
+  try {
+    final fromUri = parseIncomingChatPushFromUri(Uri.base);
+    if (fromUri != null) return fromUri;
+    final raw = html.window.sessionStorage['familychat_pending_chat'];
+    if (raw == null || raw.isEmpty) return null;
+    html.window.sessionStorage.remove('familychat_pending_chat');
     final decoded = jsonDecode(raw);
     if (decoded is Map) {
       return Map<String, dynamic>.from(decoded);
@@ -35,21 +84,7 @@ void listenWebPushIncomingCalls() {
     if (raw is! Map) return;
     final source = raw['source']?.toString() ?? '';
     if (source != 'familychat-fcm' && source != 'familychat-fcm-sw') return;
-    final data = Map<String, dynamic>.from(raw);
-    final type = data['type']?.toString() ?? '';
-    if (type == 'familychat_call') {
-      IncomingCallCoordinator.instance.presentFromPushData(data);
-      return;
-    }
-    if (type == 'familychat_chat') {
-      final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
-      final messageId = int.tryParse(data['message_id']?.toString() ?? '');
-      FamilyChatRealtime.instance.emitSyntheticEvent({
-        'event': 'chat_refresh',
-        if (threadId != null) 'thread_id': threadId,
-        if (messageId != null) 'message_id': messageId,
-      });
-    }
+    _applyIncomingWebPush(Map<String, dynamic>.from(raw));
   });
 
   _visibilitySub?.cancel();

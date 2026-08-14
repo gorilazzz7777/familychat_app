@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/offline_ui.dart';
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/media/media_incoming_sync.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
@@ -27,7 +29,12 @@ bool _isVisibleFeedEvent(Map<String, dynamic> event) {
 List<Map<String, dynamic>> _visibleFeedEvents(
   Iterable<Map<String, dynamic>> events,
 ) {
-  return events.where(_isVisibleFeedEvent).toList();
+  final list = events.where(_isVisibleFeedEvent).toList();
+  for (final event in list) {
+    MediaLocalIndex.hydrateFeedEvent(event);
+  }
+  unawaited(MediaIncomingSync.ensureFeedEvents(list));
+  return list;
 }
 
 bool _isAggregatedEngagementEvent(Map<String, dynamic> event) {

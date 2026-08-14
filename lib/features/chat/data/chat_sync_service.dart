@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/local_db/chat_local_store.dart';
+import '../../../core/media/media_incoming_sync.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_realtime_utils.dart';
 import 'familychat_realtime.dart';
@@ -16,10 +17,13 @@ class ChatSyncService {
   FamilyChatRepository? _repo;
   bool _listening = false;
   bool _syncingHub = false;
+  bool _historySyncing = false;
+  Timer? _historyTimer;
   final Set<int> _syncingThreads = <int>{};
   final Map<int, Future<void>> _threadQueues = <int, Future<void>>{};
 
   static bool get isSupported => ChatLocalStore.isSupported;
+  static const _historyCompletePrefix = 'hist_done_v1_';
 
   Future<void> start(FamilyChatRepository repo) async {
     if (!isSupported) return;
@@ -29,10 +33,19 @@ class ChatSyncService {
       FamilyChatRealtime.instance.addListener(_onRealtime);
       _listening = true;
     }
-    unawaited(syncHub());
+    _historyTimer?.cancel();
+    _historyTimer = Timer.periodic(const Duration(minutes: 12), (_) {
+      unawaited(syncHistoriesInBackground());
+    });
+    unawaited(() async {
+      await syncHub(prefetchMessages: true);
+      unawaited(syncHistoriesInBackground());
+    }());
   }
 
   Future<void> stop() async {
+    _historyTimer?.cancel();
+    _historyTimer = null;
     if (_listening) {
       FamilyChatRealtime.instance.removeListener(_onRealtime);
       _listening = false;
@@ -48,6 +61,7 @@ class ChatSyncService {
       final msg = event['message'];
       if (msg is! Map) return;
       final map = chatNormalizeMap(Map<dynamic, dynamic>.from(msg));
+      map['thread_id'] ??= chatAsInt(event['thread_id']);
       unawaited(_ingestIncomingMessage(map));
       return;
     }
@@ -97,14 +111,9 @@ class ChatSyncService {
     final threadId = chatAsInt(message['thread_id']);
     if (threadId == null) return;
 
-    final senderId = chatAsInt(message['sender_user_id']);
-    // Drop optimistic pending rows from this device when server echo arrives.
-    if (senderId != null) {
-      // Keep other pending; syncThread will reconcile. Clear only exact pending
-      // on upsert via store — handled by message id replace.
-    }
-
     await ChatLocalStore.instance.upsertMessage(message);
+    unawaited(MediaIncomingSync.ensureMessages([message]));
+    await _dropMatchingPending(threadId, message);
 
     // Patch thread preview/unread in local hub without waiting for HTTP.
     final threads = await ChatLocalStore.instance.readThreads();
@@ -123,6 +132,66 @@ class ChatSyncService {
       await ChatLocalStore.instance.upsertThread(thread);
     } else {
       unawaited(syncHub());
+    }
+  }
+
+  /// Remove optimistic/outbox rows that duplicate a confirmed server message.
+  Future<void> _dropMatchingPending(
+    int threadId,
+    Map<String, dynamic> serverMessage, {
+    int? currentUserId,
+  }) async {
+    if (chatMessageIsPending(serverMessage)) return;
+    final rows = await ChatLocalStore.instance.readMessages(threadId);
+    final candidates = <({int id, int delta})>[];
+    final serverCreated =
+        DateTime.tryParse(serverMessage['created_at']?.toString() ?? '');
+    for (final row in rows) {
+      if (!chatMessageIsPending(row) || row['_scheduled'] == true) continue;
+      if (!chatPendingMatchesServer(
+        row,
+        serverMessage,
+        currentUserId: currentUserId,
+      )) {
+        continue;
+      }
+      final id = chatAsInt(row['id']);
+      if (id == null) continue;
+      final pendingCreated =
+          DateTime.tryParse(row['created_at']?.toString() ?? '');
+      var delta = 0;
+      if (pendingCreated != null && serverCreated != null) {
+        delta =
+            (pendingCreated.difference(serverCreated).inMilliseconds).abs();
+      }
+      candidates.add((id: id, delta: delta));
+    }
+    if (candidates.isEmpty) return;
+    candidates.sort((a, b) => a.delta.compareTo(b.delta));
+    await ChatLocalStore.instance.deleteMessages(threadId, [candidates.first.id]);
+  }
+
+  /// Reconcile stuck pending after a full thread window upsert.
+  Future<void> _reconcileThreadPending(int threadId) async {
+    final rows = await ChatLocalStore.instance.readMessages(threadId);
+    final reconciled = chatReconcilePendingDuplicates(rows);
+    if (reconciled.length == rows.length) return;
+    final keptIds = <int>{
+      for (final m in reconciled)
+        if (chatAsInt(m['id']) != null) chatAsInt(m['id'])!,
+    };
+    final toDelete = <int>[];
+    for (final row in rows) {
+      final id = chatAsInt(row['id']);
+      if (id == null) continue;
+      if (chatMessageIsPending(row) &&
+          row['_scheduled'] != true &&
+          !keptIds.contains(id)) {
+        toDelete.add(id);
+      }
+    }
+    if (toDelete.isNotEmpty) {
+      await ChatLocalStore.instance.deleteMessages(threadId, toDelete);
     }
   }
 
@@ -177,6 +246,8 @@ class ChatSyncService {
     try {
       final page = await repo.threadMessages(threadId, limit: limit);
       await ChatLocalStore.instance.upsertMessages(threadId, page.messages);
+      unawaited(MediaIncomingSync.ensureMessages(page.messages));
+      await _reconcileThreadPending(threadId);
     } catch (e, st) {
       debugPrint('[ChatSyncService] syncThread($threadId) failed: $e\n$st');
     } finally {
@@ -202,4 +273,90 @@ class ChatSyncService {
   /// Push / reconnect wake: fetch newest window for a thread.
   Future<void> syncThreadFromPush(int threadId) =>
       syncThread(threadId, limit: 50);
+
+  /// Newest page for [prioritizeThreadId] (and hub), then backfill full history
+  /// for that thread and others in the background.
+  Future<void> syncHistoriesInBackground({int? prioritizeThreadId}) async {
+    if (!isSupported || _repo == null) return;
+    if (_historySyncing) return;
+    _historySyncing = true;
+    try {
+      await syncHub();
+      final threads = await ChatLocalStore.instance.readThreads();
+      final ids = <int>[
+        if (prioritizeThreadId != null) prioritizeThreadId,
+        for (final thread in threads)
+          if (chatAsInt(thread['id']) != null &&
+              chatAsInt(thread['id']) != prioritizeThreadId)
+            chatAsInt(thread['id'])!,
+      ];
+      for (final id in ids) {
+        if (_repo == null) return;
+        await syncThread(id, limit: 80);
+        await syncThreadHistory(
+          id,
+          maxPages: id == prioritizeThreadId ? 24 : 8,
+        );
+      }
+    } catch (e, st) {
+      debugPrint('[ChatSyncService] syncHistoriesInBackground failed: $e\n$st');
+    } finally {
+      _historySyncing = false;
+    }
+  }
+
+  Future<void> syncThreadHistory(int threadId, {int maxPages = 12}) async {
+    final repo = _repo;
+    if (!isSupported || repo == null) return;
+    if (await _isHistoryComplete(threadId)) return;
+    var pages = 0;
+    while (pages < maxPages) {
+      if (_repo == null) return;
+      var oldest =
+          await ChatLocalStore.instance.oldestServerMessageId(threadId);
+      if (oldest == null) {
+        await syncThread(threadId, limit: 80);
+        pages += 1;
+        oldest = await ChatLocalStore.instance.oldestServerMessageId(threadId);
+        if (oldest == null) return;
+      }
+      try {
+        final page = await repo.threadMessages(
+          threadId,
+          limit: 80,
+          beforeId: oldest,
+        );
+        if (page.messages.isEmpty) {
+          await _markHistoryComplete(threadId);
+          return;
+        }
+        await ChatLocalStore.instance.upsertMessages(threadId, page.messages);
+        pages += 1;
+        if (!page.hasMore) {
+          await _markHistoryComplete(threadId);
+          return;
+        }
+      } catch (e, st) {
+        debugPrint('[ChatSyncService] syncThreadHistory($threadId) failed: $e\n$st');
+        return;
+      }
+    }
+  }
+
+  Future<bool> isThreadHistoryComplete(int threadId) =>
+      _isHistoryComplete(threadId);
+
+  Future<bool> _isHistoryComplete(int threadId) async {
+    final flag = await ChatLocalStore.instance.metaGet(
+      '$_historyCompletePrefix$threadId',
+    );
+    return flag == '1';
+  }
+
+  Future<void> _markHistoryComplete(int threadId) async {
+    await ChatLocalStore.instance.metaSet(
+      '$_historyCompletePrefix$threadId',
+      '1',
+    );
+  }
 }

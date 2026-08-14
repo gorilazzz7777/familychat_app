@@ -33,6 +33,7 @@ class ChatMessageActionsSheet {
     bool canPin = false,
     bool isPinned = false,
     bool canSpeak = false,
+    bool canCancelSend = false,
     bool canDeleteForEveryone = false,
     bool canDeleteForMe = false,
   }) {
@@ -49,6 +50,7 @@ class ChatMessageActionsSheet {
         canPin: canPin,
         isPinned: isPinned,
         canSpeak: canSpeak,
+        canCancelSend: canCancelSend,
         canDeleteForEveryone: canDeleteForEveryone,
         canDeleteForMe: canDeleteForMe,
       ),
@@ -67,6 +69,7 @@ class _ChatMessageActionsSheetBody extends StatefulWidget {
     required this.canPin,
     required this.isPinned,
     required this.canSpeak,
+    required this.canCancelSend,
     required this.canDeleteForEveryone,
     required this.canDeleteForMe,
   });
@@ -80,6 +83,7 @@ class _ChatMessageActionsSheetBody extends StatefulWidget {
   final bool canPin;
   final bool isPinned;
   final bool canSpeak;
+  final bool canCancelSend;
   final bool canDeleteForEveryone;
   final bool canDeleteForMe;
 
@@ -216,6 +220,21 @@ class _ChatMessageActionsSheetBodyState
                 onTap: () => Navigator.pop(
                   context,
                   const ChatMessageMenuResult.action('speak'),
+                ),
+              ),
+            if (widget.canCancelSend)
+              ListTile(
+                leading: Icon(
+                  Icons.cancel_schedule_send_outlined,
+                  color: theme.colorScheme.error,
+                ),
+                title: Text(
+                  'Отменить отправку',
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+                onTap: () => Navigator.pop(
+                  context,
+                  const ChatMessageMenuResult.action('cancel_send'),
                 ),
               ),
             if (showDelete)

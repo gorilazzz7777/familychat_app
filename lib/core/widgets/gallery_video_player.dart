@@ -1,16 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
+import '../media/local_device_file.dart';
+
 class GalleryVideoPlayer extends StatefulWidget {
   const GalleryVideoPlayer({
     super.key,
     required this.url,
+    this.localPath,
     this.fit = BoxFit.contain,
     this.autoplay = false,
     this.showControls = true,
   });
 
   final String url;
+  final String? localPath;
   final BoxFit fit;
   final bool autoplay;
   final bool showControls;
@@ -32,19 +36,26 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer> {
   @override
   void didUpdateWidget(covariant GalleryVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url) {
+    if (oldWidget.url != widget.url || oldWidget.localPath != widget.localPath) {
       _disposeController();
       _init();
     }
   }
 
   Future<void> _init() async {
-    final url = widget.url.trim();
-    if (url.isEmpty) {
-      setState(() => _error = StateError('Пустой URL видео'));
-      return;
+    final local = widget.localPath?.trim() ?? '';
+    VideoPlayerController? controller;
+    if (local.isNotEmpty) {
+      controller = localDeviceVideoController(local);
     }
-    final controller = VideoPlayerController.networkUrl(Uri.parse(url));
+    if (controller == null) {
+      final url = widget.url.trim();
+      if (url.isEmpty) {
+        setState(() => _error = StateError('Пустой URL видео'));
+        return;
+      }
+      controller = VideoPlayerController.networkUrl(Uri.parse(url));
+    }
     _controller = controller;
     try {
       await controller.initialize();

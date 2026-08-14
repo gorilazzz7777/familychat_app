@@ -171,12 +171,22 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
     final raw = event['message'];
     if (raw is! Map) return;
     final msg = chatNormalizeMap(Map<dynamic, dynamic>.from(raw));
+    msg['thread_id'] ??= eventThreadId;
     if (!chatMessageBelongsToThread(msg, widget.threadId)) return;
     final id = chatAsInt(msg['id']);
     if (id != null && _messages.any((m) => chatAsInt(m['id']) == id)) return;
     if (!mounted) return;
     setState(() => _messages = chatUpsertMessage(_messages, msg));
     _scrollToBottom();
+    final lastId = chatNewestServerMessageId(_messages) ?? id;
+    if (lastId != null && lastId > 0) {
+      unawaited(
+        widget.repository.markRead(
+          threadId: widget.threadId,
+          lastReadMessageId: lastId,
+        ),
+      );
+    }
   }
 
   Future<void> _load({bool silent = false}) async {

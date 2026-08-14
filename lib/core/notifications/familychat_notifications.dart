@@ -1,12 +1,16 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../push/push_navigation.dart';
+import 'notification_inline_reply.dart';
 
 /// Локальные уведомления со звуком (Android/iOS) и каналы Android.
 class FamilyChatNotifications {
@@ -26,19 +30,37 @@ class FamilyChatNotifications {
 
   @pragma('vm:entry-point')
   static void _onBackgroundNotificationTap(NotificationResponse response) {
-    _handleNotificationPayload(response.payload);
+    WidgetsFlutterBinding.ensureInitialized();
+    DartPluginRegistrant.ensureInitialized();
+    unawaited(handleNotificationResponse(response));
   }
 
   static Future<void> initialize() async {
     if (_initialized || kIsWeb) return;
 
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const iosInit = DarwinInitializationSettings(
+    final iosInit = DarwinInitializationSettings(
       requestAlertPermission: false,
       requestBadgePermission: false,
       requestSoundPermission: false,
+      notificationCategories: [
+        DarwinNotificationCategory(
+          NotificationInlineReply.iosCategoryId,
+          actions: [
+            DarwinNotificationAction.text(
+              NotificationInlineReply.actionId,
+              'Ответить',
+              buttonTitle: 'Отправить',
+              placeholder: 'Сообщение',
+            ),
+          ],
+          options: {
+            DarwinNotificationCategoryOption.hiddenPreviewShowTitle,
+          },
+        ),
+      ],
     );
-    const initSettings = InitializationSettings(
+    final initSettings = InitializationSettings(
       android: androidInit,
       iOS: iosInit,
     );
@@ -78,23 +100,68 @@ class FamilyChatNotifications {
   }
 
   static void _onNotificationTap(NotificationResponse response) {
+    unawaited(handleNotificationResponse(response));
+  }
+
+  static Future<void> handleNotificationResponse(
+    NotificationResponse response,
+  ) async {
+    if (response.actionId == NotificationInlineReply.actionId) {
+      await _sendInlineReply(response);
+      return;
+    }
     _handleNotificationPayload(response.payload);
+  }
+
+  static Future<void> _sendInlineReply(NotificationResponse response) async {
+    final text = response.input?.trim() ?? '';
+    if (text.isEmpty) return;
+    Map<String, dynamic> data = const {};
+    final payload = response.payload;
+    if (payload != null && payload.isNotEmpty) {
+      try {
+        data = Map<String, dynamic>.from(jsonDecode(payload) as Map);
+      } catch (e) {
+        debugPrint('inline reply payload error: $e');
+        return;
+      }
+    }
+    final ok = await NotificationInlineReply.sendFromPayload(
+      data: data,
+      rawText: text,
+    );
+    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+    if (ok && threadId != null) {
+      await clearChatNotifications(threadId: threadId);
+      return;
+    }
+    if (!ok) {
+      await showForegroundPush(
+        title: 'Family Space',
+        body: 'Не удалось отправить ответ. Откройте чат.',
+        data: data.isEmpty
+            ? <String, dynamic>{'type': 'familychat_chat'}
+            : data,
+      );
+    }
   }
 
   static void _handleNotificationPayload(String? payload) {
     if (payload == null || payload.isEmpty) return;
     try {
-      final data = jsonDecode(payload) as Map<String, dynamic>;
+      final data = Map<String, dynamic>.from(jsonDecode(payload) as Map);
       final type = data['type']?.toString() ?? '';
-      if (type == 'familychat_chat') {
-        openChatFromPushData(data);
-      } else if (type == 'familychat_calendar_reminder') {
+      if (type == 'familychat_calendar_reminder') {
         openCalendarFromPushData(data);
-      } else if (type == 'familychat_call') {
+        return;
+      }
+      if (type == 'familychat_call') {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           IncomingCallCoordinator.instance.presentFromPushData(data);
         });
+        return;
       }
+      openChatFromPushData(data);
     } catch (e) {
       debugPrint('notification tap payload error: $e');
     }
@@ -102,16 +169,58 @@ class FamilyChatNotifications {
 
   static Future<void> consumeLaunchNotification() async {
     if (kIsWeb || !_initialized) return;
+    await consumePendingNativeReply();
     final details = await _plugin.getNotificationAppLaunchDetails();
     if (details?.didNotificationLaunchApp != true) return;
-    _handleNotificationPayload(details?.notificationResponse?.payload);
+    final response = details?.notificationResponse;
+    if (response == null) return;
+    await handleNotificationResponse(response);
+  }
+
+  static Future<void> consumePendingNativeReply() async {
+    if (kIsWeb) return;
+    if (defaultTargetPlatform != TargetPlatform.iOS) return;
+    try {
+      const channel = MethodChannel('com.familychat/push_reply');
+      final raw = await channel.invokeMethod<dynamic>('takePending');
+      if (raw is! Map) return;
+      final data = raw.map((key, value) => MapEntry('$key', value));
+      final text = data['text']?.toString() ?? '';
+      if (text.trim().isEmpty) return;
+      await NotificationInlineReply.sendFromPayload(
+        data: data,
+        rawText: text,
+      );
+    } catch (e) {
+      debugPrint('consumePendingNativeReply: $e');
+    }
   }
 
   static Future<void> handleBackgroundRemoteMessage(RemoteMessage message) async {
     if (kIsWeb) return;
     await initialize();
     final data = Map<String, dynamic>.from(message.data);
-    final type = data['type']?.toString() ?? '';
+    var type = data['type']?.toString() ?? '';
+    if (type.isEmpty &&
+        data['deeplink']?.toString() == 'chat' &&
+        (data['thread_id']?.toString() ?? '').isNotEmpty) {
+      type = 'familychat_chat';
+      data['type'] = type;
+    }
+
+    if (type == 'familychat_chat') {
+      final title = data['title']?.toString().trim() ??
+          message.notification?.title?.trim();
+      final body = data['body']?.toString().trim() ??
+          message.notification?.body?.trim();
+      await showForegroundPush(
+        title: title != null && title.isNotEmpty ? title : 'Family Space',
+        body: body != null && body.isNotEmpty ? body : 'Новое сообщение',
+        data: data,
+      );
+      return;
+    }
+
     if (type != 'familychat_call') return;
 
     final title = data['title']?.toString().trim() ??
@@ -202,6 +311,10 @@ class FamilyChatNotifications {
     }
 
     final tag = _androidTag(data);
+    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+    final isChat = type == 'familychat_chat' ||
+        (data['deeplink']?.toString() == 'chat' && threadId != null);
+    final canReply = isChat && threadId != null;
     final androidDetails = AndroidNotificationDetails(
       messagesChannelId,
       'Сообщения',
@@ -210,16 +323,35 @@ class FamilyChatNotifications {
       playSound: true,
       enableVibration: true,
       tag: tag,
+      category: isChat ? AndroidNotificationCategory.message : null,
+      actions: canReply
+          ? [
+              AndroidNotificationAction(
+                NotificationInlineReply.actionId,
+                'Ответить',
+                inputs: const [
+                  AndroidNotificationActionInput(
+                    label: 'Сообщение',
+                    allowFreeFormInput: true,
+                  ),
+                ],
+                allowGeneratedReplies: true,
+                showsUserInterface: false,
+                cancelNotification: true,
+              ),
+            ]
+          : null,
       // Один баннер на чат: повторный show с тем же id/tag заменяет старый.
       onlyAlertOnce: false,
     );
-    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
     final iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
       threadIdentifier: tag ??
           (threadId != null ? chatNotificationTag(threadId) : null),
+      categoryIdentifier:
+          canReply ? NotificationInlineReply.iosCategoryId : null,
     );
 
     await _plugin.show(

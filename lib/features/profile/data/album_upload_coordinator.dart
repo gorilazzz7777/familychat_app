@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/push/push_message_handler.dart';
 import '../../familychat/data/familychat_repository.dart';
@@ -173,6 +174,20 @@ class AlbumUploadCoordinator extends ChangeNotifier {
             }
             session.pendingPhotos.add(uploaded);
             session.done++;
+            final uploadedId = uploaded['id'] is int
+                ? uploaded['id'] as int
+                : int.tryParse('${uploaded['id']}');
+            final localPath = photo.localPath?.trim() ?? '';
+            if (uploadedId != null && localPath.isNotEmpty) {
+              unawaited(
+                MediaLocalIndex.saveOutgoing(
+                  attachmentId: uploadedId,
+                  localPath: localPath,
+                  filename: photo.filename,
+                  kind: photo.kind,
+                ),
+              );
+            }
           }
         } catch (_) {
           session.failed++;
@@ -235,6 +250,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
         photoExif: draft.geo?.toPhotoExif() ?? photo.photoExif,
         kind: 'video',
         optimisticKey: photo.optimisticKey,
+        localPath: photo.localPath,
       );
     }
     final draft = await prepareImageUploadDraft(
@@ -252,6 +268,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
       photoExif: draft.geo?.toPhotoExif() ?? photo.photoExif,
       kind: 'image',
       optimisticKey: photo.optimisticKey,
+      localPath: photo.localPath,
     );
   }
 }

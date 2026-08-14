@@ -7,12 +7,18 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 import 'family_public_web_image.dart';
 import '../cache/familychat_media_cache.dart';
+import '../media/gallery_media_utils.dart';
+import '../media/local_device_file.dart';
+import '../media/media_local_index.dart';
 
 /// Публичные URL (аватары в S3). На web — через API-прокси (CORS на S3 не нужен).
+/// Если есть локальный файл — показываем его, сеть не трогаем.
 class FamilyPublicImage extends StatelessWidget {
   const FamilyPublicImage({
     super.key,
     required this.url,
+    this.localPath,
+    this.attachment,
     this.userId,
     this.width,
     this.height,
@@ -24,6 +30,8 @@ class FamilyPublicImage extends StatelessWidget {
   });
 
   final String url;
+  final String? localPath;
+  final Map<String, dynamic>? attachment;
   final int? userId;
   final double? width;
   final double? height;
@@ -35,6 +43,25 @@ class FamilyPublicImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (attachment != null) {
+      MediaLocalIndex.hydrateAttachment(attachment!);
+    }
+    final local = (localPath ??
+            (attachment == null ? '' : galleryLocalDevicePath(attachment!)))
+        .trim();
+    if (!kIsWeb && localDeviceFileExists(local)) {
+      return localDeviceFileImage(
+        path: local,
+        width: width,
+        height: height,
+        fit: fit,
+        error: _network(context),
+      );
+    }
+    return _network(context);
+  }
+
+  Widget _network(BuildContext context) {
     final trimmed = url.trim();
     if (trimmed.isEmpty) {
       return error ?? const SizedBox.shrink();

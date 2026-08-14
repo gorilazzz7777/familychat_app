@@ -16,6 +16,7 @@ import '../../../core/widgets/family_tab_bar.dart';
 import 'chat_thread_avatars.dart';
 import 'chat_call_screen.dart';
 import 'widgets/chat_image_viewer.dart';
+import 'widgets/chat_link_preview_tile.dart';
 import 'widgets/chat_network_image.dart';
 
 String chatParticipantCountLabel(int count) {
@@ -785,25 +786,34 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       ];
     }
     return [
-      SliverList(
-        delegate: SliverChildBuilderDelegate(
-          (context, i) {
-            final item = _links[i];
-            final url = item['url']?.toString() ?? '';
-            final messageId = _messageIdOf(item);
-            return ListTile(
-              title: Text(url, maxLines: 2, overflow: TextOverflow.ellipsis),
-              onTap: () => _showItemActions(
-                title: 'Открыть ссылку',
-                onOpen: () => launchUrl(
-                  Uri.parse(url),
-                  mode: LaunchMode.externalApplication,
+      SliverPadding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+        sliver: SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, i) {
+              final item = _links[i];
+              final url = item['url']?.toString() ?? '';
+              if (url.isEmpty) return const SizedBox.shrink();
+              final messageId = _messageIdOf(item);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: ChatLinkPreviewTile(
+                  url: url,
+                  onTap: () => _showItemActions(
+                    title: 'Открыть ссылку',
+                    onOpen: () => launchUrl(
+                      Uri.parse(
+                        url.startsWith('http') ? url : 'https://$url',
+                      ),
+                      mode: LaunchMode.externalApplication,
+                    ),
+                    messageId: messageId,
+                  ),
                 ),
-                messageId: messageId,
-              ),
-            );
-          },
-          childCount: _links.length,
+              );
+            },
+            childCount: _links.length,
+          ),
         ),
       ),
     ];

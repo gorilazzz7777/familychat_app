@@ -580,18 +580,18 @@ class _PreviewBottomNav extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
           _PreviewNavItem(
-            icon: Icons.home_outlined,
-            label: 'Главная',
-            scheme: scheme,
-            theme: theme,
-          ),
-          _PreviewNavItem(
             icon: Icons.chat,
             label: 'Чат',
             scheme: scheme,
             theme: theme,
             selected: true,
             badge: '2',
+          ),
+          _PreviewNavItem(
+            icon: Icons.dynamic_feed_outlined,
+            label: 'Лента',
+            scheme: scheme,
+            theme: theme,
           ),
           _PreviewNavItem(
             icon: Icons.people_outline,

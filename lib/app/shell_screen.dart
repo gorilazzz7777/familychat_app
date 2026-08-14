@@ -16,6 +16,8 @@ import '../core/widgets/family_app_bar.dart';
 import '../core/providers/app_providers.dart';
 import '../core/theme/theme_seed_controller.dart';
 import '../core/share/incoming_share_bus.dart';
+import '../core/settings/app_settings_controller.dart';
+import '../core/settings/shell_nav_layout.dart';
 import 'app_actions_scope.dart';
 import 'shell_refresh.dart';
 import '../features/calendar/data/calendar_photo_sync_service.dart';
@@ -57,17 +59,20 @@ class ShellScreen extends ConsumerStatefulWidget {
 
 class _ShellScreenState extends ConsumerState<ShellScreen>
     with WidgetsBindingObserver {
+  static const _chatTabIndex = 0;
+  static const _feedTabIndex = 1;
+  static const _familyTabIndex = 2;
   static const _galleryTabIndex = 3;
   static const _calendarTabIndex = 4;
   static const _tabRefreshTtl = Duration(seconds: 45);
 
-  int _index = 0;
+  int _index = _chatTabIndex;
   late Map<String, dynamic> _status;
   final _feedKey = GlobalKey<FeedScreenState>();
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
   final _tabRefreshedAt = <int, DateTime>{};
-  /// Главная + Чаты сразу; остальные — при первом заходе.
-  final _visitedTabs = <int>{0, 1};
+  /// Чат (главная) + лента сразу; остальные — при первом заходе.
+  final _visitedTabs = <int>{_chatTabIndex, _feedTabIndex};
   Timer? _webPollTimer;
   Timer? _presenceTimer;
 
@@ -116,6 +121,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         ),
       );
       unawaited(AppUpdateService.checkAndPrompt(context));
+      unawaited(ref.read(appSettingsProvider.notifier).syncFromServer());
     });
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
@@ -199,9 +205,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   }
 
   Future<void> _refreshMainTabs({bool silent = true}) async {
-    await _refreshTab(0, silent: silent);
-    await _refreshTab(1, silent: silent);
-    await _refreshTab(2, silent: silent);
+    await _refreshTab(_chatTabIndex, silent: silent);
+    await _refreshTab(_feedTabIndex, silent: silent);
+    await _refreshTab(_familyTabIndex, silent: silent);
   }
 
   void _onChatRealtime(Map<String, dynamic> event) {
@@ -338,8 +344,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     );
     if (!mounted) return;
     if (sent == true) {
-      await _refreshTab(0, silent: true);
-      await _refreshTab(1, silent: true);
+      await _refreshTab(_chatTabIndex, silent: true);
+      await _refreshTab(_feedTabIndex, silent: true);
     }
     // Share flow can race with cold-start push pending navigation.
     flushPendingChatPush();
@@ -347,10 +353,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   Future<void> _refreshTab(int tabIndex, {bool silent = true}) async {
     switch (tabIndex) {
-      case 0:
-        await _feedKey.currentState?.refresh(silent: silent);
-      case 1:
+      case _chatTabIndex:
         await _chatHubKey.currentState?.refresh(silent: silent);
+      case _feedTabIndex:
+        await _feedKey.currentState?.refresh(silent: silent);
       default:
         break;
     }
@@ -383,20 +389,21 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   }
 
   String get _title => switch (_index) {
-        0 => 'Лента',
-        1 => 'Family Space',
-        2 => 'Семья',
-        3 => 'Галерея',
-        4 => 'Календарь',
+        _chatTabIndex => 'Family Space',
+        _feedTabIndex => 'Лента',
+        _familyTabIndex => 'Семья',
+        _galleryTabIndex => 'Галерея',
+        _calendarTabIndex => 'Календарь',
         _ => 'Family Space',
       };
 
   bool get _hideShellAppBar =>
-      _index == 1 ||
+      _index == _chatTabIndex ||
       _index == _galleryTabIndex ||
       _index == _calendarTabIndex;
 
-  void _onDestinationSelected(int i) {
+  void _selectSection(ShellSection section) {
+    final i = _indexOf(section);
     final previous = _index;
     final needsBuild = !_visitedTabs.contains(i);
     setState(() {
@@ -408,15 +415,118 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     }
   }
 
+  int _indexOf(ShellSection section) {
+    return switch (section) {
+      ShellSection.chat => _chatTabIndex,
+      ShellSection.feed => _feedTabIndex,
+      ShellSection.family => _familyTabIndex,
+      ShellSection.gallery => _galleryTabIndex,
+      ShellSection.calendar => _calendarTabIndex,
+    };
+  }
+
+  ShellSection _sectionOf(int index) {
+    return switch (index) {
+      _feedTabIndex => ShellSection.feed,
+      _familyTabIndex => ShellSection.family,
+      _galleryTabIndex => ShellSection.gallery,
+      _calendarTabIndex => ShellSection.calendar,
+      _ => ShellSection.chat,
+    };
+  }
+
+  NavigationDestination _destinationFor(
+    ShellSection section, {
+    required int chatUnread,
+    required String chatBadgeLabel,
+  }) {
+    return switch (section) {
+      ShellSection.chat => NavigationDestination(
+          icon: Badge(
+            isLabelVisible: chatUnread > 0,
+            label: Text(chatBadgeLabel),
+            child: const Icon(Icons.chat_outlined),
+          ),
+          selectedIcon: Badge(
+            isLabelVisible: chatUnread > 0,
+            label: Text(chatBadgeLabel),
+            child: const Icon(Icons.chat),
+          ),
+          label: ShellNavLayout.label(section),
+        ),
+      ShellSection.feed => const NavigationDestination(
+          icon: Icon(Icons.dynamic_feed_outlined),
+          selectedIcon: Icon(Icons.dynamic_feed),
+          label: 'Лента',
+        ),
+      ShellSection.family => const NavigationDestination(
+          icon: Icon(Icons.people_outline),
+          selectedIcon: Icon(Icons.people),
+          label: 'Семья',
+        ),
+      ShellSection.gallery => const NavigationDestination(
+          icon: Icon(Icons.photo_library_outlined),
+          selectedIcon: Icon(Icons.photo_library),
+          label: 'Галерея',
+        ),
+      ShellSection.calendar => const NavigationDestination(
+          icon: Icon(Icons.calendar_month_outlined),
+          selectedIcon: Icon(Icons.calendar_month),
+          label: 'Календарь',
+        ),
+    };
+  }
+
+  void _onBarDestinationSelected(int i, ShellNavLayout layout) {
+    if (layout.showMore && i == layout.barSections.length) {
+      unawaited(_openMoreSheet(layout));
+      return;
+    }
+    if (i < 0 || i >= layout.barSections.length) return;
+    _selectSection(layout.barSections[i]);
+  }
+
+  Future<void> _openMoreSheet(ShellNavLayout layout) async {
+    final picked = await showModalBottomSheet<ShellSection>(
+      context: context,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(title: Text('Ещё')),
+              for (final section in layout.overflowSections)
+                ListTile(
+                  leading: Icon(_iconFor(section)),
+                  title: Text(ShellNavLayout.label(section)),
+                  onTap: () => Navigator.pop(ctx, section),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+    if (picked == null || !mounted) return;
+    _selectSection(picked);
+  }
+
+  IconData _iconFor(ShellSection section) {
+    return switch (section) {
+      ShellSection.chat => Icons.chat_outlined,
+      ShellSection.feed => Icons.dynamic_feed_outlined,
+      ShellSection.family => Icons.people_outline,
+      ShellSection.gallery => Icons.photo_library_outlined,
+      ShellSection.calendar => Icons.calendar_month_outlined,
+    };
+  }
+
   Widget _buildTab(int i) {
     if (!_visitedTabs.contains(i)) {
       return const SizedBox.shrink();
     }
     final userId = _currentUserId;
     switch (i) {
-      case 0:
-        return FeedScreen(key: _feedKey);
-      case 1:
+      case _chatTabIndex:
         return ChatHubScreen(
           key: _chatHubKey,
           hasIndividualPremium: _hasIndividualPremium,
@@ -424,19 +534,21 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           profileAvatarUrl: _avatarUrl,
           onProfileTap: _openProfile,
         );
-      case 2:
+      case _feedTabIndex:
+        return FeedScreen(key: _feedKey);
+      case _familyTabIndex:
         return MembersScreen(
           currentUserId: userId,
           onOpenOwnProfile: _openProfile,
           showAppBar: false,
         );
-      case 3:
+      case _galleryTabIndex:
         return userId == null
             ? const DeferredPlaceholder(
                 child: Center(child: CircularProgressIndicator()),
               )
             : GalleryMenuScreen(currentUserId: userId);
-      case 4:
+      case _calendarTabIndex:
         return const CalendarScreen();
       default:
         return const SizedBox.shrink();
@@ -470,7 +582,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         return;
       }
       if (posted == true) {
-        await _refreshTab(0, silent: true);
+        await _refreshTab(_feedTabIndex, silent: true);
       }
     }
 
@@ -572,6 +684,34 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     final chatUnread = ref.watch(chatUnreadTotalProvider).value ?? 0;
     final chatBadgeLabel = chatUnread > 99 ? '99+' : '$chatUnread';
     final showingNestedScreen = _hideShellAppBar;
+    final layout = ShellNavLayout.fromSettings(ref.watch(appSettingsProvider));
+    final current = _sectionOf(_index);
+    if (!layout.isEnabled(current) && _index != _chatTabIndex) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (!layout.isEnabled(_sectionOf(_index))) {
+          _selectSection(ShellSection.chat);
+        }
+      });
+    }
+    final barIndex = layout.barSections.indexOf(current);
+    final selectedIndex = barIndex >= 0
+        ? barIndex
+        : (layout.showMore ? layout.barSections.length : 0);
+    final destinations = [
+      for (final section in layout.barSections)
+        _destinationFor(
+          section,
+          chatUnread: chatUnread,
+          chatBadgeLabel: chatBadgeLabel,
+        ),
+      if (layout.showMore)
+        const NavigationDestination(
+          icon: Icon(Icons.more_horiz),
+          selectedIcon: Icon(Icons.more_horiz),
+          label: 'Ещё',
+        ),
+    ];
 
     return Scaffold(
       appBar: showingNestedScreen
@@ -582,13 +722,13 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
               profileAvatarUrl: _avatarUrl,
               onProfileTap: _openProfile,
               actions: [
-                if (_index == 0)
+                if (_index == _feedTabIndex)
                   IconButton(
                     icon: const Icon(Icons.add),
                     tooltip: 'Новый пост',
                     onPressed: _openFeedPost,
                   ),
-                if (_index == 2)
+                if (_index == _familyTabIndex)
                   IconButton(
                     icon: const Icon(Icons.person_add_outlined),
                     tooltip: 'Добавить в семью',
@@ -604,45 +744,14 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         index: _index,
         children: List<Widget>.generate(5, _buildTab),
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: _onDestinationSelected,
-        destinations: [
-          const NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Лента',
-          ),
-          NavigationDestination(
-            icon: Badge(
-              isLabelVisible: chatUnread > 0,
-              label: Text(chatBadgeLabel),
-              child: const Icon(Icons.chat_outlined),
-            ),
-            selectedIcon: Badge(
-              isLabelVisible: chatUnread > 0,
-              label: Text(chatBadgeLabel),
-              child: const Icon(Icons.chat),
-            ),
-            label: 'Чат',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.people_outline),
-            selectedIcon: Icon(Icons.people),
-            label: 'Семья',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.photo_library_outlined),
-            selectedIcon: Icon(Icons.photo_library),
-            label: 'Галерея',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.calendar_month_outlined),
-            selectedIcon: Icon(Icons.calendar_month),
-            label: 'Календарь',
-          ),
-        ],
-      ),
+      bottomNavigationBar: layout.showBar && destinations.isNotEmpty
+          ? NavigationBar(
+              selectedIndex: selectedIndex.clamp(0, destinations.length - 1),
+              onDestinationSelected: (i) =>
+                  _onBarDestinationSelected(i, layout),
+              destinations: destinations,
+            )
+          : null,
     );
   }
 }
