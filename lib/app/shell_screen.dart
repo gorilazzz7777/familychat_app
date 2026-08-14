@@ -19,6 +19,7 @@ import '../core/share/incoming_share_bus.dart';
 import '../core/settings/app_settings_controller.dart';
 import '../core/settings/shell_nav_layout.dart';
 import 'app_actions_scope.dart';
+import 'shell_nav_bar.dart';
 import 'shell_refresh.dart';
 import '../features/calendar/data/calendar_photo_sync_service.dart';
 import '../features/calendar/presentation/calendar_staging_review_screen.dart';
@@ -82,6 +83,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     WidgetsBinding.instance.addObserver(this);
     _status = widget.status;
     IncomingShareBus.instance.addListener(_onIncomingShare);
+    onOpenFeedFromPush = _openFeedFromPush;
     if (kIsWeb) {
       _webPollTimer = Timer.periodic(const Duration(seconds: 6), (_) {
         unawaited(_webRealtimeSoftSync());
@@ -264,6 +266,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     _webPollTimer?.cancel();
     _presenceTimer?.cancel();
     IncomingShareBus.instance.removeListener(_onIncomingShare);
+    onOpenFeedFromPush = null;
     FamilyChatRealtime.instance.removeListener(_onChatRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
     ChatScheduledSendService.instance.stop();
@@ -415,6 +418,14 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     }
   }
 
+  void _openFeedFromPush() {
+    if (!mounted) return;
+    final layout = ShellNavLayout.fromSettings(ref.read(appSettingsProvider));
+    if (!layout.isEnabled(ShellSection.feed)) return;
+    _selectSection(ShellSection.feed);
+    unawaited(_refreshTab(_feedTabIndex, silent: true));
+  }
+
   int _indexOf(ShellSection section) {
     return switch (section) {
       ShellSection.chat => _chatTabIndex,
@@ -432,48 +443,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       _galleryTabIndex => ShellSection.gallery,
       _calendarTabIndex => ShellSection.calendar,
       _ => ShellSection.chat,
-    };
-  }
-
-  NavigationDestination _destinationFor(
-    ShellSection section, {
-    required int chatUnread,
-    required String chatBadgeLabel,
-  }) {
-    return switch (section) {
-      ShellSection.chat => NavigationDestination(
-          icon: Badge(
-            isLabelVisible: chatUnread > 0,
-            label: Text(chatBadgeLabel),
-            child: const Icon(Icons.chat_outlined),
-          ),
-          selectedIcon: Badge(
-            isLabelVisible: chatUnread > 0,
-            label: Text(chatBadgeLabel),
-            child: const Icon(Icons.chat),
-          ),
-          label: ShellNavLayout.label(section),
-        ),
-      ShellSection.feed => const NavigationDestination(
-          icon: Icon(Icons.dynamic_feed_outlined),
-          selectedIcon: Icon(Icons.dynamic_feed),
-          label: 'Лента',
-        ),
-      ShellSection.family => const NavigationDestination(
-          icon: Icon(Icons.people_outline),
-          selectedIcon: Icon(Icons.people),
-          label: 'Семья',
-        ),
-      ShellSection.gallery => const NavigationDestination(
-          icon: Icon(Icons.photo_library_outlined),
-          selectedIcon: Icon(Icons.photo_library),
-          label: 'Галерея',
-        ),
-      ShellSection.calendar => const NavigationDestination(
-          icon: Icon(Icons.calendar_month_outlined),
-          selectedIcon: Icon(Icons.calendar_month),
-          label: 'Календарь',
-        ),
     };
   }
 
@@ -497,7 +466,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
               const ListTile(title: Text('Ещё')),
               for (final section in layout.overflowSections)
                 ListTile(
-                  leading: Icon(_iconFor(section)),
+                  leading: Icon(ShellNavLayout.icon(section)),
                   title: Text(ShellNavLayout.label(section)),
                   onTap: () => Navigator.pop(ctx, section),
                 ),
@@ -508,16 +477,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     );
     if (picked == null || !mounted) return;
     _selectSection(picked);
-  }
-
-  IconData _iconFor(ShellSection section) {
-    return switch (section) {
-      ShellSection.chat => Icons.chat_outlined,
-      ShellSection.feed => Icons.dynamic_feed_outlined,
-      ShellSection.family => Icons.people_outline,
-      ShellSection.gallery => Icons.photo_library_outlined,
-      ShellSection.calendar => Icons.calendar_month_outlined,
-    };
   }
 
   Widget _buildTab(int i) {
@@ -698,20 +657,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     final selectedIndex = barIndex >= 0
         ? barIndex
         : (layout.showMore ? layout.barSections.length : 0);
-    final destinations = [
-      for (final section in layout.barSections)
-        _destinationFor(
-          section,
-          chatUnread: chatUnread,
-          chatBadgeLabel: chatBadgeLabel,
-        ),
-      if (layout.showMore)
-        const NavigationDestination(
-          icon: Icon(Icons.more_horiz),
-          selectedIcon: Icon(Icons.more_horiz),
-          label: 'Ещё',
-        ),
-    ];
 
     return Scaffold(
       appBar: showingNestedScreen
@@ -744,12 +689,25 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         index: _index,
         children: List<Widget>.generate(5, _buildTab),
       ),
-      bottomNavigationBar: layout.showBar && destinations.isNotEmpty
-          ? NavigationBar(
-              selectedIndex: selectedIndex.clamp(0, destinations.length - 1),
+      bottomNavigationBar: layout.showBar && layout.barSections.isNotEmpty
+          ? ShellNavBar(
+              layout: layout,
+              selectedIndex: selectedIndex.clamp(0, layout.barSections.length),
+              chatUnread: chatUnread,
+              chatBadgeLabel: chatBadgeLabel,
               onDestinationSelected: (i) =>
                   _onBarDestinationSelected(i, layout),
-              destinations: destinations,
+              onBarReorder: (oldIndex, newIndex) {
+                final next = ShellNavLayout.orderKeysAfterMove(
+                  currentKeys: ref.read(appSettingsProvider).menuOrder,
+                  enabled: layout.barSections,
+                  oldIndex: oldIndex,
+                  newIndex: newIndex,
+                );
+                unawaited(
+                  ref.read(appSettingsProvider.notifier).setMenuOrder(next),
+                );
+              },
             )
           : null,
     );

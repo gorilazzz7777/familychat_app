@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.MediaStore
 import android.util.Log
+import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -48,6 +49,10 @@ class MainActivity : FlutterActivity() {
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "bringToForeground" -> {
+                    val forCall = call.argument<Boolean>("forCall") == true
+                    if (forCall) {
+                        setShowOnLockScreen(true)
+                    }
                     val intent = Intent(this, MainActivity::class.java).apply {
                         addFlags(
                             Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -56,6 +61,12 @@ class MainActivity : FlutterActivity() {
                         )
                     }
                     startActivity(intent)
+                    result.success(null)
+                }
+
+                "setShowOnLockScreen" -> {
+                    val enabled = call.arguments == true
+                    setShowOnLockScreen(enabled)
                     result.success(null)
                 }
 
@@ -250,9 +261,31 @@ class MainActivity : FlutterActivity() {
         manager.createNotificationChannel(calls)
     }
 
+    override fun onPause() {
+        disableCallProximity()
+        super.onPause()
+    }
+
     override fun onDestroy() {
         disableCallProximity()
+        setShowOnLockScreen(false)
         super.onDestroy()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setShowOnLockScreen(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(enabled)
+            setTurnScreenOn(enabled)
+        }
+        val flags = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+        if (enabled) {
+            window.addFlags(flags)
+        } else {
+            window.clearFlags(flags)
+        }
     }
 
     private fun enableCallProximity() {

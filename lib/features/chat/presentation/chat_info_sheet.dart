@@ -18,6 +18,8 @@ import 'chat_call_screen.dart';
 import 'widgets/chat_image_viewer.dart';
 import 'widgets/chat_link_preview_tile.dart';
 import 'widgets/chat_network_image.dart';
+import '../../gallery/presentation/gallery_media_thumbnail.dart';
+import '../../gallery/presentation/widgets/gallery_mosaic_layout.dart';
 
 String chatParticipantCountLabel(int count) {
   final mod10 = count % 10;
@@ -740,13 +742,9 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     }
     return [
       SliverPadding(
-        padding: const EdgeInsets.all(8),
+        padding: const EdgeInsets.all(GalleryMosaicLayout.padding),
         sliver: SliverGrid(
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            crossAxisSpacing: 4,
-            mainAxisSpacing: 4,
-          ),
+          gridDelegate: GalleryMosaicLayout.delegate(),
           delegate: SliverChildBuilderDelegate(
             (context, i) {
               final item = _media[i];
@@ -762,7 +760,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                     );
                   }
                 },
-                child: ChatNetworkImage(
+                child: GalleryMediaThumbnail(
                   threadId: widget.threadId,
                   attachment: item,
                   fit: BoxFit.cover,
@@ -935,8 +933,10 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   }
 
   Future<void> _goToMessage(int messageId) async {
+    final goTo = widget.onGoToMessage;
     Navigator.of(context).pop();
-    await widget.onGoToMessage?.call(messageId);
+    await Future<void>.delayed(const Duration(milliseconds: 220));
+    await goTo?.call(messageId);
   }
 
   Future<void> _showItemActions({

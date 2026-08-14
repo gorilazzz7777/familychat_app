@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'screen_timeout.dart';
+
 @immutable
 class QuietPeriod {
   const QuietPeriod({required this.start, required this.end});
@@ -33,6 +35,7 @@ class FamilyChatAppSettings {
     this.pushMessages = true,
     this.pushCalls = true,
     this.pushCalendar = true,
+    this.pushFeed = true,
     this.quietPeriods = const [],
     this.utcOffsetMinutes,
     this.canQuietHours = false,
@@ -40,12 +43,23 @@ class FamilyChatAppSettings {
     this.menuFamily = true,
     this.menuGallery = true,
     this.menuCalendar = true,
+    this.menuOrder = defaultMenuOrder,
+    this.screenTimeout = ScreenTimeoutOption.system,
   });
+
+  static const defaultMenuOrder = [
+    'chat',
+    'feed',
+    'family',
+    'gallery',
+    'calendar',
+  ];
 
   final bool pushEnabled;
   final bool pushMessages;
   final bool pushCalls;
   final bool pushCalendar;
+  final bool pushFeed;
   final List<QuietPeriod> quietPeriods;
   final int? utcOffsetMinutes;
   final bool canQuietHours;
@@ -53,12 +67,15 @@ class FamilyChatAppSettings {
   final bool menuFamily;
   final bool menuGallery;
   final bool menuCalendar;
+  final List<String> menuOrder;
+  final ScreenTimeoutOption screenTimeout;
 
   FamilyChatAppSettings copyWith({
     bool? pushEnabled,
     bool? pushMessages,
     bool? pushCalls,
     bool? pushCalendar,
+    bool? pushFeed,
     List<QuietPeriod>? quietPeriods,
     int? utcOffsetMinutes,
     bool? canQuietHours,
@@ -66,12 +83,15 @@ class FamilyChatAppSettings {
     bool? menuFamily,
     bool? menuGallery,
     bool? menuCalendar,
+    List<String>? menuOrder,
+    ScreenTimeoutOption? screenTimeout,
   }) {
     return FamilyChatAppSettings(
       pushEnabled: pushEnabled ?? this.pushEnabled,
       pushMessages: pushMessages ?? this.pushMessages,
       pushCalls: pushCalls ?? this.pushCalls,
       pushCalendar: pushCalendar ?? this.pushCalendar,
+      pushFeed: pushFeed ?? this.pushFeed,
       quietPeriods: quietPeriods ?? this.quietPeriods,
       utcOffsetMinutes: utcOffsetMinutes ?? this.utcOffsetMinutes,
       canQuietHours: canQuietHours ?? this.canQuietHours,
@@ -79,6 +99,8 @@ class FamilyChatAppSettings {
       menuFamily: menuFamily ?? this.menuFamily,
       menuGallery: menuGallery ?? this.menuGallery,
       menuCalendar: menuCalendar ?? this.menuCalendar,
+      menuOrder: menuOrder ?? this.menuOrder,
+      screenTimeout: screenTimeout ?? this.screenTimeout,
     );
   }
 
@@ -102,6 +124,7 @@ class FamilyChatAppSettings {
       pushMessages: _bool(json, 'pushMessages', 'push_messages', true),
       pushCalls: _bool(json, 'pushCalls', 'push_calls', true),
       pushCalendar: _bool(json, 'pushCalendar', 'push_calendar', true),
+      pushFeed: _bool(json, 'pushFeed', 'push_feed', true),
       quietPeriods: periods,
       utcOffsetMinutes: _int(json['utcOffsetMinutes'] ?? json['utc_offset_minutes']),
       canQuietHours:
@@ -110,6 +133,10 @@ class FamilyChatAppSettings {
       menuFamily: _bool(json, 'menuFamily', 'menu_family', true),
       menuGallery: _bool(json, 'menuGallery', 'menu_gallery', true),
       menuCalendar: _bool(json, 'menuCalendar', 'menu_calendar', true),
+      menuOrder: _stringList(json['menuOrder'] ?? json['menu_order']),
+      screenTimeout: ScreenTimeoutOptionX.fromStorage(
+        json['screenTimeout'] ?? json['screen_timeout'],
+      ),
     );
   }
 
@@ -119,6 +146,7 @@ class FamilyChatAppSettings {
       'pushMessages': pushMessages,
       'pushCalls': pushCalls,
       'pushCalendar': pushCalendar,
+      'pushFeed': pushFeed,
       if (canQuietHours)
         'quietPeriods': quietPeriods.map((e) => e.toJson()).toList(),
       'utcOffsetMinutes':
@@ -133,6 +161,8 @@ class FamilyChatAppSettings {
   Map<String, dynamic> toCacheJson() => {
         ...toPatchJson(),
         'canQuietHours': canQuietHours,
+        'screenTimeout': screenTimeout.storageKey,
+        'menuOrder': menuOrder,
       };
 
   static bool _bool(
@@ -149,5 +179,16 @@ class FamilyChatAppSettings {
   static int? _int(Object? raw) {
     if (raw is int) return raw;
     return int.tryParse('$raw');
+  }
+
+  static List<String> _stringList(Object? raw) {
+    if (raw is! List) return defaultMenuOrder;
+    final keys = <String>[];
+    for (final item in raw) {
+      final key = item.toString().trim();
+      if (key.isEmpty || keys.contains(key)) continue;
+      keys.add(key);
+    }
+    return keys.isEmpty ? defaultMenuOrder : keys;
   }
 }

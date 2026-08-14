@@ -1,4 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/link_preview_service.dart';
@@ -50,12 +51,16 @@ class _ChatLinkPreviewTileState extends State<ChatLinkPreviewTile> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final host = LinkPreviewService.displayHost(widget.url);
-    final path = LinkPreviewService.displayPath(widget.url);
+    final host = _preview?.host.isNotEmpty == true
+        ? _preview!.host
+        : LinkPreviewService.displayHost(widget.url);
     final title = _preview?.title?.trim();
     final description = _preview?.description?.trim();
-    final imageUrl = _preview?.imageUrl;
-    final showCard = _tried && _preview != null && _preview!.hasCard;
+    final imageUrl = _preview?.imageUrl?.trim();
+    final urlLabel = LinkPreviewService.displayUrl(
+      _preview?.canonicalUrl ?? widget.url,
+    );
+    final letter = host.isNotEmpty ? host[0].toUpperCase() : '#';
 
     return Material(
       color: cs.surfaceContainerHighest.withValues(alpha: 0.55),
@@ -68,33 +73,48 @@ class _ChatLinkPreviewTileState extends State<ChatLinkPreviewTile> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (showCard && imageUrl != null && imageUrl.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(right: 10),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: SizedBox(
-                      width: 72,
-                      height: 72,
-                      child: CachedNetworkImage(
-                        imageUrl: imageUrl,
-                        fit: BoxFit.cover,
-                        errorWidget: (_, __, ___) => ColoredBox(
-                          color: cs.surfaceContainerHigh,
-                          child: Icon(
-                            Icons.link,
+              Padding(
+                padding: const EdgeInsets.only(right: 10),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 72,
+                    height: 72,
+                    child: imageUrl != null && imageUrl.isNotEmpty
+                        ? CachedNetworkImage(
+                            imageUrl: imageUrl,
+                            fit: BoxFit.cover,
+                            httpHeaders: kIsWeb
+                                ? const {}
+                                : const {
+                                    'Accept':
+                                        'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                                  },
+                            placeholder: (_, __) => ColoredBox(
+                              color: cs.surfaceContainerHigh,
+                              child: const Center(
+                                child: SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              ),
+                            ),
+                            errorWidget: (_, __, ___) => _LetterThumb(
+                              letter: letter,
+                              color: cs.primary,
+                              background: cs.primaryContainer,
+                            ),
+                          )
+                        : _LetterThumb(
+                            letter: _tried ? letter : '',
                             color: cs.primary,
+                            background: cs.surfaceContainerHigh,
+                            loading: !_tried,
                           ),
-                        ),
-                      ),
-                    ),
                   ),
-                )
-              else
-                Padding(
-                  padding: const EdgeInsets.only(right: 10, top: 2),
-                  child: Icon(Icons.link, color: cs.primary),
                 ),
+              ),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -104,51 +124,79 @@ class _ChatLinkPreviewTileState extends State<ChatLinkPreviewTile> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodyMedium?.copyWith(
-                        color: cs.primary,
-                        fontWeight: FontWeight.w600,
+                        color: cs.onSurface,
+                        fontWeight: FontWeight.w700,
                         decoration: TextDecoration.none,
                       ),
                     ),
-                    if (title != null && title.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        path.isNotEmpty ? '$host$path' : host,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                          decoration: TextDecoration.none,
-                        ),
-                      ),
-                    ] else if (path.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        path,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                          decoration: TextDecoration.none,
-                        ),
-                      ),
-                    ],
                     if (description != null && description.isNotEmpty) ...[
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 2),
                       Text(
                         description,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: cs.onSurfaceVariant,
+                          decoration: TextDecoration.none,
                         ),
                       ),
                     ],
+                    const SizedBox(height: 4),
+                    Text(
+                      urlLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.primary,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
                   ],
                 ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _LetterThumb extends StatelessWidget {
+  const _LetterThumb({
+    required this.letter,
+    required this.color,
+    required this.background,
+    this.loading = false,
+  });
+
+  final String letter;
+  final Color color;
+  final Color background;
+  final bool loading;
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: background,
+      child: Center(
+        child: loading
+            ? SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: color,
+                ),
+              )
+            : Text(
+                letter,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 22,
+                ),
+              ),
       ),
     );
   }

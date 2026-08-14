@@ -24,6 +24,22 @@ class ChatMentionText extends StatelessWidget {
     caseSensitive: false,
   );
 
+  static const _trailingPunctuation = r''')]}>,.;:!?»"'«''';
+
+  static String? firstUrl(String body) {
+    final match = _urlPattern.firstMatch(body);
+    if (match == null) return null;
+    return stripTrailingPunctuation(match.group(0)!);
+  }
+
+  static String stripTrailingPunctuation(String raw) {
+    var value = raw.trim();
+    while (value.isNotEmpty && _trailingPunctuation.contains(value[value.length - 1])) {
+      value = value.substring(0, value.length - 1);
+    }
+    return value;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (body.isEmpty) return const SizedBox.shrink();
@@ -59,7 +75,11 @@ class ChatMentionText extends StatelessWidget {
 
       final urlMatch = _urlPattern.matchAsPrefix(body, index);
       if (urlMatch != null) {
-        final urlText = urlMatch.group(0)!;
+        final urlText = stripTrailingPunctuation(urlMatch.group(0)!);
+        if (urlText.isEmpty) {
+          index += 1;
+          continue;
+        }
         spans.add(
           TextSpan(
             text: urlText,

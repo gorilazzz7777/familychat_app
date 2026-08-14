@@ -15,6 +15,7 @@ import 'core/push/push_navigation.dart';
 import 'core/push/push_registration_service.dart';
 import 'core/share/incoming_share_bus.dart';
 import 'core/media/media_local_index.dart';
+import 'core/settings/screen_timeout_guard.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_seed_controller.dart';
 
@@ -60,6 +61,11 @@ class FamilyChatApp extends ConsumerWidget {
         GlobalCupertinoLocalizations.delegate,
       ],
       theme: AppTheme.lightTheme(seedColor),
+      builder: (context, child) {
+        return ScreenTimeoutGuard(
+          child: child ?? const SizedBox.shrink(),
+        );
+      },
       home: const BootstrapScreen(),
     );
   }

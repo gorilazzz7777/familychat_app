@@ -4,9 +4,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/settings/app_screen_keep_on.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../../../core/widgets/gallery_video_player.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
@@ -49,7 +49,7 @@ class PhotoSlideshowScreen extends StatefulWidget {
 }
 
 class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _speeds = <Duration>[
     Duration(seconds: 2),
     Duration(seconds: 5),
@@ -73,6 +73,7 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _index = widget.initialIndex.clamp(0, widget.photos.length - 1);
     _speedIndex = 1; // 5 секунд по умолчанию
     _transitionCtrl = AnimationController(
@@ -87,17 +88,27 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
         }
       });
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    unawaited(WakelockPlus.enable());
+    unawaited(AppScreenKeepOn.acquire('slideshow'));
     _restartTimer();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     _transitionCtrl.dispose();
-    unawaited(WakelockPlus.disable());
+    unawaited(AppScreenKeepOn.release('slideshow'));
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (!_paused) unawaited(AppScreenKeepOn.acquire('slideshow'));
+    } else {
+      unawaited(AppScreenKeepOn.release('slideshow'));
+    }
   }
 
   Duration get _interval => _speeds[_speedIndex];

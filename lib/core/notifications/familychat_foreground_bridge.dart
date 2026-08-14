@@ -24,10 +24,13 @@ class FamilyChatForegroundBridge {
     return WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
   }
 
-  static Future<void> bringToForegroundIfNeeded() async {
+  static Future<void> bringToForegroundIfNeeded({bool forCall = false}) async {
     if (!_shouldUseAndroidBridge || !isAppInBackground()) return;
     try {
-      await _channel.invokeMethod<void>('bringToForeground');
+      await _channel.invokeMethod<void>(
+        'bringToForeground',
+        <String, dynamic>{'forCall': forCall},
+      );
     } catch (e) {
       debugPrint('bringToForeground failed: $e');
     }

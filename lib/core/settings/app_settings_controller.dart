@@ -1,10 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/app_providers.dart';
 import 'app_settings.dart';
 import 'app_settings_storage.dart';
+import 'screen_timeout.dart';
 
 final appSettingsProvider =
     StateNotifierProvider<AppSettingsController, FamilyChatAppSettings>((ref) {
@@ -18,6 +20,16 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
 
   final Ref _ref;
   bool _syncing = false;
+
+  FamilyChatAppSettings _withLocal(
+    FamilyChatAppSettings remote,
+    FamilyChatAppSettings local,
+  ) {
+    return remote.copyWith(
+      screenTimeout: local.screenTimeout,
+      menuOrder: local.menuOrder,
+    );
+  }
 
   Future<void> _load() async {
     final local = await AppSettingsStorage.load();
@@ -33,8 +45,8 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
       final remote =
           await _ref.read(familychatRepositoryProvider).fetchAppSettings();
       if (!mounted) return;
-      state = remote;
-      await AppSettingsStorage.save(remote);
+      state = _withLocal(remote, state);
+      await AppSettingsStorage.save(state);
     } catch (_) {
     } finally {
       _syncing = false;
@@ -49,8 +61,8 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
       final saved =
           await _ref.read(familychatRepositoryProvider).updateAppSettings(next);
       if (!mounted) return;
-      state = saved;
-      await AppSettingsStorage.save(saved);
+      state = _withLocal(saved, next);
+      await AppSettingsStorage.save(state);
     } catch (e) {
       if (mounted) state = previous;
       await AppSettingsStorage.save(previous);
@@ -58,8 +70,24 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
     }
   }
 
+  Future<void> setScreenTimeout(ScreenTimeoutOption value) async {
+    state = state.copyWith(screenTimeout: value);
+    await AppSettingsStorage.save(state);
+  }
+
+  Future<void> setMenuOrder(List<String> value) async {
+    if (listEquals(state.menuOrder, value)) return;
+    state = state.copyWith(menuOrder: List<String>.from(value));
+    await AppSettingsStorage.save(state);
+  }
+
   Future<void> resetToDefaults() async {
-    state = const FamilyChatAppSettings();
+    final timeout = state.screenTimeout;
+    final order = state.menuOrder;
+    state = FamilyChatAppSettings(
+      screenTimeout: timeout,
+      menuOrder: order,
+    );
     await AppSettingsStorage.save(state);
   }
 }

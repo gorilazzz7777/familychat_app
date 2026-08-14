@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/call/call_lock_screen.dart';
 import '../../../core/notifications/call_ringtone_controller.dart';
 import '../../../core/notifications/familychat_notifications.dart';
 import '../../../core/providers/app_providers.dart';
@@ -38,6 +39,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
   void initState() {
     super.initState();
     FamilyChatRealtime.instance.addListener(_onRealtime);
+    unawaited(CallLockScreen.acquire());
     unawaited(_loadProfile());
     unawaited(CallRingtoneController.instance.startIncomingCall());
   }
@@ -48,6 +50,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
     unawaited(CallRingtoneController.instance.stop());
     unawaited(FamilyChatNotifications.cancelCallNotification(widget.callId));
     IncomingCallCoordinator.instance.markHandled(widget.callId);
+    unawaited(CallLockScreen.release());
     super.dispose();
   }
 
@@ -135,16 +138,13 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
     await FamilyChatNotifications.cancelCallNotification(widget.callId);
     IncomingCallCoordinator.instance.markHandled(widget.callId);
     final nav = Navigator.of(context);
-    nav.pop();
-    unawaited(
-      nav.push<void>(
-        MaterialPageRoute<void>(
-          builder: (_) => ChatCallScreen(
-            threadId: widget.threadId,
-            title: _displayName,
-            callId: widget.callId,
-            isCaller: false,
-          ),
+    await nav.pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatCallScreen(
+          threadId: widget.threadId,
+          title: _displayName,
+          callId: widget.callId,
+          isCaller: false,
         ),
       ),
     );

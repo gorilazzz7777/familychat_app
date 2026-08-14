@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/widgets/family_input_styles.dart';
 import 'chat_compose_action_button.dart';
 import 'chat_compose_circle_button.dart';
+import 'chat_emoji_picker_sheet.dart';
 import 'chat_voice_recording_compose_slot.dart';
 import '../../data/chat_send_options.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
@@ -259,6 +260,11 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                           ),
                         ),
                 ),
+                if (!_recording.isRecording)
+                  ChatComposeEmojiButton(
+                    controller: widget.controller,
+                    focusNode: widget.focusNode,
+                  ),
                 ChatComposeActionButton(
                   controller: widget.controller,
                   onSend: (options) => _handleSend(options),

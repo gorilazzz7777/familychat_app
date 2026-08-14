@@ -18,7 +18,6 @@ import '../../../core/local_db/chat_local_store.dart';
 import '../data/chat_sync_service.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/notifications/familychat_notifications.dart';
-import '../../../core/widgets/gallery_video_player.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/presence/user_presence.dart';
@@ -159,9 +158,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _hasMoreOlder = false;
   bool _showScrollToBottom = false;
   bool _followLiveTail = true;
+  Timer? _scrollToBottomHintTimer;
+  double _lastScrollPixels = 0;
   String? _loadError;
   int? _currentUserId;
   int? _highlightMessageId;
+  int? _seekingMessageId;
   int? _lastMarkedReadId;
   _PendingFileDraft? _pendingFileDraft;
   int _tempIdCounter = -1;
@@ -555,8 +557,46 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
+  bool _hasMessage(int messageId) {
+    return _messages.any((m) => chatAsInt(m['id']) == messageId);
+  }
+
+  Future<void> _applyHistoryWindow(
+    List<Map<String, dynamic>> messages, {
+    required bool replaceIfDisjoint,
+    bool? hasMore,
+  }) async {
+    if (!mounted || messages.isEmpty) return;
+    _followLiveTail = false;
+    if (_localFirst) {
+      await ChatLocalStore.instance.upsertMessages(
+        widget.threadId,
+        messages,
+      );
+      if (!mounted) return;
+    }
+    final overlaps = _messageWindowsOverlap(_messages, messages);
+    setState(() {
+      if (!replaceIfDisjoint || overlaps || _messages.isEmpty) {
+        _messages = sortChatMessages(
+          chatMergeMessageLists(
+            _messages,
+            messages,
+            currentUserId: _currentUserId,
+          ),
+        );
+      } else {
+        _messages = sortChatMessages(messages);
+        if (hasMore != null) _hasMoreOlder = hasMore;
+        _loadingOlder = false;
+      }
+      _showScrollToBottom = true;
+    });
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
   Future<void> _ensureMessageLoaded(int messageId) async {
-    if (_messages.any((m) => chatAsInt(m['id']) == messageId)) return;
+    if (_hasMessage(messageId)) return;
 
     final repo = ref.read(familychatRepositoryProvider);
     try {
@@ -568,40 +608,38 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final found =
           around.messages.any((m) => chatAsInt(m['id']) == messageId);
       if (found) {
-        final overlaps = _messageWindowsOverlap(_messages, around.messages);
-        if (overlaps || _messages.isEmpty) {
-          if (_localFirst) {
-            await ChatLocalStore.instance.upsertMessages(
-              widget.threadId,
-              around.messages,
-            );
-          } else if (mounted) {
-            setState(() {
-              _messages = chatMergeMessageLists(
-                _messages,
-                around.messages,
-                currentUserId: _currentUserId,
-              );
-            });
-          }
-        } else if (mounted) {
-          _followLiveTail = false;
-          setState(() {
-            _messages = sortChatMessages(around.messages);
-            _hasMoreOlder = around.hasMore;
-            _showScrollToBottom = true;
-            _loadingOlder = false;
-          });
-        }
-        if (_messages.any((m) => chatAsInt(m['id']) == messageId)) return;
+        await _applyHistoryWindow(
+          around.messages,
+          replaceIfDisjoint: true,
+          hasMore: around.hasMore,
+        );
+        if (_hasMessage(messageId)) return;
       }
     } catch (_) {}
 
     var guard = 0;
-    while (_hasMoreOlder && guard < 80) {
+    var cursor = _oldestServerMessageId(_messages);
+    while (cursor != null && cursor > messageId && guard < 40) {
       guard += 1;
-      await _loadOlder();
-      if (_messages.any((m) => chatAsInt(m['id']) == messageId)) return;
+      try {
+        final page = await repo.threadMessages(
+          widget.threadId,
+          limit: 50,
+          beforeId: cursor,
+        );
+        if (page.messages.isEmpty) break;
+        await _applyHistoryWindow(
+          page.messages,
+          replaceIfDisjoint: false,
+          hasMore: page.hasMore,
+        );
+        if (_hasMessage(messageId)) return;
+        final nextCursor = _oldestServerMessageId(page.messages);
+        if (nextCursor == null || nextCursor >= cursor) break;
+        cursor = nextCursor;
+      } catch (_) {
+        break;
+      }
     }
   }
 
@@ -659,12 +697,45 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     } catch (_) {}
   }
 
+  static const _scrollToBottomAwayPx = 280.0;
+  static const _scrollToBottomHintDelay = Duration(milliseconds: 420);
+
+  void _hideScrollToBottomButton() {
+    _scrollToBottomHintTimer?.cancel();
+    _scrollToBottomHintTimer = null;
+    if (_showScrollToBottom) {
+      setState(() => _showScrollToBottom = false);
+    }
+  }
+
   void _updateScrollToBottomVisibility() {
     if (!_scrollController.hasClients) return;
-    final show = _scrollController.position.pixels > 320;
-    if (show != _showScrollToBottom) {
-      setState(() => _showScrollToBottom = show);
+    final pixels = _scrollController.position.pixels;
+    final delta = pixels - _lastScrollPixels;
+    _lastScrollPixels = pixels;
+
+    // reverse: 0 — живой хвост. Кнопка нужна, только если ушли вверх
+    // и крутим обратно вниз, с задержкой — «докрутить» до конца.
+    if (pixels <= _scrollToBottomAwayPx) {
+      _hideScrollToBottomButton();
+      return;
     }
+
+    final scrollingDown = delta < -1.5;
+    final scrollingUp = delta > 1.5;
+    if (scrollingUp) {
+      _hideScrollToBottomButton();
+      return;
+    }
+    if (!scrollingDown || _showScrollToBottom) return;
+
+    _scrollToBottomHintTimer ??= Timer(_scrollToBottomHintDelay, () {
+      _scrollToBottomHintTimer = null;
+      if (!mounted || !_scrollController.hasClients) return;
+      if (_scrollController.position.pixels > _scrollToBottomAwayPx) {
+        setState(() => _showScrollToBottom = true);
+      }
+    });
   }
 
   Future<void> _scrollToLiveTail() async {
@@ -681,11 +752,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _messages = sortChatMessages(hydrated);
         _showScrollToBottom = false;
       });
+      _scrollToBottomHintTimer?.cancel();
+      _scrollToBottomHintTimer = null;
       unawaited(ChatSyncService.instance.syncThread(widget.threadId));
     } else {
       await _load(silent: true);
       if (!mounted) return;
       setState(() => _showScrollToBottom = false);
+      _scrollToBottomHintTimer?.cancel();
+      _scrollToBottomHintTimer = null;
     }
     _scrollToBottom(jump: true, settle: true);
   }
@@ -755,6 +830,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
     ChatScheduledSendService.instance.removeListener(_onScheduledSend);
     _transcriptPollTimer?.cancel();
+    _scrollToBottomHintTimer?.cancel();
     unawaited(_speakPlayer?.dispose() ?? Future<void>.value());
     _controller.dispose();
     _scrollController.dispose();
@@ -925,65 +1001,87 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _scrollToMessage(int messageId) async {
-    await _ensureMessageLoaded(messageId);
     if (!mounted) return;
-    final msgIndex =
-        _messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
-    if (msgIndex < 0) {
+    setState(() => _seekingMessageId = messageId);
+    try {
+      await _ensureMessageLoaded(messageId);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Сообщение не найдено в загруженной истории'),
-        ),
-      );
-      return;
-    }
+      final msgIndex =
+          _messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
+      if (msgIndex < 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Сообщение не найдено в истории чата'),
+          ),
+        );
+        return;
+      }
 
-    setState(() => _highlightMessageId = messageId);
-
-    // reverse ListView: index 0 = самые новые. Сначала прыгаем примерно
-    // к позиции, чтобы элемент успел построиться, затем ensureVisible.
-    if (_scrollController.hasClients) {
-      final listIndex = _messages.length - 1 - msgIndex;
-      final max = _scrollController.position.maxScrollExtent;
-      // Средняя высота строки чата — грубая оценка для первичного jump.
-      const avgItemExtent = 88.0;
-      final estimated = (listIndex * avgItemExtent).clamp(0.0, max);
-      _scrollController.jumpTo(estimated);
-    }
-
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-    if (!mounted) return;
-
-    for (var attempt = 0; attempt < 8; attempt++) {
+      setState(() => _highlightMessageId = messageId);
+      await WidgetsBinding.instance.endOfFrame;
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted) return;
-      final key = _messageKeys.putIfAbsent(messageId, GlobalKey.new);
-      final ctx = key.currentContext;
-      if (ctx != null && ctx.mounted) {
-        await Scrollable.ensureVisible(
-          ctx,
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeInOut,
-          alignment: 0.35,
-        );
-        break;
-      }
-      // Ещё не в дереве — подтянуть соседнюю область.
-      if (_scrollController.hasClients) {
-        final pos = _scrollController.position;
-        final step = 240.0 * (attempt.isEven ? 1 : -1);
-        final next = (pos.pixels + step).clamp(0.0, pos.maxScrollExtent);
-        _scrollController.jumpTo(next);
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 40));
-    }
 
-    Future<void>.delayed(const Duration(seconds: 2), () {
-      if (mounted && _highlightMessageId == messageId) {
-        setState(() => _highlightMessageId = null);
+      // reverse ListView: index 0 = самые новые.
+      if (_scrollController.hasClients) {
+        final listIndex = _messages.length - 1 - msgIndex;
+        final max = _scrollController.position.maxScrollExtent;
+        const avgItemExtent = 88.0;
+        final estimated = (listIndex * avgItemExtent).clamp(0.0, max);
+        _scrollController.jumpTo(estimated);
       }
-    });
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      if (!mounted) return;
+
+      var found = false;
+      for (var attempt = 0; attempt < 12; attempt++) {
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return;
+        final key = _messageKeys.putIfAbsent(messageId, GlobalKey.new);
+        final ctx = key.currentContext;
+        if (ctx != null && ctx.mounted) {
+          await Scrollable.ensureVisible(
+            ctx,
+            duration: attempt == 0
+                ? Duration.zero
+                : const Duration(milliseconds: 280),
+            curve: Curves.easeInOut,
+            alignment: 0.35,
+          );
+          found = true;
+          break;
+        }
+        if (_scrollController.hasClients) {
+          final pos = _scrollController.position;
+          final listIndex = _messages.length - 1 - msgIndex;
+          const avgItemExtent = 88.0;
+          final base = (listIndex * avgItemExtent).clamp(0.0, pos.maxScrollExtent);
+          final drift = 160.0 * ((attempt ~/ 2) + 1) * (attempt.isEven ? 1 : -1);
+          final next = (base + drift).clamp(0.0, pos.maxScrollExtent);
+          _scrollController.jumpTo(next);
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+
+      if (!found && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Не удалось прокрутить к сообщению'),
+          ),
+        );
+      }
+
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted && _highlightMessageId == messageId) {
+          setState(() => _highlightMessageId = null);
+        }
+      });
+    } finally {
+      if (mounted && _seekingMessageId == messageId) {
+        setState(() => _seekingMessageId = null);
+      }
+    }
   }
 
   Future<void> _cyclePinnedOrScroll() async {
@@ -3086,13 +3184,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _forwardMessageIds(List<int> ids) async {
     if (ids.isEmpty) return;
-    final targets = await Navigator.of(context).push<List<int>>(
-      MaterialPageRoute<List<int>>(
-        builder: (_) => ChatForwardScreen(
-          sourceThreadId: widget.threadId,
-          messageIds: ids,
-        ),
-      ),
+    final targets = await ChatForwardScreen.open(
+      context,
+      sourceThreadId: widget.threadId,
+      messageIds: ids,
     );
     if (targets != null && targets.isNotEmpty && mounted) {
       _exitSelection();
@@ -3232,6 +3327,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       attachmentId: chatAsInt(attachment?['id']),
       filename: filename,
       messageId: messageId,
+      attachment: attachment,
       onGoToMessage:
           messageId != null ? () => _scrollToMessage(messageId) : null,
       httpHeaders: headers,
@@ -3240,40 +3336,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   void _openImageFromAttachment(Map<String, dynamic> attachment,
       {int? messageId}) {
-    if (isVideoAttachment(attachment)) {
-      final repo = ref.read(familychatRepositoryProvider);
-      final url = chatAttachmentImageUrl(
-        repo: repo,
-        threadId: widget.threadId,
-        attachment: attachment,
-      );
-      if (url.isEmpty) return;
-      showDialog<void>(
-        context: context,
-        builder: (ctx) => Dialog(
-          backgroundColor: Colors.black,
-          insetPadding: const EdgeInsets.all(12),
-          child: AspectRatio(
-            aspectRatio: 9 / 16,
-            child: Stack(
-              children: [
-                GalleryVideoPlayer(url: url, autoplay: true),
-                Align(
-                  alignment: Alignment.topRight,
-                  child: IconButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-      return;
-    }
     final repo = ref.read(familychatRepositoryProvider);
-    _openImage(
+    unawaited(_openImageAsync(
       imageUrl: chatAttachmentImageUrl(
         repo: repo,
         threadId: widget.threadId,
@@ -3282,7 +3346,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       filename: attachment['filename']?.toString(),
       messageId: messageId ?? chatAsInt(attachment['message_id']),
       attachment: attachment,
-    );
+    ));
   }
 
   Future<void> _openSearch() async {
@@ -3543,7 +3607,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               controller: _scrollController,
                               reverse: true,
                               // Меньше оффскрин-префетча медиа — видимые грузятся первыми.
-                              cacheExtent: 180,
+                              cacheExtent: _seekingMessageId != null ? 2400 : 180,
                               physics: const AlwaysScrollableScrollPhysics(),
                               keyboardDismissBehavior:
                                   ScrollViewKeyboardDismissBehavior.onDrag,
@@ -3723,6 +3787,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               Positioned(
                                 left: 0,
                                 right: 0,
+                                top: 0,
+                                child: IgnorePointer(
+                                  child: AnimatedOpacity(
+                                    opacity: _seekingMessageId != null ? 1 : 0,
+                                    duration: const Duration(milliseconds: 150),
+                                    child: const LinearProgressIndicator(
+                                      minHeight: 2,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                right: 12,
                                 bottom: 12,
                                 child: IgnorePointer(
                                   ignoring: !_showScrollToBottom,
@@ -3733,15 +3810,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     child: AnimatedSlide(
                                       offset: _showScrollToBottom
                                           ? Offset.zero
-                                          : const Offset(0, 0.4),
+                                          : const Offset(0.2, 0.15),
                                       duration:
                                           const Duration(milliseconds: 180),
                                       curve: Curves.easeOut,
-                                      child: Center(
-                                        child: _ChatScrollToBottomButton(
-                                          onPressed: () => unawaited(
-                                            _scrollToLiveTail(),
-                                          ),
+                                      child: _ChatScrollToBottomButton(
+                                        onPressed: () => unawaited(
+                                          _scrollToLiveTail(),
                                         ),
                                       ),
                                     ),

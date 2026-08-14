@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../../core/call/call_lock_screen.dart';
 import '../../../core/call/call_proximity_controller.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
@@ -32,7 +33,8 @@ class ChatCallScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatCallScreen> createState() => _ChatCallScreenState();
 }
 
-class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
+class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
+    with WidgetsBindingObserver {
   RTCPeerConnection? _peer;
   MediaStream? _localStream;
   RTCSessionDescription? _localOffer;
@@ -96,6 +98,8 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(CallLockScreen.acquire());
     if (!widget.isCaller && widget.callId != null) {
       _callId = widget.callId;
     }
@@ -105,9 +109,20 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     FamilyChatRealtime.instance.removeListener(_onRealtime);
+    unawaited(CallLockScreen.release());
     unawaited(_cleanup());
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_syncProximity());
+    } else {
+      unawaited(CallProximityController.disable());
+    }
   }
 
   Future<void> _initCall() async {

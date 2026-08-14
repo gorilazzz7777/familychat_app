@@ -76,4 +76,8 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     implementation(platform("ru.rustore.sdk:bom:2025.02.01"))
     implementation("ru.rustore.sdk:review")
+    // Needed so the app can subclass FCM: firebase_messaging uses `implementation`,
+    // so FirebaseMessagingService is not leaked onto the app compile classpath.
+    implementation(platform("com.google.firebase:firebase-bom:33.16.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }

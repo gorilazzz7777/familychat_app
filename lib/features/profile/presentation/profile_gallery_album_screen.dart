@@ -25,7 +25,8 @@ import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart
 import '../data/album_upload_coordinator.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
-import '../../chat/presentation/widgets/chat_network_image.dart';
+import '../../gallery/presentation/gallery_media_thumbnail.dart';
+import '../../gallery/presentation/widgets/gallery_mosaic_layout.dart';
 import 'widgets/chat_avatar.dart';
 
 class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
@@ -1768,83 +1769,47 @@ class _ProfileGalleryAlbumScreenState
                                         }
                                         return false;
                                       },
-                                      child: GridView.builder(
-                                        padding: const EdgeInsets.all(8),
-                                        gridDelegate:
-                                            const SliverGridDelegateWithFixedCrossAxisCount(
-                                          crossAxisCount: 3,
-                                          crossAxisSpacing: 4,
-                                          mainAxisSpacing: 4,
-                                        ),
-                                        itemCount: _photos.length +
-                                            (_loadingMore ? 1 : 0),
-                                        itemBuilder: (_, i) {
-                                          if (i >= _photos.length) {
-                                            return const Center(
-                                              child: Padding(
-                                                padding: EdgeInsets.all(12),
-                                                child:
-                                                    CircularProgressIndicator(
-                                                        strokeWidth: 2),
-                                              ),
-                                            );
-                                          }
-                                          final photo = _photos[i];
-                                          final threadId = photo['thread_id'];
-                                          if (threadId is! int) {
-                                            return const ColoredBox(
-                                                color: Color(0x22000000));
-                                          }
-                                          final id = photo['id'] is int
-                                              ? photo['id'] as int
-                                              : int.tryParse('${photo['id']}');
-                                          final selected = id != null &&
-                                              _selectedPhotoIds.contains(id);
-                                          return GestureDetector(
-                                            behavior: HitTestBehavior.opaque,
-                                            onTap: _selectionMode
-                                                ? () =>
-                                                    _togglePhotoSelection(photo)
-                                                : () =>
-                                                    _openPhotoViewer(photo, i),
-                                            onLongPress: _selectionMode
-                                                ? () =>
-                                                    _togglePhotoSelection(photo)
-                                                : () =>
-                                                    _enterSelectionWithPhoto(
-                                                        photo),
-                                            child: Stack(
-                                              fit: StackFit.expand,
-                                              children: [
-                                                ChatNetworkImage(
-                                                  threadId: threadId,
-                                                  attachment: photo,
-                                                  fit: BoxFit.cover,
+                                      child: CustomScrollView(
+                                        slivers: [
+                                          SliverPadding(
+                                            padding: const EdgeInsets.all(
+                                              GalleryMosaicLayout.padding,
+                                            ),
+                                            sliver: SliverGrid(
+                                              gridDelegate:
+                                                  GalleryMosaicLayout
+                                                      .delegate(),
+                                              delegate:
+                                                  SliverChildBuilderDelegate(
+                                                (context, i) =>
+                                                    _buildPhotoTile(
+                                                  _photos[i],
+                                                  i,
                                                 ),
-                                                if (_selectionMode)
-                                                  Align(
-                                                    alignment:
-                                                        Alignment.topRight,
-                                                    child: Padding(
-                                                      padding:
-                                                          const EdgeInsets.all(
-                                                              6),
-                                                      child: Icon(
-                                                        selected
-                                                            ? Icons.check_circle
-                                                            : Icons
-                                                                .radio_button_unchecked,
-                                                        color: selected
-                                                            ? Colors
-                                                                .lightGreenAccent
-                                                            : Colors.white70,
-                                                      ),
+                                                childCount: _photos.length,
+                                              ),
+                                            ),
+                                          ),
+                                          if (_loadingMore)
+                                            const SliverToBoxAdapter(
+                                              child: Padding(
+                                                padding: EdgeInsets.all(16),
+                                                child: Center(
+                                                  child: SizedBox(
+                                                    width: 24,
+                                                    height: 24,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                      strokeWidth: 2,
                                                     ),
                                                   ),
-                                              ],
+                                                ),
+                                              ),
                                             ),
-                                          );
-                                        },
+                                          const SliverToBoxAdapter(
+                                            child: SizedBox(height: 8),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ),
@@ -1856,6 +1821,51 @@ class _ProfileGalleryAlbumScreenState
         ),
         _buildPreparingOverlay(),
       ],
+    );
+  }
+
+  Widget _buildPhotoTile(Map<String, dynamic> photo, int index) {
+    final threadId = photo['thread_id'];
+    if (threadId is! int) {
+      return const ColoredBox(color: Color(0x22000000));
+    }
+    final id = photo['id'] is int
+        ? photo['id'] as int
+        : int.tryParse('${photo['id']}');
+    final selected = id != null && _selectedPhotoIds.contains(id);
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _selectionMode
+          ? () => _togglePhotoSelection(photo)
+          : () => _openPhotoViewer(photo, index),
+      onLongPress: _selectionMode
+          ? () => _togglePhotoSelection(photo)
+          : () => _enterSelectionWithPhoto(photo),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          GalleryMediaThumbnail(
+            attachment: photo,
+            threadId: threadId,
+            fit: BoxFit.cover,
+          ),
+          if (_selectionMode)
+            Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(
+                  selected
+                      ? Icons.check_circle
+                      : Icons.radio_button_unchecked,
+                  color: selected
+                      ? Colors.lightGreenAccent
+                      : Colors.white70,
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

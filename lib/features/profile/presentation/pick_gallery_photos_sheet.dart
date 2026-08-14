@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
-import '../../chat/presentation/widgets/chat_network_image.dart';
+import '../../gallery/presentation/gallery_media_thumbnail.dart';
 
 /// Выбор фото из галереи для добавления в пользовательский альбом.
 class PickGalleryPhotosSheet extends ConsumerStatefulWidget {
@@ -212,9 +212,9 @@ class _PickGalleryPhotosSheetState extends ConsumerState<PickGalleryPhotosSheet>
                                 child: Stack(
                                   fit: StackFit.expand,
                                   children: [
-                                    ChatNetworkImage(
-                                      threadId: threadId,
+                                    GalleryMediaThumbnail(
                                       attachment: photo,
+                                      threadId: threadId,
                                       fit: BoxFit.cover,
                                     ),
                                     if (selected)

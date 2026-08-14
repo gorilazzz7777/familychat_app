@@ -5,10 +5,13 @@ import 'package:image_picker/image_picker.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/settings/app_settings_controller.dart';
+import '../../../core/settings/screen_timeout.dart';
 import '../../../core/theme/theme_seed_controller.dart';
 import 'theme_appearance_screen.dart';
 import 'notification_settings_screen.dart';
 import 'menu_sections_screen.dart';
+import 'screen_timeout_settings_screen.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
@@ -16,7 +19,6 @@ import 'profile_gallery_tab.dart';
 import '../../chat/presentation/widgets/chat_image_viewer.dart';
 import '../../members/presentation/members_screen.dart';
 import 'widgets/chat_avatar.dart';
-import 'widgets/premium_badges.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({
@@ -340,6 +342,146 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     );
   }
 
+  Widget _buildProfileIdentitySection(ThemeData theme) {
+    const avatarRadius = 46.0;
+    final cs = theme.colorScheme;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: cs.outlineVariant.withValues(alpha: 0.55),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            GestureDetector(
+              onTap: _avatarBusy ? null : _showAvatarOptions,
+              child: SizedBox(
+                width: avatarRadius * 2,
+                height: avatarRadius * 2,
+                child: Stack(
+                  children: [
+                    ChatAvatar(
+                      name: _displayName,
+                      avatarUrl: _avatarUrl,
+                      radius: avatarRadius,
+                    ),
+                    if (_avatarBusy)
+                      const Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.black38,
+                          ),
+                          child: Center(
+                            child: SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: _lastName,
+                    decoration: const InputDecoration(
+                      labelText: 'Фамилия',
+                    ),
+                    textCapitalization: TextCapitalization.words,
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _firstName,
+                    decoration: const InputDecoration(
+                      labelText: 'Имя',
+                    ),
+                    textCapitalization: TextCapitalization.words,
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      _genderIcon(
+                        theme,
+                        value: 'male',
+                        icon: Icons.male,
+                        tooltip: 'Мужской',
+                      ),
+                      const SizedBox(width: 8),
+                      _genderIcon(
+                        theme,
+                        value: 'female',
+                        icon: Icons.female,
+                        tooltip: 'Женский',
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _genderIcon(
+    ThemeData theme, {
+    required String value,
+    required IconData icon,
+    required String tooltip,
+  }) {
+    final cs = theme.colorScheme;
+    final selected = _gender == value;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: selected ? cs.primary : cs.surface,
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => setState(() => _gender = value),
+          child: Ink(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: selected
+                    ? cs.primary
+                    : cs.outline.withValues(alpha: 0.5),
+              ),
+            ),
+            child: SizedBox(
+              width: 40,
+              height: 40,
+              child: Icon(
+                icon,
+                color: selected ? cs.onPrimary : cs.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildMainTab(BuildContext context) {
     final theme = Theme.of(context);
     final birthLabel = _birthDate == null
@@ -350,81 +492,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     return ListView(
       padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
       children: [
-        Center(
-          child: GestureDetector(
-            onTap: _avatarBusy ? null : _showAvatarOptions,
-            child: SizedBox(
-              width: 112,
-              height: 112,
-              child: Stack(
-                children: [
-                  ChatAvatar(
-                    name: _displayName,
-                    avatarUrl: _avatarUrl,
-                    radius: 56,
-                  ),
-                  if (_avatarBusy)
-                    const Positioned.fill(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: Colors.black38,
-                        ),
-                        child: Center(
-                          child: SizedBox(
-                            width: 28,
-                            height: 28,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        if (PremiumBadges.labelsFrom(
-          (widget.status['entitlements'] as Map<String, dynamic>?),
-        ).isNotEmpty) ...[
-          const SizedBox(height: 12),
-          PremiumBadges(
-            entitlements:
-                widget.status['entitlements'] as Map<String, dynamic>?,
-          ),
-        ],
-        const SizedBox(height: 24),
-        TextField(
-          controller: _firstName,
-          decoration: const InputDecoration(
-            labelText: 'Имя',
-          ),
-          textCapitalization: TextCapitalization.words,
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _lastName,
-          decoration: const InputDecoration(
-            labelText: 'Фамилия',
-          ),
-          textCapitalization: TextCapitalization.words,
-        ),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          initialValue: _gender,
-          decoration: const InputDecoration(
-            labelText: 'Пол',
-          ),
-          items: const [
-            DropdownMenuItem(value: 'male', child: Text('Мужской')),
-            DropdownMenuItem(value: 'female', child: Text('Женский')),
-          ],
-          onChanged: (v) => setState(() => _gender = v ?? 'male'),
-        ),
-        const SizedBox(height: 12),
+        _buildProfileIdentitySection(theme),
+        const SizedBox(height: 8),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.cake_outlined),
@@ -434,38 +503,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           onTap: _pickBirthDate,
         ),
         const SizedBox(height: 24),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.palette_outlined, color: theme.colorScheme.primary),
-          title: const Text('Оформление'),
-          subtitle: const Text('Цвет темы приложения'),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 22,
-                height: 22,
-                decoration: BoxDecoration(
-                  color: ref.watch(themeSeedProvider),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: theme.colorScheme.outlineVariant),
-                ),
-              ),
-              const SizedBox(width: 4),
-              const Icon(Icons.chevron_right),
-            ],
-          ),
-          onTap: () {
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => ThemeAppearanceScreen(
-                  onApplied: widget.onStatusChanged,
-                ),
-              ),
-            );
-          },
-        ),
-        const SizedBox(height: 8),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(Icons.people_outline, color: theme.colorScheme.primary),
@@ -519,6 +556,54 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
       children: [
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(Icons.palette_outlined, color: theme.colorScheme.primary),
+          title: const Text('Оформление'),
+          subtitle: const Text('Цвет темы приложения'),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                  color: ref.watch(themeSeedProvider),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: theme.colorScheme.outlineVariant),
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ThemeAppearanceScreen(
+                  onApplied: widget.onStatusChanged,
+                ),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            Icons.brightness_auto_outlined,
+            color: theme.colorScheme.primary,
+          ),
+          title: const Text('Автоугасание экрана'),
+          subtitle: Text(ref.watch(appSettingsProvider).screenTimeout.label),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const ScreenTimeoutSettingsScreen(),
+              ),
+            );
+          },
+        ),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(Icons.notifications_outlined, color: theme.colorScheme.primary),

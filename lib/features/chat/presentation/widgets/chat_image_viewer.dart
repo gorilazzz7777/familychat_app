@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
@@ -8,15 +7,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/widgets/family_app_bar.dart';
+import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/media/gallery_media_export.dart';
+import '../../../../core/media/gallery_media_utils.dart';
 import '../../../../core/media/media_incoming_sync.dart';
+import '../../../../core/media/media_local_index.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
 import '../../../profile/presentation/widgets/photo_people_on_photo_bar.dart';
+import '../../data/chat_realtime_utils.dart';
+import '../chat_forward_screen.dart';
 import 'chat_network_image.dart';
 
-/// Полноэкранный просмотр изображения из чата с загрузкой/шарингом.
+/// Полноэкранный просмотр фото/видео из чата.
 abstract final class ChatImageViewer {
   static Future<void> open(
     BuildContext context, {
@@ -25,6 +29,7 @@ abstract final class ChatImageViewer {
     int? attachmentId,
     String? filename,
     int? messageId,
+    Map<String, dynamic>? attachment,
     VoidCallback? onGoToMessage,
     Map<String, String>? httpHeaders,
   }) {
@@ -40,6 +45,7 @@ abstract final class ChatImageViewer {
             attachmentId: attachmentId,
             filename: filename,
             messageId: messageId,
+            attachment: attachment,
             onGoToMessage: onGoToMessage,
             httpHeaders: httpHeaders,
           ),
@@ -56,6 +62,7 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
     this.attachmentId,
     this.filename,
     this.messageId,
+    this.attachment,
     this.onGoToMessage,
     this.httpHeaders,
   });
@@ -65,15 +72,19 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
   final int? attachmentId;
   final String? filename;
   final int? messageId;
+  final Map<String, dynamic>? attachment;
   final VoidCallback? onGoToMessage;
   final Map<String, String>? httpHeaders;
 
   @override
-  ConsumerState<_ChatImageViewerScreen> createState() => _ChatImageViewerScreenState();
+  ConsumerState<_ChatImageViewerScreen> createState() =>
+      _ChatImageViewerScreenState();
 }
 
 class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> {
   bool _downloading = false;
+  bool _sharing = false;
+  bool _forwarding = false;
   final List<_ChatViewerPhoto> _photos = [];
   int _index = 0;
   PageController? _pageController;
@@ -90,41 +101,59 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     super.dispose();
   }
 
+  _ChatViewerPhoto _photoFromAttachment(
+    Map<String, dynamic> att, {
+    required String imageUrl,
+    int? fallbackMessageId,
+  }) {
+    final copy = Map<String, dynamic>.from(att);
+    MediaLocalIndex.hydrateAttachment(copy);
+    return _ChatViewerPhoto(
+      imageUrl: imageUrl,
+      threadId: widget.threadId,
+      attachmentId: chatAsInt(copy['id']) ?? widget.attachmentId,
+      filename: copy['filename']?.toString() ?? widget.filename,
+      messageId: chatAsInt(copy['message_id']) ?? fallbackMessageId,
+      attachment: copy,
+      httpHeaders: widget.httpHeaders,
+    );
+  }
+
   Future<void> _initPhotos() async {
     final repo = ref.read(familychatRepositoryProvider);
-    final seed = _ChatViewerPhoto(
+    final seedAtt = widget.attachment == null
+        ? <String, dynamic>{
+            if (widget.attachmentId != null) 'id': widget.attachmentId,
+            if (widget.filename != null) 'filename': widget.filename,
+            'file_url': widget.imageUrl,
+            if (widget.messageId != null) 'message_id': widget.messageId,
+            'thread_id': widget.threadId,
+          }
+        : Map<String, dynamic>.from(widget.attachment!);
+    final seed = _photoFromAttachment(
+      seedAtt,
       imageUrl: widget.imageUrl,
-      threadId: widget.threadId,
-      attachmentId: widget.attachmentId,
-      filename: widget.filename,
-      httpHeaders: widget.httpHeaders,
+      fallbackMessageId: widget.messageId,
     );
     final media = <_ChatViewerPhoto>[seed];
     if (widget.threadId != null) {
       try {
         final threadMedia = await repo.threadMedia(widget.threadId!);
         for (final att in threadMedia) {
-          final kind = att['kind']?.toString();
-          if (kind != 'image') continue;
+          if (!isGalleryMediaAttachment(att)) continue;
           final url = chatAttachmentImageUrl(
             repo: repo,
             threadId: widget.threadId!,
             attachment: att,
           );
           media.add(
-            _ChatViewerPhoto(
+            _photoFromAttachment(
+              att,
               imageUrl: url,
-              threadId: widget.threadId,
-              attachmentId: att['id'] is int ? att['id'] as int : int.tryParse('${att['id']}'),
-              filename: att['filename']?.toString(),
-              attachment: att,
-              httpHeaders: widget.httpHeaders,
             ),
           );
         }
-      } catch (_) {
-        // Fallback to single photo if media list failed.
-      }
+      } catch (_) {}
     }
     final dedup = <String, _ChatViewerPhoto>{};
     for (final p in media) {
@@ -152,15 +181,32 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
 
   _ChatViewerPhoto get _currentPhoto {
     if (_photos.isEmpty) {
-      return _ChatViewerPhoto(
+      return _photoFromAttachment(
+        widget.attachment ??
+            {
+              if (widget.attachmentId != null) 'id': widget.attachmentId,
+              if (widget.filename != null) 'filename': widget.filename,
+              'file_url': widget.imageUrl,
+              if (widget.messageId != null) 'message_id': widget.messageId,
+            },
         imageUrl: widget.imageUrl,
-        threadId: widget.threadId,
-        attachmentId: widget.attachmentId,
-        filename: widget.filename,
-        httpHeaders: widget.httpHeaders,
+        fallbackMessageId: widget.messageId,
       );
     }
     return _photos[_index];
+  }
+
+  Map<String, dynamic> _attachmentMap(_ChatViewerPhoto photo) {
+    final att = photo.attachment == null
+        ? <String, dynamic>{}
+        : Map<String, dynamic>.from(photo.attachment!);
+    att['id'] ??= photo.attachmentId;
+    att['filename'] ??= photo.filename ?? _guessFilename(photo);
+    att['file_url'] ??= photo.imageUrl;
+    att['kind'] ??= photo.isVideo ? 'video' : 'image';
+    att['thread_id'] ??= photo.threadId;
+    att['message_id'] ??= photo.messageId;
+    return att;
   }
 
   Future<Uint8List?> _resolveBytes(_ChatViewerPhoto photo) async {
@@ -170,6 +216,13 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
         threadId: photo.threadId,
         attachmentId: photo.attachmentId,
       );
+    }
+    if (photo.threadId != null && photo.attachmentId != null) {
+      try {
+        return await ref
+            .read(familychatRepositoryProvider)
+            .fetchChatAttachmentBytes(photo.threadId!, photo.attachmentId!);
+      } catch (_) {}
     }
     final response = await ref.read(apiClientProvider).dio.get<List<int>>(
           photo.imageUrl,
@@ -185,15 +238,8 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     final photo = _currentPhoto;
     setState(() => _downloading = true);
     try {
-      final attachment = <String, dynamic>{
-        'id': photo.attachmentId,
-        'filename': photo.filename ?? _guessFilename(photo.imageUrl),
-        'file_url': photo.imageUrl,
-        'kind': 'image',
-        'thread_id': photo.threadId,
-      };
       await MediaIncomingSync.saveByUserDownload(
-        attachment,
+        _attachmentMap(photo),
         fetchBytes: photo.threadId == null || photo.attachmentId == null
             ? null
             : () async {
@@ -222,11 +268,73 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     }
   }
 
-  String _guessFilename(String url) {
-    final uri = Uri.tryParse(url);
-    final last = uri?.pathSegments.isNotEmpty == true ? uri!.pathSegments.last : '';
+  Future<void> _share() async {
+    if (_sharing) return;
+    final photo = _currentPhoto;
+    setState(() => _sharing = true);
+    try {
+      final box = context.findRenderObject() as RenderBox?;
+      final origin =
+          box == null ? null : box.localToGlobal(Offset.zero) & box.size;
+      await GalleryMediaExport.shareAttachments(
+        attachments: [_attachmentMap(photo)],
+        fetchBytes: photo.threadId == null || photo.attachmentId == null
+            ? null
+            : (_) async {
+                final bytes = await _resolveBytes(photo);
+                if (bytes == null || bytes.isEmpty) {
+                  throw StateError('Пустой файл');
+                }
+                return bytes;
+              },
+        sharePositionOrigin: origin,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось поделиться: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
+  Future<void> _forward() async {
+    if (_forwarding) return;
+    final photo = _currentPhoto;
+    final threadId = photo.threadId ?? widget.threadId;
+    final messageId = photo.messageId ?? widget.messageId;
+    if (threadId == null || messageId == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось переслать')),
+      );
+      return;
+    }
+    setState(() => _forwarding = true);
+    try {
+      final targets = await ChatForwardScreen.open(
+        context,
+        sourceThreadId: threadId,
+        messageIds: [messageId],
+      );
+      if (!mounted) return;
+      if (targets != null && targets.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Переслано')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _forwarding = false);
+    }
+  }
+
+  String _guessFilename(_ChatViewerPhoto photo) {
+    final uri = Uri.tryParse(photo.imageUrl);
+    final last =
+        uri?.pathSegments.isNotEmpty == true ? uri!.pathSegments.last : '';
     if (last.contains('.')) return last;
-    return 'image.jpg';
+    return photo.isVideo ? 'video.mp4' : 'image.jpg';
   }
 
   void _goToMessage() {
@@ -239,7 +347,8 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       if (photo.threadId != null && photo.attachmentId != null) {
         return ChatNetworkImage(
           threadId: photo.threadId!,
-          attachment: photo.attachment ?? {'id': photo.attachmentId, 'file_url': photo.imageUrl},
+          attachment: photo.attachment ??
+              {'id': photo.attachmentId, 'file_url': photo.imageUrl},
           fit: BoxFit.contain,
         );
       }
@@ -253,41 +362,67 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       fit: BoxFit.contain,
       imageBuilder: (context, imageProvider) {
         unawaited(FamilyChatMediaCache.trimIfNeeded());
-        return Image(image: imageProvider, fit: BoxFit.contain, gaplessPlayback: true);
+        return Image(
+          image: imageProvider,
+          fit: BoxFit.contain,
+          gaplessPlayback: true,
+        );
       },
     );
   }
 
+  Widget _mediaBody(_ChatViewerPhoto photo, {required bool autoplay}) {
+    if (photo.isVideo) {
+      final local = galleryLocalDevicePath(photo.attachment ?? const {});
+      return GalleryVideoPlayer(
+        url: photo.imageUrl,
+        localPath: local.isEmpty ? null : local,
+        httpHeaders: photo.httpHeaders,
+        fit: BoxFit.contain,
+        autoplay: autoplay,
+      );
+    }
+    return _imageBody(photo);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final photo = _photos.isEmpty ? null : _currentPhoto;
+    final isVideo = photo?.isVideo == true;
+    final canForward =
+        (photo?.threadId ?? widget.threadId) != null &&
+            (photo?.messageId ?? widget.messageId) != null;
+    final canFaceTag = !isVideo &&
+        (photo?.threadId ?? widget.threadId) != null &&
+        (photo?.attachmentId ?? widget.attachmentId) != null;
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: FamilyAppBar.build(
-        title: 'Фото',
+        title: isVideo ? 'Видео' : 'Фото',
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
-          if (widget.threadId != null && widget.attachmentId != null)
+          IconButton(
+            tooltip: 'Поделиться',
+            onPressed: _sharing ? null : _share,
+            icon: _sharing
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.share_outlined),
+          ),
+          if (canForward)
             IconButton(
-              tooltip: 'Кто на фото',
-              onPressed: () {
-                final photo = _currentPhoto;
-                if (photo.threadId == null || photo.attachmentId == null) return;
-                FaceTaggingSheet.show(
-                  context,
-                  threadId: photo.threadId!,
-                  attachmentId: photo.attachmentId!,
-                  imageChild: _imageBody(photo),
-                );
-              },
-              icon: const Icon(Icons.face_outlined),
-            ),
-          if (widget.onGoToMessage != null)
-            IconButton(
-              tooltip: 'Перейти к сообщению',
-              onPressed: _goToMessage,
-              icon: const Icon(Icons.reply_outlined),
+              tooltip: 'Переслать',
+              onPressed: _forwarding ? null : _forward,
+              icon: const Icon(Icons.forward_outlined),
             ),
           IconButton(
             tooltip: 'Скачать',
@@ -296,10 +431,47 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
                 ? const SizedBox(
                     width: 22,
                     height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
                   )
                 : const Icon(Icons.download_outlined),
           ),
+          if (canFaceTag || widget.onGoToMessage != null)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              onSelected: (value) {
+                switch (value) {
+                  case 'faces':
+                    final current = _currentPhoto;
+                    if (current.threadId == null ||
+                        current.attachmentId == null) {
+                      return;
+                    }
+                    FaceTaggingSheet.show(
+                      context,
+                      threadId: current.threadId!,
+                      attachmentId: current.attachmentId!,
+                      imageChild: _imageBody(current),
+                    );
+                  case 'goto':
+                    _goToMessage();
+                }
+              },
+              itemBuilder: (context) => [
+                if (canFaceTag)
+                  const PopupMenuItem(
+                    value: 'faces',
+                    child: Text('Кто на фото'),
+                  ),
+                if (widget.onGoToMessage != null)
+                  const PopupMenuItem(
+                    value: 'goto',
+                    child: Text('Перейти к сообщению'),
+                  ),
+              ],
+            ),
         ],
       ),
       body: _photos.isEmpty
@@ -312,7 +484,10 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
                     onPageChanged: (i) => setState(() => _index = i),
                     itemCount: _photos.length,
                     itemBuilder: (_, i) {
-                      final photo = _photos[i];
+                      final item = _photos[i];
+                      if (item.isVideo) {
+                        return _mediaBody(item, autoplay: i == _index);
+                      }
                       return LayoutBuilder(
                         builder: (context, constraints) => Center(
                           child: InteractiveViewer(
@@ -323,7 +498,7 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
                             child: SizedBox(
                               width: constraints.maxWidth,
                               height: constraints.maxHeight,
-                              child: _imageBody(photo),
+                              child: _mediaBody(item, autoplay: i == _index),
                             ),
                           ),
                         ),
@@ -331,7 +506,7 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
                     },
                   ),
                 ),
-                if (_currentPhoto.attachmentId != null)
+                if (_currentPhoto.attachmentId != null && !_currentPhoto.isVideo)
                   PhotoPeopleOnPhotoBar(
                     key: ValueKey<int>(_currentPhoto.attachmentId!),
                     attachmentId: _currentPhoto.attachmentId!,
@@ -349,6 +524,7 @@ class _ChatViewerPhoto {
     this.threadId,
     this.attachmentId,
     this.filename,
+    this.messageId,
     this.attachment,
     this.httpHeaders,
   });
@@ -357,6 +533,10 @@ class _ChatViewerPhoto {
   final int? threadId;
   final int? attachmentId;
   final String? filename;
+  final int? messageId;
   final Map<String, dynamic>? attachment;
   final Map<String, String>? httpHeaders;
+
+  bool get isVideo =>
+      isVideoAttachment(attachment ?? {'filename': filename, 'file_url': imageUrl});
 }

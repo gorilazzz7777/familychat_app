@@ -155,6 +155,11 @@ class FamilyChatNotifications {
         openCalendarFromPushData(data);
         return;
       }
+      if (type == 'familychat_feed_photos' ||
+          data['deeplink']?.toString() == 'feed') {
+        openFeedFromPushData(data);
+        return;
+      }
       if (type == 'familychat_call') {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           IncomingCallCoordinator.instance.presentFromPushData(data);

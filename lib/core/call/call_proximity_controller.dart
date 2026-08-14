@@ -10,7 +10,7 @@ class CallProximityController {
   static bool _enabled = false;
 
   static Future<void> setEnabled(bool enabled) async {
-    if (kIsWeb || _enabled == enabled) return;
+    if (kIsWeb) return;
     try {
       await _channel.invokeMethod<void>(enabled ? 'enable' : 'disable');
       _enabled = enabled;

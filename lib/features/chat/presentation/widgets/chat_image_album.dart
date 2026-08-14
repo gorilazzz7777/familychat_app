@@ -20,12 +20,14 @@ class ChatImageAlbum extends StatelessWidget {
     required this.attachments,
     required this.maxWidth,
     this.onImageTap,
+    this.borderRadius,
   });
 
   final int threadId;
   final List<Map<String, dynamic>> attachments;
   final double maxWidth;
   final void Function(Map<String, dynamic> attachment)? onImageTap;
+  final BorderRadius? borderRadius;
 
   static const double _gap = 2;
 
@@ -34,6 +36,7 @@ class ChatImageAlbum extends StatelessWidget {
     final count = attachments.length;
     if (count == 0) return const SizedBox.shrink();
 
+    final radius = borderRadius ?? BorderRadius.circular(10);
     final width = maxWidth > 0 ? maxWidth : 200.0;
     if (count == 1) {
       final height = _singleHeight(width);
@@ -41,13 +44,13 @@ class ChatImageAlbum extends StatelessWidget {
         attachments.first,
         width: width,
         height: height,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: radius,
       );
     }
 
     final height = _albumHeight(count, width);
     return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: radius,
       child: SizedBox(
         width: width,
         height: height,

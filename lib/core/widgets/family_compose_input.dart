@@ -15,6 +15,7 @@ class FamilyComposeInput extends StatelessWidget {
     this.trailing,
     this.onSend,
     this.sending = false,
+    this.header,
     this.textInputAction = TextInputAction.newline,
     this.fillColor,
     this.borderColor,
@@ -32,6 +33,7 @@ class FamilyComposeInput extends StatelessWidget {
   final Widget? trailing;
   final VoidCallback? onSend;
   final bool sending;
+  final Widget? header;
   final TextInputAction textInputAction;
   final Color? fillColor;
   final Color? borderColor;
@@ -71,39 +73,46 @@ class FamilyComposeInput extends StatelessWidget {
         fillColor: fillColor,
         borderColor: borderColor,
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (leading != null) leading!,
-          Expanded(
-            child: TextField(
-              controller: controller,
-              focusNode: focusNode,
-              keyboardType: TextInputType.multiline,
-              minLines: minLines,
-              maxLines: maxLines,
-              textInputAction: textInputAction,
-              style: textColor != null ? TextStyle(color: textColor) : null,
-              onSubmitted: onSend != null && textInputAction == TextInputAction.send
-                  ? (_) => onSend!()
-                  : null,
-              decoration: InputDecoration(
-                hintText: hintText,
-                hintStyle: hintColor != null ? TextStyle(color: hintColor) : null,
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                contentPadding: EdgeInsets.fromLTRB(
-                  leading == null ? 16 : 0,
-                  10,
-                  0,
-                  10,
+          if (header != null) header!,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (leading != null) leading!,
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  focusNode: focusNode,
+                  keyboardType: TextInputType.multiline,
+                  minLines: minLines,
+                  maxLines: maxLines,
+                  textInputAction: textInputAction,
+                  style: textColor != null ? TextStyle(color: textColor) : null,
+                  onSubmitted: onSend != null && textInputAction == TextInputAction.send
+                      ? (_) => onSend!()
+                      : null,
+                  decoration: InputDecoration(
+                    hintText: hintText,
+                    hintStyle: hintColor != null ? TextStyle(color: hintColor) : null,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    contentPadding: EdgeInsets.fromLTRB(
+                      leading == null ? 16 : 0,
+                      header != null ? 4 : 10,
+                      0,
+                      10,
+                    ),
+                    isDense: true,
+                  ),
                 ),
-                isDense: true,
               ),
-            ),
+              sendButton,
+            ],
           ),
-          sendButton,
         ],
       ),
     );

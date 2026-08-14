@@ -141,6 +141,7 @@ class _ChatMessageActionsSheetBodyState
                       categoryViewConfig: CategoryViewConfig(
                         backgroundColor: theme.colorScheme.surface,
                         indicatorColor: theme.colorScheme.primary,
+                        iconColor: Colors.grey,
                         iconColorSelected: theme.colorScheme.primary,
                       ),
                       bottomActionBarConfig: const BottomActionBarConfig(

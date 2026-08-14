@@ -4,10 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/media/gallery_media_export.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/media_incoming_sync.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/widgets/family_app_bar.dart';
+import '../../../core/widgets/gallery_video_player.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/zoom_aware_page_view.dart';
+import '../../chat/presentation/chat_forward_screen.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
+import '../../chat/data/chat_realtime_utils.dart';
 import '../../feed/presentation/widgets/feed_reactions.dart';
 import 'face_tagging_sheet.dart';
 import 'media_engagement_inline.dart';
@@ -181,6 +185,28 @@ class _GalleryPhotoViewerScreenState
   bool get _isOwnGallery => widget.profileUserId == widget.currentUserId;
   bool get _isOwnUpload => _uploadedByUserId == widget.currentUserId;
 
+  Widget _buildMedia(
+    Map<String, dynamic> photo,
+    int threadId, {
+    required bool autoplay,
+  }) {
+    MediaLocalIndex.hydrateAttachment(photo);
+    if (isVideoAttachment(photo)) {
+      final local = galleryLocalDevicePath(photo);
+      return GalleryVideoPlayer(
+        url: galleryAttachmentUrl(photo),
+        localPath: local.isEmpty ? null : local,
+        fit: BoxFit.contain,
+        autoplay: autoplay,
+      );
+    }
+    return ChatNetworkImage(
+      threadId: threadId,
+      attachment: photo,
+      fit: BoxFit.contain,
+    );
+  }
+
   Future<void> _openFaceTagging(BuildContext context, WidgetRef ref) async {
     final threadId = _threadId;
     final attachmentId = _attachmentId;
@@ -242,6 +268,29 @@ class _GalleryPhotoViewerScreenState
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Ошибка: $e')),
+      );
+    }
+  }
+
+  Future<void> _forwardCurrent() async {
+    final threadId = _threadId;
+    final messageId = chatAsInt(_photo['message_id']);
+    if (threadId == null || messageId == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось переслать')),
+      );
+      return;
+    }
+    final targets = await ChatForwardScreen.open(
+      context,
+      sourceThreadId: threadId,
+      messageIds: [messageId],
+    );
+    if (!mounted) return;
+    if (targets != null && targets.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Переслано')),
       );
     }
   }
@@ -329,7 +378,13 @@ class _GalleryPhotoViewerScreenState
             IconButton(
               tooltip: 'Поделиться',
               onPressed: () => _shareCurrent(context),
-              icon: const Icon(Icons.share),
+              icon: const Icon(Icons.share_outlined),
+            ),
+          if (threadId != null && chatAsInt(_photo['message_id']) != null)
+            IconButton(
+              tooltip: 'Переслать',
+              onPressed: _forwardCurrent,
+              icon: const Icon(Icons.forward_outlined),
             ),
           if (threadId != null && attachmentId != null && !_isVideo)
             IconButton(
@@ -410,10 +465,10 @@ class _GalleryPhotoViewerScreenState
                             child: SizedBox(
                               width: constraints.maxWidth,
                               height: constraints.maxHeight,
-                              child: ChatNetworkImage(
-                                threadId: tid,
-                                attachment: p,
-                                fit: BoxFit.contain,
+                              child: _buildMedia(
+                                p,
+                                tid,
+                                autoplay: i == _index,
                               ),
                             ),
                           ),

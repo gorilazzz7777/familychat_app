@@ -19,6 +19,7 @@ import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_sync_service.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
+import '../features/chat/data/link_preview_service.dart';
 import '../features/chat/presentation/chat_conversation_screen.dart';
 import '../features/chat/presentation/friend_invite_flow.dart';
 import '../core/push/push_registration_service.dart';
@@ -260,6 +261,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     unawaited(
       ChatSyncService.instance.start(ref.read(familychatRepositoryProvider)),
     );
+    LinkPreviewService.instance.bindBackend(
+      ref.read(familychatRepositoryProvider).fetchLinkPreview,
+    );
     _syncAppActions();
     if (_ready) {
       unawaited(ref.read(appSettingsProvider.notifier).syncFromServer());
@@ -278,6 +282,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       _bootError = null;
       _transferOnboardingSession = null;
     });
+    LinkPreviewService.instance.bindBackend(null);
     unawaited(_validatePendingInvitesInBackground());
   }
 

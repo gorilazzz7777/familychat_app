@@ -1,21 +1,26 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/providers/app_providers.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import '../../data/chat_location_utils.dart';
 import '../../data/chat_voice_utils.dart';
+import 'chat_bubble_clipper.dart';
 import 'chat_image_album.dart';
+import 'chat_link_preview_card.dart';
 import 'chat_location_preview.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
 import 'chat_message_read_status_icon.dart';
 import 'chat_message_tap_target.dart';
 import 'chat_mention_text.dart';
+import 'chat_network_image.dart';
 import 'chat_swipe_to_reply.dart';
 import 'chat_voice_message_player.dart';
 
@@ -106,106 +111,148 @@ class ChatMessageBubble extends StatelessWidget {
         ? theme.colorScheme.primary.withValues(alpha: 0.12)
         : Colors.transparent;
 
-    Widget bubble = Material(
-      color: bubbleColor,
-      elevation: 0,
-      borderRadius: BorderRadius.only(
-        topLeft: const Radius.circular(16),
-        topRight: const Radius.circular(16),
-        bottomLeft: Radius.circular(isMine ? 16 : 4),
-        bottomRight: Radius.circular(isMine ? 4 : 16),
-      ),
-      child: ChatMessageTapTarget(
-        onTap: onTap,
-        onLongPress: selectionMode ? null : onLongPress,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (forward != null)
-                _buildForwardQuote(forward!, quoteAccent, textColor),
-              if (replyTo != null)
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: selectionMode ? onTap : onReplyTap,
-                  child: _buildReplyQuote(replyTo!, quoteAccent, textColor),
+    final showTail = !compactWithNext;
+    const tailWidth = 8.0;
+    final hasCaption = _showBody(body, forward);
+    final hasVisualMedia = _hasVisualMedia();
+    final framePad = hasVisualMedia ? 2.0 : 10.0;
+    final contentMaxWidth =
+        maxBubbleWidth - framePad * 2 - (showTail ? tailWidth : 0);
+
+    Widget bubble = ClipPath(
+      clipper: ChatBubbleClipper(isMine: isMine, showTail: showTail),
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        color: bubbleColor,
+        elevation: 0,
+        child: ChatMessageTapTarget(
+          onTap: onTap,
+          onLongPress: selectionMode ? null : onLongPress,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              isMine ? framePad : framePad + (showTail ? tailWidth : 0),
+              hasVisualMedia ? 2 : 8,
+              isMine ? framePad + (showTail ? tailWidth : 0) : framePad,
+              6,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (forward != null)
+                  Padding(
+                    padding: hasVisualMedia
+                        ? const EdgeInsets.fromLTRB(8, 6, 8, 0)
+                        : EdgeInsets.zero,
+                    child: _buildForwardQuote(forward!, quoteAccent, textColor),
+                  ),
+                if (replyTo != null)
+                  Padding(
+                    padding: hasVisualMedia
+                        ? const EdgeInsets.fromLTRB(8, 6, 8, 0)
+                        : EdgeInsets.zero,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: selectionMode ? onTap : onReplyTap,
+                      child: _buildReplyQuote(replyTo!, quoteAccent, textColor),
+                    ),
+                  ),
+                ..._buildAttachmentBlocks(
+                  textColor: textColor,
+                  metaColor: metaColor,
+                  maxWidth: contentMaxWidth,
+                  hasLeadingContent: forward != null || replyTo != null,
+                  mediaRadius: BorderRadius.only(
+                    topLeft: Radius.circular(hasVisualMedia ? 12 : 8),
+                    topRight: Radius.circular(hasVisualMedia ? 12 : 8),
+                    bottomLeft: Radius.circular(
+                      hasCaption || location != null ? 4 : 12,
+                    ),
+                    bottomRight: Radius.circular(
+                      hasCaption || location != null ? 4 : 12,
+                    ),
+                  ),
                 ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (_showBody(body, forward))
-                    ChatMentionText(
+                if (hasCaption)
+                  Padding(
+                    padding: hasVisualMedia
+                        ? const EdgeInsets.fromLTRB(8, 6, 8, 0)
+                        : EdgeInsets.zero,
+                    child: ChatMentionText(
                       body: body,
                       mentions: mentions,
-                        style: theme.textTheme.bodyMedium
-                                ?.copyWith(color: textColor) ??
-                            TextStyle(color: textColor),
-                        mentionStyle:
-                            (theme.textTheme.bodyMedium ?? const TextStyle())
-                                .copyWith(
-                          color: isMine
-                              ? const Color(0xFF8FD3FF)
-                              : theme.colorScheme.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        linkStyle:
-                            (theme.textTheme.bodyMedium ?? const TextStyle())
-                                .copyWith(
-                          color: isMine
-                              ? const Color(0xFF8FD3FF)
-                              : theme.colorScheme.primary,
-                          decoration: TextDecoration.none,
-                        ),
+                      style: theme.textTheme.bodyMedium
+                              ?.copyWith(color: textColor) ??
+                          TextStyle(color: textColor),
+                      mentionStyle:
+                          (theme.textTheme.bodyMedium ?? const TextStyle())
+                              .copyWith(
+                        color: isMine
+                            ? const Color(0xFF8FD3FF)
+                            : theme.colorScheme.primary,
+                        fontWeight: FontWeight.w600,
                       ),
-                    if (location != null) ...[
-                      if (_showBody(body, forward)) const SizedBox(height: 8),
-                      ChatLocationPreview(
-                        location: location!,
-                        isMine: isMine,
-                        maxWidth: maxBubbleWidth - 24,
+                      linkStyle:
+                          (theme.textTheme.bodyMedium ?? const TextStyle())
+                              .copyWith(
+                        color: isMine
+                            ? const Color(0xFF8FD3FF)
+                            : theme.colorScheme.primary,
+                        decoration: TextDecoration.none,
                       ),
-                    ],
-                    ..._buildAttachmentBlocks(
-                      textColor: textColor,
-                      metaColor: metaColor,
-                      maxWidth: maxBubbleWidth - 24,
-                      hasLeadingContent:
-                          _showBody(body, forward) || location != null,
                     ),
-                    const SizedBox(height: 4),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (scheduledAt != null) ...[
-                          Icon(Icons.schedule, size: 13, color: metaColor),
-                          const SizedBox(width: 4),
-                          Text(
-                            timeFmt.format(scheduledAt!.toLocal()),
-                            style: theme.textTheme.labelSmall
-                                ?.copyWith(color: metaColor),
-                          ),
-                        ] else if (createdAt != null)
-                          Text(
-                            timeFmt.format(createdAt!.toLocal()),
-                            style: theme.textTheme.labelSmall
-                                ?.copyWith(color: metaColor),
-                          ),
-                        if (isMine && readStatus != null) ...[
-                          const SizedBox(width: 4),
-                          ChatMessageReadStatusIcon(
-                            status: readStatus!,
-                            color: metaColor,
-                          ),
-                        ],
+                  ),
+                if (location != null) ...[
+                  if (hasCaption || hasVisualMedia) const SizedBox(height: 8),
+                  ChatLocationPreview(
+                    location: location!,
+                    isMine: isMine,
+                    maxWidth: contentMaxWidth,
+                  ),
+                ],
+                if (_linkPreviewUrl() != null) ...[
+                  if (hasCaption || location != null) const SizedBox(height: 8),
+                  ChatLinkPreviewCard(
+                    url: _linkPreviewUrl()!,
+                    isMine: isMine,
+                    maxWidth: contentMaxWidth,
+                  ),
+                ],
+                Padding(
+                  padding: hasVisualMedia
+                      ? const EdgeInsets.fromLTRB(8, 4, 8, 0)
+                      : const EdgeInsets.only(top: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (scheduledAt != null) ...[
+                        Icon(Icons.schedule, size: 13, color: metaColor),
+                        const SizedBox(width: 4),
+                        Text(
+                          timeFmt.format(scheduledAt!.toLocal()),
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: metaColor),
+                        ),
+                      ] else if (createdAt != null)
+                        Text(
+                          timeFmt.format(createdAt!.toLocal()),
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: metaColor),
+                        ),
+                      if (isMine && readStatus != null) ...[
+                        const SizedBox(width: 4),
+                        ChatMessageReadStatusIcon(
+                          status: readStatus!,
+                          color: metaColor,
+                        ),
                       ],
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ],
             ),
           ),
         ),
+      ),
     );
 
     return ChatSwipeToReply(
@@ -321,6 +368,16 @@ class ChatMessageBubble extends StatelessWidget {
     return body.trim() != original.trim();
   }
 
+  String? _linkPreviewUrl() {
+    if (attachments.isNotEmpty || location != null) return null;
+    if (_showBody(body, forward)) {
+      final fromBody = ChatMentionText.firstUrl(body);
+      if (fromBody != null) return fromBody;
+    }
+    final original = forward?['original_body']?.toString() ?? '';
+    return ChatMentionText.firstUrl(original);
+  }
+
   Widget _buildReplyQuote(
     Map<String, dynamic> reply,
     Color accent,
@@ -365,11 +422,28 @@ class ChatMessageBubble extends StatelessWidget {
     );
   }
 
+  bool _hasVisualMedia() {
+    for (final a in attachments) {
+      if (isVoiceAttachment(a, messageMetadata: messageMetadata)) continue;
+      if (a['kind'] == 'video' || isVideoAttachment(a)) {
+        final videoNote = messageMetadata['video_note'];
+        final isCircle = a['is_video_note'] == true ||
+            videoNote is Map ||
+            a['is_video_note'] == 'true';
+        if (!isCircle) return true;
+        continue;
+      }
+      if (chatAttachmentLooksLikeImage(a)) return true;
+    }
+    return false;
+  }
+
   List<Widget> _buildAttachmentBlocks({
     required Color textColor,
     required Color metaColor,
     required double maxWidth,
     required bool hasLeadingContent,
+    required BorderRadius mediaRadius,
   }) {
     final images = <Map<String, dynamic>>[];
     final rest = <Map<String, dynamic>>[];
@@ -402,6 +476,7 @@ class ChatMessageBubble extends StatelessWidget {
           attachments: images,
           maxWidth: maxWidth,
           onImageTap: onImageTap,
+          borderRadius: mediaRadius,
         ),
       );
     }
@@ -444,6 +519,7 @@ class ChatMessageBubble extends StatelessWidget {
             attachment: a,
             maxWidth: maxWidth,
             circular: isCircle,
+            borderRadius: mediaRadius,
             onOpen: onImageTap != null ? () => onImageTap!(a) : null,
           ),
         );
@@ -476,12 +552,13 @@ class ChatMessageBubble extends StatelessWidget {
   }
 }
 
-class _ChatVideoAttachmentPreview extends StatelessWidget {
+class _ChatVideoAttachmentPreview extends ConsumerWidget {
   const _ChatVideoAttachmentPreview({
     required this.threadId,
     required this.attachment,
     required this.maxWidth,
     this.circular = false,
+    this.borderRadius,
     this.onOpen,
   });
 
@@ -489,14 +566,30 @@ class _ChatVideoAttachmentPreview extends StatelessWidget {
   final Map<String, dynamic> attachment;
   final double maxWidth;
   final bool circular;
+  final BorderRadius? borderRadius;
   final VoidCallback? onOpen;
 
   @override
-  Widget build(BuildContext context) {
-    final local = attachment['local_bytes'];
-    final url = galleryAttachmentUrl(attachment);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final localBytes = attachment['local_bytes'];
+    final localPath = galleryLocalDevicePath(attachment);
+    final url = chatAttachmentImageUrl(
+      repo: ref.read(familychatRepositoryProvider),
+      threadId: threadId,
+      attachment: attachment,
+    );
     final size = circular ? (maxWidth * 0.72).clamp(160.0, 220.0) : maxWidth;
     final height = circular ? size : 180.0;
+    final hasSource = localPath.isNotEmpty || url.isNotEmpty;
+
+    Widget? placeholder;
+    if (isSafeUiPreviewBytes(localBytes)) {
+      placeholder = Image.memory(
+        localBytes as Uint8List,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+      );
+    }
 
     final content = SizedBox(
       width: size,
@@ -504,33 +597,44 @@ class _ChatVideoAttachmentPreview extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (isSafeUiPreviewBytes(local))
-            Image.memory(local as Uint8List, fit: BoxFit.cover)
-          else if (url.isNotEmpty)
-            GalleryVideoPlayer(
+          if (hasSource)
+            IgnorePointer(
+              child: GalleryVideoPlayer(
               url: url,
-              autoplay: false,
+              localPath: localPath.isEmpty ? null : localPath,
+              autoplay: true,
+              looping: true,
+              muted: true,
               showControls: false,
+              fit: BoxFit.cover,
+              placeholder: placeholder ??
+                  const ColoredBox(
+                    color: Colors.black26,
+                    child: Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+              ),
             )
           else
-            const ColoredBox(
-              color: Colors.black26,
-              child: Center(
-                child: Icon(Icons.videocam_outlined, color: Colors.white54),
+            placeholder ??
+                const ColoredBox(
+                  color: Colors.black26,
+                  child: Center(
+                    child: Icon(Icons.videocam_outlined, color: Colors.white54),
+                  ),
+                ),
+          const Align(
+            alignment: Alignment.bottomLeft,
+            child: Padding(
+              padding: EdgeInsets.all(8),
+              child: Icon(
+                Icons.volume_off_rounded,
+                color: Colors.white70,
+                size: 18,
               ),
             ),
-          if (!circular)
-            const Center(
-              child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 48),
-            )
-          else
-            const Align(
-              alignment: Alignment.bottomCenter,
-              child: Padding(
-                padding: EdgeInsets.only(bottom: 10),
-                child: Icon(Icons.play_arrow_rounded, color: Colors.white70, size: 28),
-              ),
-            ),
+          ),
         ],
       ),
     );
@@ -541,7 +645,7 @@ class _ChatVideoAttachmentPreview extends StatelessWidget {
       child: circular
           ? ClipOval(child: content)
           : ClipRRect(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: borderRadius ?? BorderRadius.circular(10),
               child: content,
             ),
     );

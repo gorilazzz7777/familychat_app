@@ -15,6 +15,8 @@ final familyChatNavigatorKey = GlobalKey<NavigatorState>();
 Map<String, dynamic>? pendingChatPushData;
 Map<String, dynamic>? pendingCalendarPushData;
 Map<String, dynamic>? pendingCallPushData;
+Map<String, dynamic>? pendingFeedPushData;
+VoidCallback? onOpenFeedFromPush;
 bool _chatPushRetryScheduled = false;
 int? _openingThreadId;
 DateTime? _openingThreadAt;
@@ -35,6 +37,11 @@ void flushPendingChatPush() {
     pendingCallPushData = null;
     IncomingCallCoordinator.instance.presentFromPushData(call);
   }
+  final feed = pendingFeedPushData;
+  if (feed != null) {
+    pendingFeedPushData = null;
+    openFeedFromPushData(feed);
+  }
 }
 
 Map<String, dynamic> _unwrapPushData(Map<String, dynamic> data) {
@@ -50,13 +57,16 @@ Map<String, dynamic> _unwrapPushData(Map<String, dynamic> data) {
 
 bool _isChatPushData(Map<String, dynamic> data) {
   final type = data['type']?.toString() ?? '';
-  if (type == 'familychat_call' || type == 'familychat_calendar_reminder') {
+  if (type == 'familychat_call' ||
+      type == 'familychat_calendar_reminder' ||
+      type == 'familychat_feed_photos') {
     return false;
   }
   final threadId = data['thread_id']?.toString() ?? '';
   if (threadId.isEmpty) return false;
   if (type == 'familychat_chat') return true;
   final deeplink = data['deeplink']?.toString() ?? '';
+  if (deeplink == 'feed' || deeplink == 'calendar') return false;
   return deeplink == 'chat' || type.isEmpty;
 }
 
@@ -187,6 +197,32 @@ void openCalendarFromPushData(Map<String, dynamic> data) {
       builder: (_) => const CalendarScreen(),
     ),
   );
+}
+
+bool _isFeedPushData(Map<String, dynamic> data) {
+  final type = data['type']?.toString() ?? '';
+  final deeplink = data['deeplink']?.toString() ?? '';
+  return type == 'familychat_feed_photos' || deeplink == 'feed';
+}
+
+void openFeedFromPushData(Map<String, dynamic> data) {
+  final payload = _unwrapPushData(Map<String, dynamic>.from(data));
+  if (!_isFeedPushData(payload)) return;
+
+  final nav = familyChatNavigatorKey.currentState;
+  if (nav == null) {
+    pendingFeedPushData = payload;
+    return;
+  }
+  if (nav.canPop()) {
+    nav.popUntil((route) => route.isFirst);
+  }
+  final openFeed = onOpenFeedFromPush;
+  if (openFeed == null) {
+    pendingFeedPushData = payload;
+    return;
+  }
+  WidgetsBinding.instance.addPostFrameCallback((_) => openFeed());
 }
 
 void openCallFromPushData(Map<String, dynamic> data) {

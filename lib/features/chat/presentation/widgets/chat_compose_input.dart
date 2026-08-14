@@ -6,6 +6,7 @@ import '../../../../core/widgets/family_input_styles.dart';
 import '../../data/chat_send_options.dart';
 import 'chat_compose_action_button.dart';
 import 'chat_compose_circle_button.dart';
+import 'chat_emoji_picker_sheet.dart';
 import 'chat_voice_recording_compose_slot.dart';
 
 /// Поле ввода сообщения с кнопками вложения и отправки внутри блока.
@@ -95,6 +96,11 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
                       ),
                     ),
             ),
+            if (!recording)
+              ChatComposeEmojiButton(
+                controller: widget.controller,
+                focusNode: widget.focusNode,
+              ),
             ChatComposeActionButton(
               controller: widget.controller,
               onSend: widget.onSend,

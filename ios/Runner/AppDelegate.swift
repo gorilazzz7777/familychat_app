@@ -17,6 +17,11 @@ import UserNotifications
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
+  override func applicationDidEnterBackground(_ application: UIApplication) {
+    UIDevice.current.isProximityMonitoringEnabled = false
+    super.applicationDidEnterBackground(application)
+  }
+
   private func registerChatReplyCategory() {
     let reply = UNTextInputNotificationAction(
       identifier: "familychat_reply",

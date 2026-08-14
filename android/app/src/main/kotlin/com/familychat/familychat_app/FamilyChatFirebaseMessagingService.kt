@@ -2,19 +2,14 @@ package com.familychat.familychat_app
 
 import android.content.Intent
 import android.os.Bundle
-import com.google.firebase.messaging.FirebaseMessagingService
-import io.flutter.plugins.firebase.messaging.FlutterFirebaseTokenLiveData
+import io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService
 
 /**
  * FCM в фоне сам рисует баннер без кнопки «Ответить».
  * Для чатов снимаем notification-ключи, чтобы сообщение ушло в Dart
  * и мы показали локальный пуш с полем ответа.
  */
-class FamilyChatFirebaseMessagingService : FirebaseMessagingService() {
-    override fun onNewToken(token: String) {
-        FlutterFirebaseTokenLiveData.getInstance().postToken(token)
-    }
-
+class FamilyChatFirebaseMessagingService : FlutterFirebaseMessagingService() {
     override fun handleIntent(intent: Intent) {
         val extras = intent.extras
         if (extras != null && isChatPush(extras)) {

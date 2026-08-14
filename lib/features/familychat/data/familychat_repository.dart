@@ -9,6 +9,7 @@ import '../../../core/debug/upload_image_exif_log.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/settings/app_settings.dart';
+import '../../chat/data/link_preview_service.dart';
 
 class ThreadMessagesPage {
   const ThreadMessagesPage({
@@ -1347,6 +1348,17 @@ class FamilyChatRepository {
   Future<FamilyChatAppSettings> fetchAppSettings() async {
     final res = await _dio.get<Map<String, dynamic>>('familychat/settings/');
     return FamilyChatAppSettings.fromJson(res.data ?? {});
+  }
+
+  Future<ChatLinkPreview?> fetchLinkPreview(String url) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/link-preview/',
+      queryParameters: {'url': url},
+    );
+    final data = res.data;
+    if (data == null || data.isEmpty) return null;
+    final preview = ChatLinkPreview.fromJson(data, url);
+    return preview;
   }
 
   Future<FamilyChatAppSettings> updateAppSettings(

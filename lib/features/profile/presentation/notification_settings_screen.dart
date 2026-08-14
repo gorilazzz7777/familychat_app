@@ -110,7 +110,7 @@ class _NotificationSettingsScreenState
           SwitchListTile.adaptive(
             contentPadding: EdgeInsets.zero,
             title: const Text('Получать уведомления'),
-            subtitle: const Text('Все типы: сообщения, звонки, календарь'),
+            subtitle: const Text('Все типы: сообщения, звонки, календарь, лента'),
             value: settings.pushEnabled,
             onChanged: _busy ? null : _onMasterChanged,
           ),
@@ -141,6 +141,15 @@ class _NotificationSettingsScreenState
               onChanged: _busy
                   ? null
                   : (v) => _apply(settings.copyWith(pushCalendar: v)),
+            ),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Лента'),
+              subtitle: const Text('Новые фото в семейной ленте'),
+              value: settings.pushFeed,
+              onChanged: _busy
+                  ? null
+                  : (v) => _apply(settings.copyWith(pushFeed: v)),
             ),
             const SizedBox(height: 16),
             Text(
@@ -292,7 +301,7 @@ class _QuietPeriodDialogState extends State<_QuietPeriodDialog> {
         children: [
           const Text(
             'В выбранном промежутке уведомления не приходят — '
-            'включая сообщения, звонки и календарь.',
+            'включая сообщения, звонки, календарь и ленту.',
           ),
           const SizedBox(height: 16),
           ListTile(

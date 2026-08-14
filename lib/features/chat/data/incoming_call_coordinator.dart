@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/call/call_lock_screen.dart';
 import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/notifications/familychat_notifications.dart';
 import '../../../core/push/push_message_handler.dart';
@@ -66,9 +67,10 @@ class IncomingCallCoordinator {
   }) async {
     if (_presenting) return;
     _presenting = true;
+    await CallLockScreen.acquire();
     try {
       if (FamilyChatForegroundBridge.isAppInBackground()) {
-        await FamilyChatForegroundBridge.bringToForegroundIfNeeded();
+        await FamilyChatForegroundBridge.bringToForegroundIfNeeded(forCall: true);
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
 
@@ -103,6 +105,7 @@ class IncomingCallCoordinator {
         _activeCallId = null;
       }
       _presenting = false;
+      unawaited(CallLockScreen.release());
     }
   }
 

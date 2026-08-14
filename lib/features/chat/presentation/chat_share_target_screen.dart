@@ -21,10 +21,12 @@ import 'chat_conversation_screen.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../profile/data/album_upload_coordinator.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
-import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/share_attachment_loader.dart';
+import 'widgets/chat_link_preview_mini.dart';
+import 'widgets/chat_mention_text.dart';
+import 'widgets/chat_thread_select_tile.dart';
 
 /// Выбор чата для отправки контента из системного «Поделиться».
 class ChatShareTargetScreen extends ConsumerStatefulWidget {
@@ -298,50 +300,6 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
       setState(() => _loadingAlbums = false);
       if (albums.isEmpty) rethrow;
     }
-  }
-
-  int? _dmPeerUserId(Map<String, dynamic> thread) {
-    final kind = thread['kind']?.toString();
-    if (kind != 'dm' && kind != 'friend_dm') return null;
-    final raw = thread['peer_user_id'];
-    if (raw is int) return raw;
-    return int.tryParse('$raw');
-  }
-
-  String _threadTitle(Map<String, dynamic> thread) {
-    final peerId = _dmPeerUserId(thread);
-    if (peerId != null) {
-      final display = _memberByUserId[peerId]?['display_name']?.toString().trim();
-      if (display != null && display.isNotEmpty) return display;
-    }
-    return thread['title']?.toString() ?? 'Чат';
-  }
-
-  String? _threadSubtitle(Map<String, dynamic> thread) {
-    final kind = thread['kind']?.toString() ?? '';
-    if (kind == 'dm') {
-      final peerId = _dmPeerUserId(thread);
-      if (peerId == null) return null;
-      final label = _memberByUserId[peerId]?['kinship_label']?.toString().trim();
-      return label == null || label.isEmpty ? null : label;
-    }
-    if (kind == 'group') {
-      return 'Группа';
-    }
-    if (kind == 'family') {
-      return 'Общий чат семьи';
-    }
-    return null;
-  }
-
-  String? _threadAvatarUrl(Map<String, dynamic> thread) {
-    final fromThread = thread['peer_avatar_url']?.toString().trim();
-    if (fromThread != null && fromThread.isNotEmpty) return fromThread;
-    final peerId = _dmPeerUserId(thread);
-    if (peerId == null) return null;
-    final url = _memberByUserId[peerId]?['avatar_url']?.toString().trim();
-    if (url == null || url.isEmpty) return null;
-    return url;
   }
 
   Future<void> _createAlbum() async {
@@ -674,8 +632,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
         final id = chatAsInt(t['id']);
         if (id == null) return const SizedBox.shrink();
         final selected = _selectedThreads.contains(id);
-        return _buildSelectableTile(
+        return ChatThreadSelectTile(
+          thread: t,
           selected: selected,
+          memberByUserId: _memberByUserId,
           onTap: () {
             setState(() {
               if (selected) {
@@ -685,14 +645,6 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
               }
             });
           },
-          leading: ChatAvatar(
-            name: _threadTitle(t),
-            avatarUrl: _threadAvatarUrl(t),
-            userId: _dmPeerUserId(t),
-            radius: 24,
-          ),
-          title: _threadTitle(t),
-          subtitle: _threadSubtitle(t),
         );
       },
     );
@@ -796,6 +748,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
   }
 
   Widget _buildChatCompose() {
+    final shareUrl = ChatMentionText.firstUrl(_captionController.text);
     return Material(
       color: Theme.of(context).colorScheme.surface,
       child: SafeArea(
@@ -828,6 +781,9 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
                 controller: _captionController,
                 hintText: 'Сообщение...',
                 sending: _sending,
+                header: shareUrl == null
+                    ? null
+                    : ChatLinkPreviewMini(url: shareUrl),
                 onSend: !_canSendChats || _sending || _creatingAlbum
                     ? null
                     : () {

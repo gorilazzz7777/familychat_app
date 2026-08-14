@@ -63,6 +63,15 @@ void handleFamilyChatRemoteMessage(
     if (isForeground) return;
   }
 
+  if (type == 'familychat_feed_photos' ||
+      data['deeplink']?.toString() == 'feed') {
+    if (openedFromTap) {
+      openFeedFromPushData(data);
+      return;
+    }
+    if (isForeground) return;
+  }
+
   if (type == 'familychat_call') {
     if (openedFromTap) {
       IncomingCallCoordinator.instance.presentFromPushData(data);

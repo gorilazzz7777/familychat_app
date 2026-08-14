@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../chat/presentation/widgets/chat_network_image.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
+import 'gallery_media_thumbnail.dart';
 
 Future<void> openProfileGalleryAlbum(
   BuildContext context, {
@@ -360,9 +360,9 @@ class _AllPhotosCard extends ConsumerWidget {
                 width: 112,
                 height: 112,
                 child: cover != null && threadId is int
-                    ? ChatNetworkImage(
-                        threadId: threadId,
+                    ? GalleryMediaThumbnail(
                         attachment: cover,
+                        threadId: threadId,
                         fit: BoxFit.cover,
                       )
                     : ColoredBox(
@@ -582,9 +582,9 @@ class _AlbumCover extends StatelessWidget {
   Widget build(BuildContext context) {
     final threadId = cover?['thread_id'];
     if (cover != null && threadId is int) {
-      return ChatNetworkImage(
-        threadId: threadId,
+      return GalleryMediaThumbnail(
         attachment: cover!,
+        threadId: threadId,
         fit: BoxFit.cover,
       );
     }
