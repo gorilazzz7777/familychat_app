@@ -5,7 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../features/familychat/data/familychat_repository.dart';
+import '../../familychat/data/familychat_repository.dart';
 
 /// Периодическая отправка геолокации, пока пользователь кому-то шарит.
 ///
@@ -19,12 +19,12 @@ class LocationShareCoordinator with WidgetsBindingObserver {
   static const interval = Duration(minutes: 12);
   static const staleAfter = Duration(minutes: 10);
 
-  FamilychatRepository? _repo;
+  FamilyChatRepository? _repo;
   Timer? _timer;
   bool _busy = false;
   bool _observing = false;
 
-  void attach(FamilychatRepository repo) {
+  void attach(FamilyChatRepository repo) {
     _repo = repo;
     if (!_observing) {
       WidgetsBinding.instance.addObserver(this);
