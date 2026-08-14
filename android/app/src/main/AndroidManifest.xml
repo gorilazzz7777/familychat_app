@@ -120,6 +120,9 @@
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="familychat_messages" />
+        <meta-data
+            android:name="com.yandex.maps.apikey"
+            android:value="0dc3b06e-efcb-42e6-af03-f727adca58bf" />
         <service
             android:name="io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService"
             tools:node="remove" />

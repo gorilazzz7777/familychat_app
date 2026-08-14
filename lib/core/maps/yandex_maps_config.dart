@@ -1,11 +1,11 @@
-/// Конфиг Яндекс.Карт (Raster Tiles API).
+/// Конфиг Яндекс.Карт (MapKit / Raster Tiles API).
 ///
 /// В кабинете разработчика ограничьте ключ пакетом
 /// `com.familychat.familychat_app` / доменом familychat-app.ru.
 abstract final class YandexMapsConfig {
   static const String apiKey = String.fromEnvironment(
     'YANDEX_MAPS_API_KEY',
-    defaultValue: '4f165611-082b-40d8-b442-642f1f985af4',
+    defaultValue: '0dc3b06e-efcb-42e6-af03-f727adca58bf',
   );
 
   /// Web Mercator XYZ — совместимо с flutter_map.
