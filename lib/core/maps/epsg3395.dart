@@ -1,5 +1,5 @@
-import 'dart:math' as math
-    show Point, atan, exp, log, max, pi, pow, sin, sqrt, tan;
+import 'dart:math' as math;
+import 'dart:math' show Point;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
