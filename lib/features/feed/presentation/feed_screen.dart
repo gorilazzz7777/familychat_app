@@ -119,6 +119,10 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       return;
     }
     await _syncUpdates();
+    // После быстрого delta — тихо подтянуть первую страницу (лайки/просмотры).
+    if (!silent) {
+      unawaited(_loadFull(showSpinner: false));
+    }
   }
 
   void _updateScrollToTopVisibility() {
@@ -374,44 +378,30 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           .cast<Map<String, dynamic>>();
       final newHasMore = _parseHasMore(data, batchLength: batch.length);
 
-      // Silent reload: не затираем более длинный кэш первой страницей API,
-      // если id свежих совпадают — только обновляем meta / хвост.
-      final sameHead = _events.length >= batch.length &&
+      // Не затираем более длинный кэш первой страницей API, если id совпадают —
+      // обновляем голову (лайки/просмотры) и оставляем хвост.
+      final canKeepTail = _events.length > batch.length &&
+          batch.isNotEmpty &&
           _feedEventsSameIds(_events.take(batch.length).toList(), batch);
-      final metaChanged = newLastRead != _lastReadAt ||
-          _filterPeopleFingerprint(newFilter) !=
-              _filterPeopleFingerprint(_filterPeople) ||
-          newHasMore != _hasMore;
-
-      if (!showSpinner && sameHead && !metaChanged && !_loading && _error == null) {
-        await _maybeMarkRead();
-        return;
-      }
 
       setState(() {
-        if (!sameHead) {
-          if (_events.length > batch.length &&
-              batch.isNotEmpty &&
-              _feedEventsSameIds(
-                _events.take(batch.length).toList(),
-                batch,
-              )) {
-            // Заменяем только голову, хвост кэша оставляем.
-            _events.replaceRange(0, batch.length, batch);
-          } else {
-            _events
-              ..clear()
-              ..addAll(batch);
-          }
+        if (canKeepTail) {
+          _events.replaceRange(0, batch.length, batch);
+        } else {
+          _events
+            ..clear()
+            ..addAll(batch);
         }
         _lastReadAt = newLastRead;
-        _filterPeople = newFilter;
+        if (newFilter.isNotEmpty) {
+          _filterPeople = newFilter;
+        }
         _hasMore = newHasMore;
         _loading = false;
         _error = null;
       });
-      await _persistCache();
-      await _maybeMarkRead();
+      unawaited(_persistCache());
+      unawaited(_maybeMarkRead());
       WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
     } catch (e) {
       if (!mounted) return;
@@ -450,8 +440,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       final newFilter = (data['filter_people'] as List<dynamic>? ?? [])
           .cast<Map<String, dynamic>>();
       final metaChanged = newLastRead != _lastReadAt ||
-          _filterPeopleFingerprint(newFilter) !=
-              _filterPeopleFingerprint(_filterPeople);
+          (newFilter.isNotEmpty &&
+              _filterPeopleFingerprint(newFilter) !=
+                  _filterPeopleFingerprint(_filterPeople));
 
       var eventsChanged = false;
       if (afterId == null) {
@@ -475,7 +466,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           !metaChanged &&
           !_loading &&
           _error == null) {
-        await _maybeMarkRead();
+        unawaited(_maybeMarkRead());
         return;
       }
 
@@ -492,15 +483,17 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             _prependUnique(batch);
           }
           _lastReadAt = newLastRead;
-          _filterPeople = newFilter;
+          if (newFilter.isNotEmpty) {
+            _filterPeople = newFilter;
+          }
         }
         _loading = false;
         _error = null;
       });
       if (eventsChanged || metaChanged) {
-        await _persistCache();
+        unawaited(_persistCache());
       }
-      await _maybeMarkRead();
+      unawaited(_maybeMarkRead());
       WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
     } catch (e) {
       if (!mounted) return;
@@ -837,7 +830,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             children: [
               if (_events.isEmpty)
                 RefreshIndicator(
-                  onRefresh: () => refresh(forceFull: true),
+                  onRefresh: refresh,
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
                     children: [
@@ -848,7 +841,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                 )
               else
                 RefreshIndicator(
-                  onRefresh: () => refresh(forceFull: true),
+                  onRefresh: refresh,
                   child: ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),

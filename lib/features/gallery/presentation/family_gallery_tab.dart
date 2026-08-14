@@ -59,9 +59,7 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   Future<void> _load({bool silent = false}) async {
     final cached = await FamilyChatLocalCache.readFamilyAlbums();
     if (cached != null && mounted) {
-      final raw = (cached['albums'] as List<dynamic>? ?? [])
-          .cast<Map<String, dynamic>>();
-      final next = _filterCommonAlbums(raw);
+      final next = _filterCommonAlbums(_asAlbumMaps(cached['albums']));
       final hint = cached['face_hint_message']?.toString() ?? '';
       final showHint = cached['show_face_hint'] == true;
       if (_albumsFingerprint(_albums) != _albumsFingerprint(next) ||
@@ -87,9 +85,8 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
           await ref.read(familychatRepositoryProvider).familyGalleryAlbums();
       await FamilyChatLocalCache.saveFamilyAlbums(data);
       if (!mounted) return;
-      final raw = (data['albums'] as List<dynamic>? ?? [])
-          .cast<Map<String, dynamic>>();
-      final next = _filterCommonAlbums(raw);
+      final raw = (data['albums'] as List<dynamic>? ?? []);
+      final next = _filterCommonAlbums(_asAlbumMaps(raw));
       final hint = data['face_hint_message']?.toString() ?? '';
       final showHint = data['show_face_hint'] == true;
       if (_albumsFingerprint(_albums) == _albumsFingerprint(next) &&
@@ -103,6 +100,7 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
         _faceHintMessage = hint;
         _showFaceHint = showHint;
         _loading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
@@ -116,6 +114,14 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
         });
       }
     }
+  }
+
+  List<Map<String, dynamic>> _asAlbumMaps(dynamic raw) {
+    if (raw is! List) return const [];
+    return [
+      for (final item in raw)
+        if (item is Map) Map<String, dynamic>.from(item),
+    ];
   }
 
   String _albumsFingerprint(List<Map<String, dynamic>> albums) {
