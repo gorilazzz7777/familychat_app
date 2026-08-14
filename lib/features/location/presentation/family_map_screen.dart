@@ -5,6 +5,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../core/maps/epsg3395.dart';
 import '../../../core/maps/yandex_tile_layer.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
@@ -203,6 +204,7 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
                           : FlutterMap(
                               mapController: _mapController,
                               options: MapOptions(
+                                crs: const Epsg3395(),
                                 initialCenter:
                                     _pointOf(withPoints.first) ??
                                         const LatLng(55.751244, 37.618423),
