@@ -336,6 +336,7 @@ class FamilyChatRepository {
     required String filename,
     String? contentType,
     String? batchId,
+    int? albumPk,
     Map<String, dynamic>? photoExif,
     void Function(int sent, int total)? onSendProgress,
   }) async {
@@ -347,6 +348,7 @@ class FamilyChatRepository {
             contentType != null ? DioMediaType.parse(contentType) : null,
       ),
       if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
+      if (albumPk != null) 'album_pk': albumPk,
       if (photoExif != null && photoExif.isNotEmpty)
         'photo_exif': jsonEncode(photoExif),
     });
@@ -360,6 +362,79 @@ class FamilyChatRepository {
       ),
     );
     return res.data!;
+  }
+
+  Future<Map<String, dynamic>> createChildCustomAlbum(
+    int childId, {
+    required String title,
+    String accessMode = 'all',
+    List<int> accessUserIds = const [],
+    String addMode = 'all',
+    List<int> addUserIds = const [],
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/children/$childId/gallery/albums/',
+      data: {
+        'title': title,
+        'access_mode': accessMode,
+        'access_user_ids': accessUserIds,
+        'add_mode': addMode,
+        'add_user_ids': addUserIds,
+      },
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> updateChildCustomAlbum(
+    int childId,
+    int albumPk, {
+    String? title,
+    String? accessMode,
+    List<int>? accessUserIds,
+    String? addMode,
+    List<int>? addUserIds,
+  }) async {
+    final data = <String, dynamic>{};
+    if (title != null) data['title'] = title;
+    if (accessMode != null) data['access_mode'] = accessMode;
+    if (accessUserIds != null) data['access_user_ids'] = accessUserIds;
+    if (addMode != null) data['add_mode'] = addMode;
+    if (addUserIds != null) data['add_user_ids'] = addUserIds;
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/children/$childId/gallery/custom-albums/$albumPk/',
+      data: data,
+    );
+    return res.data!;
+  }
+
+  Future<void> deleteChildCustomAlbum(int childId, int albumPk) async {
+    await _dio.delete(
+      'familychat/children/$childId/gallery/custom-albums/$albumPk/',
+    );
+  }
+
+  Future<int> addPhotosToChildCustomAlbum(
+    int childId,
+    int albumPk,
+    List<int> attachmentIds,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/children/$childId/gallery/custom-albums/$albumPk/photos/',
+      data: {'attachment_ids': attachmentIds},
+    );
+    final added = res.data?['added'];
+    if (added is int) return added;
+    return int.tryParse('$added') ?? 0;
+  }
+
+  Future<void> removePhotoFromChildCustomAlbum({
+    required int childId,
+    required int albumPk,
+    required int attachmentId,
+  }) async {
+    await _dio.delete(
+      'familychat/children/$childId/gallery/custom-albums/$albumPk/photos/$attachmentId/',
+    );
   }
 
   Future<void> deleteChildGalleryPhoto({

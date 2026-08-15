@@ -9,6 +9,7 @@ class CustomAlbumDialog extends ConsumerStatefulWidget {
   const CustomAlbumDialog({
     super.key,
     required this.userId,
+    this.childId,
     this.initialTitle = '',
     this.initialAccessMode = 'all',
     this.initialAccessUserIds = const [],
@@ -18,6 +19,7 @@ class CustomAlbumDialog extends ConsumerStatefulWidget {
   });
 
   final int userId;
+  final int? childId;
   final String initialTitle;
   final String initialAccessMode;
   final List<int> initialAccessUserIds;
@@ -28,6 +30,7 @@ class CustomAlbumDialog extends ConsumerStatefulWidget {
   static Future<bool?> show(
     BuildContext context, {
     required int userId,
+    int? childId,
     String initialTitle = '',
     String initialAccessMode = 'all',
     List<int> initialAccessUserIds = const [],
@@ -41,6 +44,7 @@ class CustomAlbumDialog extends ConsumerStatefulWidget {
         parent: ProviderScope.containerOf(context),
         child: CustomAlbumDialog(
           userId: userId,
+          childId: childId,
           initialTitle: initialTitle,
           initialAccessMode: initialAccessMode,
           initialAccessUserIds: initialAccessUserIds,
@@ -148,7 +152,29 @@ class _CustomAlbumDialogState extends ConsumerState<CustomAlbumDialog> {
       final repo = ref.read(familychatRepositoryProvider);
       final userIds = _needsMembers ? _selectedUserIds.toList() : <int>[];
       final addUserIds = _needsAddMembers ? _selectedAddUserIds.toList() : <int>[];
-      if (widget.albumPk != null) {
+      final childId = widget.childId;
+      if (childId != null) {
+        if (widget.albumPk != null) {
+          await repo.updateChildCustomAlbum(
+            childId,
+            widget.albumPk!,
+            title: title,
+            accessMode: _accessMode,
+            accessUserIds: userIds,
+            addMode: _addMode,
+            addUserIds: addUserIds,
+          );
+        } else {
+          await repo.createChildCustomAlbum(
+            childId,
+            title: title,
+            accessMode: _accessMode,
+            accessUserIds: userIds,
+            addMode: _addMode,
+            addUserIds: addUserIds,
+          );
+        }
+      } else if (widget.albumPk != null) {
         await repo.updateCustomGalleryAlbum(
           widget.userId,
           widget.albumPk!,

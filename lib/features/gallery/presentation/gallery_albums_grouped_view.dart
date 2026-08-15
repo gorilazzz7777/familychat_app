@@ -47,6 +47,7 @@ class GalleryAlbumsGroupedView extends StatefulWidget {
     this.customTabLabel = 'Мои альбомы',
     this.excludeUploadedByUserId,
     this.alwaysShowCustomGroup = false,
+    this.onOpenAlbum,
   });
 
   final List<Map<String, dynamic>> albums;
@@ -60,6 +61,8 @@ class GalleryAlbumsGroupedView extends StatefulWidget {
   final String customTabLabel;
   final int? excludeUploadedByUserId;
   final bool alwaysShowCustomGroup;
+  /// Если задан — открытие альбома делегируется сюда (например, галерея ребёнка).
+  final Future<void> Function(Map<String, dynamic> album)? onOpenAlbum;
 
   @override
   State<GalleryAlbumsGroupedView> createState() =>
@@ -245,6 +248,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
               isFamilyGallery: widget.isFamilyGallery,
               excludeUploadedByUserId: widget.excludeUploadedByUserId,
               onClosed: widget.onRefresh,
+              onOpenAlbum: widget.onOpenAlbum,
             ),
           ),
         if (_groups.isNotEmpty) ...[
@@ -285,6 +289,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
                       iconForKind: _albumIcon,
                       onAlbumLongPress: widget.onAlbumLongPress,
                       onAlbumClosed: widget.onRefresh,
+                      onOpenAlbum: widget.onOpenAlbum,
                       emptyLabel:
                           'В разделе «${selectedGroup.label}» пока нет альбомов',
                     ),
@@ -316,6 +321,7 @@ class _AllPhotosCard extends ConsumerWidget {
     required this.isFamilyGallery,
     this.excludeUploadedByUserId,
     this.onClosed,
+    this.onOpenAlbum,
   });
 
   final Map<String, dynamic> album;
@@ -324,6 +330,7 @@ class _AllPhotosCard extends ConsumerWidget {
   final bool isFamilyGallery;
   final int? excludeUploadedByUserId;
   final Future<void> Function()? onClosed;
+  final Future<void> Function(Map<String, dynamic> album)? onOpenAlbum;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -341,6 +348,11 @@ class _AllPhotosCard extends ConsumerWidget {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () async {
+          if (onOpenAlbum != null) {
+            await onOpenAlbum!(album);
+            await onClosed?.call();
+            return;
+          }
           await openProfileGalleryAlbum(
             context,
             userId: userId,
@@ -423,6 +435,7 @@ class _AlbumGrid extends StatelessWidget {
     required this.iconForKind,
     this.onAlbumLongPress,
     this.onAlbumClosed,
+    this.onOpenAlbum,
     required this.emptyLabel,
   });
 
@@ -434,6 +447,7 @@ class _AlbumGrid extends StatelessWidget {
   final IconData Function(String? kind) iconForKind;
   final void Function(Map<String, dynamic> album)? onAlbumLongPress;
   final Future<void> Function()? onAlbumClosed;
+  final Future<void> Function(Map<String, dynamic> album)? onOpenAlbum;
   final String emptyLabel;
 
   @override
@@ -469,6 +483,7 @@ class _AlbumGrid extends StatelessWidget {
           isFamilyGallery: isFamilyGallery,
           excludeUploadedByUserId: excludeUploadedByUserId,
           onClosed: onAlbumClosed,
+          onOpenAlbum: onOpenAlbum,
           onLongPress: canManage && onAlbumLongPress != null
               ? () => onAlbumLongPress!(album)
               : null,
@@ -487,6 +502,7 @@ class _AlbumCard extends StatelessWidget {
     required this.isFamilyGallery,
     this.excludeUploadedByUserId,
     this.onClosed,
+    this.onOpenAlbum,
     this.onLongPress,
   });
 
@@ -497,6 +513,7 @@ class _AlbumCard extends StatelessWidget {
   final bool isFamilyGallery;
   final int? excludeUploadedByUserId;
   final Future<void> Function()? onClosed;
+  final Future<void> Function(Map<String, dynamic> album)? onOpenAlbum;
   final VoidCallback? onLongPress;
 
   @override
@@ -519,6 +536,11 @@ class _AlbumCard extends StatelessWidget {
         onTap: albumId.isEmpty
             ? null
             : () async {
+                if (onOpenAlbum != null) {
+                  await onOpenAlbum!(album);
+                  await onClosed?.call();
+                  return;
+                }
                 await openProfileGalleryAlbum(
                   context,
                   userId: userId,
@@ -587,6 +609,18 @@ class _AlbumCover extends StatelessWidget {
         threadId: threadId,
         fit: BoxFit.cover,
       );
+    }
+    final url = (cover?['file_url'] ?? cover?['url'] ?? '').toString();
+    if (url.isNotEmpty) {
+      return Image.network(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) {
+        return ColoredBox(
+          color: Theme.of(context).colorScheme.surfaceContainerHigh,
+          child: Center(
+            child: Icon(icon,
+                size: 40, color: Theme.of(context).colorScheme.primary),
+          ),
+        );
+      });
     }
     return ColoredBox(
       color: Theme.of(context).colorScheme.surfaceContainerHigh,

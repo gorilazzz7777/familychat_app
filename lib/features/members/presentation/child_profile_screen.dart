@@ -1,16 +1,15 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import 'child_gallery_tab.dart';
 import 'child_milestone_detail_screen.dart';
 
 /// Профиль ребёнка в вёрстке Dairy: Профиль (карточка + вехи) и Галерея (альбомы).
@@ -32,19 +31,17 @@ class ChildProfileScreen extends ConsumerStatefulWidget {
 
 enum _MilestoneGroup { ahead, achieved }
 
-enum _GallerySection { albums, places, years }
-
 class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
   final _milestoneSearchCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
   final _birthCtrl = TextEditingController();
+  final _galleryKey = GlobalKey<ChildGalleryTabState>();
 
   Map<String, dynamic>? _child;
   Map<String, dynamic>? _baby;
   List<Map<String, dynamic>> _milestones = [];
-  List<Map<String, dynamic>> _albums = [];
   bool _isCustodian = false;
   bool _loading = true;
   bool _savingBaby = false;
@@ -52,7 +49,6 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
   String? _error;
   String _milestoneQuery = '';
   _MilestoneGroup _milestoneGroup = _MilestoneGroup.ahead;
-  _GallerySection _gallerySection = _GallerySection.albums;
 
   @override
   void initState() {
@@ -123,18 +119,17 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
       } catch (_) {
         diaryUnavailable = true;
       }
-      final albums = await repo.childGalleryAlbums(widget.childId);
       if (!mounted) return;
       setState(() {
         _child = child;
         _baby = baby;
         _milestones = milestones;
-        _albums = albums;
         _isCustodian = child['is_custodian'] == true;
         _diaryUnavailable = diaryUnavailable;
         _loading = false;
       });
       _syncHeaderFields();
+      unawaited(_galleryKey.currentState?.refresh() ?? Future<void>.value());
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -181,17 +176,6 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     }).toList();
   }
 
-  List<Map<String, dynamic>> get _customAlbums => _albums
-      .where((a) => a['id']?.toString() != 'all' && a['kind'] == 'custom')
-      .toList();
-
-  Map<String, dynamic>? get _allPhotosAlbum {
-    for (final a in _albums) {
-      if (a['id']?.toString() == 'all') return a;
-    }
-    return null;
-  }
-
   Future<void> _saveGender(String gender) async {
     if (!_isCustodian || _diaryUnavailable || _savingBaby) return;
     setState(() => _savingBaby = true);
@@ -218,22 +202,6 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
           code: code,
           initial: m,
           canEdit: _isCustodian && !_diaryUnavailable,
-        ),
-      ),
-    );
-    if (mounted) await _load(silent: true);
-  }
-
-  Future<void> _openAlbum(Map<String, dynamic> album) async {
-    final id = album['id']?.toString() ?? 'all';
-    final title = album['title']?.toString() ?? 'Альбом';
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => _ChildAlbumPhotosScreen(
-          childId: widget.childId,
-          albumId: id,
-          title: title,
-          isCustodian: _isCustodian,
         ),
       ),
     );
@@ -619,179 +587,6 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     );
   }
 
-  Widget _sectionChip({
-    required String label,
-    required IconData icon,
-    required bool selected,
-    required VoidCallback onTap,
-  }) {
-    final scheme = Theme.of(context).colorScheme;
-    return Expanded(
-      child: Material(
-        color: selected
-            ? scheme.primaryContainer.withValues(alpha: 0.85)
-            : scheme.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-          side: BorderSide(
-            color: selected
-                ? Colors.transparent
-                : scheme.outlineVariant.withValues(alpha: 0.7),
-          ),
-        ),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(14),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Column(
-              children: [
-                Icon(icon, size: 20, color: scheme.primary),
-                const SizedBox(height: 4),
-                Text(
-                  label,
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _galleryTab() {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final allAlbum = _allPhotosAlbum;
-    final custom = _customAlbums;
-
-    return RefreshIndicator(
-      onRefresh: () => _load(),
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
-        children: [
-          if (allAlbum != null) _AllPhotosCard(
-            album: allAlbum,
-            onTap: () => _openAlbum(allAlbum),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              _sectionChip(
-                label: 'Альбомы (${custom.length})',
-                icon: Icons.menu_book_outlined,
-                selected: _gallerySection == _GallerySection.albums,
-                onTap: () =>
-                    setState(() => _gallerySection = _GallerySection.albums),
-              ),
-              const SizedBox(width: 8),
-              _sectionChip(
-                label: 'Места (0)',
-                icon: Icons.place_outlined,
-                selected: _gallerySection == _GallerySection.places,
-                onTap: () =>
-                    setState(() => _gallerySection = _GallerySection.places),
-              ),
-              const SizedBox(width: 8),
-              _sectionChip(
-                label: 'Годы (0)',
-                icon: Icons.calendar_today_outlined,
-                selected: _gallerySection == _GallerySection.years,
-                onTap: () =>
-                    setState(() => _gallerySection = _GallerySection.years),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          if (_gallerySection != _GallerySection.albums)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 40),
-              child: Text(
-                _gallerySection == _GallerySection.places
-                    ? 'Места появятся после разметки фото'
-                    : 'Годы появятся после разметки фото',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-            )
-          else if (custom.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 40),
-              child: Text(
-                'Пока нет альбомов',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-            )
-          else
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: custom.length,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                childAspectRatio: 0.92,
-              ),
-              itemBuilder: (context, index) {
-                final album = custom[index];
-                return _AlbumCard(
-                  album: album,
-                  onTap: () => _openAlbum(album),
-                );
-              },
-            ),
-          if (_isCustodian) ...[
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: _pickAndUpload,
-              icon: const Icon(Icons.add_photo_alternate_outlined),
-              label: const Text('Добавить фото'),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Future<void> _pickAndUpload() async {
-    final picker = ImagePicker();
-    final picked = await picker.pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 92,
-    );
-    if (picked == null) return;
-    try {
-      final bytes = await picked.readAsBytes();
-      await ref.read(familychatRepositoryProvider).childGalleryUpload(
-            childId: widget.childId,
-            bytes: Uint8List.fromList(bytes),
-            filename: picked.name.isNotEmpty ? picked.name : 'photo.jpg',
-            contentType: picked.mimeType,
-          );
-      await _load(silent: true);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Фото добавлено')),
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось загрузить фото')),
-        );
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final tabBar = FamilyTabBar.build(
@@ -830,7 +625,11 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
                   controller: _tabs,
                   children: [
                     _profileTab(),
-                    _galleryTab(),
+                    ChildGalleryTab(
+                      key: _galleryKey,
+                      childId: widget.childId,
+                      isCustodian: _isCustodian,
+                    ),
                   ],
                 ),
     );
@@ -1051,251 +850,6 @@ class _AchievedMilestoneCard extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _AllPhotosCard extends StatelessWidget {
-  const _AllPhotosCard({required this.album, required this.onTap});
-
-  final Map<String, dynamic> album;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final count = album['count'] ?? 0;
-    final cover = album['cover'];
-    final coverUrl = cover is Map
-        ? (cover['file_url'] ?? cover['url'] ?? '').toString()
-        : '';
-
-    return Material(
-      color: theme.colorScheme.primaryContainer.withValues(alpha: 0.35),
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: SizedBox(
-          height: 112,
-          child: Row(
-            children: [
-              SizedBox(
-                width: 112,
-                height: 112,
-                child: coverUrl.isNotEmpty
-                    ? FamilyPublicImage(url: coverUrl, fit: BoxFit.cover)
-                    : ColoredBox(
-                        color: theme.colorScheme.primaryContainer,
-                        child: Icon(
-                          Icons.photo_library_outlined,
-                          size: 40,
-                          color: theme.colorScheme.primary,
-                        ),
-                      ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Все фото',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '$count фото',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(right: 12),
-                child: Icon(
-                  Icons.chevron_right,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _AlbumCard extends StatelessWidget {
-  const _AlbumCard({required this.album, required this.onTap});
-
-  final Map<String, dynamic> album;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final title = album['title']?.toString() ?? '';
-    final count = album['count'] ?? 0;
-    final cover = album['cover'];
-    final coverUrl = cover is Map
-        ? (cover['file_url'] ?? cover['url'] ?? '').toString()
-        : '';
-    final isVideo = cover is Map && cover['kind']?.toString() == 'video';
-
-    return Material(
-      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
-      borderRadius: BorderRadius.circular(14),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  coverUrl.isNotEmpty
-                      ? FamilyPublicImage(url: coverUrl, fit: BoxFit.cover)
-                      : ColoredBox(
-                          color: theme.colorScheme.primaryContainer
-                              .withValues(alpha: 0.5),
-                          child: Icon(
-                            Icons.photo_album_outlined,
-                            color: theme.colorScheme.primary,
-                          ),
-                        ),
-                  if (isVideo)
-                    const Center(
-                      child: CircleAvatar(
-                        radius: 18,
-                        backgroundColor: Colors.black45,
-                        child: Icon(Icons.play_arrow, color: Colors.white),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            Container(
-              color: theme.colorScheme.primaryContainer.withValues(alpha: 0.55),
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  Text(
-                    '$count фото',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ChildAlbumPhotosScreen extends ConsumerStatefulWidget {
-  const _ChildAlbumPhotosScreen({
-    required this.childId,
-    required this.albumId,
-    required this.title,
-    required this.isCustodian,
-  });
-
-  final int childId;
-  final String albumId;
-  final String title;
-  final bool isCustodian;
-
-  @override
-  ConsumerState<_ChildAlbumPhotosScreen> createState() =>
-      _ChildAlbumPhotosScreenState();
-}
-
-class _ChildAlbumPhotosScreenState
-    extends ConsumerState<_ChildAlbumPhotosScreen> {
-  List<Map<String, dynamic>> _photos = [];
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    try {
-      final gallery =
-          await ref.read(familychatRepositoryProvider).childGalleryPhotos(
-                widget.childId,
-                albumId: widget.albumId == 'all' ? null : widget.albumId,
-                limit: 100,
-              );
-      if (!mounted) return;
-      setState(() {
-        _photos = (gallery['photos'] as List?)
-                ?.cast<Map<String, dynamic>>() ??
-            [];
-        _loading = false;
-      });
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _photos.isEmpty
-              ? const Center(child: Text('Пока нет фото'))
-              : GridView.builder(
-                  padding: const EdgeInsets.all(12),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    mainAxisSpacing: 6,
-                    crossAxisSpacing: 6,
-                  ),
-                  itemCount: _photos.length,
-                  itemBuilder: (context, index) {
-                    final photo = _photos[index];
-                    final url =
-                        (photo['file_url'] ?? photo['url'] ?? '').toString();
-                    return ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: url.isEmpty
-                          ? ColoredBox(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHighest,
-                            )
-                          : FamilyPublicImage(url: url, fit: BoxFit.cover),
-                    );
-                  },
-                ),
     );
   }
 }
