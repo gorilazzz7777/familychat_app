@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -120,36 +121,13 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
       return;
     }
 
-    int? motherUserId;
-    int? fatherUserId;
-    final confirmed = await showDialog<bool>(
+    final parents = await showDialog<({int? mother, int? father})>(
       context: context,
       builder: (ctx) {
+        int? motherUserId;
+        int? fatherUserId;
         return StatefulBuilder(
           builder: (ctx, setLocal) {
-            Widget parentDropdown({
-              required String label,
-              required int? value,
-              required ValueChanged<int?> onChanged,
-            }) {
-              return DropdownButtonFormField<int?>(
-                value: value,
-                decoration: InputDecoration(labelText: label),
-                items: [
-                  const DropdownMenuItem<int?>(
-                    value: null,
-                    child: Text('Не указан'),
-                  ),
-                  for (final m in adults)
-                    DropdownMenuItem<int?>(
-                      value: m['user_id'] as int,
-                      child: Text(m['display_name']?.toString() ?? 'Участник'),
-                    ),
-                ],
-                onChanged: onChanged,
-              );
-            }
-
             return AlertDialog(
               title: const Text('Кто мама и папа?'),
               content: SingleChildScrollView(
@@ -162,15 +140,41 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                           : 'Малыш: ${_importableBabies.first['display_name'] ?? 'Малыш'}',
                     ),
                     const SizedBox(height: 16),
-                    parentDropdown(
-                      label: 'Мама',
+                    DropdownButtonFormField<int?>(
                       value: motherUserId,
+                      decoration: const InputDecoration(labelText: 'Мама'),
+                      items: [
+                        const DropdownMenuItem<int?>(
+                          value: null,
+                          child: Text('Не указан'),
+                        ),
+                        for (final m in adults)
+                          DropdownMenuItem<int?>(
+                            value: m['user_id'] as int,
+                            child: Text(
+                              m['display_name']?.toString() ?? 'Участник',
+                            ),
+                          ),
+                      ],
                       onChanged: (v) => setLocal(() => motherUserId = v),
                     ),
                     const SizedBox(height: 12),
-                    parentDropdown(
-                      label: 'Папа',
+                    DropdownButtonFormField<int?>(
                       value: fatherUserId,
+                      decoration: const InputDecoration(labelText: 'Папа'),
+                      items: [
+                        const DropdownMenuItem<int?>(
+                          value: null,
+                          child: Text('Не указан'),
+                        ),
+                        for (final m in adults)
+                          DropdownMenuItem<int?>(
+                            value: m['user_id'] as int,
+                            child: Text(
+                              m['display_name']?.toString() ?? 'Участник',
+                            ),
+                          ),
+                      ],
                       onChanged: (v) => setLocal(() => fatherUserId = v),
                     ),
                   ],
@@ -178,7 +182,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
+                  onPressed: () => Navigator.pop(ctx),
                   child: const Text('Отмена'),
                 ),
                 FilledButton(
@@ -201,7 +205,10 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                       );
                       return;
                     }
-                    Navigator.pop(ctx, true);
+                    Navigator.pop(
+                      ctx,
+                      (mother: motherUserId, father: fatherUserId),
+                    );
                   },
                   child: const Text('Импортировать'),
                 ),
@@ -211,14 +218,14 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
         );
       },
     );
-    if (confirmed != true || !mounted) return;
+    if (parents == null || !mounted) return;
 
     setState(() => _importing = true);
     try {
       final child =
           await ref.read(familychatRepositoryProvider).importChildFromDiary(
-                motherUserId: motherUserId,
-                fatherUserId: fatherUserId,
+                motherUserId: parents.mother,
+                fatherUserId: parents.father,
               );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -239,6 +246,22 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
             ),
           ),
         );
+      }
+    } on DioException catch (e) {
+      if (mounted) {
+        final data = e.response?.data;
+        String msg = 'Не удалось импортировать малыша из Dairy';
+        if (data is Map) {
+          final detail = data['detail'];
+          if (detail != null) {
+            msg = detail.toString();
+          } else if (data.isNotEmpty) {
+            msg = data.entries
+                .map((e) => '${e.key}: ${e.value}')
+                .join('; ');
+          }
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (_) {
       if (mounted) {
