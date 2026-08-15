@@ -611,7 +611,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             MaterialPageRoute<void>(
               builder: (_) => ChildProfileScreen(
                 childId: batchChildId,
-                initialTabIndex: 2,
+                initialTabIndex: 1,
               ),
             ),
           );
@@ -662,7 +662,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             MaterialPageRoute<void>(
               builder: (_) => ChildProfileScreen(
                 childId: childId,
-                initialTabIndex: 2,
+                initialTabIndex: 1,
               ),
             ),
           );
