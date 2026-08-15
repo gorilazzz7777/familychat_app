@@ -10,18 +10,17 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import 'child_milestone_detail_screen.dart';
 
 String _childGenderLabel(String? gender) {
   return switch (gender) {
-    'boy' => 'Мальчик',
-    'girl' => 'Девочка',
-    'male' => 'Мальчик',
-    'female' => 'Девочка',
+    'boy' || 'male' => 'Мальчик',
+    'girl' || 'female' => 'Девочка',
     _ => '—',
   };
 }
 
-/// Профиль ребёнка: карточка Dairy + вехи + галерея FC.
+/// Профиль ребёнка в стиле Dairy: карточка + вехи + галерея.
 class ChildProfileScreen extends ConsumerStatefulWidget {
   const ChildProfileScreen({
     super.key,
@@ -38,6 +37,8 @@ class ChildProfileScreen extends ConsumerStatefulWidget {
   ConsumerState<ChildProfileScreen> createState() => _ChildProfileScreenState();
 }
 
+enum _MilestoneGroup { ahead, achieved }
+
 class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
@@ -45,11 +46,15 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
   Map<String, dynamic>? _baby;
   List<Map<String, dynamic>> _milestones = [];
   List<Map<String, dynamic>> _photos = [];
+  List<Map<String, dynamic>> _albums = [];
+  String _albumId = 'all';
   bool _isCustodian = false;
   bool _loading = true;
   bool _uploading = false;
   bool _diaryUnavailable = false;
   String? _error;
+  String _milestoneQuery = '';
+  _MilestoneGroup _milestoneGroup = _MilestoneGroup.ahead;
 
   @override
   void initState() {
@@ -85,6 +90,7 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
         diaryUnavailable = true;
       }
       final gallery = await repo.childGalleryPhotos(widget.childId);
+      final albums = await repo.childGalleryAlbums(widget.childId);
       final photos = (gallery['photos'] as List?)
               ?.cast<Map<String, dynamic>>() ??
           const <Map<String, dynamic>>[];
@@ -94,6 +100,8 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
         _baby = baby;
         _milestones = milestones;
         _photos = photos;
+        _albums = albums;
+        _albumId = 'all';
         _isCustodian = child['is_custodian'] == true ||
             gallery['is_custodian'] == true;
         _diaryUnavailable = diaryUnavailable;
@@ -112,6 +120,36 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     }
   }
 
+  Future<void> _reloadPhotosForAlbum(String albumId) async {
+    final gallery = await ref
+        .read(familychatRepositoryProvider)
+        .childGalleryPhotos(
+          widget.childId,
+          albumId: albumId == 'all' ? null : albumId,
+        );
+    final photos =
+        (gallery['photos'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    if (!mounted) return;
+    setState(() {
+      _albumId = albumId;
+      _photos = photos;
+    });
+  }
+
+  List<Map<String, dynamic>> get _filteredMilestones {
+    final q = _milestoneQuery.trim().toLowerCase();
+    return _milestones.where((m) {
+      final achieved = m['achieved'] == true;
+      if (_milestoneGroup == _MilestoneGroup.achieved && !achieved) {
+        return false;
+      }
+      if (_milestoneGroup == _MilestoneGroup.ahead && achieved) return false;
+      if (q.isEmpty) return true;
+      final title = m['title']?.toString().toLowerCase() ?? '';
+      return title.contains(q);
+    }).toList();
+  }
+
   Future<void> _pickAndUpload() async {
     if (!_isCustodian || _uploading) return;
     final picker = ImagePicker();
@@ -123,17 +161,16 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     setState(() => _uploading = true);
     try {
       final bytes = await picked.readAsBytes();
-      final repo = ref.read(familychatRepositoryProvider);
-      await repo.childGalleryUpload(
-        childId: widget.childId,
-        bytes: Uint8List.fromList(bytes),
-        filename: picked.name.isNotEmpty ? picked.name : 'photo.jpg',
-        contentType: picked.mimeType,
-      );
-      await _load();
+      await ref.read(familychatRepositoryProvider).childGalleryUpload(
+            childId: widget.childId,
+            bytes: Uint8List.fromList(bytes),
+            filename: picked.name.isNotEmpty ? picked.name : 'photo.jpg',
+            contentType: picked.mimeType,
+          );
+      await _reloadPhotosForAlbum(_albumId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Фото добавлено в галерею ребёнка')),
+          const SnackBar(content: Text('Фото добавлено')),
         );
       }
     } catch (_) {
@@ -147,48 +184,6 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     }
   }
 
-  Future<void> _deletePhoto(Map<String, dynamic> photo) async {
-    final id = photo['id'] as int? ?? photo['attachment_id'] as int?;
-    if (id == null || !_isCustodian) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить фото?'),
-        content: const Text(
-          'Фото будет удалено и в FamilyChat, и в Dairy.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    try {
-      await ref.read(familychatRepositoryProvider).deleteChildGalleryPhoto(
-            childId: widget.childId,
-            attachmentId: id,
-          );
-      setState(() {
-        _photos = _photos
-            .where((p) => (p['id'] ?? p['attachment_id']) != id)
-            .toList();
-      });
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Не удалось удалить')),
-        );
-      }
-    }
-  }
-
   Widget _babyTab() {
     final child = _child ?? {};
     final baby = _baby;
@@ -198,35 +193,18 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
             'Малыш')
         .toString();
     final avatar = (baby?['avatar_url'] ?? child['avatar_url'] ?? '').toString();
-    final birth = (baby?['birth_date'] ?? child['birth_date'] ?? '').toString();
+    final birth = (baby?['birth_date_display'] ??
+            baby?['birth_date'] ??
+            child['birth_date'] ??
+            '')
+        .toString();
+    final age = baby?['age_label']?.toString() ?? '';
     final gender = (baby?['gender'] ?? child['gender'] ?? '').toString();
-
-    if (_diaryUnavailable) {
-      return ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          ChatAvatar(name: name, avatarUrl: avatar.isEmpty ? null : avatar, radius: 48),
-          const SizedBox(height: 16),
-          Text(name, style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 8),
-          Text(
-            'Полный профиль Dairy недоступен. Откройте приложение Dairy '
-            'под тем же аккаунтом, чтобы видеть вехи и дневник.',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-          ),
-          if (birth.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Text('Дата рождения: $birth'),
-          ],
-          Text('Пол: ${_childGenderLabel(gender)}'),
-        ],
-      );
-    }
+    final achieved = baby?['milestones_achieved_count'];
+    final total = baby?['milestones_total_count'];
 
     return ListView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
       children: [
         Center(
           child: ChatAvatar(
@@ -241,34 +219,48 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
           textAlign: TextAlign.center,
           style: Theme.of(context).textTheme.headlineSmall,
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         Text(
-          'Ребёнок семьи',
+          [
+            if (birth.isNotEmpty) birth,
+            if (age.isNotEmpty) age,
+            _childGenderLabel(gender),
+          ].where((e) => e.isNotEmpty && e != '—').join(' · '),
           textAlign: TextAlign.center,
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
         ),
-        const SizedBox(height: 20),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.cake_outlined),
-          title: const Text('Дата рождения'),
-          subtitle: Text(birth.isEmpty ? '—' : birth),
-        ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.wc_outlined),
-          title: const Text('Пол'),
-          subtitle: Text(_childGenderLabel(gender)),
-        ),
-        if (_isCustodian)
+        if (achieved != null && total != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Вехи: $achieved из $total',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+        ],
+        if (_diaryUnavailable) ...[
+          const SizedBox(height: 20),
+          Text(
+            'Полный профиль Dairy недоступен. Откройте Dairy под тем же аккаунтом.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
+        if (_isCustodian) ...[
+          const SizedBox(height: 16),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.verified_user_outlined),
             title: const Text('Вы опекун'),
-            subtitle: const Text('Можете добавлять фото в галерею ребёнка'),
+            subtitle: const Text(
+              'В календаре синхронизируются события Dairy; '
+              'остальным членам семьи виден день рождения',
+            ),
           ),
+        ],
       ],
     );
   }
@@ -279,52 +271,165 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
         child: Padding(
           padding: EdgeInsets.all(24),
           child: Text(
-            'Вехи доступны при членстве в Dairy. Откройте Dairy с этим аккаунтом.',
+            'Вехи доступны при членстве в Dairy.',
             textAlign: TextAlign.center,
           ),
         ),
       );
     }
-    if (_milestones.isEmpty) {
-      return const Center(child: Text('Вех пока нет'));
-    }
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: _milestones.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
-      itemBuilder: (context, index) {
-        final m = _milestones[index];
-        final title = m['title']?.toString() ?? m['code']?.toString() ?? 'Веха';
-        final achieved = m['achieved'] == true;
-        final achievedAt = m['achieved_at']?.toString() ?? '';
-        return ListTile(
-          leading: Icon(
-            achieved ? Icons.check_circle : Icons.radio_button_unchecked,
-            color: achieved
-                ? Theme.of(context).colorScheme.primary
-                : Theme.of(context).colorScheme.outline,
+    final items = _filteredMilestones;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: TextField(
+            decoration: const InputDecoration(
+              hintText: 'Поиск вехи',
+              prefixIcon: Icon(Icons.search),
+            ),
+            onChanged: (v) => setState(() => _milestoneQuery = v),
           ),
-          title: Text(title),
-          subtitle: achievedAt.isNotEmpty
-              ? Text(achievedAt)
-              : (achieved ? const Text('Достигнуто') : const Text('Ещё впереди')),
-          onTap: () {
-            final code = m['code']?.toString();
-            if (code == null || code.isEmpty) return;
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => _MilestoneDetailPage(code: code, title: title),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              ChoiceChip(
+                label: const Text('Впереди'),
+                selected: _milestoneGroup == _MilestoneGroup.ahead,
+                onSelected: (_) =>
+                    setState(() => _milestoneGroup = _MilestoneGroup.ahead),
               ),
-            );
-          },
-        );
-      },
+              const SizedBox(width: 8),
+              ChoiceChip(
+                label: const Text('Уже умею'),
+                selected: _milestoneGroup == _MilestoneGroup.achieved,
+                onSelected: (_) =>
+                    setState(() => _milestoneGroup = _MilestoneGroup.achieved),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: items.isEmpty
+              ? const Center(child: Text('Нет вех'))
+              : GridView.builder(
+                  padding: const EdgeInsets.all(16),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 12,
+                    crossAxisSpacing: 12,
+                    childAspectRatio: 0.92,
+                  ),
+                  itemCount: items.length,
+                  itemBuilder: (context, index) {
+                    final m = items[index];
+                    final title = m['title']?.toString() ?? 'Веха';
+                    final achieved = m['achieved'] == true;
+                    final cover = m['cover_url']?.toString() ?? '';
+                    final when = m['achieved_at_display']?.toString() ??
+                        m['achieved_at']?.toString() ??
+                        '';
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(16),
+                      onTap: () async {
+                        final code = m['code']?.toString();
+                        if (code == null || code.isEmpty) return;
+                        await Navigator.of(context).push<void>(
+                          MaterialPageRoute<void>(
+                            builder: (_) => ChildMilestoneDetailScreen(
+                              code: code,
+                              initial: m,
+                              canEdit: _isCustodian && !_diaryUnavailable,
+                            ),
+                          ),
+                        );
+                        await _load();
+                      },
+                      child: Ink(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest
+                              .withValues(alpha: 0.55),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: cover.isEmpty
+                                    ? Center(
+                                        child: Icon(
+                                          achieved
+                                              ? Icons.check_circle
+                                              : Icons.flag_outlined,
+                                          size: 36,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary,
+                                        ),
+                                      )
+                                    : ClipRRect(
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: FamilyPublicImage(
+                                          url: cover,
+                                          fit: BoxFit.cover,
+                                        ),
+                                      ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              if (when.isNotEmpty)
+                                Text(
+                                  when,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 
   Widget _galleryTab() {
     return Column(
       children: [
+        if (_albums.isNotEmpty)
+          SizedBox(
+            height: 48,
+            child: ListView.separated(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+              scrollDirection: Axis.horizontal,
+              itemCount: _albums.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final album = _albums[index];
+                final id = album['id']?.toString() ?? 'all';
+                final title = album['title']?.toString() ?? 'Альбом';
+                final selected = id == _albumId;
+                return ChoiceChip(
+                  label: Text(title),
+                  selected: selected,
+                  onSelected: (_) => _reloadPhotosForAlbum(id),
+                );
+              },
+            ),
+          ),
         if (_isCustodian)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -356,24 +461,17 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
                   itemCount: _photos.length,
                   itemBuilder: (context, index) {
                     final photo = _photos[index];
-                    final url = (photo['file_url'] ?? photo['url'] ?? '')
-                        .toString();
-                    return GestureDetector(
-                      onLongPress:
-                          _isCustodian ? () => _deletePhoto(photo) : null,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: url.isEmpty
-                            ? ColoredBox(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .surfaceContainerHighest,
-                              )
-                            : FamilyPublicImage(
-                                url: url,
-                                fit: BoxFit.cover,
-                              ),
-                      ),
+                    final url =
+                        (photo['file_url'] ?? photo['url'] ?? '').toString();
+                    return ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: url.isEmpty
+                          ? ColoredBox(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest,
+                            )
+                          : FamilyPublicImage(url: url, fit: BoxFit.cover),
                     );
                   },
                 ),
@@ -384,7 +482,10 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
 
   @override
   Widget build(BuildContext context) {
-    final name = (_child?['display_name'] ?? 'Ребёнок').toString();
+    final name = (_baby?['display_name'] ??
+            _child?['display_name'] ??
+            'Ребёнок')
+        .toString();
     final tabBar = FamilyTabBar.build(
       controller: _tabs,
       tabs: const [
@@ -426,75 +527,6 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
                     _galleryTab(),
                   ],
                 ),
-    );
-  }
-}
-
-class _MilestoneDetailPage extends ConsumerStatefulWidget {
-  const _MilestoneDetailPage({required this.code, required this.title});
-
-  final String code;
-  final String title;
-
-  @override
-  ConsumerState<_MilestoneDetailPage> createState() =>
-      _MilestoneDetailPageState();
-}
-
-class _MilestoneDetailPageState extends ConsumerState<_MilestoneDetailPage> {
-  Map<String, dynamic>? _data;
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final data = await ref
-          .read(familychatRepositoryProvider)
-          .diaryMilestoneDetail(widget.code);
-      if (!mounted) return;
-      setState(() {
-        _data = data;
-        _loading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final note = _data?['note']?.toString() ?? '';
-    final achieved = _data?['achieved'] == true;
-    final achievedAt = _data?['achieved_at']?.toString() ?? '';
-    return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(20),
-              children: [
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(
-                    achieved ? Icons.check_circle : Icons.radio_button_unchecked,
-                  ),
-                  title: Text(achieved ? 'Достигнуто' : 'Ещё не отмечено'),
-                  subtitle: achievedAt.isNotEmpty ? Text(achievedAt) : null,
-                ),
-                if (note.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  Text('Заметка', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 4),
-                  Text(note),
-                ],
-              ],
-            ),
     );
   }
 }

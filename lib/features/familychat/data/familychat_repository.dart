@@ -292,9 +292,16 @@ class FamilyChatRepository {
     return babies.cast<Map<String, dynamic>>();
   }
 
-  Future<Map<String, dynamic>> importChildFromDiary() async {
+  Future<Map<String, dynamic>> importChildFromDiary({
+    int? motherUserId,
+    int? fatherUserId,
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/children/import/',
+      data: {
+        if (motherUserId != null) 'mother_user_id': motherUserId,
+        if (fatherUserId != null) 'father_user_id': fatherUserId,
+      },
     );
     return res.data ?? {};
   }
@@ -310,12 +317,14 @@ class FamilyChatRepository {
     int childId, {
     int limit = 50,
     int? beforeId,
+    String? albumId,
   }) async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/children/$childId/gallery/photos/',
       queryParameters: {
         'limit': limit,
         if (beforeId != null) 'before_id': beforeId,
+        if (albumId != null && albumId.isNotEmpty) 'album_id': albumId,
       },
     );
     return res.data ?? {};
@@ -395,6 +404,34 @@ class FamilyChatRepository {
       'littleone-diary/milestones/$code/',
     );
     return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> patchDiaryMilestone(
+    String code,
+    Map<String, dynamic> data,
+  ) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'littleone-diary/milestones/$code/',
+      data: data,
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> patchDiaryBaby(Map<String, dynamic> data) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'littleone-diary/baby/',
+      data: data,
+    );
+    return res.data ?? {};
+  }
+
+  Future<List<Map<String, dynamic>>> childGalleryAlbums(int childId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/children/$childId/gallery/albums/',
+    );
+    final albums = res.data?['albums'];
+    if (albums is! List) return [];
+    return albums.cast<Map<String, dynamic>>();
   }
 
   Future<Map<String, dynamic>> familyTree() async {

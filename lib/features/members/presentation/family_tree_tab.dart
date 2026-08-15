@@ -8,6 +8,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import 'child_profile_screen.dart';
 import 'family_tree_graph.dart';
 import 'kinship_link_sheet.dart';
 import 'member_profile_screen.dart';
@@ -257,10 +258,19 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
   }
 
   void _openProfile(TreePerson person) {
+    if (person.isChild && person.childId != null) {
+      Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChildProfileScreen(childId: person.childId!),
+        ),
+      );
+      return;
+    }
     if (person.userId == widget.currentUserId) {
       widget.onOpenOwnProfile?.call();
       return;
     }
+    if (person.userId <= 0) return;
     Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => MemberProfileScreen(

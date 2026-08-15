@@ -110,10 +110,116 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
 
   Future<void> _importBaby() async {
     if (_importing) return;
+    final adults = _members
+        .where((m) => m['is_child'] != true && m['user_id'] is int)
+        .toList();
+    if (adults.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('В семье нет участников для роли родителей')),
+      );
+      return;
+    }
+
+    int? motherUserId;
+    int? fatherUserId;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            Widget parentDropdown({
+              required String label,
+              required int? value,
+              required ValueChanged<int?> onChanged,
+            }) {
+              return DropdownButtonFormField<int?>(
+                value: value,
+                decoration: InputDecoration(labelText: label),
+                items: [
+                  const DropdownMenuItem<int?>(
+                    value: null,
+                    child: Text('Не указан'),
+                  ),
+                  for (final m in adults)
+                    DropdownMenuItem<int?>(
+                      value: m['user_id'] as int,
+                      child: Text(m['display_name']?.toString() ?? 'Участник'),
+                    ),
+                ],
+                onChanged: onChanged,
+              );
+            }
+
+            return AlertDialog(
+              title: const Text('Кто мама и папа?'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _importableBabies.isEmpty
+                          ? 'Укажите родителей малыша'
+                          : 'Малыш: ${_importableBabies.first['display_name'] ?? 'Малыш'}',
+                    ),
+                    const SizedBox(height: 16),
+                    parentDropdown(
+                      label: 'Мама',
+                      value: motherUserId,
+                      onChanged: (v) => setLocal(() => motherUserId = v),
+                    ),
+                    const SizedBox(height: 12),
+                    parentDropdown(
+                      label: 'Папа',
+                      value: fatherUserId,
+                      onChanged: (v) => setLocal(() => fatherUserId = v),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Отмена'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    if (motherUserId == null && fatherUserId == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Укажите хотя бы одного родителя'),
+                        ),
+                      );
+                      return;
+                    }
+                    if (motherUserId != null &&
+                        fatherUserId != null &&
+                        motherUserId == fatherUserId) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Мама и папа должны быть разными'),
+                        ),
+                      );
+                      return;
+                    }
+                    Navigator.pop(ctx, true);
+                  },
+                  child: const Text('Импортировать'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+
     setState(() => _importing = true);
     try {
       final child =
-          await ref.read(familychatRepositoryProvider).importChildFromDiary();
+          await ref.read(familychatRepositoryProvider).importChildFromDiary(
+                motherUserId: motherUserId,
+                fatherUserId: fatherUserId,
+              );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

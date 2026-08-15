@@ -9,6 +9,8 @@ class TreePerson {
     required this.displayName,
     required this.avatarUrl,
     required this.gender,
+    this.isChild = false,
+    this.childId,
   });
 
   final int personId;
@@ -16,16 +18,23 @@ class TreePerson {
   final String displayName;
   final String avatarUrl;
   final String gender;
+  final bool isChild;
+  final int? childId;
 
   factory TreePerson.fromJson(Map<String, dynamic> json) {
     final personId = json['person_id'];
     final userId = json['user_id'];
+    final childIdRaw = json['child_id'];
     return TreePerson(
       personId: personId is int ? personId : int.tryParse('$personId') ?? 0,
       userId: userId is int ? userId : int.tryParse('$userId') ?? 0,
       displayName: json['display_name']?.toString() ?? '',
       avatarUrl: json['avatar_url']?.toString() ?? '',
       gender: json['gender']?.toString() ?? '',
+      isChild: json['is_child'] == true,
+      childId: childIdRaw is int
+          ? childIdRaw
+          : int.tryParse('$childIdRaw'),
     );
   }
 }
