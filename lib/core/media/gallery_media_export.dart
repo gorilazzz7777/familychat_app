@@ -12,8 +12,17 @@ import 'gallery_media_utils.dart';
 
 /// Экспорт фото/видео галереи: share из кэша и сохранение в папку приложения.
 abstract final class GalleryMediaExport {
-  /// Имя альбома/папки в галерее телефона.
+  /// Имя альбома/папки в галерее телефона (FamilyChat).
   static const String appAlbumName = 'FamilyChat';
+
+  /// Партнёрский альбом Dairy: те же файлы могли уже лежать там после sync.
+  static const String diaryPartnerAlbumName = 'LittleOne';
+
+  /// Альбомы, в которых ищем уже сохранённый файл по имени (сначала свой).
+  static const List<String> localLookupAlbumNames = [
+    appAlbumName,
+    diaryPartnerAlbumName,
+  ];
 
   /// Session cache: normalized filename -> MediaStore / Photos asset id.
   static final Map<String, String> _knownAppAlbumAssetIds = {};
@@ -45,7 +54,7 @@ abstract final class GalleryMediaExport {
     _knownAppAlbumAssetIds[key] = assetId;
   }
 
-  /// Найти уже сохранённый файл в альбоме FamilyChat с тем же именем.
+  /// Найти уже сохранённый файл в FamilyChat или LittleOne с тем же именем.
   static Future<AssetEntity?> findExistingInAppAlbum(String filename) async {
     final want = normalizeAlbumFilename(filename);
     if (want.isEmpty) return null;
@@ -68,34 +77,49 @@ abstract final class GalleryMediaExport {
         type: RequestType.common,
         filterOption: filter,
       );
-      AssetPathEntity? album;
-      for (final path in paths) {
-        if (path.name == appAlbumName) {
-          album = path;
-          break;
+      final albums = <AssetPathEntity>[];
+      for (final albumName in localLookupAlbumNames) {
+        for (final path in paths) {
+          if (path.name == albumName) {
+            albums.add(path);
+            break;
+          }
         }
       }
-      if (album == null) return null;
+      if (albums.isEmpty) return null;
 
-      final count = await album.assetCountAsync;
-      const pageSize = 100;
-      for (var start = 0; start < count; start += pageSize) {
-        final end = start + pageSize > count ? count : start + pageSize;
-        final assets = await album.getAssetListRange(start: start, end: end);
-        for (final asset in assets) {
-          var title = asset.title?.trim() ?? '';
-          if (title.isEmpty) {
-            try {
-              title = (await asset.titleAsync).trim();
-            } catch (_) {}
-          }
-          if (normalizeAlbumFilename(title) != want) continue;
-          rememberAppAlbumAsset(filename, asset.id);
-          return asset;
+      for (final album in albums) {
+        final found = await _findAssetInAlbum(album, want);
+        if (found != null) {
+          rememberAppAlbumAsset(filename, found.id);
+          return found;
         }
       }
     } catch (e) {
       debugPrint('[GalleryMediaExport] findExisting failed: $e');
+    }
+    return null;
+  }
+
+  static Future<AssetEntity?> _findAssetInAlbum(
+    AssetPathEntity album,
+    String wantNormalized,
+  ) async {
+    final count = await album.assetCountAsync;
+    const pageSize = 100;
+    for (var start = 0; start < count; start += pageSize) {
+      final end = start + pageSize > count ? count : start + pageSize;
+      final assets = await album.getAssetListRange(start: start, end: end);
+      for (final asset in assets) {
+        var title = asset.title?.trim() ?? '';
+        if (title.isEmpty) {
+          try {
+            title = (await asset.titleAsync).trim();
+          } catch (_) {}
+        }
+        if (normalizeAlbumFilename(title) != wantNormalized) continue;
+        return asset;
+      }
     }
     return null;
   }

@@ -11,6 +11,7 @@ import '../../../core/widgets/family_tab_bar.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'child_gallery_tab.dart';
 import 'child_milestone_detail_screen.dart';
+import 'child_milestone_view_screen.dart';
 
 /// Профиль ребёнка в вёрстке Dairy: Профиль (карточка + вехи) и Галерея (альбомы).
 class ChildProfileScreen extends ConsumerStatefulWidget {
@@ -196,15 +197,28 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
   Future<void> _openMilestone(Map<String, dynamic> m) async {
     final code = m['code']?.toString();
     if (code == null || code.isEmpty) return;
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => ChildMilestoneDetailScreen(
-          code: code,
-          initial: m,
-          canEdit: _isCustodian && !_diaryUnavailable,
+    final canEdit = _isCustodian && !_diaryUnavailable;
+    if (m['achieved'] == true) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChildMilestoneViewScreen(
+            code: code,
+            initialTitle: m['title']?.toString(),
+            canEdit: canEdit,
+          ),
         ),
-      ),
-    );
+      );
+    } else {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChildMilestoneDetailScreen(
+            code: code,
+            initial: m,
+            canEdit: canEdit,
+          ),
+        ),
+      );
+    }
     if (mounted) await _load(silent: true);
   }
 

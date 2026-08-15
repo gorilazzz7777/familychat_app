@@ -47,7 +47,7 @@ abstract final class GalleryDeviceMediaStore {
   static bool isGalleryMedia(Map<String, dynamic> attachment) =>
       isImageAttachment(attachment) || isVideoAttachment(attachment);
 
-  /// Уже лежит в Pictures/FamilyChat — вернуть путь и asset id без повторного save.
+  /// Уже лежит в Pictures/FamilyChat или LittleOne — путь без повторного save.
   static Future<Map<String, dynamic>?> linkExistingInAlbum(
     Map<String, dynamic> attachment,
   ) async {
@@ -93,6 +93,10 @@ abstract final class GalleryDeviceMediaStore {
         if (url.isNotEmpty) 'server_url': url,
       };
     }
+    // Сначала ищем локальную копию в FamilyChat / LittleOne (Dairy).
+    final linked = await linkExistingInAlbum(attachment);
+    if (linked != null) return linked;
+
     final video = isVideoAttachment(attachment);
     if (video && !downloadVideo) return null;
     if (url.isEmpty) return null;

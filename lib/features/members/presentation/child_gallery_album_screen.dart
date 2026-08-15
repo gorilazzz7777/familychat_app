@@ -3,9 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/media/media_incoming_sync.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
-import '../../../core/widgets/family_public_image.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../../gallery/presentation/gallery_media_thumbnail.dart';
@@ -105,6 +106,8 @@ class _ChildGalleryAlbumScreenState
       final batch = (gallery['photos'] as List?)
               ?.cast<Map<String, dynamic>>() ??
           const <Map<String, dynamic>>[];
+      MediaLocalIndex.hydrateAttachments(batch);
+      unawaited(MediaIncomingSync.ensureGalleryPhotos(batch));
       setState(() {
         if (reset) {
           _photos
@@ -152,13 +155,24 @@ class _ChildGalleryAlbumScreenState
       for (final item in items) {
         if (item.kind != 'image' && item.kind != 'video') continue;
         try {
-          await repo.childGalleryUpload(
+          final uploaded = await repo.childGalleryUpload(
             childId: widget.childId,
             bytes: item.bytes,
             filename: item.filename,
             contentType: item.contentType,
             albumPk: widget.customAlbumPk,
           );
+          final id = uploaded['id'];
+          final attachmentId = id is int ? id : int.tryParse('$id');
+          final localPath = item.localPath?.trim() ?? '';
+          if (attachmentId != null && localPath.isNotEmpty) {
+            await MediaLocalIndex.saveOutgoing(
+              attachmentId: attachmentId,
+              localPath: localPath,
+              filename: item.filename,
+              kind: item.kind,
+            );
+          }
           ok++;
         } catch (_) {
           fail++;
@@ -294,19 +308,11 @@ class _ChildGalleryAlbumScreenState
 
   Widget _thumb(Map<String, dynamic> photo) {
     final threadId = photo['thread_id'];
-    if (threadId is int) {
-      return GalleryMediaThumbnail(
-        attachment: photo,
-        threadId: threadId,
-        fit: BoxFit.cover,
-      );
-    }
-    final url = (photo['file_url'] ?? photo['url'] ?? '').toString();
-    if (url.isNotEmpty) {
-      return FamilyPublicImage(url: url, fit: BoxFit.cover);
-    }
-    return ColoredBox(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+    final tid = threadId is int ? threadId : int.tryParse('$threadId');
+    return GalleryMediaThumbnail(
+      attachment: photo,
+      threadId: tid,
+      fit: BoxFit.cover,
     );
   }
 
