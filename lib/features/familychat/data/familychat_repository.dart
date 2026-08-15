@@ -500,6 +500,31 @@ class FamilyChatRepository {
     return res.data ?? {};
   }
 
+  Future<Map<String, dynamic>> createScrapbookShare() async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'littleone-diary/scrapbook/share/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> publicScrapbook(String token) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'littleone-diary/public/scrapbook/$token/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> saveMilestoneMediaLayouts(
+    String code,
+    Map<String, dynamic> layouts,
+  ) async {
+    final res = await _dio.put<Map<String, dynamic>>(
+      'littleone-diary/milestones/$code/media-layouts/',
+      data: {'layouts': layouts},
+    );
+    return res.data ?? {};
+  }
+
   Future<List<Map<String, dynamic>>> childGalleryAlbums(int childId) async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/children/$childId/gallery/albums/',

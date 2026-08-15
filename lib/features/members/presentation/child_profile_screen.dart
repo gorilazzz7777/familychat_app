@@ -12,6 +12,7 @@ import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'child_gallery_tab.dart';
 import 'child_milestone_detail_screen.dart';
 import 'child_milestone_view_screen.dart';
+import 'scrapbook/milestone_scrapbook_screen.dart';
 
 /// Профиль ребёнка в вёрстке Dairy: Профиль (карточка + вехи) и Галерея (альбомы).
 class ChildProfileScreen extends ConsumerStatefulWidget {
@@ -258,8 +259,24 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () {
-          setState(() => _milestoneGroup = _MilestoneGroup.achieved);
+        onTap: () async {
+          if (_diaryUnavailable) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Дневник недоступен для этого профиля'),
+              ),
+            );
+            return;
+          }
+          await openMilestoneScrapbook(
+            context,
+            babyName: _displayName,
+            milestones: _milestones,
+            birthDate: scrapbookBirthDateFromBaby(_baby),
+            babyAvatarUrl: _avatarUrl.isEmpty ? null : _avatarUrl,
+          );
+          if (mounted) await _load(silent: true);
         },
         borderRadius: BorderRadius.circular(20),
         child: Ink(
