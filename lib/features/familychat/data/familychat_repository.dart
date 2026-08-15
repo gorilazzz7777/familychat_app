@@ -278,6 +278,125 @@ class FamilyChatRepository {
     return (res.data ?? []).cast<Map<String, dynamic>>();
   }
 
+  Future<List<Map<String, dynamic>>> children() async {
+    final res = await _dio.get<List<dynamic>>('familychat/children/');
+    return (res.data ?? []).cast<Map<String, dynamic>>();
+  }
+
+  Future<List<Map<String, dynamic>>> childrenImportable() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/children/importable/',
+    );
+    final babies = res.data?['babies'];
+    if (babies is! List) return [];
+    return babies.cast<Map<String, dynamic>>();
+  }
+
+  Future<Map<String, dynamic>> importChildFromDiary() async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/children/import/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> childDetail(int childId) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/children/$childId/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> childGalleryPhotos(
+    int childId, {
+    int limit = 50,
+    int? beforeId,
+  }) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/children/$childId/gallery/photos/',
+      queryParameters: {
+        'limit': limit,
+        if (beforeId != null) 'before_id': beforeId,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> childGalleryUpload({
+    required int childId,
+    required Uint8List bytes,
+    required String filename,
+    String? contentType,
+    String? batchId,
+    Map<String, dynamic>? photoExif,
+    void Function(int sent, int total)? onSendProgress,
+  }) async {
+    final form = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        bytes,
+        filename: filename,
+        contentType:
+            contentType != null ? DioMediaType.parse(contentType) : null,
+      ),
+      if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
+      if (photoExif != null && photoExif.isNotEmpty)
+        'photo_exif': jsonEncode(photoExif),
+    });
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/children/$childId/gallery/upload/',
+      data: form,
+      onSendProgress: onSendProgress,
+      options: Options(
+        sendTimeout: const Duration(minutes: 10),
+        receiveTimeout: const Duration(minutes: 10),
+      ),
+    );
+    return res.data!;
+  }
+
+  Future<void> deleteChildGalleryPhoto({
+    required int childId,
+    required int attachmentId,
+  }) async {
+    await _dio.delete(
+      'familychat/children/$childId/gallery/photos/$attachmentId/',
+    );
+  }
+
+  /// LittleOne Diary baby card (requires diary membership).
+  Future<Map<String, dynamic>?> diaryBaby() async {
+    try {
+      final res = await _dio.get<Map<String, dynamic>>('littleone-diary/baby/');
+      return res.data;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 403 || e.response?.statusCode == 404) {
+        return null;
+      }
+      rethrow;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> diaryMilestones() async {
+    try {
+      final res =
+          await _dio.get<Map<String, dynamic>>('littleone-diary/milestones/');
+      final list = res.data?['milestones'];
+      if (list is! List) return [];
+      return list.cast<Map<String, dynamic>>();
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 403 || e.response?.statusCode == 404) {
+        return [];
+      }
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> diaryMilestoneDetail(String code) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'littleone-diary/milestones/$code/',
+    );
+    return res.data ?? {};
+  }
+
   Future<Map<String, dynamic>> familyTree() async {
     final res =
         await _dio.get<Map<String, dynamic>>('familychat/members/tree/');

@@ -10,6 +10,7 @@ import '../../../core/widgets/family_tab_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../location/presentation/family_map_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import 'child_profile_screen.dart';
 import 'family_invite_flow.dart';
 import 'family_tree_tab.dart';
 import 'member_profile_screen.dart';
@@ -34,7 +35,9 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
   List<Map<String, dynamic>> _members = [];
+  List<Map<String, dynamic>> _importableBabies = [];
   bool _loading = true;
+  bool _importing = false;
   String _query = '';
   String _relationFilter = 'all';
 
@@ -76,11 +79,21 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
     try {
       final list = await repo.members();
       await FamilyChatLocalCache.saveChatMembers(list);
+      var importable = <Map<String, dynamic>>[];
+      final hasChild = list.any((m) => m['is_child'] == true);
+      if (!hasChild) {
+        try {
+          importable = await repo.childrenImportable();
+        } catch (_) {}
+      }
       if (!mounted) return;
       final same = _membersFingerprint(_members) == _membersFingerprint(list);
-      if (same && !_loading) return;
+      if (same && !_loading && importable.length == _importableBabies.length) {
+        return;
+      }
       setState(() {
         _members = list;
+        _importableBabies = importable;
         _loading = false;
       });
     } catch (_) {
@@ -91,11 +104,63 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
   String _membersFingerprint(List<Map<String, dynamic>> members) {
     return members
         .map((m) =>
-            '${m['user_id']}|${m['display_name']}|${m['avatar_url']}|${m['kinship_label']}|${m['is_online']}')
+            '${m['user_id']}|${m['child_id']}|${m['display_name']}|${m['avatar_url']}|${m['kinship_label']}|${m['is_online']}')
         .join(';');
   }
 
+  Future<void> _importBaby() async {
+    if (_importing) return;
+    setState(() => _importing = true);
+    try {
+      final child =
+          await ref.read(familychatRepositoryProvider).importChildFromDiary();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${child['display_name'] ?? 'Малыш'} добавлен в семью',
+          ),
+        ),
+      );
+      await _load();
+      final childId = child['id'] as int? ?? child['child_id'] as int?;
+      if (childId != null && mounted) {
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => ChildProfileScreen(
+              childId: childId,
+              initialMember: child,
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Не удалось импортировать малыша из Dairy'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
   void _openMember(Map<String, dynamic> member) {
+    if (member['is_child'] == true) {
+      final childId = member['child_id'] as int? ?? member['id'] as int?;
+      if (childId == null) return;
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => ChildProfileScreen(
+            childId: childId,
+            initialMember: member,
+          ),
+        ),
+      );
+      return;
+    }
     final userId = member['user_id'] as int?;
     if (userId == null) return;
     if (userId == widget.currentUserId) {
@@ -135,6 +200,8 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
             hay.contains('отец') ||
             hay.contains('сын') ||
             hay.contains('доч') ||
+            hay.contains('ребён') ||
+            hay.contains('ребен') ||
             hay.contains('брат') ||
             hay.contains('сестр') ||
             hay.contains('муж') ||
@@ -145,6 +212,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
             hay.contains('sister') ||
             hay.contains('son') ||
             hay.contains('daughter') ||
+            hay.contains('child') ||
             hay.contains('spouse');
       case 'cousin':
         return hay.contains('двоюр') || hay.contains('cousin');
@@ -252,6 +320,31 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                     ),
                     const Divider(height: 1),
                     const SizedBox(height: 8),
+                    if (_importableBabies.isNotEmpty) ...[
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(
+                          Icons.child_care_outlined,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        title: const Text('Импортировать малыша из Dairy'),
+                        subtitle: Text(
+                          _importableBabies.first['display_name']?.toString() ??
+                              'Добавить ребёнка в семью',
+                        ),
+                        trailing: _importing
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.chevron_right),
+                        onTap: _importing ? null : _importBaby,
+                      ),
+                      const Divider(height: 1),
+                      const SizedBox(height: 8),
+                    ],
                     TextField(
                       decoration: InputDecoration(
                         hintText: 'Поиск',

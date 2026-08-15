@@ -10,6 +10,7 @@ import '../../../core/media/media_local_index.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
+import '../../members/presentation/child_profile_screen.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
@@ -600,7 +601,24 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
 
     switch (kind) {
       case 'photo_batch_uploaded':
-        await _openPhotoBatch(event);
+        final batchChildRaw = payload['child_id'];
+        final batchChildId = batchChildRaw is int
+            ? batchChildRaw
+            : int.tryParse('$batchChildRaw');
+        if (batchChildId != null) {
+          if (!mounted) return;
+          await Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => ChildProfileScreen(
+                childId: batchChildId,
+                initialTabIndex: 2,
+              ),
+            ),
+          );
+          if (mounted) await refresh(silent: true);
+        } else {
+          await _openPhotoBatch(event);
+        }
       case 'message_sent':
         final threadId = payload['thread_id'];
         if (threadId is! int) return;
@@ -634,18 +652,33 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
         );
         if (mounted) await refresh(silent: true);
       case 'photo_uploaded':
+        final childIdRaw = payload['child_id'];
+        final childId = childIdRaw is int
+            ? childIdRaw
+            : int.tryParse('$childIdRaw');
         if (!mounted) return;
-        await Navigator.of(context).push<void>(
-          MaterialPageRoute<void>(
-            builder: (_) => ProfileGalleryAlbumScreen(
-              userId: currentUserId,
-              albumId: 'all',
-              title: 'Галерея',
-              isOwnGallery: true,
-              isFamilyGallery: true,
+        if (childId != null) {
+          await Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => ChildProfileScreen(
+                childId: childId,
+                initialTabIndex: 2,
+              ),
             ),
-          ),
-        );
+          );
+        } else {
+          await Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => ProfileGalleryAlbumScreen(
+                userId: currentUserId,
+                albumId: 'all',
+                title: 'Галерея',
+                isOwnGallery: true,
+                isFamilyGallery: true,
+              ),
+            ),
+          );
+        }
         if (mounted) await refresh(silent: true);
       case 'media_liked':
       case 'media_commented':
