@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart';
 
 import 'chat_database_connection.dart';
 import 'chat_tables.dart';
@@ -30,8 +31,10 @@ class ChatDatabase extends _$ChatDatabase {
   static const metaMigratedOutbox = 'migrated_outbox_v1';
   static const metaMigratedMediaIndex = 'migrated_media_index_v1';
 
-  /// Native + web (Wasm) via drift_flutter.
-  static bool get isSupported => true;
+  /// Native SQLite only for now. Web Wasm path is prepared (assets + connection)
+  /// but enabling it made hub local-first with an empty/failed store → no chats.
+  /// Keep `!kIsWeb` until Wasm open is verified in production.
+  static bool get isSupported => !kIsWeb;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(

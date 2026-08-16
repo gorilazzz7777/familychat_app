@@ -950,15 +950,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
         appBar: FamilyAppBar.build(
           title: '$titlePrefix: ${widget.title}',
         ),
-        body: kIsWeb
-            ? Align(
-                alignment: Alignment.topCenter,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 560),
-                  child: stage,
-                ),
-              )
-            : stage,
+        body: stage,
       ),
     );
   }

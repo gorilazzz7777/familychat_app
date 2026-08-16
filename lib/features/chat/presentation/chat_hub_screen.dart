@@ -77,11 +77,15 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   /// Обновить список чатов (например при возврате на вкладку).
-  Future<void> refresh({bool silent = true}) {
+  Future<void> refresh({bool silent = true}) async {
     if (_localFirst) {
-      return ChatSyncService.instance.syncHub(prefetchMessages: true);
+      await ChatSyncService.instance.syncHub(prefetchMessages: true);
+      if (_threads.isEmpty) {
+        await _load(silent: silent);
+      }
+      return;
     }
-    return _load(silent: silent);
+    await _load(silent: silent);
   }
 
   @override
@@ -96,9 +100,26 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     unawaited(_restoreTabOrder());
     if (_localFirst) {
       _bindLocalStore();
-      unawaited(ChatSyncService.instance.syncHub(prefetchMessages: true));
+      unawaited(_bootstrapLocalHub());
     } else {
       _load();
+    }
+  }
+
+  /// Open SQLite, sync via ChatSyncService when ready, else HTTP [_load].
+  Future<void> _bootstrapLocalHub() async {
+    final db = await ChatLocalStore.instance.ensureOpen();
+    if (!mounted) return;
+    if (db == null) {
+      // Drift/Wasm failed — fall back to network list.
+      await _load(silent: false);
+      return;
+    }
+    await ChatSyncService.instance.syncHub(prefetchMessages: true);
+    if (!mounted) return;
+    if (_threads.isEmpty) {
+      // Sync may have no-op'd before ChatSyncService.start() set the repo.
+      await _load(silent: true);
     }
   }
 
@@ -261,9 +282,18 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   Future<void> _hydrateFromCache() async {
-    final cachedThreads = await ChatLocalStore.instance.readThreads();
-    if (cachedThreads.isEmpty || !mounted) return;
-    final cachedMembers = await ChatLocalStore.instance.readMembers();
+    List<Map<String, dynamic>> cachedThreads = const [];
+    List<Map<String, dynamic>> cachedMembers = const [];
+    if (ChatLocalStore.isSupported) {
+      cachedThreads = await ChatLocalStore.instance.readThreads();
+      if (cachedThreads.isEmpty) return;
+      cachedMembers = await ChatLocalStore.instance.readMembers();
+    } else {
+      cachedThreads = await FamilyChatLocalCache.readChatThreads() ?? const [];
+      if (cachedThreads.isEmpty || !mounted) return;
+      cachedMembers = await FamilyChatLocalCache.readChatMembers() ?? const [];
+    }
+    if (!mounted) return;
     setState(() {
       _threads = _sortedThreads(cachedThreads);
       if (cachedMembers.isNotEmpty) {
@@ -306,8 +336,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       ]);
       final list = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
-      await ChatLocalStore.instance.replaceThreads(list);
-      await ChatLocalStore.instance.replaceMembers(members);
+      if (ChatLocalStore.isSupported) {
+        await ChatLocalStore.instance.replaceThreads(list);
+        await ChatLocalStore.instance.replaceMembers(members);
+      } else {
+        await FamilyChatLocalCache.saveChatThreads(list);
+        await FamilyChatLocalCache.saveChatMembers(members);
+      }
       if (!mounted) return;
       final sorted = _sortedThreads(list);
       final sameThreads = _threadsFingerprint(_threads) ==

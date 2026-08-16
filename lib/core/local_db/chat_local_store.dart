@@ -7,7 +7,7 @@ import 'chat_database.dart';
 import 'chat_database_connection.dart';
 import 'chat_json_migrator.dart';
 
-/// Native SQLite facade for chat threads/messages. Web: unsupported.
+/// Native SQLite facade for chat threads/messages. Web: unsupported for now.
 class ChatLocalStore {
   ChatLocalStore._();
 

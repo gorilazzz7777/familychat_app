@@ -62,8 +62,34 @@ class FamilyChatApp extends ConsumerWidget {
       ],
       theme: AppTheme.lightTheme(seedColor),
       builder: (context, child) {
-        return ScreenTimeoutGuard(
+        final content = ScreenTimeoutGuard(
           child: child ?? const SizedBox.shrink(),
+        );
+        if (!kIsWeb) return content;
+
+        // Phone-width column on desktop so the UI does not stretch edge-to-edge.
+        const maxWidth = 560.0;
+        final mq = MediaQuery.of(context);
+        if (mq.size.width <= maxWidth) return content;
+
+        final scheme = Theme.of(context).colorScheme;
+        // Explicit height is required: Center alone gives unbounded height and
+        // collapses Expanded/TabBarView (empty chat list, blank shell).
+        return ColoredBox(
+          color: scheme.surfaceContainerHighest,
+          child: Center(
+            child: SizedBox(
+              width: maxWidth,
+              height: mq.size.height,
+              child: MediaQuery(
+                data: mq.copyWith(size: Size(maxWidth, mq.size.height)),
+                child: ColoredBox(
+                  color: scheme.surface,
+                  child: content,
+                ),
+              ),
+            ),
+          ),
         );
       },
       home: const BootstrapScreen(),

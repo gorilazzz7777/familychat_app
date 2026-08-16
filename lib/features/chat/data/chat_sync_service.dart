@@ -201,8 +201,13 @@ class ChatSyncService {
   }
 
   Future<void> syncHub({bool prefetchMessages = false}) async {
-    final repo = _repo;
-    if (!isSupported || repo == null) return;
+    var repo = _repo;
+    if (!isSupported) return;
+    if (repo == null) {
+      // Hub may open before ChatSyncService.start(); allow a one-shot no-op.
+      debugPrint('[ChatSyncService] syncHub skipped: repo not attached yet');
+      return;
+    }
     if (_syncingHub) return;
     _syncingHub = true;
     try {
