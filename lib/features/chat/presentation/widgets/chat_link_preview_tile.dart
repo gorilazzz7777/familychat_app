@@ -49,16 +49,27 @@ class _ChatLinkPreviewTileState extends State<ChatLinkPreviewTile> {
 
   @override
   Widget build(BuildContext context) {
+    final preview = (_preview != null && !_preview!.isGenericBrand)
+        ? _preview
+        : null;
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final host = _preview?.host.isNotEmpty == true
-        ? _preview!.host
+    final host = preview?.host.isNotEmpty == true
+        ? preview!.host
         : LinkPreviewService.displayHost(widget.url);
-    final title = _preview?.title?.trim();
-    final description = _preview?.description?.trim();
-    final imageUrl = _preview?.imageUrl?.trim();
-    final urlLabel = LinkPreviewService.displayUrl(
-      _preview?.canonicalUrl ?? widget.url,
+    final title = LinkPreviewService.displayTitle(
+      originalUrl: widget.url,
+      preview: preview,
+    );
+    final description = preview?.description?.trim();
+    final showDescription = description != null &&
+        description.isNotEmpty &&
+        !description.toLowerCase().contains('найдётся всё') &&
+        !description.toLowerCase().contains('найдется все');
+    final imageUrl = preview?.imageUrl?.trim();
+    final urlLabel = LinkPreviewService.displayPageUrl(
+      widget.url,
+      preview?.canonicalUrl,
     );
     final letter = host.isNotEmpty ? host[0].toUpperCase() : '#';
 
@@ -120,7 +131,7 @@ class _ChatLinkPreviewTileState extends State<ChatLinkPreviewTile> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      (title != null && title.isNotEmpty) ? title : host,
+                      title,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodyMedium?.copyWith(
@@ -129,7 +140,7 @@ class _ChatLinkPreviewTileState extends State<ChatLinkPreviewTile> {
                         decoration: TextDecoration.none,
                       ),
                     ),
-                    if (description != null && description.isNotEmpty) ...[
+                    if (showDescription) ...[
                       const SizedBox(height: 2),
                       Text(
                         description,

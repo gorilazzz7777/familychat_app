@@ -32,7 +32,18 @@ class FamilyChatNotifications {
   static void _onBackgroundNotificationTap(NotificationResponse response) {
     WidgetsFlutterBinding.ensureInitialized();
     DartPluginRegistrant.ensureInitialized();
-    unawaited(handleNotificationResponse(response));
+    unawaited(_handleBackgroundNotificationResponse(response));
+  }
+
+  static Future<void> _handleBackgroundNotificationResponse(
+    NotificationResponse response,
+  ) async {
+    try {
+      await initialize();
+      await handleNotificationResponse(response);
+    } catch (e, st) {
+      debugPrint('background notification action failed: $e\n$st');
+    }
   }
 
   static Future<void> initialize() async {
@@ -126,11 +137,22 @@ class FamilyChatNotifications {
         return;
       }
     }
+    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+    // Android держит спиннер RemoteInput, пока то же уведомление не
+    // обновят. Нельзя ждать HTTP — сначала снимаем загрузку.
+    if (threadId != null) {
+      await _stopInlineReplySpinner(
+        threadId: threadId,
+        text: text,
+        data: data,
+      );
+    }
+
     final ok = await NotificationInlineReply.sendFromPayload(
       data: data,
       rawText: text,
     );
-    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+
     if (ok && threadId != null) {
       await clearChatNotifications(threadId: threadId);
       return;
@@ -144,6 +166,36 @@ class FamilyChatNotifications {
             : data,
       );
     }
+  }
+
+  /// Заменяет баннер с полем ответа — иначе Android крутит вечный прогресс.
+  static Future<void> _stopInlineReplySpinner({
+    required int threadId,
+    required String text,
+    required Map<String, dynamic> data,
+  }) async {
+    await initialize();
+    final preview = text.length > 80 ? '${text.substring(0, 80)}…' : text;
+    final androidDetails = AndroidNotificationDetails(
+      messagesChannelId,
+      'Сообщения',
+      importance: Importance.low,
+      priority: Priority.low,
+      playSound: false,
+      enableVibration: false,
+      silent: true,
+      onlyAlertOnce: true,
+      autoCancel: true,
+      tag: chatNotificationTag(threadId),
+      category: AndroidNotificationCategory.message,
+    );
+    await _plugin.show(
+      chatNotificationId(threadId),
+      'Family Space',
+      preview,
+      NotificationDetails(android: androidDetails),
+      payload: jsonEncode(data),
+    );
   }
 
   static void _handleNotificationPayload(String? payload) {
@@ -342,7 +394,8 @@ class FamilyChatNotifications {
                 ],
                 allowGeneratedReplies: true,
                 showsUserInterface: false,
-                cancelNotification: true,
+                // false: Android ждёт notify() с тем же id/tag, иначе спиннер.
+                cancelNotification: false,
               ),
             ]
           : null,

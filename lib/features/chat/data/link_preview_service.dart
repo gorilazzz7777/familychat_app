@@ -6,6 +6,7 @@ class ChatLinkPreview {
     required this.url,
     required this.host,
     this.canonicalUrl,
+    this.siteName,
     this.title,
     this.description,
     this.imageUrl,
@@ -14,6 +15,7 @@ class ChatLinkPreview {
   final String url;
   final String host;
   final String? canonicalUrl;
+  final String? siteName;
   final String? title;
   final String? description;
   final String? imageUrl;
@@ -27,6 +29,20 @@ class ChatLinkPreview {
     return value != null && value.isNotEmpty;
   }
 
+  bool get isGenericBrand {
+    if (LinkPreviewService.isUnusablePageUrl(canonicalUrl ?? url)) return true;
+    final image = imageUrl?.toLowerCase() ?? '';
+    if (LinkPreviewService.looksLikeSiteLogo(image)) return true;
+    final heading = (title ?? '').trim().toLowerCase();
+    final desc = (description ?? '').trim().toLowerCase();
+    const genericTitles = {'яндекс', 'yandex', 'google', 'yahoo'};
+    final genericDesc = desc.contains('найдётся всё') ||
+        desc.contains('найдется все') ||
+        desc.contains('everything will be found');
+    if (genericTitles.contains(heading) && genericDesc) return true;
+    return LinkPreviewService.isGenericTitle(heading);
+  }
+
   factory ChatLinkPreview.fromJson(Map<String, dynamic> json, String fallbackUrl) {
     final url = json['url']?.toString().trim();
     final hostRaw = json['host']?.toString().trim();
@@ -35,10 +51,23 @@ class ChatLinkPreview {
       host: (hostRaw != null && hostRaw.isNotEmpty)
           ? hostRaw
           : LinkPreviewService.displayHost(fallbackUrl),
-      canonicalUrl: json['canonicalUrl']?.toString(),
+      canonicalUrl: () {
+        final raw = json['canonicalUrl']?.toString();
+        if (raw != null && LinkPreviewService.isUnusablePageUrl(raw)) {
+          return fallbackUrl;
+        }
+        return raw;
+      }(),
+      siteName: _emptyToNull(json['siteName']?.toString()),
       title: _emptyToNull(json['title']?.toString()),
       description: _emptyToNull(json['description']?.toString()),
-      imageUrl: _emptyToNull(json['imageUrl']?.toString()),
+      imageUrl: () {
+        final raw = _emptyToNull(json['imageUrl']?.toString());
+        if (raw != null && LinkPreviewService.looksLikeSiteLogo(raw)) {
+          return null;
+        }
+        return raw;
+      }(),
     );
   }
 
@@ -83,9 +112,7 @@ class LinkPreviewService {
       headers: {
         'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.6,en;q=0.4',
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-            '(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'User-Agent': 'TelegramBot (like TwitterBot)',
       },
       validateStatus: (code) => code != null && code >= 200 && code < 400,
     ),
@@ -131,6 +158,85 @@ class LinkPreviewService {
     return '${text.substring(0, 61)}…';
   }
 
+  static bool isUnusablePageUrl(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return true;
+    final lower = raw.toLowerCase();
+    const junk = [
+      'showcaptcha',
+      '/captcha',
+      '/challenge',
+      'cdn-cgi/challenge',
+      '/sorry/',
+      '/checkpoint',
+    ];
+    return junk.any(lower.contains);
+  }
+
+  static bool isGenericTitle(String title) {
+    const generic = {
+      'яндекс',
+      'yandex',
+      'google',
+      'yahoo',
+      'вы не робот?',
+      'are you a robot?',
+    };
+    return generic.contains(title.trim().toLowerCase());
+  }
+
+  /// Подпись ссылки: реальная страница, не капча.
+  static String displayPageUrl(String original, [String? canonical]) {
+    if (canonical != null &&
+        canonical.trim().isNotEmpty &&
+        !isUnusablePageUrl(canonical)) {
+      return displayUrl(canonical);
+    }
+    return displayUrl(original);
+  }
+
+  /// Заголовок из пути (/card/lezhanka-divan-...), если OG не пришёл.
+  static String? titleFromUrl(String rawUrl) {
+    final uri = _tryParse(rawUrl);
+    if (uri == null) return null;
+    final segments = uri.path
+        .split('/')
+        .map((part) {
+          try {
+            return Uri.decodeComponent(part);
+          } catch (_) {
+            return part;
+          }
+        })
+        .where((part) => part.isNotEmpty)
+        .toList();
+    for (final seg in segments.reversed) {
+      if (RegExp(r'^\d+$').hasMatch(seg)) continue;
+      if (seg.length < 8) continue;
+      if (!seg.contains('-') && !seg.contains('_')) continue;
+      final human = seg.replaceAll(RegExp(r'[-_]+'), ' ').trim();
+      if (human.length < 8) continue;
+      return human[0].toUpperCase() + human.substring(1);
+    }
+    return null;
+  }
+
+  static String displayTitle({
+    required String originalUrl,
+    ChatLinkPreview? preview,
+  }) {
+    if (preview != null && !preview.isGenericBrand) {
+      final title = preview.title?.trim();
+      if (title != null && title.isNotEmpty && !isGenericTitle(title)) {
+        return title;
+      }
+      final fromCanonical = titleFromUrl(preview.canonicalUrl ?? '');
+      if (fromCanonical != null) return fromCanonical;
+    }
+    return titleFromUrl(originalUrl) ??
+        preview?.siteName?.trim() ??
+        displayHost(originalUrl);
+  }
+
   Future<ChatLinkPreview?> load(String rawUrl) {
     final url = rawUrl.trim();
     if (url.isEmpty) return Future<ChatLinkPreview?>.value(null);
@@ -168,11 +274,11 @@ class LinkPreviewService {
       if (backend != null) {
         try {
           final fromServer = await backend(url);
-          if (fromServer != null) {
-            if (fromServer.hasCard) {
-              _cache[url] = _CacheEntry(fromServer, DateTime.now());
-              return fromServer;
-            }
+          if (fromServer != null &&
+              fromServer.hasCard &&
+              !fromServer.isGenericBrand) {
+            _cache[url] = _CacheEntry(fromServer, DateTime.now());
+            return fromServer;
           }
         } catch (e) {
           if (kDebugMode) {
@@ -195,7 +301,11 @@ class LinkPreviewService {
         return null;
       }
       final pageUri = res.realUri;
-      final snippet = html.length > 180000 ? html.substring(0, 180000) : html;
+      if (isUnusablePageUrl(pageUri.toString())) {
+        _cache[url] = _CacheEntry(null, DateTime.now());
+        return null;
+      }
+      final snippet = html.length > 750000 ? html.substring(0, 750000) : html;
       final title = _firstNonEmpty([
         _meta(snippet, 'og:title'),
         _meta(snippet, 'twitter:title'),
@@ -206,12 +316,13 @@ class LinkPreviewService {
         _meta(snippet, 'twitter:description'),
         _meta(snippet, 'description', name: true),
       ]);
-      final imageRaw = _firstNonEmpty([
-        _meta(snippet, 'og:image'),
-        _meta(snippet, 'og:image:url'),
-        _meta(snippet, 'og:image:secure_url'),
-        _meta(snippet, 'twitter:image'),
-        _meta(snippet, 'twitter:image:src'),
+      final siteName = _firstNonEmpty([_meta(snippet, 'og:site_name')]);
+      final imageRaw = _firstContentImage([
+        ..._metaAll(snippet, 'og:image'),
+        ..._metaAll(snippet, 'og:image:url'),
+        ..._metaAll(snippet, 'og:image:secure_url'),
+        ..._metaAll(snippet, 'twitter:image'),
+        ..._metaAll(snippet, 'twitter:image:src'),
         _jsonLdImage(snippet),
       ]);
       final imageUrl = _absolutize(pageUri, imageRaw);
@@ -219,11 +330,13 @@ class LinkPreviewService {
         url: url,
         host: displayHost(pageUri.toString()),
         canonicalUrl: pageUri.toString(),
+        siteName: siteName,
         title: title,
         description: description,
         imageUrl: imageUrl,
       );
-      final stored = preview.hasCard ? preview : null;
+      final stored =
+          (preview.hasCard && !preview.isGenericBrand) ? preview : null;
       _cache[url] = _CacheEntry(stored, DateTime.now());
       return stored;
     } catch (e) {
@@ -250,9 +363,47 @@ class LinkPreviewService {
     return null;
   }
 
+  static const _logoMarkers = [
+    'home-static',
+    'favicon',
+    'apple-touch-icon',
+    '/logo.',
+    'logo.png',
+    'logo.svg',
+    'logo.webp',
+    'default-og',
+    'default_og',
+    'og-logo',
+    'site-logo',
+    'site_logo',
+    'brand-logo',
+    'sprite.png',
+    '1x1',
+    'pixel.gif',
+    'spacer.gif',
+    'blank.gif',
+  ];
+
+  static bool looksLikeSiteLogo(String url) {
+    if (url.trim().isEmpty) return false;
+    final lower = url.toLowerCase();
+    return _logoMarkers.any(lower.contains);
+  }
+
+  static String? _firstContentImage(List<String?> values) {
+    for (final value in values) {
+      final decoded = _firstNonEmpty([value]);
+      if (decoded == null) continue;
+      if (looksLikeSiteLogo(decoded)) continue;
+      return decoded;
+    }
+    return null;
+  }
+
   static String? _absolutize(Uri page, String? raw) {
     if (raw == null || raw.trim().isEmpty) return null;
     final value = raw.trim();
+    if (looksLikeSiteLogo(value)) return null;
     final abs = Uri.tryParse(value);
     if (abs == null) return null;
     if (abs.hasScheme) return abs.toString();
@@ -260,6 +411,11 @@ class LinkPreviewService {
   }
 
   static String? _meta(String html, String property, {bool name = false}) {
+    final all = _metaAll(html, property, name: name);
+    return all.isEmpty ? null : all.first;
+  }
+
+  static List<String> _metaAll(String html, String property, {bool name = false}) {
     final attr = name ? 'name' : 'property';
     final patterns = [
       RegExp(
@@ -271,11 +427,17 @@ class LinkPreviewService {
         caseSensitive: false,
       ),
     ];
+    final found = <String>[];
+    final seen = <String>{};
     for (final pattern in patterns) {
-      final match = pattern.firstMatch(html);
-      if (match != null) return match.group(1);
+      for (final match in pattern.allMatches(html)) {
+        final value = match.group(1);
+        if (value == null || value.isEmpty || seen.contains(value)) continue;
+        seen.add(value);
+        found.add(value);
+      }
     }
-    return null;
+    return found;
   }
 
   static String? _tagTitle(String html) {

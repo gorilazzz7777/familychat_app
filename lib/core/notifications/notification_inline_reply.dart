@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../features/chat/data/familychat_realtime.dart';
 import '../../features/familychat/data/familychat_repository.dart';
 import '../local_db/chat_local_store.dart';
 import '../network/api_client.dart';
@@ -10,6 +9,7 @@ import '../network/api_client.dart';
 abstract final class NotificationInlineReply {
   static const actionId = 'familychat_reply';
   static const iosCategoryId = 'familychat_message';
+  static const sendTimeout = Duration(seconds: 20);
 
   static Future<bool> sendFromPayload({
     required Map<String, dynamic> data,
@@ -30,24 +30,19 @@ abstract final class NotificationInlineReply {
     } catch (_) {}
 
     try {
-      final repo = FamilyChatRepository(ApiClient());
-      final msg = await repo.sendThreadMessage(threadId, body: text);
+      final client = ApiClient();
+      client.dio.options = client.dio.options.copyWith(
+        connectTimeout: const Duration(seconds: 12),
+        receiveTimeout: sendTimeout,
+        sendTimeout: sendTimeout,
+      );
+      final repo = FamilyChatRepository(client);
+      final msg = await repo
+          .sendThreadMessage(threadId, body: text)
+          .timeout(sendTimeout);
       final payload = Map<String, dynamic>.from(msg);
       payload['thread_id'] ??= threadId;
-      if (ChatLocalStore.isSupported) {
-        try {
-          await ChatLocalStore.instance.upsertMessages(threadId, [payload]);
-        } catch (e) {
-          debugPrint('[NotificationInlineReply] local upsert failed: $e');
-        }
-      }
-      try {
-        FamilyChatRealtime.instance.emitSyntheticEvent({
-          'event': 'chat_refresh',
-          'thread_id': threadId,
-          'message_id': payload['id'],
-        });
-      } catch (_) {}
+      await _persistInBackground(threadId, payload);
       return true;
     } catch (e, st) {
       debugPrint('[NotificationInlineReply] send failed: $e\n$st');
@@ -56,6 +51,29 @@ abstract final class NotificationInlineReply {
         await prefs.remove(dedupeKey);
       } catch (_) {}
       return false;
+    }
+  }
+
+  /// Отдельное соединение: в фоне нельзя трогать singleton основного isolate.
+  static Future<void> _persistInBackground(
+    int threadId,
+    Map<String, dynamic> payload,
+  ) async {
+    if (!ChatLocalStore.isSupported) return;
+    try {
+      final db = await ChatLocalStore.instance.openWithExecutor().timeout(
+        const Duration(seconds: 3),
+      );
+      if (db == null) return;
+      try {
+        await db.upsertMessages(threadId, [payload]).timeout(
+          const Duration(seconds: 3),
+        );
+      } finally {
+        await db.close();
+      }
+    } catch (e) {
+      debugPrint('[NotificationInlineReply] local upsert failed: $e');
     }
   }
 }

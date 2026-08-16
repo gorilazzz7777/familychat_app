@@ -5,7 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/link_preview_service.dart';
 
-/// Превью ссылки внутри пузыря: сразу хост, затем OG-заголовок и картинка.
+/// Превью ссылки в пузыре: сайт, заголовок страницы и фото со ссылки.
 class ChatLinkPreviewCard extends StatefulWidget {
   const ChatLinkPreviewCard({
     super.key,
@@ -47,7 +47,9 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
   }
 
   Future<void> _open() async {
-    final raw = (_preview?.canonicalUrl ?? widget.url).trim();
+    final raw = LinkPreviewService.isUnusablePageUrl(_preview?.canonicalUrl)
+        ? widget.url
+        : (_preview?.canonicalUrl ?? widget.url).trim();
     final uri = Uri.tryParse(raw.startsWith('http') ? raw : 'https://$raw');
     if (uri == null) return;
     await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -67,11 +69,14 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
     final host = (preview?.host.trim().isNotEmpty == true)
         ? preview!.host.trim()
         : LinkPreviewService.displayHost(widget.url);
+    final siteName = preview?.siteName?.trim();
     final title = preview?.title?.trim();
     final description = preview?.description?.trim();
     final imageUrl = preview?.imageUrl?.trim();
-    final heading = (title != null && title.isNotEmpty) ? title : host;
-    final showHostLine = heading != host && host.isNotEmpty;
+    final source = (siteName != null && siteName.isNotEmpty) ? siteName : host;
+    final showTitle = title != null &&
+        title.isNotEmpty &&
+        title.toLowerCase() != source.toLowerCase();
     final width = widget.maxWidth ?? 280;
 
     return Material(
@@ -104,38 +109,40 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              heading,
-                              maxLines: 2,
+                              source,
+                              maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyMedium?.copyWith(
+                              style: theme.textTheme.bodySmall?.copyWith(
                                 color: accent,
                                 fontWeight: FontWeight.w700,
                                 height: 1.2,
                                 decoration: TextDecoration.none,
                               ),
                             ),
-                            if (description != null &&
-                                description.isNotEmpty) ...[
+                            if (showTitle) ...[
                               const SizedBox(height: 2),
                               Text(
-                                description,
-                                maxLines: 2,
+                                title,
+                                maxLines: 3,
                                 overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: descColor,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: titleColor,
+                                  fontWeight: FontWeight.w700,
                                   height: 1.25,
                                   decoration: TextDecoration.none,
                                 ),
                               ),
                             ],
-                            if (showHostLine) ...[
+                            if (description != null &&
+                                description.isNotEmpty) ...[
                               const SizedBox(height: 2),
                               Text(
-                                host,
-                                maxLines: 1,
+                                description,
+                                maxLines: 4,
                                 overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.labelSmall?.copyWith(
+                                style: theme.textTheme.bodySmall?.copyWith(
                                   color: descColor,
+                                  height: 1.25,
                                   decoration: TextDecoration.none,
                                 ),
                               ),
@@ -152,8 +159,8 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
                   borderRadius: const BorderRadius.vertical(
                     bottom: Radius.circular(10),
                   ),
-                  child: SizedBox(
-                    height: 148,
+                  child: AspectRatio(
+                    aspectRatio: 16 / 9,
                     child: CachedNetworkImage(
                       imageUrl: imageUrl,
                       fit: BoxFit.cover,
