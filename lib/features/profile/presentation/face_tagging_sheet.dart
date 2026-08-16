@@ -7,6 +7,19 @@ import '../../../core/providers/app_providers.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 
+class _FaceSubjectPick {
+  const _FaceSubjectPick._({this.userId, this.childId});
+
+  factory _FaceSubjectPick.user(int userId) =>
+      _FaceSubjectPick._(userId: userId);
+
+  factory _FaceSubjectPick.child(int childId) =>
+      _FaceSubjectPick._(childId: childId);
+
+  final int? userId;
+  final int? childId;
+}
+
 /// Окно «Кто на этом фото?» с рамками лиц и выбором участника семьи.
 class FaceTaggingSheet extends ConsumerStatefulWidget {
   const FaceTaggingSheet({
@@ -101,7 +114,11 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
     }
   }
 
-  Future<void> _assignFace(int faceIndex, int userId) async {
+  Future<void> _assignFace(
+    int faceIndex, {
+    int? userId,
+    int? childId,
+  }) async {
     try {
       final repo = ref.read(familychatRepositoryProvider);
       final data = widget.profileUserId != null
@@ -109,17 +126,20 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
               widget.profileUserId!,
               widget.attachmentId,
               faceIndex,
-              userId,
+              userId: userId,
+              childId: childId,
             )
           : await repo.assignChatAttachmentFace(
               widget.threadId,
               widget.attachmentId,
               faceIndex,
-              userId,
+              userId: userId,
+              childId: childId,
             );
       if (!mounted) return;
       setState(() {
-        _faces = (data['faces'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        _faces =
+            (data['faces'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
         _selectedFaceIndex = null;
       });
     } catch (e) {
@@ -139,18 +159,21 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
           ? await repo.createGalleryPhotoManualFace(
               widget.profileUserId!,
               widget.attachmentId,
-              userId: picked,
+              userId: picked.userId,
+              childId: picked.childId,
               bbox: bbox,
             )
           : await repo.createChatAttachmentManualFace(
               widget.threadId,
               widget.attachmentId,
-              userId: picked,
+              userId: picked.userId,
+              childId: picked.childId,
               bbox: bbox,
             );
       if (!mounted) return;
       setState(() {
-        _faces = (data['faces'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        _faces =
+            (data['faces'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
         _manualMarkMode = false;
       });
     } catch (e) {
@@ -161,8 +184,65 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
     }
   }
 
-  Future<int?> _pickMemberFromAll() async {
-    final picked = await showModalBottomSheet<int>(
+  int? _memberUserId(Map<String, dynamic> m) {
+    final id = m['user_id'];
+    if (id is int) return id;
+    return int.tryParse(id?.toString() ?? '');
+  }
+
+  int? _memberChildId(Map<String, dynamic> m) {
+    if (m['is_child'] != true) return null;
+    final id = m['child_id'];
+    if (id is int) return id;
+    return int.tryParse(id?.toString() ?? '');
+  }
+
+  String? _memberSubjectKey(Map<String, dynamic> m) {
+    final childId = _memberChildId(m);
+    if (childId != null) return 'child:$childId';
+    final userId = _memberUserId(m);
+    if (userId != null) return 'user:$userId';
+    return null;
+  }
+
+  String? _suggestionSubjectKey(Map<String, dynamic> s) {
+    final childRaw = s['child_id'];
+    final childId =
+        childRaw is int ? childRaw : int.tryParse(childRaw?.toString() ?? '');
+    if (childId != null || s['is_child'] == true) {
+      if (childId != null) return 'child:$childId';
+    }
+    final userRaw = s['user_id'];
+    final userId =
+        userRaw is int ? userRaw : int.tryParse(userRaw?.toString() ?? '');
+    if (userId != null) return 'user:$userId';
+    return null;
+  }
+
+  _FaceSubjectPick? _pickFromMember(Map<String, dynamic> m) {
+    final childId = _memberChildId(m);
+    if (childId != null) return _FaceSubjectPick.child(childId);
+    final userId = _memberUserId(m);
+    if (userId != null) return _FaceSubjectPick.user(userId);
+    return null;
+  }
+
+  _FaceSubjectPick? _pickFromSuggestion(Map<String, dynamic> s) {
+    final childRaw = s['child_id'];
+    final childId =
+        childRaw is int ? childRaw : int.tryParse(childRaw?.toString() ?? '');
+    if (childId != null || s['is_child'] == true) {
+      if (childId != null) return _FaceSubjectPick.child(childId);
+    }
+    final userRaw = s['user_id'];
+    final userId =
+        userRaw is int ? userRaw : int.tryParse(userRaw?.toString() ?? '');
+    if (userId != null) return _FaceSubjectPick.user(userId);
+    return null;
+  }
+
+  Future<_FaceSubjectPick?> _pickMemberFromAll() async {
+    final picked = await showModalBottomSheet<_FaceSubjectPick>(
       context: context,
       builder: (ctx) => SafeArea(
         child: Column(
@@ -180,22 +260,22 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                 shrinkWrap: true,
                 children: [
                   for (final m in _members)
-                    ListTile(
-                      leading: ChatAvatar(
-                        name: m['display_name']?.toString() ?? '',
-                        avatarUrl: m['avatar_url']?.toString(),
-                        radius: 20,
+                    if (_memberSubjectKey(m) != null)
+                      ListTile(
+                        leading: ChatAvatar(
+                          name: m['display_name']?.toString() ?? '',
+                          avatarUrl: m['avatar_url']?.toString(),
+                          radius: 20,
+                        ),
+                        title: Text(m['display_name']?.toString() ?? ''),
+                        subtitle: m['is_child'] == true
+                            ? const Text('Ребёнок')
+                            : null,
+                        onTap: () {
+                          final pick = _pickFromMember(m);
+                          if (pick != null) Navigator.pop(ctx, pick);
+                        },
                       ),
-                      title: Text(m['display_name']?.toString() ?? ''),
-                      onTap: () {
-                        final id = m['user_id'];
-                        if (id is int) {
-                          Navigator.pop(ctx, id);
-                        } else {
-                          Navigator.pop(ctx, int.tryParse(id?.toString() ?? ''));
-                        }
-                      },
-                    ),
                 ],
               ),
             ),
@@ -216,17 +296,16 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
     }
     final suggestions = (face?['suggestions'] as List<dynamic>? ?? [])
         .cast<Map<String, dynamic>>();
-    final suggestedIds = suggestions
-        .map((s) => s['user_id'])
-        .whereType<int>()
+    final suggestedKeys = suggestions
+        .map(_suggestionSubjectKey)
+        .whereType<String>()
         .toSet();
     final otherMembers = _members.where((m) {
-      final id = m['user_id'];
-      final userId = id is int ? id : int.tryParse(id?.toString() ?? '');
-      return userId != null && !suggestedIds.contains(userId);
+      final key = _memberSubjectKey(m);
+      return key != null && !suggestedKeys.contains(key);
     }).toList();
 
-    final picked = await showModalBottomSheet<int>(
+    final picked = await showModalBottomSheet<_FaceSubjectPick>(
       context: context,
       builder: (ctx) => SafeArea(
         child: Column(
@@ -257,12 +336,8 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                       _SuggestionTile(
                         suggestion: s,
                         onTap: () {
-                          final id = s['user_id'];
-                          if (id is int) {
-                            Navigator.pop(ctx, id);
-                          } else {
-                            Navigator.pop(ctx, int.tryParse(id?.toString() ?? ''));
-                          }
+                          final pick = _pickFromSuggestion(s);
+                          if (pick != null) Navigator.pop(ctx, pick);
                         },
                       ),
                     if (otherMembers.isNotEmpty) const Divider(height: 24),
@@ -271,7 +346,9 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                       child: Text(
-                        suggestions.isEmpty ? 'Участники семьи' : 'Все участники',
+                        suggestions.isEmpty
+                            ? 'Участники семьи'
+                            : 'Все участники',
                         style: Theme.of(ctx).textTheme.titleSmall,
                       ),
                     ),
@@ -283,14 +360,11 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                         radius: 20,
                       ),
                       title: Text(m['display_name']?.toString() ?? ''),
+                      subtitle:
+                          m['is_child'] == true ? const Text('Ребёнок') : null,
                       onTap: () {
-                        final id = m['user_id'];
-                        if (id is int) {
-                          Navigator.pop(ctx, id);
-                        } else {
-                          final parsed = int.tryParse(id?.toString() ?? '');
-                          Navigator.pop(ctx, parsed);
-                        }
+                        final pick = _pickFromMember(m);
+                        if (pick != null) Navigator.pop(ctx, pick);
                       },
                     ),
                 ],
@@ -301,7 +375,11 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
       ),
     );
     if (picked != null) {
-      await _assignFace(faceIndex, picked);
+      await _assignFace(
+        faceIndex,
+        userId: picked.userId,
+        childId: picked.childId,
+      );
     }
   }
 
@@ -523,10 +601,10 @@ class _FaceOverlay extends StatelessWidget {
                 final y = (bbox['y'] as num?)?.toDouble() ?? 0;
                 final w = (bbox['w'] as num?)?.toDouble() ?? 0;
                 final h = (bbox['h'] as num?)?.toDouble() ?? 0;
-                final assigned = face['assigned_user_id'];
+                final assigned = face['assigned_user_id'] ?? face['assigned_child_id'];
                 final name = face['assigned_display_name']?.toString() ?? '';
                 final selected = selectedFaceIndex == idx;
-                final matched = assigned != null;
+                final matched = assigned != null || face['is_matched'] == true;
                 return Positioned(
                   left: x * boxW,
                   top: y * boxH,

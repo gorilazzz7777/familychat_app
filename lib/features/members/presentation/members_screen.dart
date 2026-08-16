@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_tab_bar.dart';
@@ -39,8 +40,8 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
   List<Map<String, dynamic>> _importableBabies = [];
   bool _loading = true;
   bool _importing = false;
+  bool _viewerIndividualPremium = false;
   String _query = '';
-  String _relationFilter = 'all';
 
   @override
   void initState() {
@@ -87,14 +88,28 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
           importable = await repo.childrenImportable();
         } catch (_) {}
       }
+      var premium = _viewerIndividualPremium;
+      for (final m in list) {
+        if (m['user_id'] == widget.currentUserId) {
+          final entitlements = m['entitlements'];
+          if (entitlements is Map) {
+            premium = entitlements['individual_premium'] == true;
+          }
+          break;
+        }
+      }
       if (!mounted) return;
       final same = _membersFingerprint(_members) == _membersFingerprint(list);
-      if (same && !_loading && importable.length == _importableBabies.length) {
+      if (same &&
+          !_loading &&
+          importable.length == _importableBabies.length &&
+          premium == _viewerIndividualPremium) {
         return;
       }
       setState(() {
         _members = list;
         _importableBabies = importable;
+        _viewerIndividualPremium = premium;
         _loading = false;
       });
     } catch (_) {
@@ -105,7 +120,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
   String _membersFingerprint(List<Map<String, dynamic>> members) {
     return members
         .map((m) =>
-            '${m['user_id']}|${m['child_id']}|${m['display_name']}|${m['avatar_url']}|${m['kinship_label']}|${m['is_online']}')
+            '${m['user_id']}|${m['child_id']}|${m['display_name']}|${m['avatar_url']}|${m['kinship_label']}|${m['is_online']}|${m['last_seen']}')
         .join(';');
   }
 
@@ -316,79 +331,35 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
         .toLowerCase();
   }
 
-  bool _matchesRelationFilter(Map<String, dynamic> member) {
-    if (_relationFilter == 'all') return true;
-    final hay =
-        '${member['kinship_label'] ?? ''} ${member['kinship_code'] ?? ''}'
-            .toLowerCase();
-    switch (_relationFilter) {
-      case 'close':
-        return hay.contains('мама') ||
-            hay.contains('папа') ||
-            hay.contains('мать') ||
-            hay.contains('отец') ||
-            hay.contains('сын') ||
-            hay.contains('доч') ||
-            hay.contains('ребён') ||
-            hay.contains('ребен') ||
-            hay.contains('брат') ||
-            hay.contains('сестр') ||
-            hay.contains('муж') ||
-            hay.contains('жена') ||
-            hay.contains('mother') ||
-            hay.contains('father') ||
-            hay.contains('brother') ||
-            hay.contains('sister') ||
-            hay.contains('son') ||
-            hay.contains('daughter') ||
-            hay.contains('child') ||
-            hay.contains('spouse');
-      case 'cousin':
-        return hay.contains('двоюр') || hay.contains('cousin');
-      case 'parents':
-        return hay.contains('мама') ||
-            hay.contains('папа') ||
-            hay.contains('мать') ||
-            hay.contains('отец') ||
-            hay.contains('mother') ||
-            hay.contains('father') ||
-            hay.contains('parent');
-      case 'siblings':
-        return hay.contains('брат') ||
-            hay.contains('сестр') ||
-            hay.contains('brother') ||
-            hay.contains('sister') ||
-            hay.contains('sibling');
-      default:
-        return true;
-    }
-  }
-
   List<Map<String, dynamic>> get _filteredMembers {
     final query = _query.trim().toLowerCase();
-    return _members.where((member) {
-      if (!_matchesRelationFilter(member)) return false;
-      if (query.isEmpty) return true;
-      return _memberSearchText(member).contains(query);
-    }).toList();
+    if (query.isEmpty) return _members;
+    return _members
+        .where((member) => _memberSearchText(member).contains(query))
+        .toList();
   }
 
-  Widget _relationChip(String id, String label) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: _relationFilter == id,
-      onSelected: (_) => setState(() => _relationFilter = id),
-    );
+  String _memberSubtitle(Map<String, dynamic> m) {
+    final kinship = m['kinship_label']?.toString().trim() ?? '';
+    final isChild = m['is_child'] == true;
+    final secondary = isChild
+        ? (m['birthday_display']?.toString().trim() ?? '')
+        : userPresenceFromProfile(
+            m,
+            preciseLastSeen: _viewerIndividualPremium,
+          ).label;
+    final parts = <String>[
+      if (kinship.isNotEmpty) kinship,
+      if (secondary.isNotEmpty) secondary,
+    ];
+    return parts.join(' · ');
   }
 
   Widget _memberTile(Map<String, dynamic> m) {
     final name = m['display_name']?.toString() ?? '';
     final avatarUrl = m['avatar_url']?.toString();
-    final birthday = m['birthday_display']?.toString();
-    final subtitleParts = <String>[
-      if (m['kinship_label'] != null) m['kinship_label']!.toString(),
-      if (birthday != null && birthday.isNotEmpty) birthday,
-    ];
+    final subtitle = _memberSubtitle(m);
+    final online = m['is_child'] != true && m['is_online'] == true;
     return Column(
       children: [
         ListTile(
@@ -399,7 +370,16 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
             radius: 22,
           ),
           title: Text(name),
-          subtitle: Text(subtitleParts.join(' · ')),
+          subtitle: subtitle.isEmpty
+              ? null
+              : Text(
+                  subtitle,
+                  style: online
+                      ? TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                        )
+                      : null,
+                ),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => _openMember(m),
         ),
@@ -487,23 +467,6 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                               ),
                       ),
                       onChanged: (v) => setState(() => _query = v),
-                    ),
-                    const SizedBox(height: 10),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: [
-                          _relationChip('all', 'Все'),
-                          const SizedBox(width: 8),
-                          _relationChip('close', 'Близкие'),
-                          const SizedBox(width: 8),
-                          _relationChip('parents', 'Родители'),
-                          const SizedBox(width: 8),
-                          _relationChip('siblings', 'Братья/сестры'),
-                          const SizedBox(width: 8),
-                          _relationChip('cousin', 'Двоюродные'),
-                        ],
-                      ),
                     ),
                     const SizedBox(height: 8),
                     if (_filteredMembers.isEmpty)

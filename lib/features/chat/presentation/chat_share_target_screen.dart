@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
 import '../../../core/media/local_device_file.dart';
-import '../../../core/media/media_local_index.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/family_compose_input.dart';
 import '../../../core/widgets/family_tab_bar.dart';
@@ -16,7 +15,6 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/push/push_navigation.dart';
 import '../../../core/push/push_message_handler.dart';
 import '../../../core/local_db/chat_local_store.dart';
-import '../data/chat_sync_service.dart';
 import 'chat_conversation_screen.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../profile/data/album_upload_coordinator.dart';
@@ -24,6 +22,7 @@ import '../../profile/presentation/custom_album_dialog.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/share_attachment_loader.dart';
+import '../data/share_chat_send_coordinator.dart';
 import 'widgets/chat_link_preview_mini.dart';
 import 'widgets/chat_mention_text.dart';
 import 'widgets/chat_thread_select_tile.dart';
@@ -386,78 +385,88 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
 
     final messenger = familyChatScaffoldMessengerKey.currentState;
     final nav = familyChatNavigatorKey.currentState;
-    Navigator.of(context).pop(true);
+    final shareNav = Navigator.of(context);
+
+    final pendingByThread =
+        <int, ({int tempId, List<Map<String, dynamic>> atts})>{};
+    if (threadIds.isNotEmpty) {
+      final optimisticAtts =
+          ShareChatSendCoordinator.buildPendingAttachments(pending);
+      for (final threadId in threadIds) {
+        final tempId = ShareChatSendCoordinator.nextTempId();
+        final message = ShareChatSendCoordinator.buildPendingMessage(
+          threadId: threadId,
+          tempId: tempId,
+          senderUserId: myUserId,
+          caption: caption,
+          attachments: optimisticAtts,
+        );
+        await ShareChatSendCoordinator.seedPendingMessage(message);
+        pendingByThread[threadId] = (tempId: tempId, atts: optimisticAtts);
+      }
+    }
+
+    if (!mounted) return;
+    shareNav.pop(true);
 
     unawaited(() async {
       try {
-        final resolved = await _resolveList(pending);
-        final resolvedImages = resolved.where((a) => a.isImage).toList();
         if (threadIds.isNotEmpty) {
           for (final threadId in threadIds) {
-            final attachmentIds = <int>[];
-            for (final att in resolved) {
-              final uploaded = await repo.uploadChatAttachmentBytes(
-                threadId,
-                bytes: Uint8List.fromList(att.bytes),
-                filename: att.filename,
-                contentType: att.contentType,
+            final seeded = pendingByThread[threadId];
+            if (seeded == null) continue;
+            try {
+              await ShareChatSendCoordinator.deliver(
+                repo: repo,
+                threadId: threadId,
+                tempId: seeded.tempId,
+                caption: caption,
+                pendingAttachments: pending,
+                optimisticAttachmentMaps: seeded.atts,
               );
-              final id = chatAsInt(uploaded['id']);
-              if (id == null) continue;
-              attachmentIds.add(id);
-              final path = att.localPath?.trim() ?? '';
-              if (path.isNotEmpty && (att.isImage || att.isVideo)) {
-                unawaited(
-                  MediaLocalIndex.saveOutgoing(
-                    attachmentId: id,
-                    localPath: path,
+            } catch (_) {
+              await ShareChatSendCoordinator.markPendingFailed(
+                threadId: threadId,
+                tempId: seeded.tempId,
+              );
+              rethrow;
+            }
+          }
+        }
+
+        if (albumPks.isNotEmpty && myUserId != null) {
+          final resolved = await _resolveList(pending);
+          final resolvedImages = resolved.where((a) => a.isImage).toList();
+          if (resolvedImages.isNotEmpty) {
+            final photos = resolvedImages
+                .map(
+                  (att) => AlbumUploadPhoto(
+                    bytes: Uint8List.fromList(att.bytes),
                     filename: att.filename,
-                    kind: att.isVideo ? 'video' : 'image',
+                    contentType: att.contentType ?? 'image/jpeg',
+                    localPath: att.localPath,
                   ),
-                );
-              }
-            }
-            final sent = await repo.sendThreadMessage(
-              threadId,
-              body: caption.isEmpty ? null : caption,
-              attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
+                )
+                .toList();
+            final batch = FeedPhotoBatchSession(
+              totalTasks: albumPks.length * photos.length,
             );
-            if (ChatLocalStore.isSupported) {
-              final map = Map<String, dynamic>.from(sent);
-              map['thread_id'] ??= threadId;
-              await ChatLocalStore.instance.upsertMessage(map);
-            }
-            if (ChatSyncService.isSupported) {
-              unawaited(ChatSyncService.instance.syncThread(threadId));
+            for (final albumPk in albumPks) {
+              AlbumUploadCoordinator.instance.startUploadToCustomAlbum(
+                repo: repo,
+                userId: myUserId,
+                albumPk: albumPk,
+                albumId: 'custom:$albumPk',
+                title: albumTitles[albumPk] ?? 'Альбом',
+                photos: photos,
+                batchSession: batch,
+              );
             }
           }
+        } else if (threadIds.isNotEmpty) {
+          await finishShareAttachmentRead();
         }
-        if (albumPks.isNotEmpty && resolvedImages.isNotEmpty && myUserId != null) {
-          final photos = resolvedImages
-              .map(
-                (att) => AlbumUploadPhoto(
-                  bytes: Uint8List.fromList(att.bytes),
-                  filename: att.filename,
-                  contentType: att.contentType ?? 'image/jpeg',
-                  localPath: att.localPath,
-                ),
-              )
-              .toList();
-          final batch = FeedPhotoBatchSession(
-            totalTasks: albumPks.length * photos.length,
-          );
-          for (final albumPk in albumPks) {
-            AlbumUploadCoordinator.instance.startUploadToCustomAlbum(
-              repo: repo,
-              userId: myUserId,
-              albumPk: albumPk,
-              albumId: 'custom:$albumPk',
-              title: albumTitles[albumPk] ?? 'Альбом',
-              photos: photos,
-              batchSession: batch,
-            );
-          }
-        }
+
         await ShellRefresh.instance.refreshMainTabs();
       } catch (_) {
         messenger?.showSnackBar(

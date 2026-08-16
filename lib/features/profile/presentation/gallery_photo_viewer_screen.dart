@@ -78,6 +78,7 @@ class _GalleryPhotoViewerScreenState
   bool _commentsExpanded = false;
   bool _reactBusy = false;
   int? _highlightUserId;
+  String? _highlightSubjectKey;
   List<PhotoFaceBox> _highlightBoxes = const [];
 
   @override
@@ -433,6 +434,7 @@ class _GalleryPhotoViewerScreenState
                 _index = i;
                 _commentsExpanded = false;
                 _highlightUserId = null;
+                _highlightSubjectKey = null;
                 _highlightBoxes = const [];
               }),
               itemCount: _photos.length,
@@ -609,14 +611,17 @@ class _GalleryPhotoViewerScreenState
                 attachmentId: attachmentId,
                 profileUserId: widget.profileUserId,
                 threadId: threadId,
+                selectedSubjectKey: _highlightSubjectKey,
                 selectedUserId: _highlightUserId,
                 onHighlightChanged: (highlight) {
                   setState(() {
                     if (highlight == null) {
                       _highlightUserId = null;
+                      _highlightSubjectKey = null;
                       _highlightBoxes = const [];
                     } else {
                       _highlightUserId = highlight.userId;
+                      _highlightSubjectKey = highlight.subjectKey;
                       _highlightBoxes = highlight.boxes;
                     }
                   });

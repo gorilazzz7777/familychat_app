@@ -1348,12 +1348,16 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> assignChatAttachmentFace(
     int threadId,
     int attachmentId,
-    int faceIndex,
-    int userId,
-  ) async {
+    int faceIndex, {
+    int? userId,
+    int? childId,
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/attachments/$attachmentId/faces/$faceIndex/assign/',
-      data: {'user_id': userId},
+      data: {
+        if (userId != null) 'user_id': userId,
+        if (childId != null) 'child_id': childId,
+      },
     );
     return res.data!;
   }
@@ -1361,12 +1365,17 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> createChatAttachmentManualFace(
     int threadId,
     int attachmentId, {
-    required int userId,
+    int? userId,
+    int? childId,
     required Map<String, dynamic> bbox,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/attachments/$attachmentId/faces/manual/',
-      data: {'user_id': userId, 'bbox': bbox},
+      data: {
+        if (userId != null) 'user_id': userId,
+        if (childId != null) 'child_id': childId,
+        'bbox': bbox,
+      },
     );
     return res.data!;
   }
@@ -1389,12 +1398,16 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> assignGalleryPhotoFace(
     int profileUserId,
     int attachmentId,
-    int faceIndex,
-    int userId,
-  ) async {
+    int faceIndex, {
+    int? userId,
+    int? childId,
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/members/$profileUserId/gallery/photos/$attachmentId/faces/$faceIndex/assign/',
-      data: {'user_id': userId},
+      data: {
+        if (userId != null) 'user_id': userId,
+        if (childId != null) 'child_id': childId,
+      },
     );
     return res.data!;
   }
@@ -1402,12 +1415,17 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> createGalleryPhotoManualFace(
     int profileUserId,
     int attachmentId, {
-    required int userId,
+    int? userId,
+    int? childId,
     required Map<String, dynamic> bbox,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/members/$profileUserId/gallery/photos/$attachmentId/faces/manual/',
-      data: {'user_id': userId, 'bbox': bbox},
+      data: {
+        if (userId != null) 'user_id': userId,
+        if (childId != null) 'child_id': childId,
+        'bbox': bbox,
+      },
     );
     return res.data!;
   }

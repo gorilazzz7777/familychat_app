@@ -9,6 +9,7 @@ import '../../../core/share/share_to_diary_prefs.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/media/gallery_media_export.dart';
 import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/gallery_photo_date.dart';
 import '../../../core/media/media_incoming_sync.dart';
 import '../../../core/media/media_local_index.dart';
 import '../../../core/media/image_upload_pipeline.dart';
@@ -26,6 +27,7 @@ import '../data/album_upload_coordinator.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
 import '../../gallery/presentation/gallery_media_thumbnail.dart';
+import '../../gallery/presentation/widgets/gallery_date_scrubber.dart';
 import '../../gallery/presentation/widgets/gallery_mosaic_layout.dart';
 import 'widgets/chat_avatar.dart';
 
@@ -67,7 +69,9 @@ class _ProfileGalleryAlbumScreenState
     extends ConsumerState<ProfileGalleryAlbumScreen> {
   final List<Map<String, dynamic>> _photos = [];
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   final Set<int> _selectedPhotoIds = {};
+  List<GalleryAlbumDaySection> _daySections = const [];
   bool _loading = true;
   bool _loadingMore = false;
   bool _addingPhotos = false;
@@ -95,6 +99,13 @@ class _ProfileGalleryAlbumScreenState
   static const _maxUploadCount = 500;
   static const _galleryAddChunkSize = 50;
   static const _uploadPollInterval = Duration(seconds: 3);
+
+  void _rebuildDaySections() {
+    _daySections = buildGalleryAlbumDaySections(_photos);
+  }
+
+  List<Map<String, dynamic>> get _displayPhotos =>
+      _daySections.expand((s) => s.photos).toList(growable: false);
 
   int? _photoUploaderId(Map<String, dynamic> photo) {
     final id = photo['uploaded_by_user_id'];
@@ -135,6 +146,7 @@ class _ProfileGalleryAlbumScreenState
     }
     _uploadPollTimer?.cancel();
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -445,6 +457,7 @@ class _ProfileGalleryAlbumScreenState
           _photos
             ..clear()
             ..addAll(batch);
+          _rebuildDaySections();
           _total = cachedPage['total'] is int
               ? cachedPage['total'] as int
               : int.tryParse('${cachedPage['total']}') ?? batch.length;
@@ -463,6 +476,7 @@ class _ProfileGalleryAlbumScreenState
           _error = null;
           _offset = 0;
           _photos.clear();
+          _rebuildDaySections();
         });
       }
     } else {
@@ -515,6 +529,7 @@ class _ProfileGalleryAlbumScreenState
             reset) {
           _total = _photos.length;
         }
+        _rebuildDaySections();
         _searchPeople = (data['search_people'] as List<dynamic>? ?? [])
             .cast<Map<String, dynamic>>();
         _unidentifiedCount = data['unidentified_count'] is int
@@ -605,6 +620,7 @@ class _ProfileGalleryAlbumScreenState
     if (id == null || _currentPhotoIds.contains(id)) return;
     setState(() {
       _photos.insert(0, photo);
+      _rebuildDaySections();
       _offset++;
       _total++;
     });
@@ -649,6 +665,7 @@ class _ProfileGalleryAlbumScreenState
           _total++;
         }
       }
+      _rebuildDaySections();
     });
   }
 
@@ -703,6 +720,7 @@ class _ProfileGalleryAlbumScreenState
         }
         _offset += rawBatch.length;
         _total = newTotal;
+        _rebuildDaySections();
       });
     } catch (_) {
       // Ignore polling errors while upload continues.
@@ -799,6 +817,7 @@ class _ProfileGalleryAlbumScreenState
 
     setState(() {
       _photos.insertAll(0, optimistic);
+      _rebuildDaySections();
       _offset += optimistic.length;
       _total += optimistic.length;
       _addingPhotos = true;
@@ -953,7 +972,7 @@ class _ProfileGalleryAlbumScreenState
       profileUserId: widget.userId,
       photo: photo,
       currentUserId: currentUserId,
-      photos: _photos,
+      photos: _displayPhotos,
       initialIndex: index,
       onChanged: () => _load(reset: true),
     );
@@ -1757,60 +1776,75 @@ class _ProfileGalleryAlbumScreenState
                                       ),
                                     ),
                                   Expanded(
-                                    child: NotificationListener<
-                                        ScrollNotification>(
-                                      onNotification: (n) {
-                                        if (n.metrics.pixels >=
-                                                n.metrics.maxScrollExtent -
-                                                    200 &&
-                                            !_loadingMore &&
-                                            _photos.length < _total) {
-                                          _load(reset: false);
-                                        }
-                                        return false;
-                                      },
-                                      child: CustomScrollView(
-                                        slivers: [
-                                          SliverPadding(
-                                            padding: const EdgeInsets.all(
-                                              GalleryMosaicLayout.padding,
-                                            ),
-                                            sliver: SliverGrid(
-                                              gridDelegate:
-                                                  GalleryMosaicLayout
-                                                      .delegate(),
-                                              delegate:
-                                                  SliverChildBuilderDelegate(
-                                                (context, i) =>
-                                                    _buildPhotoTile(
-                                                  _photos[i],
-                                                  i,
+                                    child: Stack(
+                                      children: [
+                                        NotificationListener<
+                                            ScrollNotification>(
+                                          onNotification: (n) {
+                                            if (n.metrics.pixels >=
+                                                    n.metrics.maxScrollExtent -
+                                                        200 &&
+                                                !_loadingMore &&
+                                                _photos.length < _total) {
+                                              _load(reset: false);
+                                            }
+                                            return false;
+                                          },
+                                          child: CustomScrollView(
+                                            controller: _scrollController,
+                                            slivers: [
+                                              SliverPadding(
+                                                padding: const EdgeInsets.all(
+                                                  GalleryMosaicLayout.padding,
                                                 ),
-                                                childCount: _photos.length,
-                                              ),
-                                            ),
-                                          ),
-                                          if (_loadingMore)
-                                            const SliverToBoxAdapter(
-                                              child: Padding(
-                                                padding: EdgeInsets.all(16),
-                                                child: Center(
-                                                  child: SizedBox(
-                                                    width: 24,
-                                                    height: 24,
-                                                    child:
-                                                        CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
+                                                sliver: SliverGrid(
+                                                  gridDelegate:
+                                                      GalleryMosaicLayout
+                                                          .delegate(),
+                                                  delegate:
+                                                      SliverChildBuilderDelegate(
+                                                    (context, i) {
+                                                      final display =
+                                                          _displayPhotos;
+                                                      return _buildPhotoTile(
+                                                        display[i],
+                                                        i,
+                                                      );
+                                                    },
+                                                    childCount:
+                                                        _displayPhotos.length,
                                                   ),
                                                 ),
                                               ),
-                                            ),
-                                          const SliverToBoxAdapter(
-                                            child: SizedBox(height: 8),
+                                              if (_loadingMore)
+                                                const SliverToBoxAdapter(
+                                                  child: Padding(
+                                                    padding: EdgeInsets.all(16),
+                                                    child: Center(
+                                                      child: SizedBox(
+                                                        width: 24,
+                                                        height: 24,
+                                                        child:
+                                                            CircularProgressIndicator(
+                                                          strokeWidth: 2,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              const SliverToBoxAdapter(
+                                                child: SizedBox(height: 8),
+                                              ),
+                                            ],
                                           ),
-                                        ],
-                                      ),
+                                        ),
+                                        if (_daySections.isNotEmpty)
+                                          GalleryDateScrubber(
+                                            sections: _daySections,
+                                            scrollController:
+                                                _scrollController,
+                                          ),
+                                      ],
                                     ),
                                   ),
                                 ],

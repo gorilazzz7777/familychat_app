@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/media/gallery_photo_date.dart';
 import '../../../core/media/media_incoming_sync.dart';
 import '../../../core/media/media_local_index.dart';
 import '../../../core/providers/app_providers.dart';
@@ -10,6 +11,7 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../../gallery/presentation/gallery_media_thumbnail.dart';
+import '../../gallery/presentation/widgets/gallery_date_scrubber.dart';
 import '../../gallery/presentation/widgets/gallery_mosaic_layout.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
@@ -46,7 +48,9 @@ class ChildGalleryAlbumScreen extends ConsumerStatefulWidget {
 class _ChildGalleryAlbumScreenState
     extends ConsumerState<ChildGalleryAlbumScreen> {
   final List<Map<String, dynamic>> _photos = [];
+  final ScrollController _scrollController = ScrollController();
   final Set<int> _selectedPhotoIds = {};
+  List<GalleryAlbumDaySection> _daySections = const [];
   bool _loading = true;
   bool _loadingMore = false;
   bool _addingPhotos = false;
@@ -57,11 +61,24 @@ class _ChildGalleryAlbumScreenState
   int? _currentUserId;
   static const _pageSize = 60;
 
+  void _rebuildDaySections() {
+    _daySections = buildGalleryAlbumDaySections(_photos);
+  }
+
+  List<Map<String, dynamic>> get _displayPhotos =>
+      _daySections.expand((s) => s.photos).toList(growable: false);
+
   @override
   void initState() {
     super.initState();
     unawaited(_loadCurrentUserId());
     unawaited(_load(reset: true));
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadCurrentUserId() async {
@@ -89,6 +106,7 @@ class _ChildGalleryAlbumScreenState
         _beforeId = null;
         _hasMore = true;
         _photos.clear();
+        _rebuildDaySections();
       });
     } else {
       if (!_hasMore || _loadingMore) return;
@@ -116,6 +134,7 @@ class _ChildGalleryAlbumScreenState
         } else {
           _photos.addAll(batch);
         }
+        _rebuildDaySections();
         if (batch.isNotEmpty) {
           _beforeId = _photoId(batch.last);
         }
@@ -293,14 +312,16 @@ class _ChildGalleryAlbumScreenState
   }
 
   void _openViewer(int index) {
-    final photo = _photos[index];
+    final display = _displayPhotos;
+    if (index < 0 || index >= display.length) return;
+    final photo = display[index];
     final uid = _currentUserId ?? 0;
     GalleryPhotoViewerScreen.open(
       context,
       profileUserId: uid,
       photo: photo,
       currentUserId: uid,
-      photos: _photos,
+      photos: display,
       initialIndex: index,
       onChanged: () => _load(reset: true),
     );
@@ -426,103 +447,115 @@ class _ChildGalleryAlbumScreenState
                         ],
                       ),
                     )
-                  : NotificationListener<ScrollNotification>(
-                      onNotification: (n) {
-                        if (n.metrics.pixels >
-                                n.metrics.maxScrollExtent - 400 &&
-                            _hasMore &&
-                            !_loadingMore) {
-                          unawaited(_load(reset: false));
-                        }
-                        return false;
-                      },
-                      child: CustomScrollView(
-                        slivers: [
-                          SliverPadding(
-                            padding: const EdgeInsets.all(
-                              GalleryMosaicLayout.padding,
-                            ),
-                            sliver: SliverGrid(
-                              gridDelegate:
-                                  GalleryMosaicLayout.delegate(),
-                              delegate: SliverChildBuilderDelegate(
-                                (context, index) {
-                                  final photo = _photos[index];
-                                  final id = _photoId(photo);
-                                  final selected = id != null &&
-                                      _selectedPhotoIds.contains(id);
-                                  return Material(
-                                    clipBehavior: Clip.antiAlias,
-                                    borderRadius: BorderRadius.circular(6),
-                                    child: InkWell(
-                                      onTap: () {
-                                        if (_selectionMode) {
-                                          if (id == null) return;
-                                          setState(() {
-                                            if (selected) {
-                                              _selectedPhotoIds.remove(id);
-                                            } else {
-                                              _selectedPhotoIds.add(id);
-                                            }
-                                          });
-                                          return;
-                                        }
-                                        _openViewer(index);
-                                      },
-                                      onLongPress: widget.canManage
-                                          ? () {
+                  : Stack(
+                      children: [
+                        NotificationListener<ScrollNotification>(
+                          onNotification: (n) {
+                            if (n.metrics.pixels >
+                                    n.metrics.maxScrollExtent - 400 &&
+                                _hasMore &&
+                                !_loadingMore) {
+                              unawaited(_load(reset: false));
+                            }
+                            return false;
+                          },
+                          child: CustomScrollView(
+                            controller: _scrollController,
+                            slivers: [
+                              SliverPadding(
+                                padding: const EdgeInsets.all(
+                                  GalleryMosaicLayout.padding,
+                                ),
+                                sliver: SliverGrid(
+                                  gridDelegate:
+                                      GalleryMosaicLayout.delegate(),
+                                  delegate: SliverChildBuilderDelegate(
+                                    (context, index) {
+                                      final display = _displayPhotos;
+                                      final photo = display[index];
+                                      final id = _photoId(photo);
+                                      final selected = id != null &&
+                                          _selectedPhotoIds.contains(id);
+                                      return Material(
+                                        clipBehavior: Clip.antiAlias,
+                                        borderRadius: BorderRadius.circular(6),
+                                        child: InkWell(
+                                          onTap: () {
+                                            if (_selectionMode) {
                                               if (id == null) return;
                                               setState(() {
-                                                _selectionMode = true;
-                                                _selectedPhotoIds.add(id);
+                                                if (selected) {
+                                                  _selectedPhotoIds.remove(id);
+                                                } else {
+                                                  _selectedPhotoIds.add(id);
+                                                }
                                               });
+                                              return;
                                             }
-                                          : null,
-                                      child: Stack(
-                                        fit: StackFit.expand,
-                                        children: [
-                                          _thumb(photo),
-                                          if (_selectionMode)
-                                            Positioned(
-                                              top: 6,
-                                              right: 6,
-                                              child: Icon(
-                                                selected
-                                                    ? Icons.check_circle
-                                                    : Icons.circle_outlined,
-                                                color: selected
-                                                    ? Theme.of(context)
-                                                        .colorScheme
-                                                        .primary
-                                                    : Colors.white,
-                                                shadows: const [
-                                                  Shadow(
-                                                    blurRadius: 4,
-                                                    color: Colors.black54,
+                                            _openViewer(index);
+                                          },
+                                          onLongPress: widget.canManage
+                                              ? () {
+                                                  if (id == null) return;
+                                                  setState(() {
+                                                    _selectionMode = true;
+                                                    _selectedPhotoIds.add(id);
+                                                  });
+                                                }
+                                              : null,
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              _thumb(photo),
+                                              if (_selectionMode)
+                                                Positioned(
+                                                  top: 6,
+                                                  right: 6,
+                                                  child: Icon(
+                                                    selected
+                                                        ? Icons.check_circle
+                                                        : Icons
+                                                            .circle_outlined,
+                                                    color: selected
+                                                        ? Theme.of(context)
+                                                            .colorScheme
+                                                            .primary
+                                                        : Colors.white,
+                                                    shadows: const [
+                                                      Shadow(
+                                                        blurRadius: 4,
+                                                        color: Colors.black54,
+                                                      ),
+                                                    ],
                                                   ),
-                                                ],
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                },
-                                childCount: _photos.length,
-                              ),
-                            ),
-                          ),
-                          if (_loadingMore)
-                            const SliverToBoxAdapter(
-                              child: Padding(
-                                padding: EdgeInsets.all(16),
-                                child: Center(
-                                  child: CircularProgressIndicator(),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    childCount: _displayPhotos.length,
+                                  ),
                                 ),
                               ),
-                            ),
-                        ],
-                      ),
+                              if (_loadingMore)
+                                const SliverToBoxAdapter(
+                                  child: Padding(
+                                    padding: EdgeInsets.all(16),
+                                    child: Center(
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        if (_daySections.isNotEmpty)
+                          GalleryDateScrubber(
+                            sections: _daySections,
+                            scrollController: _scrollController,
+                          ),
+                      ],
                     ),
     );
   }

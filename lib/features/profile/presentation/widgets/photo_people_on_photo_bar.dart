@@ -21,26 +21,35 @@ class PhotoFaceBox {
 
 class PhotoPersonHighlight {
   const PhotoPersonHighlight({
-    required this.userId,
+    required this.subjectKey,
     required this.boxes,
+    this.userId,
+    this.childId,
   });
 
-  final int userId;
+  /// `user:{id}` или `child:{id}`.
+  final String subjectKey;
   final List<PhotoFaceBox> boxes;
+  final int? userId;
+  final int? childId;
 }
 
 class _PhotoPerson {
   const _PhotoPerson({
-    required this.userId,
+    required this.subjectKey,
     required this.name,
     required this.avatarUrl,
     required this.boxes,
+    this.userId,
+    this.childId,
   });
 
-  final int userId;
+  final String subjectKey;
   final String name;
   final String avatarUrl;
   final List<PhotoFaceBox> boxes;
+  final int? userId;
+  final int? childId;
 }
 
 /// Блок «Кто на фото» внизу полноэкранного просмотра.
@@ -52,13 +61,15 @@ class PhotoPeopleOnPhotoBar extends ConsumerStatefulWidget {
     required this.attachmentId,
     this.profileUserId,
     this.threadId,
-    this.selectedUserId,
+    this.selectedSubjectKey,
+    @Deprecated('Use selectedSubjectKey') this.selectedUserId,
     this.onHighlightChanged,
   });
 
   final int attachmentId;
   final int? profileUserId;
   final int? threadId;
+  final String? selectedSubjectKey;
   final int? selectedUserId;
   final ValueChanged<PhotoPersonHighlight?>? onHighlightChanged;
 
@@ -73,6 +84,13 @@ class PhotoPeopleOnPhotoBar extends ConsumerStatefulWidget {
 class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
   bool _loading = true;
   List<_PhotoPerson> _people = const [];
+
+  String? get _selectedKey {
+    if (widget.selectedSubjectKey != null) return widget.selectedSubjectKey;
+    final uid = widget.selectedUserId;
+    if (uid != null) return 'user:$uid';
+    return null;
+  }
 
   @override
   void initState() {
@@ -123,32 +141,46 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
       if (!mounted) return;
       final faces =
           (data['faces'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
-      final byUserId = <int, _PhotoPerson>{};
+      final byKey = <String, _PhotoPerson>{};
       for (final face in faces) {
-        final rawId = face['assigned_user_id'];
-        final userId = rawId is int ? rawId : int.tryParse('$rawId');
-        if (userId == null) continue;
+        final childRaw = face['assigned_child_id'];
+        final childId =
+            childRaw is int ? childRaw : int.tryParse('$childRaw');
+        final userRaw = face['assigned_user_id'];
+        final userId = userRaw is int ? userRaw : int.tryParse('$userRaw');
+        final String subjectKey;
+        if (childId != null) {
+          subjectKey = 'child:$childId';
+        } else if (userId != null) {
+          subjectKey = 'user:$userId';
+        } else {
+          continue;
+        }
         final name = (face['assigned_display_name']?.toString() ?? '').trim();
         if (name.isEmpty) continue;
         final box = _boxFromFace(face);
-        final existing = byUserId[userId];
+        final existing = byKey[subjectKey];
         if (existing == null) {
-          byUserId[userId] = _PhotoPerson(
+          byKey[subjectKey] = _PhotoPerson(
+            subjectKey: subjectKey,
             userId: userId,
+            childId: childId,
             name: name,
             avatarUrl: face['assigned_avatar_url']?.toString() ?? '',
             boxes: box == null ? const [] : [box],
           );
         } else if (box != null) {
-          byUserId[userId] = _PhotoPerson(
+          byKey[subjectKey] = _PhotoPerson(
+            subjectKey: existing.subjectKey,
             userId: existing.userId,
+            childId: existing.childId,
             name: existing.name,
             avatarUrl: existing.avatarUrl,
             boxes: [...existing.boxes, box],
           );
         }
       }
-      final people = byUserId.values.toList()
+      final people = byKey.values.toList()
         ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
       setState(() {
         _people = people;
@@ -164,13 +196,18 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
   }
 
   void _onPersonTap(_PhotoPerson person) {
-    final selected = widget.selectedUserId == person.userId;
+    final selected = _selectedKey == person.subjectKey;
     if (selected) {
       widget.onHighlightChanged?.call(null);
       return;
     }
     widget.onHighlightChanged?.call(
-      PhotoPersonHighlight(userId: person.userId, boxes: person.boxes),
+      PhotoPersonHighlight(
+        subjectKey: person.subjectKey,
+        userId: person.userId,
+        childId: person.childId,
+        boxes: person.boxes,
+      ),
     );
   }
 
@@ -227,7 +264,7 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
                             itemBuilder: (_, i) {
                               final person = _people[i];
                               final selected =
-                                  widget.selectedUserId == person.userId;
+                                  _selectedKey == person.subjectKey;
                               return Material(
                                 color: selected
                                     ? const Color(0xFF2E7D32)
