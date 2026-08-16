@@ -358,46 +358,110 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
         ],
         const SizedBox(height: 20),
         if (!isSelf)
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: _openingChat || _openingCall ? null : _openChat,
-                  icon: _openingChat
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final w = constraints.maxWidth;
+              // Three equal actions + gaps; shrink padding/icon/font on narrow screens.
+              final gap = w < 320 ? 6.0 : (w < 360 ? 8.0 : 10.0);
+              final iconSize = w < 320 ? 20.0 : (w < 360 ? 22.0 : 24.0);
+              final fontSize = w < 320 ? 11.0 : (w < 360 ? 12.0 : 13.0);
+              final vPad = w < 320 ? 8.0 : (w < 360 ? 10.0 : 12.0);
+              final busy = _openingChat || _openingCall;
+              Widget action({
+                required VoidCallback? onPressed,
+                required IconData icon,
+                required String label,
+                required bool filled,
+                bool showSpinner = false,
+              }) {
+                final scheme = Theme.of(context).colorScheme;
+                final fg = filled
+                    ? scheme.onPrimary
+                    : (onPressed == null
+                        ? scheme.onSurface.withValues(alpha: 0.38)
+                        : scheme.primary);
+                final child = Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (showSpinner)
+                      SizedBox(
+                        width: iconSize,
+                        height: iconSize,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: filled ? Colors.white : null,
+                        ),
+                      )
+                    else
+                      Icon(icon, size: iconSize, color: fg),
+                    SizedBox(height: w < 320 ? 4 : 6),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        softWrap: false,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: fontSize,
+                          fontWeight: FontWeight.w600,
+                          height: 1.1,
+                          color: fg,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+                final style = ButtonStyle(
+                  padding: WidgetStatePropertyAll(
+                    EdgeInsets.symmetric(vertical: vPad, horizontal: 4),
+                  ),
+                  minimumSize: const WidgetStatePropertyAll(Size(0, 0)),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                );
+                return Expanded(
+                  child: filled
+                      ? FilledButton(
+                          onPressed: onPressed,
+                          style: style,
+                          child: child,
                         )
-                      : const Icon(Icons.chat_outlined),
-                  label: Text(_openingChat ? 'Открываю…' : 'Чат'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed:
-                      _openingChat || _openingCall ? null : () => _startCall(),
-                  icon: _openingCall
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.call_outlined),
-                  label: Text(_openingCall ? 'Запуск…' : 'Позвонить'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton.outlined(
-                tooltip: 'Видеозвонок',
-                onPressed: _openingChat || _openingCall
-                    ? null
-                    : () => _startCall(isVideo: true),
-                icon: const Icon(Icons.videocam_outlined),
-              ),
-            ],
+                      : OutlinedButton(
+                          onPressed: onPressed,
+                          style: style,
+                          child: child,
+                        ),
+                );
+              }
+
+              return Row(
+                children: [
+                  action(
+                    onPressed: busy ? null : _openChat,
+                    icon: Icons.chat_outlined,
+                    label: _openingChat ? '…' : 'Чат',
+                    filled: true,
+                    showSpinner: _openingChat,
+                  ),
+                  SizedBox(width: gap),
+                  action(
+                    onPressed: busy ? null : () => _startCall(),
+                    icon: Icons.call_outlined,
+                    label: _openingCall ? '…' : 'Звонок',
+                    filled: false,
+                    showSpinner: _openingCall,
+                  ),
+                  SizedBox(width: gap),
+                  action(
+                    onPressed: busy ? null : () => _startCall(isVideo: true),
+                    icon: Icons.videocam_outlined,
+                    label: 'Видео',
+                    filled: false,
+                  ),
+                ],
+              );
+            },
           ),
         if (!isSelf) ...[
           const SizedBox(height: 16),

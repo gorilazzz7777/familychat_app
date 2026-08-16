@@ -204,7 +204,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
       };
 
       if (widget.isCaller) {
-        final started = await _repo.startCall(
+        final started = await _repo.startCallWithOptions(
           widget.threadId,
           isVideo: widget.isVideo,
         );
