@@ -39,3 +39,31 @@ class ChatMetaRows extends Table {
   @override
   Set<Column<Object>> get primaryKey => {key};
 }
+
+/// Offline outbox queue (message / reaction payloads).
+class ChatOutboxRows extends Table {
+  TextColumn get id => text()();
+  TextColumn get payloadJson => text()();
+  IntColumn get createdAtMs => integer().withDefault(const Constant(0))();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+/// Binary blobs for outbox attachments (keyed by storage_key).
+class ChatOutboxBlobRows extends Table {
+  TextColumn get storageKey => text()();
+  BlobColumn get bytes => blob()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {storageKey};
+}
+
+/// Per-key media local index (avoids rewriting full blob).
+class MediaLocalIndexRows extends Table {
+  TextColumn get key => text()();
+  TextColumn get payloadJson => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {key};
+}

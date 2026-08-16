@@ -215,7 +215,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   bool get _canUseSpeak => _viewerIndividualPremium && _isDm;
 
-  void _startOutgoingCall() {
+  void _startOutgoingCall({bool isVideo = false}) {
     unawaited(
       Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
@@ -223,6 +223,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             threadId: widget.threadId,
             title: _title,
             isCaller: true,
+            isVideo: isVideo,
           ),
         ),
       ),
@@ -472,13 +473,28 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _messagesSub =
         ChatLocalStore.instance.watchMessages(widget.threadId).listen((rows) async {
       if (!mounted) return;
+      // Skip expensive bin hydrate when display fingerprint is unchanged.
+      final pendingLocal = _messages.where(chatMessageIsPending).toList();
+      final previewMerged = pendingLocal.isEmpty
+          ? rows
+          : chatMergeMessageLists(
+              rows,
+              pendingLocal,
+              currentUserId: _currentUserId,
+            );
+      final previewNext = chatReconcilePendingDuplicates(
+        previewMerged,
+        currentUserId: _currentUserId,
+      );
+      if (chatMessageListsDisplayEqual(_messages, previewNext) && !_loading) {
+        return;
+      }
       final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
         widget.threadId,
         rows,
       );
       if (!mounted) return;
       // Keep in-flight optimistic rows until they land in SQLite.
-      final pendingLocal = _messages.where(chatMessageIsPending).toList();
       final merged = pendingLocal.isEmpty
           ? hydrated
           : chatMergeMessageLists(
@@ -3602,12 +3618,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                   ),
                 ),
                 actions: [
-                  if (_isDm && _canSend && !_loading)
+                  if (_isDm && _canSend && !_loading) ...[
                     IconButton(
                       tooltip: 'Аудиозвонок',
-                      onPressed: _startOutgoingCall,
+                      onPressed: () => _startOutgoingCall(),
                       icon: const Icon(Icons.call_outlined),
                     ),
+                    IconButton(
+                      tooltip: 'Видеозвонок',
+                      onPressed: () => _startOutgoingCall(isVideo: true),
+                      icon: const Icon(Icons.videocam_outlined),
+                    ),
+                  ],
                   IconButton(
                     tooltip: 'Поиск',
                     onPressed: _loading ? null : _openSearch,
@@ -3772,8 +3794,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                       metadata: metadata,
                                       currentUserId: _currentUserId!,
                                       createdAt: created,
-                                      onRedial:
-                                          _isDm ? _startOutgoingCall : null,
+                                      onRedial: _isDm
+                                          ? () => _startOutgoingCall(
+                                                isVideo: metadata['is_video'] ==
+                                                        true ||
+                                                    metadata['is_video']
+                                                            ?.toString() ==
+                                                        '1',
+                                              )
+                                          : null,
                                     );
                                   } else if (_isBirthdayCelebration &&
                                       metadata['subtype']?.toString() ==

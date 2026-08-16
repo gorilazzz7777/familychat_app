@@ -1,0 +1,2 @@
+# Regenerated from https://www.sqlite.org/download.html (amalgamation).
+# Used by pubspec.yaml hooks → sqlite3 source:source so builds don't hit GitHub.

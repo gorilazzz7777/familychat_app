@@ -5,6 +5,7 @@ import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
+import '../../gallery/presentation/gallery_albums_tab_body.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 import 'child_gallery_album_screen.dart';
 
@@ -46,6 +47,11 @@ class ChildGalleryTabState extends ConsumerState<ChildGalleryTab> {
           .read(familychatRepositoryProvider)
           .childGalleryAlbums(widget.childId);
       if (!mounted) return;
+      if (galleryAlbumsFingerprint(_albums) ==
+              galleryAlbumsFingerprint(albums) &&
+          !_loading) {
+        return;
+      }
       setState(() {
         _albums = albums;
         _loading = false;

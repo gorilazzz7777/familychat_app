@@ -126,8 +126,8 @@ class _ChatForwardScreenState extends ConsumerState<ChatForwardScreen> {
       ]);
       final list = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
-      await FamilyChatLocalCache.saveChatThreads(list);
-      await FamilyChatLocalCache.saveChatMembers(members);
+      await ChatLocalStore.instance.replaceThreads(list);
+      await ChatLocalStore.instance.replaceMembers(members);
       if (!mounted) return;
       setState(() {
         _threads = _sorted(_withoutSource(list));

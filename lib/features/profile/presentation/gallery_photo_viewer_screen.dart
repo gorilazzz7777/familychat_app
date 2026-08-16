@@ -5,7 +5,6 @@ import '../../../core/media/gallery_media_export.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/media_incoming_sync.dart';
 import '../../../core/media/media_local_index.dart';
-import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/gallery_video_player.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/zoom_aware_page_view.dart';
@@ -13,6 +12,7 @@ import '../../chat/presentation/chat_forward_screen.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import '../../chat/data/chat_realtime_utils.dart';
 import '../../feed/presentation/widgets/feed_reactions.dart';
+import '../../gallery/presentation/widgets/gallery_fullscreen_viewer_core.dart';
 import 'face_tagging_sheet.dart';
 import 'media_engagement_inline.dart';
 import 'photo_slideshow_screen.dart';
@@ -356,280 +356,267 @@ class _GalleryPhotoViewerScreenState
   Widget build(BuildContext context) {
     final threadId = _threadId;
     final attachmentId = _attachmentId;
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: FamilyAppBar.build(
-        title: _isVideo ? 'Видео' : 'Фото',
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        actions: [
-          if (_photos.length - _index >= 2)
-            IconButton(
-              tooltip: 'Диафильм',
-              onPressed: () {
-                PhotoSlideshowScreen.open(
-                  context,
-                  photos: _photos,
-                  startIndex: _index,
-                );
-              },
-              icon: const Icon(Icons.play_arrow_rounded),
-            ),
-          if (attachmentId != null)
-            IconButton(
-              tooltip: 'Поделиться',
-              onPressed: () => _shareCurrent(context),
-              icon: const Icon(Icons.share_outlined),
-            ),
-          if (threadId != null && chatAsInt(_photo['message_id']) != null)
-            IconButton(
-              tooltip: 'Переслать',
-              onPressed: _forwardCurrent,
-              icon: const Icon(Icons.forward_outlined),
-            ),
-          if (threadId != null && attachmentId != null && !_isVideo)
-            IconButton(
-              tooltip: 'Кто на фото',
-              onPressed: () => _openFaceTagging(context, ref),
-              icon: const Icon(Icons.face_outlined),
-            ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (value) async {
-              switch (value) {
-                case 'faces':
-                  await _openFaceTagging(context, ref);
-                case 'delete':
-                  if (_isOwnGallery || _isOwnUpload) {
-                    await _confirmDelete(context, ref);
-                  }
-                case 'download':
-                  await _downloadCurrent(context);
-              }
+    return GalleryFullscreenViewerCore(
+      pageController: _pageController,
+      itemCount: _photos.length,
+      pageFlex: 3,
+      zoomPageKey: _zoomPageKey,
+      title: _isVideo ? 'Видео' : 'Фото',
+      onPageChanged: (i) => setState(() {
+        _index = i;
+        _commentsExpanded = false;
+        _highlightUserId = null;
+        _highlightSubjectKey = null;
+        _highlightBoxes = const [];
+      }),
+      actions: [
+        if (_photos.length - _index >= 2)
+          IconButton(
+            tooltip: 'Диафильм',
+            onPressed: () {
+              PhotoSlideshowScreen.open(
+                context,
+                photos: _photos,
+                startIndex: _index,
+              );
             },
-            itemBuilder: (context) => [
-              if (!_isVideo)
-                const PopupMenuItem(
-                    value: 'faces', child: Text('Указать, кто на фото')),
-              if (_isOwnGallery && !_isOwnUpload)
-                const PopupMenuItem(
-                    value: 'delete', child: Text('Убрать из моей галереи')),
-              if (_isOwnUpload)
-                const PopupMenuItem(
-                    value: 'delete', child: Text('Удалить фото')),
-              const PopupMenuItem(
-                  value: 'download', child: Text('Скачать')),
-            ],
+            icon: const Icon(Icons.play_arrow_rounded),
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            flex: 3,
-            child: ZoomAwarePageView(
-              key: _zoomPageKey,
-              controller: _pageController,
-              onPageChanged: (i) => setState(() {
-                _index = i;
-                _commentsExpanded = false;
-                _highlightUserId = null;
-                _highlightSubjectKey = null;
-                _highlightBoxes = const [];
-              }),
-              itemCount: _photos.length,
-              itemBuilder: (_, i) {
-                final p = _photos[i];
-                final tid = p['thread_id'];
-                if (tid is! int) {
-                  return const Icon(Icons.broken_image_outlined,
-                      color: Colors.white54, size: 48);
+        if (attachmentId != null)
+          IconButton(
+            tooltip: 'Поделиться',
+            onPressed: () => _shareCurrent(context),
+            icon: const Icon(Icons.share_outlined),
+          ),
+        if (threadId != null && chatAsInt(_photo['message_id']) != null)
+          IconButton(
+            tooltip: 'Переслать',
+            onPressed: _forwardCurrent,
+            icon: const Icon(Icons.forward_outlined),
+          ),
+        if (threadId != null && attachmentId != null && !_isVideo)
+          IconButton(
+            tooltip: 'Кто на фото',
+            onPressed: () => _openFaceTagging(context, ref),
+            icon: const Icon(Icons.face_outlined),
+          ),
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.more_vert),
+          onSelected: (value) async {
+            switch (value) {
+              case 'faces':
+                await _openFaceTagging(context, ref);
+              case 'delete':
+                if (_isOwnGallery || _isOwnUpload) {
+                  await _confirmDelete(context, ref);
                 }
-                final showHighlight =
-                    i == _index && _highlightBoxes.isNotEmpty;
-                return Center(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) => SizedBox(
+              case 'download':
+                await _downloadCurrent(context);
+            }
+          },
+          itemBuilder: (context) => [
+            if (!_isVideo)
+              const PopupMenuItem(
+                  value: 'faces', child: Text('Указать, кто на фото')),
+            if (_isOwnGallery && !_isOwnUpload)
+              const PopupMenuItem(
+                  value: 'delete', child: Text('Убрать из моей галереи')),
+            if (_isOwnUpload)
+              const PopupMenuItem(
+                  value: 'delete', child: Text('Удалить фото')),
+            const PopupMenuItem(value: 'download', child: Text('Скачать')),
+          ],
+        ),
+      ],
+      pageBuilder: (_, i) {
+        final p = _photos[i];
+        final tid = p['thread_id'];
+        if (tid is! int) {
+          return const Icon(Icons.broken_image_outlined,
+              color: Colors.white54, size: 48);
+        }
+        final showHighlight = i == _index && _highlightBoxes.isNotEmpty;
+        return Center(
+          child: LayoutBuilder(
+            builder: (context, constraints) => SizedBox(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  ScaleReportingInteractiveViewer(
+                    minScale: 0.8,
+                    maxScale: 5,
+                    constrained: false,
+                    clipBehavior: Clip.none,
+                    onScaleChanged: i == _index
+                        ? (scale) =>
+                            _zoomPageKey.currentState?.reportScale(scale)
+                        : null,
+                    child: SizedBox(
                       width: constraints.maxWidth,
                       height: constraints.maxHeight,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          ScaleReportingInteractiveViewer(
-                            minScale: 0.8,
-                            maxScale: 5,
-                            constrained: false,
-                            clipBehavior: Clip.none,
-                            onScaleChanged: i == _index
-                                ? (scale) =>
-                                    _zoomPageKey.currentState?.reportScale(scale)
-                                : null,
-                            child: SizedBox(
-                              width: constraints.maxWidth,
-                              height: constraints.maxHeight,
-                              child: _buildMedia(
-                                p,
-                                tid,
-                                autoplay: i == _index,
-                              ),
-                            ),
-                          ),
-                          if (showHighlight)
-                            PhotoFaceHighlightOverlay(boxes: _highlightBoxes),
-                        ],
+                      child: _buildMedia(
+                        p,
+                        tid,
+                        autoplay: i == _index,
                       ),
                     ),
                   ),
-                );
-              },
+                  if (showHighlight)
+                    PhotoFaceHighlightOverlay(boxes: _highlightBoxes),
+                ],
+              ),
             ),
           ),
-          if (attachmentId != null)
-            SafeArea(
-              top: false,
-              bottom: false,
-              child: Container(
-                color: Colors.grey.shade900,
-                child: AnimatedSize(
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOutCubic,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      InkWell(
-                        onTap: () =>
-                            setState(() => _commentsExpanded = !_commentsExpanded),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 8, 10),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _commentsExpanded
-                                    ? Icons.keyboard_arrow_down
-                                    : Icons.keyboard_arrow_up,
-                                size: 18,
-                                color: Colors.white70,
+        );
+      },
+      bottomSlots: [
+        if (attachmentId != null)
+          SafeArea(
+            top: false,
+            bottom: false,
+            child: Container(
+              color: Colors.grey.shade900,
+              child: AnimatedSize(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InkWell(
+                      onTap: () =>
+                          setState(() => _commentsExpanded = !_commentsExpanded),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 8, 10),
+                        child: Row(
+                          children: [
+                            Icon(
+                              _commentsExpanded
+                                  ? Icons.keyboard_arrow_down
+                                  : Icons.keyboard_arrow_up,
+                              size: 18,
+                              color: Colors.white70,
+                            ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 24, minHeight: 24),
+                              tooltip: 'Реакция',
+                              onPressed:
+                                  _reactBusy ? null : _openReactionPicker,
+                              icon: _myReaction.isNotEmpty
+                                  ? Text(
+                                      _myReaction,
+                                      style: const TextStyle(fontSize: 16),
+                                    )
+                                  : const Icon(
+                                      Icons.add_reaction_outlined,
+                                      size: 18,
+                                      color: Colors.white70,
+                                    ),
+                            ),
+                            SizedBox(
+                              width: 36,
+                              child: _reactionsCount > 0
+                                  ? Text(
+                                      '$_reactionsCount',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: Colors.white70,
+                                            fontSize: 12,
+                                          ),
+                                    )
+                                  : null,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                'Комментарии ($_commentsCount)',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Colors.white70,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                    ),
                               ),
-                              IconButton(
-                                visualDensity: VisualDensity.compact,
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(
-                                    minWidth: 24, minHeight: 24),
-                                tooltip: 'Реакция',
-                                onPressed:
-                                    _reactBusy ? null : _openReactionPicker,
-                                icon: _myReaction.isNotEmpty
-                                    ? Text(
-                                        _myReaction,
-                                        style: const TextStyle(fontSize: 16),
-                                      )
-                                    : const Icon(
-                                        Icons.add_reaction_outlined,
-                                        size: 18,
-                                        color: Colors.white70,
-                                      ),
-                              ),
-                              SizedBox(
-                                width: 36,
-                                child: _reactionsCount > 0
-                                    ? Text(
-                                        '$_reactionsCount',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              color: Colors.white70,
-                                              fontSize: 12,
-                                            ),
-                                      )
-                                    : null,
-                              ),
-                              const SizedBox(width: 6),
-                              Expanded(
+                            ),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 110,
+                              child: Align(
+                                alignment: Alignment.centerRight,
                                 child: Text(
-                                  'Комментарии ($_commentsCount)',
+                                  _commentsExpanded ? 'Свернуть' : 'Развернуть',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.right,
                                   style: Theme.of(context)
                                       .textTheme
                                       .bodySmall
                                       ?.copyWith(
-                                        color: Colors.white70,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w500,
+                                        color: Colors.white54,
+                                        fontSize: 11,
                                       ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              SizedBox(
-                                width: 110,
-                                child: Align(
-                                  alignment: Alignment.centerRight,
-                                  child: Text(
-                                    _commentsExpanded ? 'Свернуть' : 'Развернуть',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.right,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
-                                          color: Colors.white54,
-                                          fontSize: 11,
-                                        ),
-                                  ),
-                                ),
-                              ),
-                            ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (_commentsExpanded)
+                      const Divider(height: 1, color: Colors.white12),
+                    if (_commentsExpanded)
+                      SizedBox(
+                        height: MediaQuery.sizeOf(context).height * 0.30,
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                          child: MediaEngagementInline(
+                            key: ValueKey<int>(attachmentId),
+                            attachmentId: attachmentId,
+                            onDarkBackground: true,
                           ),
                         ),
                       ),
-                      if (_commentsExpanded)
-                        const Divider(height: 1, color: Colors.white12),
-                      if (_commentsExpanded)
-                        SizedBox(
-                          height: MediaQuery.sizeOf(context).height * 0.30,
-                          child: SingleChildScrollView(
-                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                            child: MediaEngagementInline(
-                              key: ValueKey<int>(attachmentId),
-                              attachmentId: attachmentId,
-                              onDarkBackground: true,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
+                  ],
                 ),
               ),
             ),
-          if (attachmentId != null)
-            SafeArea(
-              top: false,
-              child: PhotoPeopleOnPhotoBar(
-                key: ValueKey<int>(attachmentId),
-                attachmentId: attachmentId,
-                profileUserId: widget.profileUserId,
-                threadId: threadId,
-                selectedSubjectKey: _highlightSubjectKey,
-                selectedUserId: _highlightUserId,
-                onHighlightChanged: (highlight) {
-                  setState(() {
-                    if (highlight == null) {
-                      _highlightUserId = null;
-                      _highlightSubjectKey = null;
-                      _highlightBoxes = const [];
-                    } else {
-                      _highlightUserId = highlight.userId;
-                      _highlightSubjectKey = highlight.subjectKey;
-                      _highlightBoxes = highlight.boxes;
-                    }
-                  });
-                },
-              ),
+          ),
+        if (attachmentId != null)
+          SafeArea(
+            top: false,
+            child: PhotoPeopleOnPhotoBar(
+              key: ValueKey<int>(attachmentId),
+              attachmentId: attachmentId,
+              profileUserId: widget.profileUserId,
+              threadId: threadId,
+              selectedSubjectKey: _highlightSubjectKey,
+              selectedUserId: _highlightUserId,
+              onHighlightChanged: (highlight) {
+                setState(() {
+                  if (highlight == null) {
+                    _highlightUserId = null;
+                    _highlightSubjectKey = null;
+                    _highlightBoxes = const [];
+                  } else {
+                    _highlightUserId = highlight.userId;
+                    _highlightSubjectKey = highlight.subjectKey;
+                    _highlightBoxes = highlight.boxes;
+                  }
+                });
+              },
             ),
-        ],
-      ),
+          ),
+      ],
     );
   }
 }

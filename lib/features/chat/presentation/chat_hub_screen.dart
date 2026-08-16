@@ -261,12 +261,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   Future<void> _hydrateFromCache() async {
-    final cachedThreads = await FamilyChatLocalCache.readChatThreads();
-    if (cachedThreads == null || cachedThreads.isEmpty || !mounted) return;
-    final cachedMembers = await FamilyChatLocalCache.readChatMembers();
+    final cachedThreads = await ChatLocalStore.instance.readThreads();
+    if (cachedThreads.isEmpty || !mounted) return;
+    final cachedMembers = await ChatLocalStore.instance.readMembers();
     setState(() {
       _threads = _sortedThreads(cachedThreads);
-      if (cachedMembers != null) {
+      if (cachedMembers.isNotEmpty) {
         _applyMembers(cachedMembers);
       }
       _loading = false;
@@ -306,8 +306,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       ]);
       final list = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
-      await FamilyChatLocalCache.saveChatThreads(list);
-      await FamilyChatLocalCache.saveChatMembers(members);
+      await ChatLocalStore.instance.replaceThreads(list);
+      await ChatLocalStore.instance.replaceMembers(members);
       if (!mounted) return;
       final sorted = _sortedThreads(list);
       final sameThreads = _threadsFingerprint(_threads) ==

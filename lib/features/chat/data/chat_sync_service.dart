@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/media/media_incoming_sync.dart';
 import '../../familychat/data/familychat_repository.dart';
+import 'active_chat_context.dart';
 import 'chat_realtime_utils.dart';
 import 'familychat_realtime.dart';
 
@@ -126,8 +127,12 @@ class ChatSyncService {
     }
     if (thread != null) {
       thread['last_message'] = message;
-      final unread = chatAsInt(thread['unread_count']) ?? 0;
-      // Don't invent unread rules aggressively; hub sync corrects soon.
+      var unread = chatAsInt(thread['unread_count']) ?? 0;
+      final viewing = ActiveChatContext.instance.isViewingThread(threadId);
+      final isMine = message['is_mine'] == true;
+      if (!viewing && !isMine && !chatMessageIsPending(message)) {
+        unread += 1;
+      }
       thread['unread_count'] = unread;
       await ChatLocalStore.instance.upsertThread(thread);
     } else {
@@ -290,13 +295,21 @@ class ChatSyncService {
               chatAsInt(thread['id']) != prioritizeThreadId)
             chatAsInt(thread['id'])!,
       ];
+      // Cap work per wake: prioritized thread fully, then a few others.
+      const maxOtherThreads = 3;
+      var othersDone = 0;
       for (final id in ids) {
         if (_repo == null) return;
+        final isPriority = id == prioritizeThreadId;
+        if (!isPriority && othersDone >= maxOtherThreads) break;
         await syncThread(id, limit: 80);
         await syncThreadHistory(
           id,
-          maxPages: id == prioritizeThreadId ? 24 : 8,
+          maxPages: isPriority ? 24 : 4,
         );
+        if (!isPriority) othersDone += 1;
+        // Yield so UI/WS stay responsive.
+        await Future<void>.delayed(const Duration(milliseconds: 80));
       }
     } catch (e, st) {
       debugPrint('[ChatSyncService] syncHistoriesInBackground failed: $e\n$st');

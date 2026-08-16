@@ -6,6 +6,7 @@ import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
+import '../../gallery/presentation/gallery_albums_tab_body.dart';
 import 'custom_album_dialog.dart';
 
 class ProfileGalleryTab extends ConsumerStatefulWidget {
@@ -38,11 +39,10 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
   Future<void> _load() async {
     final cached = await FamilyChatLocalCache.readMemberAlbums(widget.userId);
     if (cached != null && mounted) {
-      final next =
-          (cached['albums'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final next = galleryAlbumsAsMaps(cached['albums']);
       final hint = cached['face_hint_message']?.toString() ?? '';
       final showHint = cached['show_face_hint'] == true;
-      if (_albumsFingerprint(_albums) != _albumsFingerprint(next) ||
+      if (galleryAlbumsFingerprint(_albums) != galleryAlbumsFingerprint(next) ||
           _faceHintMessage != hint ||
           _showFaceHint != showHint ||
           _loading) {
@@ -66,11 +66,10 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
           .memberGalleryAlbums(widget.userId);
       await FamilyChatLocalCache.saveMemberAlbums(widget.userId, data);
       if (!mounted) return;
-      final next =
-          (data['albums'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final next = galleryAlbumsAsMaps(data['albums']);
       final hint = data['face_hint_message']?.toString() ?? '';
       final showHint = data['show_face_hint'] == true;
-      if (_albumsFingerprint(_albums) == _albumsFingerprint(next) &&
+      if (galleryAlbumsFingerprint(_albums) == galleryAlbumsFingerprint(next) &&
           _faceHintMessage == hint &&
           _showFaceHint == showHint &&
           !_loading) {
@@ -94,13 +93,6 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
         });
       }
     }
-  }
-
-  String _albumsFingerprint(List<Map<String, dynamic>> albums) {
-    return albums
-        .map((a) =>
-            '${a['id']}|${a['title']}|${a['cover_attachment_id']}|${a['photos_count']}')
-        .join(';');
   }
 
   Future<bool> createAlbum() async {

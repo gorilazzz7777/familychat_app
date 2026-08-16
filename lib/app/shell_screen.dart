@@ -244,6 +244,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         threadId: threadId,
         callerUserId: callerUserId,
         callerName: callerName,
+        isVideo: IncomingCallCoordinator.parseIsVideo(event['is_video']),
       );
       return;
     }

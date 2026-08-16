@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'package:gorila_chat/gorila_chat.dart' show parseCallIsVideo;
+
 import '../../../core/call/call_lock_screen.dart';
 import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/notifications/familychat_notifications.dart';
@@ -22,6 +24,8 @@ class IncomingCallCoordinator {
   bool isPresentingCall(int callId) =>
       _presenting && _activeCallId == callId;
 
+  static bool parseIsVideo(Object? raw) => parseCallIsVideo(raw);
+
   void presentFromPushData(Map<String, dynamic> data) {
     if (data['type']?.toString() != 'familychat_call') return;
     final callId = int.tryParse(data['session_id']?.toString() ?? '');
@@ -37,6 +41,7 @@ class IncomingCallCoordinator {
       callerName: callerName != null && callerName.isNotEmpty
           ? callerName
           : 'Family Space',
+      isVideo: parseIsVideo(data['is_video']),
     );
   }
 
@@ -45,6 +50,7 @@ class IncomingCallCoordinator {
     required int threadId,
     required int callerUserId,
     required String callerName,
+    bool isVideo = false,
   }) {
     if (_presenting && _activeCallId == callId) return;
     _activeCallId = callId;
@@ -56,6 +62,7 @@ class IncomingCallCoordinator {
       threadId: threadId,
       callerUserId: callerUserId,
       callerName: callerName,
+      isVideo: isVideo,
     ));
   }
 
@@ -64,6 +71,7 @@ class IncomingCallCoordinator {
     required int threadId,
     required int callerUserId,
     required String callerName,
+    required bool isVideo,
   }) async {
     if (_presenting) return;
     _presenting = true;
@@ -82,6 +90,7 @@ class IncomingCallCoordinator {
           'thread_id': '$threadId',
           'caller_user_id': '$callerUserId',
           'caller_name': callerName,
+          'is_video': isVideo ? '1' : '0',
         };
         return;
       }
@@ -97,6 +106,7 @@ class IncomingCallCoordinator {
             threadId: threadId,
             callerUserId: callerUserId,
             callerName: callerName,
+            isVideo: isVideo,
           ),
         ),
       );

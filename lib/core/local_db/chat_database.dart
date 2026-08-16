@@ -1,7 +1,7 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:drift/drift.dart';
-import 'package:flutter/foundation.dart';
 
 import 'chat_database_connection.dart';
 import 'chat_tables.dart';
@@ -13,6 +13,9 @@ part 'chat_database.g.dart';
   ChatMessageRows,
   ChatMemberRows,
   ChatMetaRows,
+  ChatOutboxRows,
+  ChatOutboxBlobRows,
+  MediaLocalIndexRows,
 ])
 class ChatDatabase extends _$ChatDatabase {
   ChatDatabase() : super(openChatDatabaseConnection());
@@ -21,11 +24,28 @@ class ChatDatabase extends _$ChatDatabase {
   ChatDatabase.executor(super.e);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   static const metaMigratedFromJson = 'migrated_json_v1';
+  static const metaMigratedOutbox = 'migrated_outbox_v1';
+  static const metaMigratedMediaIndex = 'migrated_media_index_v1';
 
-  static bool get isSupported => !kIsWeb;
+  /// Native + web (Wasm) via drift_flutter.
+  static bool get isSupported => true;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onCreate: (m) async {
+          await m.createAll();
+        },
+        onUpgrade: (m, from, to) async {
+          if (from < 2) {
+            await m.createTable(chatOutboxRows);
+            await m.createTable(chatOutboxBlobRows);
+            await m.createTable(mediaLocalIndexRows);
+          }
+        },
+      );
 
   Future<String?> metaGet(String key) async {
     final row = await (select(chatMetaRows)..where((t) => t.key.equals(key)))
@@ -37,6 +57,98 @@ class ChatDatabase extends _$ChatDatabase {
     await into(chatMetaRows).insertOnConflictUpdate(
       ChatMetaRowsCompanion.insert(key: key, value: value),
     );
+  }
+
+  // --- Outbox ---
+
+  Future<List<Map<String, dynamic>>> readOutboxItems() async {
+    final rows = await (select(chatOutboxRows)
+          ..orderBy([(t) => OrderingTerm.asc(t.createdAtMs)]))
+        .get();
+    return rows.map((row) {
+      return Map<String, dynamic>.from(jsonDecode(row.payloadJson) as Map);
+    }).toList();
+  }
+
+  Future<void> writeOutboxItems(List<Map<String, dynamic>> items) async {
+    await transaction(() async {
+      await delete(chatOutboxRows).go();
+      for (final item in items) {
+        final id = item['id']?.toString();
+        if (id == null || id.isEmpty) continue;
+        final created = DateTime.tryParse(item['created_at']?.toString() ?? '');
+        await into(chatOutboxRows).insertOnConflictUpdate(
+          ChatOutboxRowsCompanion.insert(
+            id: id,
+            payloadJson: jsonEncode(item),
+            createdAtMs: Value(created?.millisecondsSinceEpoch ?? 0),
+          ),
+        );
+      }
+    });
+  }
+
+  Future<void> saveOutboxBlob(String storageKey, Uint8List bytes) async {
+    await into(chatOutboxBlobRows).insertOnConflictUpdate(
+      ChatOutboxBlobRowsCompanion.insert(
+        storageKey: storageKey,
+        bytes: bytes,
+      ),
+    );
+  }
+
+  Future<Uint8List?> readOutboxBlob(String storageKey) async {
+    final row = await (select(chatOutboxBlobRows)
+          ..where((t) => t.storageKey.equals(storageKey)))
+        .getSingleOrNull();
+    return row?.bytes;
+  }
+
+  Future<void> deleteOutboxBlob(String storageKey) async {
+    await (delete(chatOutboxBlobRows)
+          ..where((t) => t.storageKey.equals(storageKey)))
+        .go();
+  }
+
+  // --- Media local index (row-per-key) ---
+
+  Future<Map<String, Map<String, dynamic>>> readAllMediaIndex() async {
+    final rows = await select(mediaLocalIndexRows).get();
+    final out = <String, Map<String, dynamic>>{};
+    for (final row in rows) {
+      try {
+        out[row.key] =
+            Map<String, dynamic>.from(jsonDecode(row.payloadJson) as Map);
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  Future<void> upsertMediaIndexRow(String key, Map<String, dynamic> payload) async {
+    await into(mediaLocalIndexRows).insertOnConflictUpdate(
+      MediaLocalIndexRowsCompanion.insert(
+        key: key,
+        payloadJson: jsonEncode(payload),
+      ),
+    );
+  }
+
+  Future<void> deleteMediaIndexRow(String key) async {
+    await (delete(mediaLocalIndexRows)..where((t) => t.key.equals(key))).go();
+  }
+
+  Future<void> replaceAllMediaIndex(Map<String, Map<String, dynamic>> all) async {
+    await transaction(() async {
+      await delete(mediaLocalIndexRows).go();
+      for (final entry in all.entries) {
+        await into(mediaLocalIndexRows).insert(
+          MediaLocalIndexRowsCompanion.insert(
+            key: entry.key,
+            payloadJson: jsonEncode(entry.value),
+          ),
+        );
+      }
+    });
   }
 
   Future<void> replaceThreads(List<Map<String, dynamic>> threads) async {

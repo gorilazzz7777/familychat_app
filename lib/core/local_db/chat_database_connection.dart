@@ -1,12 +1,13 @@
 import 'package:drift/drift.dart';
-import 'package:flutter/foundation.dart';
+import 'package:drift_flutter/drift_flutter.dart';
 
-import 'chat_database_connection_stub.dart'
-    if (dart.library.io) 'chat_database_connection_io.dart' as impl;
-
+/// Cross-platform Drift executor (native file + web Wasm).
 QueryExecutor openChatDatabaseConnection() {
-  if (kIsWeb) {
-    throw UnsupportedError('Chat SQLite is native-only');
-  }
-  return impl.openChatDatabaseConnection();
+  return driftDatabase(
+    name: 'familychat_chat',
+    web: DriftWebOptions(
+      sqlite3Wasm: Uri.parse('sqlite3.wasm'),
+      driftWorker: Uri.parse('drift_worker.js'),
+    ),
+  );
 }

@@ -611,7 +611,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     );
   }
 
-  void _startCall() {
+  void _startCall({bool isVideo = false}) {
     Navigator.of(context).pop();
     Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -619,6 +619,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           threadId: widget.threadId,
           title: _title,
           isCaller: true,
+          isVideo: isVideo,
         ),
       ),
     );
@@ -1268,8 +1269,14 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
             const SizedBox(width: 10),
             _TgProfileAction(
               icon: Icons.call_outlined,
-              tooltip: 'Звонок',
-              onTap: _startCall,
+              tooltip: 'Аудиозвонок',
+              onTap: () => _startCall(),
+            ),
+            const SizedBox(width: 10),
+            _TgProfileAction(
+              icon: Icons.videocam_outlined,
+              tooltip: 'Видеозвонок',
+              onTap: () => _startCall(isVideo: true),
             ),
           ],
         ],

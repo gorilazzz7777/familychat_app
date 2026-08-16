@@ -21,6 +21,7 @@ class ChatCallScreen extends ConsumerStatefulWidget {
     this.callId,
     this.isCaller = false,
     this.autoAccept = false,
+    this.isVideo = false,
   });
 
   final int threadId;
@@ -28,6 +29,8 @@ class ChatCallScreen extends ConsumerStatefulWidget {
   final int? callId;
   final bool isCaller;
   final bool autoAccept;
+  /// Стартовый режим: видеозвонок (камера сразу) или аудио (камера выкл.).
+  final bool isVideo;
 
   @override
   ConsumerState<ChatCallScreen> createState() => _ChatCallScreenState();
@@ -38,28 +41,35 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
   RTCPeerConnection? _peer;
   MediaStream? _localStream;
   RTCSessionDescription? _localOffer;
+  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
+  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   int? _callId;
   String _stateText = 'Подключение...';
   bool _busy = true;
   bool _ended = false;
   bool _remoteDescriptionSet = false;
   bool _processingSignals = false;
+  bool _renegotiating = false;
   int _lastPersistedSignalId = 0;
   final Set<String> _sentIce = <String>{};
   final List<Map<String, dynamic>> _pendingSignals = [];
   final List<Map<String, dynamic>> _pendingIce = [];
   int? _myUserId;
   bool _speakerOn = false;
+  bool _localVideoEnabled = false;
+  bool _usingFrontCamera = true;
+  bool _remoteHasVideo = false;
+  bool _renderersReady = false;
 
   bool _showingMicHint = false;
+  bool _showingCamHint = false;
 
   bool _shouldAcceptSignal(String type, {int? fromUserId}) {
     if (fromUserId != null && _myUserId != null && fromUserId == _myUserId) {
       return false;
     }
-    if (type == 'ice') return true;
-    if (widget.isCaller) return type == 'answer';
-    return type == 'offer';
+    // offer+answer: initial + mid-call renegotiation from either side
+    return type == 'ice' || type == 'offer' || type == 'answer';
   }
 
   int? _parseUserId(Object? raw) {
@@ -84,13 +94,13 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
     }
     final text = '$error';
     if (text.contains('NotAllowedError') || text.contains('PermissionDenied')) {
-      return 'Доступ к микрофону не разрешен. Разрешите его в настройках и попробуйте снова.';
+      return 'Нет доступа к микрофону или камере. Разрешите в настройках и попробуйте снова.';
     }
     if (text.contains('NotFoundError') || text.contains('DevicesNotFoundError')) {
-      return 'Микрофон не найден на устройстве.';
+      return 'Микрофон или камера не найдены на устройстве.';
     }
     if (text.contains('NotReadableError')) {
-      return 'Не удалось получить доступ к микрофону. Возможно, он занят другим приложением.';
+      return 'Не удалось получить доступ к устройству. Возможно, оно занято другим приложением.';
     }
     return 'Не удалось начать звонок. Попробуйте еще раз.';
   }
@@ -99,6 +109,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _localVideoEnabled = widget.isVideo;
     unawaited(CallLockScreen.acquire());
     if (!widget.isCaller && widget.callId != null) {
       _callId = widget.callId;
@@ -125,8 +136,24 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
     }
   }
 
+  Future<void> _initRenderers() async {
+    if (_renderersReady) return;
+    await _localRenderer.initialize();
+    await _remoteRenderer.initialize();
+    _renderersReady = true;
+  }
+
+  Map<String, dynamic> _videoConstraints() {
+    return {
+      'facingMode': _usingFrontCamera ? 'user' : 'environment',
+      'width': 640,
+      'height': 480,
+    };
+  }
+
   Future<void> _initCall() async {
     try {
+      await _initRenderers();
       final status = await ref.read(familychatRepositoryProvider).status();
       _myUserId = _parseUserId(status['user_id']);
       final micPermission = await _ensureMicrophonePermission();
@@ -141,17 +168,62 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
         }
         return;
       }
+      if (_localVideoEnabled) {
+        final cam = await _ensureCameraPermission();
+        if (!cam.granted) {
+          if (!mounted) return;
+          setState(() {
+            _stateText = 'Нет доступа к камере';
+            _busy = false;
+            _localVideoEnabled = false;
+          });
+          if (cam.shouldOpenSettingsHint) {
+            await _showCameraPermissionHint();
+          }
+          return;
+        }
+      }
       final repo = ref.read(familychatRepositoryProvider);
       final ice = await repo.threadCallIceServers(widget.threadId);
       _peer = await createPeerConnection({'iceServers': ice});
+      _peer!.onTrack = (event) {
+        if (event.streams.isNotEmpty) {
+          _remoteRenderer.srcObject = event.streams[0];
+        } else if (event.track.kind == 'video') {
+          // Some platforms deliver track without stream list.
+          final stream = _remoteRenderer.srcObject;
+          if (stream != null) {
+            unawaited(stream.addTrack(event.track));
+          }
+        }
+        final hasVideo = event.track.kind == 'video' && event.track.enabled;
+        if (mounted) {
+          setState(() {
+            if (event.track.kind == 'video') {
+              _remoteHasVideo = hasVideo;
+            }
+            if (_remoteDescriptionSet) {
+              _stateText = 'Разговор идет';
+            }
+          });
+        }
+        event.track.onEnded = () {
+          if (!mounted) return;
+          if (event.track.kind == 'video') {
+            setState(() => _remoteHasVideo = false);
+          }
+        };
+      };
       _localStream = await navigator.mediaDevices.getUserMedia({
         'audio': true,
-        'video': false,
+        'video': _localVideoEnabled ? _videoConstraints() : false,
       });
-      for (final track in _localStream!.getAudioTracks()) {
+      _localRenderer.srcObject = _localStream;
+      for (final track in _localStream!.getTracks()) {
         await _peer!.addTrack(track, _localStream!);
       }
-      await _setSpeakerphone(false);
+      final preferSpeaker = _localVideoEnabled;
+      await _setSpeakerphone(preferSpeaker);
       await _syncProximity();
       _peer!.onIceCandidate = (candidate) {
         final cid = _callId;
@@ -170,7 +242,10 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
       };
 
       if (widget.isCaller) {
-        final started = await repo.startThreadCall(widget.threadId);
+        final started = await repo.startThreadCall(
+          widget.threadId,
+          isVideo: widget.isVideo,
+        );
         _callId = _parseCallId(started['id']);
         if (_callId == null) {
           throw StateError('Сервер не вернул id звонка');
@@ -185,7 +260,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
         );
         if (!mounted) return;
         setState(() {
-          _stateText = 'Звоним...';
+          _stateText = widget.isVideo ? 'Видеозвонок...' : 'Звоним...';
           _busy = false;
         });
       } else {
@@ -240,6 +315,31 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
     return (granted: false, shouldOpenSettingsHint: needsSettings);
   }
 
+  Future<({bool granted, bool shouldOpenSettingsHint})>
+      _ensureCameraPermission() async {
+    if (kIsWeb) {
+      try {
+        final testStream = await navigator.mediaDevices.getUserMedia({
+          'audio': false,
+          'video': true,
+        });
+        for (final track in testStream.getTracks()) {
+          track.stop();
+        }
+        await testStream.dispose();
+        return (granted: true, shouldOpenSettingsHint: false);
+      } catch (_) {
+        return (granted: false, shouldOpenSettingsHint: true);
+      }
+    }
+    final status = await Permission.camera.request();
+    if (status.isGranted) {
+      return (granted: true, shouldOpenSettingsHint: false);
+    }
+    final needsSettings = status.isPermanentlyDenied || status.isRestricted;
+    return (granted: false, shouldOpenSettingsHint: needsSettings);
+  }
+
   Future<void> _showMicPermissionHint() async {
     if (!mounted || _showingMicHint) return;
     _showingMicHint = true;
@@ -280,8 +380,39 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
     _showingMicHint = false;
   }
 
+  Future<void> _showCameraPermissionHint() async {
+    if (!mounted || _showingCamHint) return;
+    _showingCamHint = true;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Нужен доступ к камере'),
+        content: const Text(
+          'Для видеозвонка разрешите доступ к камере в настройках.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Закрыть'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await openAppSettings();
+              if (ctx.mounted) Navigator.of(ctx).pop();
+            },
+            child: const Text('Настройки'),
+          ),
+        ],
+      ),
+    );
+    _showingCamHint = false;
+  }
+
   Future<void> _setSpeakerphone(bool enabled) async {
-    if (kIsWeb) return;
+    if (kIsWeb) {
+      if (mounted) setState(() => _speakerOn = enabled);
+      return;
+    }
     try {
       await Helper.setSpeakerphoneOn(enabled);
       if (mounted) setState(() => _speakerOn = enabled);
@@ -293,20 +424,153 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
 
   Future<void> _syncProximity() async {
     if (kIsWeb || _ended) return;
-    await CallProximityController.setEnabled(!_speakerOn);
+    // Proximity sensor only when earpiece + no local video.
+    final useProximity = !_speakerOn && !_localVideoEnabled;
+    await CallProximityController.setEnabled(useProximity);
   }
 
   Future<void> _toggleSpeaker() async {
     await _setSpeakerphone(!_speakerOn);
   }
 
+  Future<void> _renegotiateAsOfferer() async {
+    if (_peer == null || _callId == null || _renegotiating) return;
+    _renegotiating = true;
+    try {
+      final offer = await _peer!.createOffer();
+      await _peer!.setLocalDescription(offer);
+      _localOffer = offer;
+      await ref.read(familychatRepositoryProvider).sendCallSignal(
+            _callId!,
+            signalType: 'offer',
+            payload: {'sdp': offer.sdp, 'type': offer.type},
+          );
+    } finally {
+      _renegotiating = false;
+    }
+  }
+
+  Future<void> _toggleLocalVideo() async {
+    if (_busy || _peer == null || _localStream == null) return;
+    if (_localVideoEnabled) {
+      await _disableLocalVideo(renegotiate: true);
+      return;
+    }
+    final cam = await _ensureCameraPermission();
+    if (!cam.granted) {
+      if (cam.shouldOpenSettingsHint) {
+        await _showCameraPermissionHint();
+      }
+      return;
+    }
+    try {
+      final videoStream = await navigator.mediaDevices.getUserMedia({
+        'audio': false,
+        'video': _videoConstraints(),
+      });
+      final videoTracks = videoStream.getVideoTracks();
+      if (videoTracks.isEmpty) {
+        await videoStream.dispose();
+        return;
+      }
+      final videoTrack = videoTracks.first;
+      await _localStream!.addTrack(videoTrack);
+      await _peer!.addTrack(videoTrack, _localStream!);
+      _localRenderer.srcObject = _localStream;
+      if (mounted) {
+        setState(() => _localVideoEnabled = true);
+      }
+      if (!_speakerOn) {
+        await _setSpeakerphone(true);
+      }
+      await _syncProximity();
+      await _renegotiateAsOfferer();
+    } catch (e) {
+      debugPrint('enable local video failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_friendlyCallError(e))),
+        );
+      }
+    }
+  }
+
+  Future<void> _disableLocalVideo({required bool renegotiate}) async {
+    if (_peer == null || _localStream == null) return;
+    final videoTracks = List<MediaStreamTrack>.from(
+      _localStream!.getVideoTracks(),
+    );
+    final senders = await _peer!.getSenders();
+    for (final track in videoTracks) {
+      for (final sender in senders) {
+        if (sender.track?.id == track.id) {
+          try {
+            await _peer!.removeTrack(sender);
+          } catch (_) {}
+        }
+      }
+      try {
+        await _localStream!.removeTrack(track);
+      } catch (_) {}
+      try {
+        await track.stop();
+      } catch (_) {}
+    }
+    _localRenderer.srcObject = _localStream;
+    if (mounted) {
+      setState(() => _localVideoEnabled = false);
+    }
+    await _syncProximity();
+    if (renegotiate) {
+      await _renegotiateAsOfferer();
+    }
+  }
+
+  Future<void> _flipCamera() async {
+    if (!_localVideoEnabled || _localStream == null) return;
+    final tracks = _localStream!.getVideoTracks();
+    if (tracks.isEmpty) return;
+    try {
+      if (!kIsWeb) {
+        await Helper.switchCamera(tracks.first);
+        if (mounted) {
+          setState(() => _usingFrontCamera = !_usingFrontCamera);
+        }
+        return;
+      }
+      // Web: recreate video track with opposite facingMode.
+      _usingFrontCamera = !_usingFrontCamera;
+      await _disableLocalVideo(renegotiate: false);
+      final videoStream = await navigator.mediaDevices.getUserMedia({
+        'audio': false,
+        'video': _videoConstraints(),
+      });
+      final videoTrack = videoStream.getVideoTracks().first;
+      await _localStream!.addTrack(videoTrack);
+      await _peer!.addTrack(videoTrack, _localStream!);
+      _localRenderer.srcObject = _localStream;
+      if (mounted) setState(() => _localVideoEnabled = true);
+      await _renegotiateAsOfferer();
+    } catch (e) {
+      debugPrint('flip camera failed: $e');
+    }
+  }
+
+  bool _cleaned = false;
+
   Future<void> _cleanup() async {
+    if (_cleaned) return;
+    _cleaned = true;
     await CallProximityController.disable();
     if (!kIsWeb) {
       try {
         await Helper.setSpeakerphoneOn(false);
       } catch (_) {}
     }
+    try {
+      _localRenderer.srcObject = null;
+      _remoteRenderer.srcObject = null;
+    } catch (_) {}
     try {
       await _localStream?.dispose();
     } catch (_) {}
@@ -315,6 +579,15 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
       await _peer?.close();
     } catch (_) {}
     _peer = null;
+    if (_renderersReady) {
+      try {
+        await _localRenderer.dispose();
+      } catch (_) {}
+      try {
+        await _remoteRenderer.dispose();
+      } catch (_) {}
+      _renderersReady = false;
+    }
   }
 
   void _enqueueSignal(
@@ -456,6 +729,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
           signalType: 'answer',
           payload: {'sdp': answer.sdp, 'type': answer.type},
         );
+    _refreshRemoteVideoFlag();
     if (!mounted) return;
     setState(() => _stateText = 'Разговор идет');
     await _flushPendingIce();
@@ -468,9 +742,19 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
     if (sdp == null || sdp.isEmpty) return;
     await _peer!.setRemoteDescription(RTCSessionDescription(sdp, type));
     _remoteDescriptionSet = true;
+    _refreshRemoteVideoFlag();
     if (!mounted) return;
     setState(() => _stateText = 'Разговор идет');
     await _flushPendingIce();
+  }
+
+  void _refreshRemoteVideoFlag() {
+    final stream = _remoteRenderer.srcObject;
+    if (stream == null) {
+      _remoteHasVideo = false;
+      return;
+    }
+    _remoteHasVideo = stream.getVideoTracks().any((t) => t.enabled);
   }
 
   Future<void> _applyIce(Map<String, dynamic> payload) async {
@@ -517,50 +801,151 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
     Navigator.of(context).maybePop();
   }
 
+  Widget _buildVideoStage(BuildContext context) {
+    final showRemote = _remoteHasVideo && _remoteRenderer.srcObject != null;
+    final showLocal = _localVideoEnabled && _localRenderer.srcObject != null;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        ColoredBox(
+          color: const Color(0xFF0F1419),
+          child: showRemote
+              ? RTCVideoView(
+                  _remoteRenderer,
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                )
+              : Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        widget.isVideo || _localVideoEnabled
+                            ? Icons.videocam_outlined
+                            : Icons.call,
+                        size: 64,
+                        color: Colors.white54,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        _stateText,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: Colors.white,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+        ),
+        if (showRemote)
+          Positioned(
+            left: 16,
+            right: 16,
+            top: 12,
+            child: Text(
+              _stateText,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        if (showLocal)
+          Positioned(
+            right: 16,
+            top: 48,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: SizedBox(
+                width: 110,
+                height: 160,
+                child: RTCVideoView(
+                  _localRenderer,
+                  mirror: _usingFrontCamera,
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _circleControl({
+    required IconData icon,
+    required VoidCallback? onPressed,
+    Color background = const Color(0xFF2A2F36),
+    Color foreground = Colors.white,
+  }) {
+    return Material(
+      color: background,
+      shape: const CircleBorder(),
+      child: IconButton(
+        onPressed: onPressed,
+        icon: Icon(icon, color: foreground),
+        iconSize: 28,
+        padding: const EdgeInsets.all(14),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final titlePrefix = widget.isVideo || _localVideoEnabled
+        ? 'Видеозвонок'
+        : 'Звонок';
     return PopScope(
       canPop: !_busy,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) unawaited(_hangup());
       },
       child: Scaffold(
-        appBar: FamilyAppBar.build(title: 'Звонок: ${widget.title}'),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.call, size: 56),
-                const SizedBox(height: 16),
-                Text(
-                  _stateText,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                if (!kIsWeb) ...[
-                  const SizedBox(height: 20),
-                  FilledButton.tonalIcon(
-                    onPressed: _busy ? null : () => unawaited(_toggleSpeaker()),
-                    icon: Icon(
-                      _speakerOn ? Icons.volume_up : Icons.phone_in_talk,
+        backgroundColor: const Color(0xFF0F1419),
+        appBar: FamilyAppBar.build(
+          title: '$titlePrefix: ${widget.title}',
+        ),
+        body: Column(
+          children: [
+            Expanded(child: _buildVideoStage(context)),
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    if (!kIsWeb)
+                      _circleControl(
+                        icon: _speakerOn
+                            ? Icons.volume_up
+                            : Icons.phone_in_talk,
+                        onPressed:
+                            _busy ? null : () => unawaited(_toggleSpeaker()),
+                      ),
+                    _circleControl(
+                      icon: _localVideoEnabled
+                          ? Icons.videocam
+                          : Icons.videocam_off,
+                      onPressed:
+                          _busy ? null : () => unawaited(_toggleLocalVideo()),
                     ),
-                    label: Text(
-                      _speakerOn ? 'Громкая связь вкл.' : 'Громкая связь',
+                    if (_localVideoEnabled)
+                      _circleControl(
+                        icon: Icons.cameraswitch,
+                        onPressed:
+                            _busy ? null : () => unawaited(_flipCamera()),
+                      ),
+                    _circleControl(
+                      icon: Icons.call_end,
+                      background: Colors.red,
+                      onPressed: _busy ? null : () => unawaited(_hangup()),
                     ),
-                  ),
-                ],
-                const SizedBox(height: 24),
-                FilledButton.icon(
-                  style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                  onPressed: _busy ? null : () => unawaited(_hangup()),
-                  icon: const Icon(Icons.call_end),
-                  label: const Text('Завершить'),
+                  ],
                 ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

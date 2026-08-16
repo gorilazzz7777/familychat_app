@@ -224,12 +224,8 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
       final list = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
 
-      await FamilyChatLocalCache.saveChatThreads(list);
-      await FamilyChatLocalCache.saveChatMembers(members);
-      if (ChatLocalStore.isSupported) {
-        await ChatLocalStore.instance.replaceThreads(list);
-        await ChatLocalStore.instance.replaceMembers(members);
-      }
+      await ChatLocalStore.instance.replaceThreads(list);
+      await ChatLocalStore.instance.replaceMembers(members);
 
       if (!mounted) return;
       setState(() {

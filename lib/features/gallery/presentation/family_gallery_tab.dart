@@ -6,6 +6,7 @@ import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
+import '../../gallery/presentation/gallery_albums_tab_body.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 
 class FamilyGalleryTab extends ConsumerStatefulWidget {
@@ -59,10 +60,10 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   Future<void> _load({bool silent = false}) async {
     final cached = await FamilyChatLocalCache.readFamilyAlbums();
     if (cached != null && mounted) {
-      final next = _filterCommonAlbums(_asAlbumMaps(cached['albums']));
+      final next = _filterCommonAlbums(galleryAlbumsAsMaps(cached['albums']));
       final hint = cached['face_hint_message']?.toString() ?? '';
       final showHint = cached['show_face_hint'] == true;
-      if (_albumsFingerprint(_albums) != _albumsFingerprint(next) ||
+      if (galleryAlbumsFingerprint(_albums) != galleryAlbumsFingerprint(next) ||
           _faceHintMessage != hint ||
           _showFaceHint != showHint ||
           _loading) {
@@ -85,11 +86,10 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
           await ref.read(familychatRepositoryProvider).familyGalleryAlbums();
       await FamilyChatLocalCache.saveFamilyAlbums(data);
       if (!mounted) return;
-      final raw = (data['albums'] as List<dynamic>? ?? []);
-      final next = _filterCommonAlbums(_asAlbumMaps(raw));
+      final next = _filterCommonAlbums(galleryAlbumsAsMaps(data['albums']));
       final hint = data['face_hint_message']?.toString() ?? '';
       final showHint = data['show_face_hint'] == true;
-      if (_albumsFingerprint(_albums) == _albumsFingerprint(next) &&
+      if (galleryAlbumsFingerprint(_albums) == galleryAlbumsFingerprint(next) &&
           _faceHintMessage == hint &&
           _showFaceHint == showHint &&
           !_loading) {
@@ -114,21 +114,6 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
         });
       }
     }
-  }
-
-  List<Map<String, dynamic>> _asAlbumMaps(dynamic raw) {
-    if (raw is! List) return const [];
-    return [
-      for (final item in raw)
-        if (item is Map) Map<String, dynamic>.from(item),
-    ];
-  }
-
-  String _albumsFingerprint(List<Map<String, dynamic>> albums) {
-    return albums
-        .map((a) =>
-            '${a['id']}|${a['title']}|${a['cover_attachment_id']}|${a['photos_count']}')
-        .join(';');
   }
 
   Future<void> _createAlbum() async {

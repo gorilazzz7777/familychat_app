@@ -713,6 +713,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
             },
             child: GridView.builder(
               controller: widget.scrollController,
+              cacheExtent: 240,
               padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 3,
@@ -752,7 +753,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   }
 }
 
-class _AssetThumb extends StatelessWidget {
+class _AssetThumb extends StatefulWidget {
   const _AssetThumb({
     required this.asset,
     required this.selected,
@@ -766,14 +767,42 @@ class _AssetThumb extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_AssetThumb> createState() => _AssetThumbState();
+}
+
+class _AssetThumbState extends State<_AssetThumb> {
+  static const _thumbSize = ThumbnailSize(200, 200);
+  Future<Uint8List?>? _thumbFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _thumbFuture = widget.asset.thumbnailDataWithSize(_thumbSize);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AssetThumb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.asset.id != widget.asset.id) {
+      _thumbFuture = widget.asset.thumbnailDataWithSize(_thumbSize);
+    }
+  }
+
+  @override
+  void dispose() {
+    _thumbFuture = null;
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: onTap,
+      onTap: widget.onTap,
       child: Stack(
         fit: StackFit.expand,
         children: [
           FutureBuilder<Uint8List?>(
-            future: asset.thumbnailDataWithSize(const ThumbnailSize(300, 300)),
+            future: _thumbFuture,
             builder: (context, snap) {
               final data = snap.data;
               if (data == null) {
@@ -785,10 +814,11 @@ class _AssetThumb extends StatelessWidget {
                 data,
                 fit: BoxFit.cover,
                 gaplessPlayback: true,
+                filterQuality: FilterQuality.low,
               );
             },
           ),
-          if (asset.type == AssetType.video)
+          if (widget.asset.type == AssetType.video)
             const Positioned(
               left: 6,
               bottom: 6,
@@ -804,14 +834,14 @@ class _AssetThumb extends StatelessWidget {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: selected
+                color: widget.selected
                     ? Theme.of(context).colorScheme.primary
                     : Colors.black45,
                 border: Border.all(color: Colors.white, width: 1.5),
               ),
-              child: selected
+              child: widget.selected
                   ? Text(
-                      '${order ?? ''}',
+                      '${widget.order ?? ''}',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 12,

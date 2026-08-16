@@ -23,12 +23,9 @@ abstract final class ChatOfflinePrefetch {
       ]);
       final threads = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
-      await FamilyChatLocalCache.saveChatThreads(threads);
-      await FamilyChatLocalCache.saveChatMembers(members);
-      if (ChatLocalStore.isSupported) {
-        await ChatLocalStore.instance.replaceThreads(threads);
-        await ChatLocalStore.instance.replaceMembers(members);
-      }
+      // SQLite is source of truth — no dual-write to JSON for chat lists/messages.
+      await ChatLocalStore.instance.replaceThreads(threads);
+      await ChatLocalStore.instance.replaceMembers(members);
 
       for (final thread in threads) {
         final threadId = chatAsInt(thread['id']);
@@ -38,16 +35,10 @@ abstract final class ChatOfflinePrefetch {
             threadId,
             limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
           );
-          await FamilyChatLocalCache.saveThreadMessages(
+          await ChatLocalStore.instance.upsertMessages(
             threadId,
             page.messages,
           );
-          if (ChatLocalStore.isSupported) {
-            await ChatLocalStore.instance.upsertMessages(
-              threadId,
-              page.messages,
-            );
-          }
           unawaited(MediaIncomingSync.ensureMessages(page.messages));
           await prefetchThreadMedia(repo, threadId, page.messages);
         } catch (_) {}

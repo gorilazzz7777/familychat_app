@@ -19,12 +19,14 @@ class IncomingCallScreen extends ConsumerStatefulWidget {
     required this.threadId,
     required this.callerUserId,
     required this.callerName,
+    this.isVideo = false,
   });
 
   final int callId;
   final int threadId;
   final int callerUserId;
   final String callerName;
+  final bool isVideo;
 
   @override
   ConsumerState<IncomingCallScreen> createState() => _IncomingCallScreenState();
@@ -145,6 +147,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
           title: _displayName,
           callId: widget.callId,
           isCaller: false,
+          isVideo: widget.isVideo,
         ),
       ),
     );
@@ -167,7 +170,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
               children: [
                 const SizedBox(height: 24),
                 Text(
-                  'Входящий звонок',
+                  widget.isVideo ? 'Входящий видеозвонок' : 'Входящий звонок',
                   style: theme.textTheme.titleMedium?.copyWith(
                     color: Colors.white70,
                   ),
@@ -210,7 +213,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
                     _CallActionButton(
                       label: 'Ответить',
                       color: Colors.green.shade600,
-                      icon: Icons.call,
+                      icon: widget.isVideo ? Icons.videocam : Icons.call,
                       onPressed: _busy ? null : () => unawaited(_answer()),
                     ),
                   ],

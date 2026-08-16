@@ -83,14 +83,10 @@ class MediaLocalRecord {
   }
 }
 
-/// Ссылки на локальные файлы: SQLite (native) / JSON-кэш (web).
+/// Ссылки на локальные файлы: row-per-key в Drift (native+web).
 abstract final class MediaLocalIndex {
-  static const _metaKey = 'media_local_index_v1';
-  static const _webCacheKey = 'media_local_index';
-
   static final Map<String, MediaLocalRecord> _mem = {};
   static Future<void>? _loading;
-  static Future<void>? _writeLock;
   static bool _loaded = false;
 
   static String keyForAttachmentId(int id) => 'a:$id';
@@ -107,25 +103,24 @@ abstract final class MediaLocalIndex {
 
   static Future<void> _load() async {
     try {
-      Map<String, dynamic>? raw;
+      _mem.clear();
       if (ChatLocalStore.isSupported) {
-        final encoded = await ChatLocalStore.instance.metaGet(_metaKey);
-        if (encoded != null && encoded.isNotEmpty) {
-          raw = jsonDecode(encoded) as Map<String, dynamic>;
+        final all = await ChatLocalStore.instance.readAllMediaIndex();
+        for (final entry in all.entries) {
+          final rec = MediaLocalRecord.fromJson(entry.value);
+          if (rec != null) _mem[rec.key] = rec;
         }
       } else {
-        raw = await FamilyChatLocalCache.readJson(_webCacheKey);
-      }
-      _mem.clear();
-      if (raw != null) {
-        for (final entry in raw.entries) {
-          if (entry.key == 'cached_at') continue;
-          final value = entry.value;
-          if (value is! Map) continue;
-          final rec = MediaLocalRecord.fromJson(
-            Map<String, dynamic>.from(value),
-          );
-          if (rec != null) _mem[rec.key] = rec;
+        final raw = await FamilyChatLocalCache.readJson('media_local_index');
+        if (raw != null) {
+          for (final entry in raw.entries) {
+            if (entry.key == 'cached_at') continue;
+            if (entry.value is! Map) continue;
+            final rec = MediaLocalRecord.fromJson(
+              Map<String, dynamic>.from(entry.value as Map),
+            );
+            if (rec != null) _mem[rec.key] = rec;
+          }
         }
       }
     } catch (e) {
@@ -135,22 +130,30 @@ abstract final class MediaLocalIndex {
     }
   }
 
-  static Future<void> _persist() async {
-    final previous = _writeLock;
-    final done = Future<void>.sync(() async {
-      await previous;
-      final payload = <String, dynamic>{
-        for (final rec in _mem.values) rec.key: rec.toJson(),
-      };
-      final encoded = jsonEncode(payload);
-      if (ChatLocalStore.isSupported) {
-        await ChatLocalStore.instance.metaSet(_metaKey, encoded);
-      } else {
-        await FamilyChatLocalCache.writeJson(_webCacheKey, payload);
-      }
-    });
-    _writeLock = done;
-    await done;
+  static Future<void> _persistRecord(MediaLocalRecord record) async {
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.upsertMediaIndexRow(
+        record.key,
+        record.toJson(),
+      );
+      return;
+    }
+    // Legacy JSON fallback (should be rare once Drift web is up).
+    final payload = <String, dynamic>{
+      for (final rec in _mem.values) rec.key: rec.toJson(),
+    };
+    await FamilyChatLocalCache.writeJson('media_local_index', payload);
+  }
+
+  static Future<void> _deletePersisted(String key) async {
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.deleteMediaIndexRow(key);
+      return;
+    }
+    final payload = <String, dynamic>{
+      for (final rec in _mem.values) rec.key: rec.toJson(),
+    };
+    await FamilyChatLocalCache.writeJson('media_local_index', payload);
   }
 
   static MediaLocalRecord? peek(String key) => _mem[key];
@@ -169,11 +172,25 @@ abstract final class MediaLocalIndex {
   static Future<void> upsert(MediaLocalRecord record) async {
     await ensureLoaded();
     _mem[record.key] = record;
+    await _persistRecord(record);
     final nameKey = keyForFilename(record.filename);
-    if (nameKey.isNotEmpty) {
-      _mem[nameKey] = record.copyWith();
+    if (nameKey.isNotEmpty && nameKey != record.key) {
+      final named = record.copyWith();
+      // Store under filename key as well for lookup-by-name.
+      final namedRec = MediaLocalRecord(
+        key: nameKey,
+        attachmentId: named.attachmentId,
+        path: named.path,
+        assetId: named.assetId,
+        kind: named.kind,
+        serverUrl: named.serverUrl,
+        filename: named.filename,
+        skipPhoneAlbum: named.skipPhoneAlbum,
+        isOutgoing: named.isOutgoing,
+      );
+      _mem[nameKey] = namedRec;
+      await _persistRecord(namedRec);
     }
-    await _persist();
   }
 
   static Future<void> saveOutgoing({
@@ -200,27 +217,33 @@ abstract final class MediaLocalIndex {
   static Future<void> markSkipPhoneAlbum(String key) async {
     await ensureLoaded();
     final current = _mem[key];
-    _mem[key] = current == null
+    final next = current == null
         ? MediaLocalRecord(key: key, skipPhoneAlbum: true)
         : current.copyWith(skipPhoneAlbum: true, path: '');
+    _mem[key] = next;
+    await _persistRecord(next);
     final nameKey = keyForFilename(current?.filename ?? '');
     if (nameKey.isNotEmpty && nameKey != key) {
       final named = _mem[nameKey];
-      _mem[nameKey] = named == null
+      final namedNext = named == null
           ? MediaLocalRecord(key: nameKey, skipPhoneAlbum: true)
           : named.copyWith(skipPhoneAlbum: true, path: '');
+      _mem[nameKey] = namedNext;
+      await _persistRecord(namedNext);
     }
-    await _persist();
   }
 
   static Future<void> remove(String key) async {
     await ensureLoaded();
     final rec = _mem.remove(key);
+    await _deletePersisted(key);
     if (rec != null) {
       final nameKey = keyForFilename(rec.filename);
-      if (nameKey.isNotEmpty) _mem.remove(nameKey);
+      if (nameKey.isNotEmpty) {
+        _mem.remove(nameKey);
+        await _deletePersisted(nameKey);
+      }
     }
-    await _persist();
   }
 
   /// Накладывает локальный путь на payload. Не ходит в сеть.

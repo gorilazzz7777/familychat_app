@@ -16,6 +16,7 @@ import '../../../../core/media/media_local_index.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
 import '../../../profile/presentation/widgets/photo_people_on_photo_bar.dart';
+import '../../../gallery/presentation/widgets/gallery_fullscreen_viewer_core.dart';
 import '../../data/chat_realtime_utils.dart';
 import '../chat_forward_screen.dart';
 import 'chat_network_image.dart';
@@ -396,124 +397,124 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
         (photo?.threadId ?? widget.threadId) != null &&
         (photo?.attachmentId ?? widget.attachmentId) != null;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: FamilyAppBar.build(
-        title: isVideo ? 'Видео' : 'Фото',
+    if (_photos.isEmpty || _pageController == null) {
+      return Scaffold(
         backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        iconTheme: const IconThemeData(color: Colors.white),
-        actions: [
+        appBar: FamilyAppBar.build(
+          title: 'Фото',
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(color: Colors.white),
+        ),
+      );
+    }
+
+    return GalleryFullscreenViewerCore(
+      pageController: _pageController!,
+      itemCount: _photos.length,
+      title: isVideo ? 'Видео' : 'Фото',
+      onPageChanged: (i) => setState(() => _index = i),
+      actions: [
+        IconButton(
+          tooltip: 'Поделиться',
+          onPressed: _sharing ? null : _share,
+          icon: _sharing
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.share_outlined),
+        ),
+        if (canForward)
           IconButton(
-            tooltip: 'Поделиться',
-            onPressed: _sharing ? null : _share,
-            icon: _sharing
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.share_outlined),
+            tooltip: 'Переслать',
+            onPressed: _forwarding ? null : _forward,
+            icon: const Icon(Icons.forward_outlined),
           ),
-          if (canForward)
-            IconButton(
-              tooltip: 'Переслать',
-              onPressed: _forwarding ? null : _forward,
-              icon: const Icon(Icons.forward_outlined),
-            ),
-          IconButton(
-            tooltip: 'Скачать',
-            onPressed: _downloading ? null : _download,
-            icon: _downloading
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.download_outlined),
-          ),
-          if (canFaceTag || widget.onGoToMessage != null)
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert),
-              onSelected: (value) {
-                switch (value) {
-                  case 'faces':
-                    final current = _currentPhoto;
-                    if (current.threadId == null ||
-                        current.attachmentId == null) {
-                      return;
-                    }
-                    FaceTaggingSheet.show(
-                      context,
-                      threadId: current.threadId!,
-                      attachmentId: current.attachmentId!,
-                      imageChild: _imageBody(current),
-                    );
-                  case 'goto':
-                    _goToMessage();
-                }
-              },
-              itemBuilder: (context) => [
-                if (canFaceTag)
-                  const PopupMenuItem(
-                    value: 'faces',
-                    child: Text('Кто на фото'),
+        IconButton(
+          tooltip: 'Скачать',
+          onPressed: _downloading ? null : _download,
+          icon: _downloading
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
                   ),
-                if (widget.onGoToMessage != null)
-                  const PopupMenuItem(
-                    value: 'goto',
-                    child: Text('Перейти к сообщению'),
-                  ),
-              ],
-            ),
-        ],
-      ),
-      body: _photos.isEmpty
-          ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : Column(
-              children: [
-                Expanded(
-                  child: PageView.builder(
-                    controller: _pageController,
-                    onPageChanged: (i) => setState(() => _index = i),
-                    itemCount: _photos.length,
-                    itemBuilder: (_, i) {
-                      final item = _photos[i];
-                      if (item.isVideo) {
-                        return _mediaBody(item, autoplay: i == _index);
-                      }
-                      return LayoutBuilder(
-                        builder: (context, constraints) => Center(
-                          child: InteractiveViewer(
-                            minScale: 0.2,
-                            maxScale: 5,
-                            constrained: false,
-                            clipBehavior: Clip.none,
-                            child: SizedBox(
-                              width: constraints.maxWidth,
-                              height: constraints.maxHeight,
-                              child: _mediaBody(item, autoplay: i == _index),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+                )
+              : const Icon(Icons.download_outlined),
+        ),
+        if (canFaceTag || widget.onGoToMessage != null)
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (value) {
+              switch (value) {
+                case 'faces':
+                  final current = _currentPhoto;
+                  if (current.threadId == null ||
+                      current.attachmentId == null) {
+                    return;
+                  }
+                  FaceTaggingSheet.show(
+                    context,
+                    threadId: current.threadId!,
+                    attachmentId: current.attachmentId!,
+                    imageChild: _imageBody(current),
+                  );
+                case 'goto':
+                  _goToMessage();
+              }
+            },
+            itemBuilder: (context) => [
+              if (canFaceTag)
+                const PopupMenuItem(
+                  value: 'faces',
+                  child: Text('Кто на фото'),
                 ),
-                if (_currentPhoto.attachmentId != null && !_currentPhoto.isVideo)
-                  PhotoPeopleOnPhotoBar(
-                    key: ValueKey<int>(_currentPhoto.attachmentId!),
-                    attachmentId: _currentPhoto.attachmentId!,
-                    threadId: _currentPhoto.threadId,
-                  ),
-              ],
+              if (widget.onGoToMessage != null)
+                const PopupMenuItem(
+                  value: 'goto',
+                  child: Text('Перейти к сообщению'),
+                ),
+            ],
+          ),
+      ],
+      pageBuilder: (_, i) {
+        final item = _photos[i];
+        if (item.isVideo) {
+          return _mediaBody(item, autoplay: i == _index);
+        }
+        return LayoutBuilder(
+          builder: (context, constraints) => Center(
+            child: InteractiveViewer(
+              minScale: 0.2,
+              maxScale: 5,
+              constrained: false,
+              clipBehavior: Clip.none,
+              child: SizedBox(
+                width: constraints.maxWidth,
+                height: constraints.maxHeight,
+                child: _mediaBody(item, autoplay: i == _index),
+              ),
             ),
+          ),
+        );
+      },
+      bottomSlots: [
+        if (_currentPhoto.attachmentId != null && !_currentPhoto.isVideo)
+          PhotoPeopleOnPhotoBar(
+            key: ValueKey<int>(_currentPhoto.attachmentId!),
+            attachmentId: _currentPhoto.attachmentId!,
+            threadId: _currentPhoto.threadId,
+          ),
+      ],
     );
   }
 }

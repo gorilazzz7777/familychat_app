@@ -10,6 +10,7 @@ export 'src/contract/chat_repository.dart';
 export 'src/contract/chat_send_options.dart';
 export 'src/realtime/gorila_chat_realtime.dart';
 export 'src/util/active_chat_context.dart';
+export 'src/util/call_signal_utils.dart';
 export 'src/util/chat_conversation_session.dart';
 export 'src/util/chat_realtime_utils.dart';
 export 'src/util/feature_matrix.dart';

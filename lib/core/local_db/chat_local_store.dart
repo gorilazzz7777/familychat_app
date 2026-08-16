@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
@@ -156,6 +157,58 @@ class ChatLocalStore {
   Future<void> metaSet(String key, String value) async {
     final db = await ensureOpen();
     await db?.metaSet(key, value);
+  }
+
+  Future<List<Map<String, dynamic>>> readOutboxItems() async {
+    final db = await ensureOpen();
+    if (db == null) return const [];
+    return db.readOutboxItems();
+  }
+
+  Future<void> writeOutboxItems(List<Map<String, dynamic>> items) async {
+    final db = await ensureOpen();
+    await db?.writeOutboxItems(items);
+  }
+
+  Future<void> saveOutboxBlob(String storageKey, List<int> bytes) async {
+    final db = await ensureOpen();
+    await db?.saveOutboxBlob(storageKey, Uint8List.fromList(bytes));
+  }
+
+  Future<Uint8List?> readOutboxBlob(String storageKey) async {
+    final db = await ensureOpen();
+    return db?.readOutboxBlob(storageKey);
+  }
+
+  Future<void> deleteOutboxBlob(String storageKey) async {
+    final db = await ensureOpen();
+    await db?.deleteOutboxBlob(storageKey);
+  }
+
+  Future<Map<String, Map<String, dynamic>>> readAllMediaIndex() async {
+    final db = await ensureOpen();
+    if (db == null) return const {};
+    return db.readAllMediaIndex();
+  }
+
+  Future<void> upsertMediaIndexRow(
+    String key,
+    Map<String, dynamic> payload,
+  ) async {
+    final db = await ensureOpen();
+    await db?.upsertMediaIndexRow(key, payload);
+  }
+
+  Future<void> deleteMediaIndexRow(String key) async {
+    final db = await ensureOpen();
+    await db?.deleteMediaIndexRow(key);
+  }
+
+  Future<void> replaceAllMediaIndex(
+    Map<String, Map<String, dynamic>> all,
+  ) async {
+    final db = await ensureOpen();
+    await db?.replaceAllMediaIndex(all);
   }
 
   Future<void> clearPendingForThread(int threadId) async {

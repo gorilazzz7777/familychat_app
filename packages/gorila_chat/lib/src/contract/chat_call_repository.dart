@@ -2,7 +2,8 @@
 abstract class ChatCallRepository {
   Future<List<Map<String, dynamic>>> iceServers(int threadId);
 
-  Future<Map<String, dynamic>> startCall(int threadId);
+  /// Start a call. [isVideo] is additive (default audio) for TeamCoach compatibility.
+  Future<Map<String, dynamic>> startCall(int threadId, {bool isVideo = false});
 
   Future<Map<String, dynamic>> callAction(int callId, String action);
 

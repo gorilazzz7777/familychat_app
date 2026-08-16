@@ -1002,6 +1002,632 @@ class ChatMetaRowsCompanion extends UpdateCompanion<ChatMetaRow> {
   }
 }
 
+class $ChatOutboxRowsTable extends ChatOutboxRows
+    with TableInfo<$ChatOutboxRowsTable, ChatOutboxRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $ChatOutboxRowsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+      'id', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _payloadJsonMeta =
+      const VerificationMeta('payloadJson');
+  @override
+  late final GeneratedColumn<String> payloadJson = GeneratedColumn<String>(
+      'payload_json', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _createdAtMsMeta =
+      const VerificationMeta('createdAtMs');
+  @override
+  late final GeneratedColumn<int> createdAtMs = GeneratedColumn<int>(
+      'created_at_ms', aliasedName, false,
+      type: DriftSqlType.int,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(0));
+  @override
+  List<GeneratedColumn> get $columns => [id, payloadJson, createdAtMs];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'chat_outbox_rows';
+  @override
+  VerificationContext validateIntegrity(Insertable<ChatOutboxRow> instance,
+      {bool isInserting = false}) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('payload_json')) {
+      context.handle(
+          _payloadJsonMeta,
+          payloadJson.isAcceptableOrUnknown(
+              data['payload_json']!, _payloadJsonMeta));
+    } else if (isInserting) {
+      context.missing(_payloadJsonMeta);
+    }
+    if (data.containsKey('created_at_ms')) {
+      context.handle(
+          _createdAtMsMeta,
+          createdAtMs.isAcceptableOrUnknown(
+              data['created_at_ms']!, _createdAtMsMeta));
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  ChatOutboxRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return ChatOutboxRow(
+      id: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}id'])!,
+      payloadJson: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}payload_json'])!,
+      createdAtMs: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}created_at_ms'])!,
+    );
+  }
+
+  @override
+  $ChatOutboxRowsTable createAlias(String alias) {
+    return $ChatOutboxRowsTable(attachedDatabase, alias);
+  }
+}
+
+class ChatOutboxRow extends DataClass implements Insertable<ChatOutboxRow> {
+  final String id;
+  final String payloadJson;
+  final int createdAtMs;
+  const ChatOutboxRow(
+      {required this.id, required this.payloadJson, required this.createdAtMs});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['payload_json'] = Variable<String>(payloadJson);
+    map['created_at_ms'] = Variable<int>(createdAtMs);
+    return map;
+  }
+
+  ChatOutboxRowsCompanion toCompanion(bool nullToAbsent) {
+    return ChatOutboxRowsCompanion(
+      id: Value(id),
+      payloadJson: Value(payloadJson),
+      createdAtMs: Value(createdAtMs),
+    );
+  }
+
+  factory ChatOutboxRow.fromJson(Map<String, dynamic> json,
+      {ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return ChatOutboxRow(
+      id: serializer.fromJson<String>(json['id']),
+      payloadJson: serializer.fromJson<String>(json['payloadJson']),
+      createdAtMs: serializer.fromJson<int>(json['createdAtMs']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'payloadJson': serializer.toJson<String>(payloadJson),
+      'createdAtMs': serializer.toJson<int>(createdAtMs),
+    };
+  }
+
+  ChatOutboxRow copyWith({String? id, String? payloadJson, int? createdAtMs}) =>
+      ChatOutboxRow(
+        id: id ?? this.id,
+        payloadJson: payloadJson ?? this.payloadJson,
+        createdAtMs: createdAtMs ?? this.createdAtMs,
+      );
+  ChatOutboxRow copyWithCompanion(ChatOutboxRowsCompanion data) {
+    return ChatOutboxRow(
+      id: data.id.present ? data.id.value : this.id,
+      payloadJson:
+          data.payloadJson.present ? data.payloadJson.value : this.payloadJson,
+      createdAtMs:
+          data.createdAtMs.present ? data.createdAtMs.value : this.createdAtMs,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ChatOutboxRow(')
+          ..write('id: $id, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('createdAtMs: $createdAtMs')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(id, payloadJson, createdAtMs);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is ChatOutboxRow &&
+          other.id == this.id &&
+          other.payloadJson == this.payloadJson &&
+          other.createdAtMs == this.createdAtMs);
+}
+
+class ChatOutboxRowsCompanion extends UpdateCompanion<ChatOutboxRow> {
+  final Value<String> id;
+  final Value<String> payloadJson;
+  final Value<int> createdAtMs;
+  final Value<int> rowid;
+  const ChatOutboxRowsCompanion({
+    this.id = const Value.absent(),
+    this.payloadJson = const Value.absent(),
+    this.createdAtMs = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  ChatOutboxRowsCompanion.insert({
+    required String id,
+    required String payloadJson,
+    this.createdAtMs = const Value.absent(),
+    this.rowid = const Value.absent(),
+  })  : id = Value(id),
+        payloadJson = Value(payloadJson);
+  static Insertable<ChatOutboxRow> custom({
+    Expression<String>? id,
+    Expression<String>? payloadJson,
+    Expression<int>? createdAtMs,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (payloadJson != null) 'payload_json': payloadJson,
+      if (createdAtMs != null) 'created_at_ms': createdAtMs,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  ChatOutboxRowsCompanion copyWith(
+      {Value<String>? id,
+      Value<String>? payloadJson,
+      Value<int>? createdAtMs,
+      Value<int>? rowid}) {
+    return ChatOutboxRowsCompanion(
+      id: id ?? this.id,
+      payloadJson: payloadJson ?? this.payloadJson,
+      createdAtMs: createdAtMs ?? this.createdAtMs,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (payloadJson.present) {
+      map['payload_json'] = Variable<String>(payloadJson.value);
+    }
+    if (createdAtMs.present) {
+      map['created_at_ms'] = Variable<int>(createdAtMs.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ChatOutboxRowsCompanion(')
+          ..write('id: $id, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('createdAtMs: $createdAtMs, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $ChatOutboxBlobRowsTable extends ChatOutboxBlobRows
+    with TableInfo<$ChatOutboxBlobRowsTable, ChatOutboxBlobRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $ChatOutboxBlobRowsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _storageKeyMeta =
+      const VerificationMeta('storageKey');
+  @override
+  late final GeneratedColumn<String> storageKey = GeneratedColumn<String>(
+      'storage_key', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _bytesMeta = const VerificationMeta('bytes');
+  @override
+  late final GeneratedColumn<Uint8List> bytes = GeneratedColumn<Uint8List>(
+      'bytes', aliasedName, false,
+      type: DriftSqlType.blob, requiredDuringInsert: true);
+  @override
+  List<GeneratedColumn> get $columns => [storageKey, bytes];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'chat_outbox_blob_rows';
+  @override
+  VerificationContext validateIntegrity(Insertable<ChatOutboxBlobRow> instance,
+      {bool isInserting = false}) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('storage_key')) {
+      context.handle(
+          _storageKeyMeta,
+          storageKey.isAcceptableOrUnknown(
+              data['storage_key']!, _storageKeyMeta));
+    } else if (isInserting) {
+      context.missing(_storageKeyMeta);
+    }
+    if (data.containsKey('bytes')) {
+      context.handle(
+          _bytesMeta, bytes.isAcceptableOrUnknown(data['bytes']!, _bytesMeta));
+    } else if (isInserting) {
+      context.missing(_bytesMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {storageKey};
+  @override
+  ChatOutboxBlobRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return ChatOutboxBlobRow(
+      storageKey: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}storage_key'])!,
+      bytes: attachedDatabase.typeMapping
+          .read(DriftSqlType.blob, data['${effectivePrefix}bytes'])!,
+    );
+  }
+
+  @override
+  $ChatOutboxBlobRowsTable createAlias(String alias) {
+    return $ChatOutboxBlobRowsTable(attachedDatabase, alias);
+  }
+}
+
+class ChatOutboxBlobRow extends DataClass
+    implements Insertable<ChatOutboxBlobRow> {
+  final String storageKey;
+  final Uint8List bytes;
+  const ChatOutboxBlobRow({required this.storageKey, required this.bytes});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['storage_key'] = Variable<String>(storageKey);
+    map['bytes'] = Variable<Uint8List>(bytes);
+    return map;
+  }
+
+  ChatOutboxBlobRowsCompanion toCompanion(bool nullToAbsent) {
+    return ChatOutboxBlobRowsCompanion(
+      storageKey: Value(storageKey),
+      bytes: Value(bytes),
+    );
+  }
+
+  factory ChatOutboxBlobRow.fromJson(Map<String, dynamic> json,
+      {ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return ChatOutboxBlobRow(
+      storageKey: serializer.fromJson<String>(json['storageKey']),
+      bytes: serializer.fromJson<Uint8List>(json['bytes']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'storageKey': serializer.toJson<String>(storageKey),
+      'bytes': serializer.toJson<Uint8List>(bytes),
+    };
+  }
+
+  ChatOutboxBlobRow copyWith({String? storageKey, Uint8List? bytes}) =>
+      ChatOutboxBlobRow(
+        storageKey: storageKey ?? this.storageKey,
+        bytes: bytes ?? this.bytes,
+      );
+  ChatOutboxBlobRow copyWithCompanion(ChatOutboxBlobRowsCompanion data) {
+    return ChatOutboxBlobRow(
+      storageKey:
+          data.storageKey.present ? data.storageKey.value : this.storageKey,
+      bytes: data.bytes.present ? data.bytes.value : this.bytes,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ChatOutboxBlobRow(')
+          ..write('storageKey: $storageKey, ')
+          ..write('bytes: $bytes')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(storageKey, $driftBlobEquality.hash(bytes));
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is ChatOutboxBlobRow &&
+          other.storageKey == this.storageKey &&
+          $driftBlobEquality.equals(other.bytes, this.bytes));
+}
+
+class ChatOutboxBlobRowsCompanion extends UpdateCompanion<ChatOutboxBlobRow> {
+  final Value<String> storageKey;
+  final Value<Uint8List> bytes;
+  final Value<int> rowid;
+  const ChatOutboxBlobRowsCompanion({
+    this.storageKey = const Value.absent(),
+    this.bytes = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  ChatOutboxBlobRowsCompanion.insert({
+    required String storageKey,
+    required Uint8List bytes,
+    this.rowid = const Value.absent(),
+  })  : storageKey = Value(storageKey),
+        bytes = Value(bytes);
+  static Insertable<ChatOutboxBlobRow> custom({
+    Expression<String>? storageKey,
+    Expression<Uint8List>? bytes,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (storageKey != null) 'storage_key': storageKey,
+      if (bytes != null) 'bytes': bytes,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  ChatOutboxBlobRowsCompanion copyWith(
+      {Value<String>? storageKey, Value<Uint8List>? bytes, Value<int>? rowid}) {
+    return ChatOutboxBlobRowsCompanion(
+      storageKey: storageKey ?? this.storageKey,
+      bytes: bytes ?? this.bytes,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (storageKey.present) {
+      map['storage_key'] = Variable<String>(storageKey.value);
+    }
+    if (bytes.present) {
+      map['bytes'] = Variable<Uint8List>(bytes.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ChatOutboxBlobRowsCompanion(')
+          ..write('storageKey: $storageKey, ')
+          ..write('bytes: $bytes, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $MediaLocalIndexRowsTable extends MediaLocalIndexRows
+    with TableInfo<$MediaLocalIndexRowsTable, MediaLocalIndexRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $MediaLocalIndexRowsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _keyMeta = const VerificationMeta('key');
+  @override
+  late final GeneratedColumn<String> key = GeneratedColumn<String>(
+      'key', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _payloadJsonMeta =
+      const VerificationMeta('payloadJson');
+  @override
+  late final GeneratedColumn<String> payloadJson = GeneratedColumn<String>(
+      'payload_json', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  @override
+  List<GeneratedColumn> get $columns => [key, payloadJson];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'media_local_index_rows';
+  @override
+  VerificationContext validateIntegrity(Insertable<MediaLocalIndexRow> instance,
+      {bool isInserting = false}) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('key')) {
+      context.handle(
+          _keyMeta, key.isAcceptableOrUnknown(data['key']!, _keyMeta));
+    } else if (isInserting) {
+      context.missing(_keyMeta);
+    }
+    if (data.containsKey('payload_json')) {
+      context.handle(
+          _payloadJsonMeta,
+          payloadJson.isAcceptableOrUnknown(
+              data['payload_json']!, _payloadJsonMeta));
+    } else if (isInserting) {
+      context.missing(_payloadJsonMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {key};
+  @override
+  MediaLocalIndexRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return MediaLocalIndexRow(
+      key: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}key'])!,
+      payloadJson: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}payload_json'])!,
+    );
+  }
+
+  @override
+  $MediaLocalIndexRowsTable createAlias(String alias) {
+    return $MediaLocalIndexRowsTable(attachedDatabase, alias);
+  }
+}
+
+class MediaLocalIndexRow extends DataClass
+    implements Insertable<MediaLocalIndexRow> {
+  final String key;
+  final String payloadJson;
+  const MediaLocalIndexRow({required this.key, required this.payloadJson});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['key'] = Variable<String>(key);
+    map['payload_json'] = Variable<String>(payloadJson);
+    return map;
+  }
+
+  MediaLocalIndexRowsCompanion toCompanion(bool nullToAbsent) {
+    return MediaLocalIndexRowsCompanion(
+      key: Value(key),
+      payloadJson: Value(payloadJson),
+    );
+  }
+
+  factory MediaLocalIndexRow.fromJson(Map<String, dynamic> json,
+      {ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return MediaLocalIndexRow(
+      key: serializer.fromJson<String>(json['key']),
+      payloadJson: serializer.fromJson<String>(json['payloadJson']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'key': serializer.toJson<String>(key),
+      'payloadJson': serializer.toJson<String>(payloadJson),
+    };
+  }
+
+  MediaLocalIndexRow copyWith({String? key, String? payloadJson}) =>
+      MediaLocalIndexRow(
+        key: key ?? this.key,
+        payloadJson: payloadJson ?? this.payloadJson,
+      );
+  MediaLocalIndexRow copyWithCompanion(MediaLocalIndexRowsCompanion data) {
+    return MediaLocalIndexRow(
+      key: data.key.present ? data.key.value : this.key,
+      payloadJson:
+          data.payloadJson.present ? data.payloadJson.value : this.payloadJson,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('MediaLocalIndexRow(')
+          ..write('key: $key, ')
+          ..write('payloadJson: $payloadJson')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(key, payloadJson);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is MediaLocalIndexRow &&
+          other.key == this.key &&
+          other.payloadJson == this.payloadJson);
+}
+
+class MediaLocalIndexRowsCompanion extends UpdateCompanion<MediaLocalIndexRow> {
+  final Value<String> key;
+  final Value<String> payloadJson;
+  final Value<int> rowid;
+  const MediaLocalIndexRowsCompanion({
+    this.key = const Value.absent(),
+    this.payloadJson = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  MediaLocalIndexRowsCompanion.insert({
+    required String key,
+    required String payloadJson,
+    this.rowid = const Value.absent(),
+  })  : key = Value(key),
+        payloadJson = Value(payloadJson);
+  static Insertable<MediaLocalIndexRow> custom({
+    Expression<String>? key,
+    Expression<String>? payloadJson,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (key != null) 'key': key,
+      if (payloadJson != null) 'payload_json': payloadJson,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  MediaLocalIndexRowsCompanion copyWith(
+      {Value<String>? key, Value<String>? payloadJson, Value<int>? rowid}) {
+    return MediaLocalIndexRowsCompanion(
+      key: key ?? this.key,
+      payloadJson: payloadJson ?? this.payloadJson,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (key.present) {
+      map['key'] = Variable<String>(key.value);
+    }
+    if (payloadJson.present) {
+      map['payload_json'] = Variable<String>(payloadJson.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('MediaLocalIndexRowsCompanion(')
+          ..write('key: $key, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$ChatDatabase extends GeneratedDatabase {
   _$ChatDatabase(QueryExecutor e) : super(e);
   $ChatDatabaseManager get managers => $ChatDatabaseManager(this);
@@ -1010,12 +1636,24 @@ abstract class _$ChatDatabase extends GeneratedDatabase {
       $ChatMessageRowsTable(this);
   late final $ChatMemberRowsTable chatMemberRows = $ChatMemberRowsTable(this);
   late final $ChatMetaRowsTable chatMetaRows = $ChatMetaRowsTable(this);
+  late final $ChatOutboxRowsTable chatOutboxRows = $ChatOutboxRowsTable(this);
+  late final $ChatOutboxBlobRowsTable chatOutboxBlobRows =
+      $ChatOutboxBlobRowsTable(this);
+  late final $MediaLocalIndexRowsTable mediaLocalIndexRows =
+      $MediaLocalIndexRowsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
   @override
-  List<DatabaseSchemaEntity> get allSchemaEntities =>
-      [chatThreadRows, chatMessageRows, chatMemberRows, chatMetaRows];
+  List<DatabaseSchemaEntity> get allSchemaEntities => [
+        chatThreadRows,
+        chatMessageRows,
+        chatMemberRows,
+        chatMetaRows,
+        chatOutboxRows,
+        chatOutboxBlobRows,
+        mediaLocalIndexRows
+      ];
 }
 
 typedef $$ChatThreadRowsTableCreateCompanionBuilder = ChatThreadRowsCompanion
@@ -1614,6 +2252,415 @@ typedef $$ChatMetaRowsTableProcessedTableManager = ProcessedTableManager<
     ),
     ChatMetaRow,
     PrefetchHooks Function()>;
+typedef $$ChatOutboxRowsTableCreateCompanionBuilder = ChatOutboxRowsCompanion
+    Function({
+  required String id,
+  required String payloadJson,
+  Value<int> createdAtMs,
+  Value<int> rowid,
+});
+typedef $$ChatOutboxRowsTableUpdateCompanionBuilder = ChatOutboxRowsCompanion
+    Function({
+  Value<String> id,
+  Value<String> payloadJson,
+  Value<int> createdAtMs,
+  Value<int> rowid,
+});
+
+class $$ChatOutboxRowsTableFilterComposer
+    extends Composer<_$ChatDatabase, $ChatOutboxRowsTable> {
+  $$ChatOutboxRowsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+      column: $table.id, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get createdAtMs => $composableBuilder(
+      column: $table.createdAtMs, builder: (column) => ColumnFilters(column));
+}
+
+class $$ChatOutboxRowsTableOrderingComposer
+    extends Composer<_$ChatDatabase, $ChatOutboxRowsTable> {
+  $$ChatOutboxRowsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+      column: $table.id, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<int> get createdAtMs => $composableBuilder(
+      column: $table.createdAtMs, builder: (column) => ColumnOrderings(column));
+}
+
+class $$ChatOutboxRowsTableAnnotationComposer
+    extends Composer<_$ChatDatabase, $ChatOutboxRowsTable> {
+  $$ChatOutboxRowsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => column);
+
+  GeneratedColumn<int> get createdAtMs => $composableBuilder(
+      column: $table.createdAtMs, builder: (column) => column);
+}
+
+class $$ChatOutboxRowsTableTableManager extends RootTableManager<
+    _$ChatDatabase,
+    $ChatOutboxRowsTable,
+    ChatOutboxRow,
+    $$ChatOutboxRowsTableFilterComposer,
+    $$ChatOutboxRowsTableOrderingComposer,
+    $$ChatOutboxRowsTableAnnotationComposer,
+    $$ChatOutboxRowsTableCreateCompanionBuilder,
+    $$ChatOutboxRowsTableUpdateCompanionBuilder,
+    (
+      ChatOutboxRow,
+      BaseReferences<_$ChatDatabase, $ChatOutboxRowsTable, ChatOutboxRow>
+    ),
+    ChatOutboxRow,
+    PrefetchHooks Function()> {
+  $$ChatOutboxRowsTableTableManager(
+      _$ChatDatabase db, $ChatOutboxRowsTable table)
+      : super(TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$ChatOutboxRowsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$ChatOutboxRowsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$ChatOutboxRowsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback: ({
+            Value<String> id = const Value.absent(),
+            Value<String> payloadJson = const Value.absent(),
+            Value<int> createdAtMs = const Value.absent(),
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              ChatOutboxRowsCompanion(
+            id: id,
+            payloadJson: payloadJson,
+            createdAtMs: createdAtMs,
+            rowid: rowid,
+          ),
+          createCompanionCallback: ({
+            required String id,
+            required String payloadJson,
+            Value<int> createdAtMs = const Value.absent(),
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              ChatOutboxRowsCompanion.insert(
+            id: id,
+            payloadJson: payloadJson,
+            createdAtMs: createdAtMs,
+            rowid: rowid,
+          ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ));
+}
+
+typedef $$ChatOutboxRowsTableProcessedTableManager = ProcessedTableManager<
+    _$ChatDatabase,
+    $ChatOutboxRowsTable,
+    ChatOutboxRow,
+    $$ChatOutboxRowsTableFilterComposer,
+    $$ChatOutboxRowsTableOrderingComposer,
+    $$ChatOutboxRowsTableAnnotationComposer,
+    $$ChatOutboxRowsTableCreateCompanionBuilder,
+    $$ChatOutboxRowsTableUpdateCompanionBuilder,
+    (
+      ChatOutboxRow,
+      BaseReferences<_$ChatDatabase, $ChatOutboxRowsTable, ChatOutboxRow>
+    ),
+    ChatOutboxRow,
+    PrefetchHooks Function()>;
+typedef $$ChatOutboxBlobRowsTableCreateCompanionBuilder
+    = ChatOutboxBlobRowsCompanion Function({
+  required String storageKey,
+  required Uint8List bytes,
+  Value<int> rowid,
+});
+typedef $$ChatOutboxBlobRowsTableUpdateCompanionBuilder
+    = ChatOutboxBlobRowsCompanion Function({
+  Value<String> storageKey,
+  Value<Uint8List> bytes,
+  Value<int> rowid,
+});
+
+class $$ChatOutboxBlobRowsTableFilterComposer
+    extends Composer<_$ChatDatabase, $ChatOutboxBlobRowsTable> {
+  $$ChatOutboxBlobRowsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get storageKey => $composableBuilder(
+      column: $table.storageKey, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<Uint8List> get bytes => $composableBuilder(
+      column: $table.bytes, builder: (column) => ColumnFilters(column));
+}
+
+class $$ChatOutboxBlobRowsTableOrderingComposer
+    extends Composer<_$ChatDatabase, $ChatOutboxBlobRowsTable> {
+  $$ChatOutboxBlobRowsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get storageKey => $composableBuilder(
+      column: $table.storageKey, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<Uint8List> get bytes => $composableBuilder(
+      column: $table.bytes, builder: (column) => ColumnOrderings(column));
+}
+
+class $$ChatOutboxBlobRowsTableAnnotationComposer
+    extends Composer<_$ChatDatabase, $ChatOutboxBlobRowsTable> {
+  $$ChatOutboxBlobRowsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get storageKey => $composableBuilder(
+      column: $table.storageKey, builder: (column) => column);
+
+  GeneratedColumn<Uint8List> get bytes =>
+      $composableBuilder(column: $table.bytes, builder: (column) => column);
+}
+
+class $$ChatOutboxBlobRowsTableTableManager extends RootTableManager<
+    _$ChatDatabase,
+    $ChatOutboxBlobRowsTable,
+    ChatOutboxBlobRow,
+    $$ChatOutboxBlobRowsTableFilterComposer,
+    $$ChatOutboxBlobRowsTableOrderingComposer,
+    $$ChatOutboxBlobRowsTableAnnotationComposer,
+    $$ChatOutboxBlobRowsTableCreateCompanionBuilder,
+    $$ChatOutboxBlobRowsTableUpdateCompanionBuilder,
+    (
+      ChatOutboxBlobRow,
+      BaseReferences<_$ChatDatabase, $ChatOutboxBlobRowsTable,
+          ChatOutboxBlobRow>
+    ),
+    ChatOutboxBlobRow,
+    PrefetchHooks Function()> {
+  $$ChatOutboxBlobRowsTableTableManager(
+      _$ChatDatabase db, $ChatOutboxBlobRowsTable table)
+      : super(TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$ChatOutboxBlobRowsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$ChatOutboxBlobRowsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$ChatOutboxBlobRowsTableAnnotationComposer(
+                  $db: db, $table: table),
+          updateCompanionCallback: ({
+            Value<String> storageKey = const Value.absent(),
+            Value<Uint8List> bytes = const Value.absent(),
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              ChatOutboxBlobRowsCompanion(
+            storageKey: storageKey,
+            bytes: bytes,
+            rowid: rowid,
+          ),
+          createCompanionCallback: ({
+            required String storageKey,
+            required Uint8List bytes,
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              ChatOutboxBlobRowsCompanion.insert(
+            storageKey: storageKey,
+            bytes: bytes,
+            rowid: rowid,
+          ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ));
+}
+
+typedef $$ChatOutboxBlobRowsTableProcessedTableManager = ProcessedTableManager<
+    _$ChatDatabase,
+    $ChatOutboxBlobRowsTable,
+    ChatOutboxBlobRow,
+    $$ChatOutboxBlobRowsTableFilterComposer,
+    $$ChatOutboxBlobRowsTableOrderingComposer,
+    $$ChatOutboxBlobRowsTableAnnotationComposer,
+    $$ChatOutboxBlobRowsTableCreateCompanionBuilder,
+    $$ChatOutboxBlobRowsTableUpdateCompanionBuilder,
+    (
+      ChatOutboxBlobRow,
+      BaseReferences<_$ChatDatabase, $ChatOutboxBlobRowsTable,
+          ChatOutboxBlobRow>
+    ),
+    ChatOutboxBlobRow,
+    PrefetchHooks Function()>;
+typedef $$MediaLocalIndexRowsTableCreateCompanionBuilder
+    = MediaLocalIndexRowsCompanion Function({
+  required String key,
+  required String payloadJson,
+  Value<int> rowid,
+});
+typedef $$MediaLocalIndexRowsTableUpdateCompanionBuilder
+    = MediaLocalIndexRowsCompanion Function({
+  Value<String> key,
+  Value<String> payloadJson,
+  Value<int> rowid,
+});
+
+class $$MediaLocalIndexRowsTableFilterComposer
+    extends Composer<_$ChatDatabase, $MediaLocalIndexRowsTable> {
+  $$MediaLocalIndexRowsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get key => $composableBuilder(
+      column: $table.key, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => ColumnFilters(column));
+}
+
+class $$MediaLocalIndexRowsTableOrderingComposer
+    extends Composer<_$ChatDatabase, $MediaLocalIndexRowsTable> {
+  $$MediaLocalIndexRowsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get key => $composableBuilder(
+      column: $table.key, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => ColumnOrderings(column));
+}
+
+class $$MediaLocalIndexRowsTableAnnotationComposer
+    extends Composer<_$ChatDatabase, $MediaLocalIndexRowsTable> {
+  $$MediaLocalIndexRowsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get key =>
+      $composableBuilder(column: $table.key, builder: (column) => column);
+
+  GeneratedColumn<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => column);
+}
+
+class $$MediaLocalIndexRowsTableTableManager extends RootTableManager<
+    _$ChatDatabase,
+    $MediaLocalIndexRowsTable,
+    MediaLocalIndexRow,
+    $$MediaLocalIndexRowsTableFilterComposer,
+    $$MediaLocalIndexRowsTableOrderingComposer,
+    $$MediaLocalIndexRowsTableAnnotationComposer,
+    $$MediaLocalIndexRowsTableCreateCompanionBuilder,
+    $$MediaLocalIndexRowsTableUpdateCompanionBuilder,
+    (
+      MediaLocalIndexRow,
+      BaseReferences<_$ChatDatabase, $MediaLocalIndexRowsTable,
+          MediaLocalIndexRow>
+    ),
+    MediaLocalIndexRow,
+    PrefetchHooks Function()> {
+  $$MediaLocalIndexRowsTableTableManager(
+      _$ChatDatabase db, $MediaLocalIndexRowsTable table)
+      : super(TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$MediaLocalIndexRowsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$MediaLocalIndexRowsTableOrderingComposer(
+                  $db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$MediaLocalIndexRowsTableAnnotationComposer(
+                  $db: db, $table: table),
+          updateCompanionCallback: ({
+            Value<String> key = const Value.absent(),
+            Value<String> payloadJson = const Value.absent(),
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              MediaLocalIndexRowsCompanion(
+            key: key,
+            payloadJson: payloadJson,
+            rowid: rowid,
+          ),
+          createCompanionCallback: ({
+            required String key,
+            required String payloadJson,
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              MediaLocalIndexRowsCompanion.insert(
+            key: key,
+            payloadJson: payloadJson,
+            rowid: rowid,
+          ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ));
+}
+
+typedef $$MediaLocalIndexRowsTableProcessedTableManager = ProcessedTableManager<
+    _$ChatDatabase,
+    $MediaLocalIndexRowsTable,
+    MediaLocalIndexRow,
+    $$MediaLocalIndexRowsTableFilterComposer,
+    $$MediaLocalIndexRowsTableOrderingComposer,
+    $$MediaLocalIndexRowsTableAnnotationComposer,
+    $$MediaLocalIndexRowsTableCreateCompanionBuilder,
+    $$MediaLocalIndexRowsTableUpdateCompanionBuilder,
+    (
+      MediaLocalIndexRow,
+      BaseReferences<_$ChatDatabase, $MediaLocalIndexRowsTable,
+          MediaLocalIndexRow>
+    ),
+    MediaLocalIndexRow,
+    PrefetchHooks Function()>;
 
 class $ChatDatabaseManager {
   final _$ChatDatabase _db;
@@ -1626,4 +2673,10 @@ class $ChatDatabaseManager {
       $$ChatMemberRowsTableTableManager(_db, _db.chatMemberRows);
   $$ChatMetaRowsTableTableManager get chatMetaRows =>
       $$ChatMetaRowsTableTableManager(_db, _db.chatMetaRows);
+  $$ChatOutboxRowsTableTableManager get chatOutboxRows =>
+      $$ChatOutboxRowsTableTableManager(_db, _db.chatOutboxRows);
+  $$ChatOutboxBlobRowsTableTableManager get chatOutboxBlobRows =>
+      $$ChatOutboxBlobRowsTableTableManager(_db, _db.chatOutboxBlobRows);
+  $$MediaLocalIndexRowsTableTableManager get mediaLocalIndexRows =>
+      $$MediaLocalIndexRowsTableTableManager(_db, _db.mediaLocalIndexRows);
 }

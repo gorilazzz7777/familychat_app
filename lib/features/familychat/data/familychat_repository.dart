@@ -39,6 +39,38 @@ class FamilyChatRepository {
   static final Map<int, Uint8List> _avatarBytesCache = <int, Uint8List>{};
   static final Map<int, Future<Uint8List>> _avatarBytesInFlight =
       <int, Future<Uint8List>>{};
+  static final List<String> _attachmentLru = <String>[];
+  static final List<int> _avatarLru = <int>[];
+  static const int _maxAttachmentCacheEntries = 64;
+  static const int _maxAvatarCacheEntries = 32;
+
+  static void _touchAttachmentLru(String key) {
+    _attachmentLru.remove(key);
+    _attachmentLru.add(key);
+    while (_attachmentLru.length > _maxAttachmentCacheEntries) {
+      final evict = _attachmentLru.removeAt(0);
+      _attachmentBytesCache.remove(evict);
+    }
+  }
+
+  static void _putAttachmentCache(String key, Uint8List bytes) {
+    _attachmentBytesCache[key] = bytes;
+    _touchAttachmentLru(key);
+  }
+
+  static void _touchAvatarLru(int userId) {
+    _avatarLru.remove(userId);
+    _avatarLru.add(userId);
+    while (_avatarLru.length > _maxAvatarCacheEntries) {
+      final evict = _avatarLru.removeAt(0);
+      _avatarBytesCache.remove(evict);
+    }
+  }
+
+  static void _putAvatarCache(int userId, Uint8List bytes) {
+    _avatarBytesCache[userId] = bytes;
+    _touchAvatarLru(userId);
+  }
 
   /// Сколько полных файлов вложений качаем одновременно (web/bytes path).
   static const int maxConcurrentAttachmentDownloads = 3;
@@ -47,13 +79,20 @@ class FamilyChatRepository {
 
   static Uint8List? peekMemberAvatarBytes(int userId) {
     final cached = _avatarBytesCache[userId];
-    if (cached != null && cached.isNotEmpty) return cached;
+    if (cached != null && cached.isNotEmpty) {
+      _touchAvatarLru(userId);
+      return cached;
+    }
     return null;
   }
 
   static Uint8List? peekChatAttachmentBytes(int threadId, int attachmentId) {
-    final cached = _attachmentBytesCache['$threadId:$attachmentId'];
-    if (cached != null && cached.isNotEmpty) return cached;
+    final key = '$threadId:$attachmentId';
+    final cached = _attachmentBytesCache[key];
+    if (cached != null && cached.isNotEmpty) {
+      _touchAttachmentLru(key);
+      return cached;
+    }
     return null;
   }
 
@@ -850,13 +889,16 @@ class FamilyChatRepository {
 
   Future<Uint8List> fetchMemberAvatarBytes(int userId) async {
     final cached = _avatarBytesCache[userId];
-    if (cached != null && cached.isNotEmpty) return cached;
+    if (cached != null && cached.isNotEmpty) {
+      _touchAvatarLru(userId);
+      return cached;
+    }
 
     final inFlight = _avatarBytesInFlight[userId];
     if (inFlight != null) return inFlight;
 
     final future = _fetchMemberAvatarBytesUncached(userId).then((bytes) {
-      _avatarBytesCache[userId] = bytes;
+      _putAvatarCache(userId, bytes);
       return bytes;
     }).whenComplete(() => _avatarBytesInFlight.remove(userId));
 
@@ -880,14 +922,17 @@ class FamilyChatRepository {
       int threadId, int attachmentId) async {
     final cacheKey = '$threadId:$attachmentId';
     final cached = _attachmentBytesCache[cacheKey];
-    if (cached != null && cached.isNotEmpty) return cached;
+    if (cached != null && cached.isNotEmpty) {
+      _touchAttachmentLru(cacheKey);
+      return cached;
+    }
 
     final inFlight = _attachmentBytesInFlight[cacheKey];
     if (inFlight != null) return inFlight;
 
     final future = _fetchChatAttachmentBytesUncached(threadId, attachmentId)
         .then((bytes) {
-      _attachmentBytesCache[cacheKey] = bytes;
+      _putAttachmentCache(cacheKey, bytes);
       return bytes;
     }).whenComplete(() => _attachmentBytesInFlight.remove(cacheKey));
 
@@ -969,9 +1014,13 @@ class FamilyChatRepository {
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
-  Future<Map<String, dynamic>> startThreadCall(int threadId) async {
+  Future<Map<String, dynamic>> startThreadCall(
+    int threadId, {
+    bool isVideo = false,
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/call/start/',
+      data: {'is_video': isVideo},
     );
     return res.data ?? {};
   }

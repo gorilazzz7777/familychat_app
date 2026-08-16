@@ -19,6 +19,7 @@ class IncomingCallScreen extends StatefulWidget {
     this.myUserId,
     this.callerAvatarUrl,
     this.onHandled,
+    this.isVideo = false,
   });
 
   final int callId;
@@ -30,6 +31,7 @@ class IncomingCallScreen extends StatefulWidget {
   final int? myUserId;
   final String? callerAvatarUrl;
   final VoidCallback? onHandled;
+  final bool isVideo;
 
   @override
   State<IncomingCallScreen> createState() => _IncomingCallScreenState();
@@ -94,6 +96,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
           callId: widget.callId,
           isCaller: false,
           autoAccept: true,
+          isVideo: widget.isVideo,
           callRepository: widget.callRepository,
           realtime: widget.realtime,
           myUserId: widget.myUserId,
@@ -128,7 +131,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Входящий звонок',
+                widget.isVideo ? 'Входящий видеозвонок' : 'Входящий звонок',
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: scheme.onSurfaceVariant,
                     ),
@@ -145,7 +148,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                   ),
                   _RoundAction(
                     color: Colors.green,
-                    icon: Icons.call,
+                    icon: widget.isVideo ? Icons.videocam : Icons.call,
                     label: 'Ответить',
                     onTap: _busy ? null : () => unawaited(_accept()),
                   ),

@@ -1,5 +1,12 @@
 import 'package:drift/drift.dart';
+import 'package:drift_flutter/drift_flutter.dart';
 
 QueryExecutor openChatDatabaseConnection() {
-  throw UnsupportedError('Chat SQLite is native-only');
+  return driftDatabase(
+    name: 'familychat_chat',
+    web: DriftWebOptions(
+      sqlite3Wasm: Uri.parse('sqlite3.wasm'),
+      driftWorker: Uri.parse('drift_worker.js'),
+    ),
+  );
 }

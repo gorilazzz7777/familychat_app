@@ -27,8 +27,7 @@ import '../data/album_upload_coordinator.dart';
 import 'custom_album_dialog.dart';
 import 'gallery_photo_viewer_screen.dart';
 import '../../gallery/presentation/gallery_media_thumbnail.dart';
-import '../../gallery/presentation/widgets/gallery_date_scrubber.dart';
-import '../../gallery/presentation/widgets/gallery_mosaic_layout.dart';
+import '../../gallery/presentation/widgets/gallery_album_mosaic_body.dart';
 import 'widgets/chat_avatar.dart';
 
 class ProfileGalleryAlbumScreen extends ConsumerStatefulWidget {
@@ -1776,75 +1775,25 @@ class _ProfileGalleryAlbumScreenState
                                       ),
                                     ),
                                   Expanded(
-                                    child: Stack(
-                                      children: [
-                                        NotificationListener<
-                                            ScrollNotification>(
-                                          onNotification: (n) {
-                                            if (n.metrics.pixels >=
-                                                    n.metrics.maxScrollExtent -
-                                                        200 &&
-                                                !_loadingMore &&
-                                                _photos.length < _total) {
-                                              _load(reset: false);
-                                            }
-                                            return false;
-                                          },
-                                          child: CustomScrollView(
-                                            controller: _scrollController,
-                                            slivers: [
-                                              SliverPadding(
-                                                padding: const EdgeInsets.all(
-                                                  GalleryMosaicLayout.padding,
-                                                ),
-                                                sliver: SliverGrid(
-                                                  gridDelegate:
-                                                      GalleryMosaicLayout
-                                                          .delegate(),
-                                                  delegate:
-                                                      SliverChildBuilderDelegate(
-                                                    (context, i) {
-                                                      final display =
-                                                          _displayPhotos;
-                                                      return _buildPhotoTile(
-                                                        display[i],
-                                                        i,
-                                                      );
-                                                    },
-                                                    childCount:
-                                                        _displayPhotos.length,
-                                                  ),
-                                                ),
-                                              ),
-                                              if (_loadingMore)
-                                                const SliverToBoxAdapter(
-                                                  child: Padding(
-                                                    padding: EdgeInsets.all(16),
-                                                    child: Center(
-                                                      child: SizedBox(
-                                                        width: 24,
-                                                        height: 24,
-                                                        child:
-                                                            CircularProgressIndicator(
-                                                          strokeWidth: 2,
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                              const SliverToBoxAdapter(
-                                                child: SizedBox(height: 8),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        if (_daySections.isNotEmpty)
-                                          GalleryDateScrubber(
-                                            sections: _daySections,
-                                            scrollController:
-                                                _scrollController,
-                                          ),
-                                      ],
+                                    child: GalleryAlbumMosaicBody(
+                                      scrollController: _scrollController,
+                                      daySections: _daySections,
+                                      photoCount: _displayPhotos.length,
+                                      loadingMore: _loadingMore,
+                                      loadMoreThreshold: 200,
+                                      onNearEnd: () {
+                                        if (!_loadingMore &&
+                                            _photos.length < _total) {
+                                          _load(reset: false);
+                                        }
+                                      },
+                                      tileBuilder: (context, i) {
+                                        final display = _displayPhotos;
+                                        return _buildPhotoTile(
+                                          display[i],
+                                          i,
+                                        );
+                                      },
                                     ),
                                   ),
                                 ],

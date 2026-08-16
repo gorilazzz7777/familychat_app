@@ -160,7 +160,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
     }
   }
 
-  Future<void> _startCall() async {
+  Future<void> _startCall({bool isVideo = false}) async {
     if (_openingCall || _openingChat) return;
     setState(() => _openingCall = true);
     try {
@@ -177,6 +177,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                 p?['display_name']?.toString() ??
                 'Чат',
             isCaller: true,
+            isVideo: isVideo,
           ),
         ),
       );
@@ -376,7 +377,8 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
               const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _openingChat || _openingCall ? null : _startCall,
+                  onPressed:
+                      _openingChat || _openingCall ? null : () => _startCall(),
                   icon: _openingCall
                       ? const SizedBox(
                           width: 18,
@@ -386,6 +388,14 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                       : const Icon(Icons.call_outlined),
                   label: Text(_openingCall ? 'Запуск…' : 'Позвонить'),
                 ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.outlined(
+                tooltip: 'Видеозвонок',
+                onPressed: _openingChat || _openingCall
+                    ? null
+                    : () => _startCall(isVideo: true),
+                icon: const Icon(Icons.videocam_outlined),
               ),
             ],
           ),

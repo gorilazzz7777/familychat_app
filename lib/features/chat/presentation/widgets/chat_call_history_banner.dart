@@ -26,6 +26,13 @@ class ChatCallHistoryBanner extends StatelessWidget {
 
   int? get _actorUserId => int.tryParse('${metadata['actor_user_id']}');
 
+  bool get _isVideo {
+    final raw = metadata['is_video'];
+    if (raw == true) return true;
+    final s = raw?.toString().trim().toLowerCase();
+    return s == '1' || s == 'true' || s == 'yes';
+  }
+
   bool get _isOutgoing => _callerUserId == currentUserId;
   bool get _isIncoming => _calleeUserId == currentUserId;
 
@@ -40,19 +47,27 @@ class ChatCallHistoryBanner extends StatelessWidget {
     if (_result == 'missed' &&
         _isOutgoing &&
         _actorUserId == currentUserId) {
-      return 'Исходящий отменён';
+      return _isVideo ? 'Исходящий видеозвонок отменён' : 'Исходящий отменён';
     }
     switch (_result) {
       case 'completed':
-        return _isOutgoing ? 'Исходящий звонок' : 'Входящий звонок';
+        return _isOutgoing
+            ? (_isVideo ? 'Исходящий видеозвонок' : 'Исходящий звонок')
+            : (_isVideo ? 'Входящий видеозвонок' : 'Входящий звонок');
       case 'missed':
-        return _isIncoming ? 'Пропущенный входящий' : 'Пропущенный исходящий';
+        return _isIncoming
+            ? (_isVideo ? 'Пропущенный входящий видеозвонок' : 'Пропущенный входящий')
+            : (_isVideo ? 'Пропущенный исходящий видеозвонок' : 'Пропущенный исходящий');
       case 'declined':
-        return _isOutgoing ? 'Вызов отклонён' : 'Входящий отклонён';
+        return _isOutgoing
+            ? (_isVideo ? 'Видеовызов отклонён' : 'Вызов отклонён')
+            : (_isVideo ? 'Входящий видеозвонок отклонён' : 'Входящий отклонён');
       case 'cancelled':
-        return _isOutgoing ? 'Исходящий отменён' : 'Входящий отменён';
+        return _isOutgoing
+            ? (_isVideo ? 'Исходящий видеозвонок отменён' : 'Исходящий отменён')
+            : (_isVideo ? 'Входящий видеозвонок отменён' : 'Входящий отменён');
       default:
-        return 'Звонок';
+        return _isVideo ? 'Видеозвонок' : 'Звонок';
     }
   }
 
@@ -69,6 +84,19 @@ class ChatCallHistoryBanner extends StatelessWidget {
   }
 
   IconData _icon() {
+    if (_isVideo) {
+      switch (_result) {
+        case 'completed':
+          return _isOutgoing ? Icons.videocam : Icons.videocam_outlined;
+        case 'missed':
+          return Icons.missed_video_call_outlined;
+        case 'declined':
+        case 'cancelled':
+          return Icons.videocam_off_outlined;
+        default:
+          return Icons.videocam_outlined;
+      }
+    }
     switch (_result) {
       case 'completed':
         return _isOutgoing ? Icons.call_made : Icons.call_received;
@@ -158,7 +186,10 @@ class ChatCallHistoryBanner extends StatelessWidget {
                       tooltip: 'Перезвонить',
                       visualDensity: VisualDensity.compact,
                       onPressed: onRedial,
-                      icon: Icon(Icons.phone_callback, color: cs.primary),
+                      icon: Icon(
+                        _isVideo ? Icons.videocam : Icons.phone_callback,
+                        color: cs.primary,
+                      ),
                     ),
                   ],
                 ],

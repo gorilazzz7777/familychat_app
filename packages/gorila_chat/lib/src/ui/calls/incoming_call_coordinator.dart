@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../contract/chat_call_repository.dart';
 import '../../realtime/gorila_chat_realtime.dart';
+import '../../util/call_signal_utils.dart';
 import 'incoming_call_screen.dart';
 
 /// Single entry for incoming calls (WS + push), without duplicates.
@@ -53,6 +54,7 @@ class IncomingCallCoordinator {
       callerName: callerName != null && callerName.isNotEmpty
           ? callerName
           : 'Звонок',
+      isVideo: parseCallIsVideo(data['is_video']),
     );
   }
 
@@ -66,6 +68,7 @@ class IncomingCallCoordinator {
       threadId: threadId,
       callerUserId: int.tryParse(event['caller_user_id']?.toString() ?? '') ?? 0,
       callerName: event['caller_name']?.toString() ?? 'Звонок',
+      isVideo: parseCallIsVideo(event['is_video']),
     );
   }
 
@@ -75,6 +78,7 @@ class IncomingCallCoordinator {
     required int callerUserId,
     required String callerName,
     String? callerAvatarUrl,
+    bool isVideo = false,
   }) {
     if (_presenting && _activeCallId == callId) return;
     _activeCallId = callId;
@@ -85,6 +89,7 @@ class IncomingCallCoordinator {
         callerUserId: callerUserId,
         callerName: callerName,
         callerAvatarUrl: callerAvatarUrl,
+        isVideo: isVideo,
       ),
     );
   }
@@ -109,6 +114,7 @@ class IncomingCallCoordinator {
     required int callerUserId,
     required String callerName,
     String? callerAvatarUrl,
+    bool isVideo = false,
   }) async {
     if (_presenting) return;
     final navKey = navigatorKey;
@@ -121,6 +127,7 @@ class IncomingCallCoordinator {
         'thread_id': '$threadId',
         'caller_user_id': '$callerUserId',
         'caller_name': callerName,
+        'is_video': isVideo ? '1' : '0',
       };
       return;
     }
@@ -138,6 +145,7 @@ class IncomingCallCoordinator {
         'thread_id': '$threadId',
         'caller_user_id': '$callerUserId',
         'caller_name': callerName,
+        'is_video': isVideo ? '1' : '0',
       };
       return;
     }
@@ -157,6 +165,7 @@ class IncomingCallCoordinator {
             callRepository: repo,
             realtime: rt,
             myUserId: myUserId,
+            isVideo: isVideo,
             onHandled: () => markHandled(callId),
           ),
         ),

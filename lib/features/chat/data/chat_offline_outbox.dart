@@ -6,7 +6,7 @@ import '../../familychat/data/familychat_repository.dart';
 import 'chat_network_status.dart';
 import 'chat_realtime_utils.dart';
 
-/// Очередь исходящих сообщений и реакций для офлайн-режима.
+/// Очередь исходящих сообщений и реакций для офлайн-режима (Drift).
 class ChatOfflineOutbox {
   ChatOfflineOutbox._();
 
@@ -17,6 +17,44 @@ class ChatOfflineOutbox {
     return '${DateTime.now().microsecondsSinceEpoch}_$_idCounter';
   }
 
+  static Future<List<Map<String, dynamic>>> _readItems() async {
+    if (ChatLocalStore.isSupported) {
+      return ChatLocalStore.instance.readOutboxItems();
+    }
+    return FamilyChatLocalCache.readOutboxItems();
+  }
+
+  static Future<void> _writeItems(List<Map<String, dynamic>> items) async {
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.writeOutboxItems(items);
+      return;
+    }
+    await FamilyChatLocalCache.writeOutboxItems(items);
+  }
+
+  static Future<void> _saveBytes(String storageKey, Uint8List bytes) async {
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.saveOutboxBlob(storageKey, bytes);
+      return;
+    }
+    await FamilyChatLocalCache.saveOutboxBytes(storageKey, bytes);
+  }
+
+  static Future<Uint8List?> _readBytes(String storageKey) async {
+    if (ChatLocalStore.isSupported) {
+      return ChatLocalStore.instance.readOutboxBlob(storageKey);
+    }
+    return FamilyChatLocalCache.readOutboxBytes(storageKey);
+  }
+
+  static Future<void> _deleteBytes(String storageKey) async {
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.deleteOutboxBlob(storageKey);
+      return;
+    }
+    await FamilyChatLocalCache.deleteOutboxBytes(storageKey);
+  }
+
   static Future<void> enqueueMessage({
     required int threadId,
     required int tempMessageId,
@@ -25,12 +63,12 @@ class ChatOfflineOutbox {
     List<int> mentionedUserIds = const [],
     List<ChatOutboxAttachment> attachments = const [],
   }) async {
-    final items = await FamilyChatLocalCache.readOutboxItems();
+    final items = await _readItems();
     final attachmentMeta = <Map<String, dynamic>>[];
     for (var i = 0; i < attachments.length; i++) {
       final att = attachments[i];
       final storageKey = '${_nextId()}_$i';
-      await FamilyChatLocalCache.saveOutboxBytes(storageKey, att.bytes);
+      await _saveBytes(storageKey, att.bytes);
       attachmentMeta.add({
         'storage_key': storageKey,
         'filename': att.filename,
@@ -48,7 +86,7 @@ class ChatOfflineOutbox {
       if (mentionedUserIds.isNotEmpty) 'mentioned_user_ids': mentionedUserIds,
       if (attachmentMeta.isNotEmpty) 'attachments': attachmentMeta,
     });
-    await FamilyChatLocalCache.writeOutboxItems(items);
+    await _writeItems(items);
   }
 
   static Future<void> enqueueReaction({
@@ -56,7 +94,7 @@ class ChatOfflineOutbox {
     required int messageId,
     required String emoji,
   }) async {
-    final items = await FamilyChatLocalCache.readOutboxItems();
+    final items = await _readItems();
     items.add({
       'id': _nextId(),
       'kind': 'reaction',
@@ -65,7 +103,7 @@ class ChatOfflineOutbox {
       'emoji': emoji,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await FamilyChatLocalCache.writeOutboxItems(items);
+    await _writeItems(items);
   }
 
   /// Remove a queued outgoing message (user cancelled a stuck/pending bubble).
@@ -73,7 +111,7 @@ class ChatOfflineOutbox {
     required int threadId,
     required int tempMessageId,
   }) async {
-    final items = await FamilyChatLocalCache.readOutboxItems();
+    final items = await _readItems();
     final remaining = <Map<String, dynamic>>[];
     for (final item in items) {
       if (item['kind']?.toString() != 'message') {
@@ -88,7 +126,7 @@ class ChatOfflineOutbox {
             if (raw is! Map) continue;
             final storageKey = raw['storage_key']?.toString();
             if (storageKey != null && storageKey.isNotEmpty) {
-              await FamilyChatLocalCache.deleteOutboxBytes(storageKey);
+              await _deleteBytes(storageKey);
             }
           }
         }
@@ -96,16 +134,16 @@ class ChatOfflineOutbox {
       }
       remaining.add(item);
     }
-    await FamilyChatLocalCache.writeOutboxItems(remaining);
+    await _writeItems(remaining);
   }
 
   static Future<int> pendingCount() async {
-    final items = await FamilyChatLocalCache.readOutboxItems();
+    final items = await _readItems();
     return items.length;
   }
 
   static Future<List<ChatOutboxDelivery>> sync(FamilyChatRepository repo) async {
-    final items = await FamilyChatLocalCache.readOutboxItems();
+    final items = await _readItems();
     if (items.isEmpty) return const [];
 
     final delivered = <ChatOutboxDelivery>[];
@@ -131,7 +169,7 @@ class ChatOfflineOutbox {
       }
     }
 
-    await FamilyChatLocalCache.writeOutboxItems(remaining);
+    await _writeItems(remaining);
     return delivered;
   }
 
@@ -152,7 +190,7 @@ class ChatOfflineOutbox {
         final filename = raw['filename']?.toString() ?? 'file';
         final contentType = raw['content_type']?.toString();
         if (storageKey == null || storageKey.isEmpty) continue;
-        final bytes = await FamilyChatLocalCache.readOutboxBytes(storageKey);
+        final bytes = await _readBytes(storageKey);
         if (bytes == null || bytes.isEmpty) continue;
         final uploaded = await repo.uploadChatAttachmentBytes(
           threadId,
@@ -162,7 +200,7 @@ class ChatOfflineOutbox {
         );
         final id = chatAsInt(uploaded['id']);
         if (id != null) attachmentIds.add(id);
-        await FamilyChatLocalCache.deleteOutboxBytes(storageKey);
+        await _deleteBytes(storageKey);
       }
     }
 
@@ -178,23 +216,19 @@ class ChatOfflineOutbox {
       mentionedUserIds: mentioned.isEmpty ? null : mentioned,
     );
 
-    final messages = await FamilyChatLocalCache.readThreadMessages(threadId) ?? [];
-    final withoutTemp = messages
-        .where((m) => chatAsInt(m['id']) != tempMessageId)
-        .toList();
-    withoutTemp.add(msg);
-    await FamilyChatLocalCache.saveThreadMessages(
-      threadId,
-      withoutTemp,
-    );
-
-    // Local-first SQLite: replace temp row — otherwise the optimistic
-    // "sending" bubble survives forever after outbox delivery.
     if (ChatLocalStore.isSupported) {
       await ChatLocalStore.instance.deleteMessages(threadId, [tempMessageId]);
       final serverMsg = Map<String, dynamic>.from(msg);
       serverMsg['thread_id'] ??= threadId;
       await ChatLocalStore.instance.upsertMessage(serverMsg);
+    } else {
+      final messages =
+          await FamilyChatLocalCache.readThreadMessages(threadId) ?? [];
+      final withoutTemp = messages
+          .where((m) => chatAsInt(m['id']) != tempMessageId)
+          .toList();
+      withoutTemp.add(msg);
+      await FamilyChatLocalCache.saveThreadMessages(threadId, withoutTemp);
     }
 
     return ChatOutboxDelivery(

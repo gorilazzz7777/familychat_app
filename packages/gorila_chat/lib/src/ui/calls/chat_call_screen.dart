@@ -7,8 +7,9 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../../contract/chat_call_repository.dart';
 import '../../realtime/gorila_chat_realtime.dart';
+import '../../util/call_signal_utils.dart';
 
-/// Shared audio call screen (Family Chat reference behaviour + remote onTrack).
+/// Shared call screen. [isVideo] is additive (default audio) for TeamCoach.
 class ChatCallScreen extends StatefulWidget {
   const ChatCallScreen({
     super.key,
@@ -20,6 +21,7 @@ class ChatCallScreen extends StatefulWidget {
     this.callId,
     this.isCaller = false,
     this.autoAccept = false,
+    this.isVideo = false,
   });
 
   final int threadId;
@@ -30,6 +32,7 @@ class ChatCallScreen extends StatefulWidget {
   final int? callId;
   final bool isCaller;
   final bool autoAccept;
+  final bool isVideo;
 
   @override
   State<ChatCallScreen> createState() => _ChatCallScreenState();
@@ -39,6 +42,8 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
   RTCPeerConnection? _peer;
   MediaStream? _localStream;
   RTCSessionDescription? _localOffer;
+  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
+  final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
   int? _callId;
   String _stateText = 'Подключение...';
   bool _busy = true;
@@ -51,19 +56,23 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
   final List<Map<String, dynamic>> _pendingIce = [];
   bool _speakerOn = false;
   bool _showingMicHint = false;
+  bool _showingCamHint = false;
+  bool _localVideoEnabled = false;
+  final bool _usingFrontCamera = true;
+  bool _remoteHasVideo = false;
+  bool _renderersReady = false;
   Timer? _signalPollTimer;
 
   ChatCallRepository get _repo => widget.callRepository;
 
   bool _shouldAcceptSignal(String type, {int? fromUserId}) {
-    if (fromUserId != null &&
-        widget.myUserId != null &&
-        fromUserId == widget.myUserId) {
-      return false;
-    }
-    if (type == 'ice') return true;
-    if (widget.isCaller) return type == 'answer';
-    return type == 'offer';
+    return shouldAcceptCallSignal(
+      type,
+      isCaller: widget.isCaller,
+      myUserId: widget.myUserId,
+      fromUserId: fromUserId,
+      allowRenegotiation: widget.isVideo || _localVideoEnabled,
+    );
   }
 
   int? _parseId(Object? raw) {
@@ -85,6 +94,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
   @override
   void initState() {
     super.initState();
+    _localVideoEnabled = widget.isVideo;
     if (!widget.isCaller && widget.callId != null) {
       _callId = widget.callId;
     }
@@ -103,8 +113,24 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
     super.dispose();
   }
 
+  Future<void> _initRenderers() async {
+    if (_renderersReady) return;
+    await _localRenderer.initialize();
+    await _remoteRenderer.initialize();
+    _renderersReady = true;
+  }
+
+  Map<String, dynamic> _videoConstraints() {
+    return {
+      'facingMode': _usingFrontCamera ? 'user' : 'environment',
+      'width': 640,
+      'height': 480,
+    };
+  }
+
   Future<void> _initCall() async {
     try {
+      await _initRenderers();
       final micPermission = await _ensureMicrophonePermission();
       if (!micPermission.granted) {
         if (!mounted) return;
@@ -117,23 +143,49 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
         }
         return;
       }
+      if (_localVideoEnabled) {
+        final cam = await _ensureCameraPermission();
+        if (!cam.granted) {
+          if (!mounted) return;
+          setState(() {
+            _stateText = 'Нет доступа к камере';
+            _busy = false;
+            _localVideoEnabled = false;
+          });
+          if (cam.shouldOpenSettingsHint) {
+            await _showCameraPermissionHint();
+          }
+          return;
+        }
+      }
       final ice = await _repo.iceServers(widget.threadId);
       _peer = await createPeerConnection({'iceServers': ice});
       _peer!.onTrack = (event) {
-        // Ensure remote audio track is enabled (iOS/Android).
         try {
           event.track.enabled = true;
         } catch (_) {}
-        if (mounted) setState(() => _stateText = 'Разговор идет');
+        if (event.streams.isNotEmpty) {
+          _remoteRenderer.srcObject = event.streams[0];
+        }
+        final hasVideo = event.track.kind == 'video' && event.track.enabled;
+        if (mounted) {
+          setState(() {
+            if (event.track.kind == 'video') {
+              _remoteHasVideo = hasVideo;
+            }
+            _stateText = 'Разговор идет';
+          });
+        }
       };
       _localStream = await navigator.mediaDevices.getUserMedia({
         'audio': true,
-        'video': false,
+        'video': _localVideoEnabled ? _videoConstraints() : false,
       });
-      for (final track in _localStream!.getAudioTracks()) {
+      _localRenderer.srcObject = _localStream;
+      for (final track in _localStream!.getTracks()) {
         await _peer!.addTrack(track, _localStream!);
       }
-      await _setSpeakerphone(false);
+      await _setSpeakerphone(_localVideoEnabled);
       _peer!.onIceCandidate = (candidate) {
         final cid = _callId;
         if (cid == null) return;
@@ -152,7 +204,10 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
       };
 
       if (widget.isCaller) {
-        final started = await _repo.startCall(widget.threadId);
+        final started = await _repo.startCall(
+          widget.threadId,
+          isVideo: widget.isVideo,
+        );
         _callId = _parseId(started['id']);
         if (_callId == null) {
           throw StateError('Сервер не вернул id звонка');
@@ -167,7 +222,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
         );
         if (!mounted) return;
         setState(() {
-          _stateText = 'Звоним...';
+          _stateText = widget.isVideo ? 'Видеозвонок...' : 'Звоним...';
           _busy = false;
         });
       } else {
@@ -217,6 +272,31 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
     return (granted: false, shouldOpenSettingsHint: needsSettings);
   }
 
+  Future<({bool granted, bool shouldOpenSettingsHint})>
+      _ensureCameraPermission() async {
+    if (kIsWeb) {
+      try {
+        final testStream = await navigator.mediaDevices.getUserMedia({
+          'audio': false,
+          'video': true,
+        });
+        for (final track in testStream.getTracks()) {
+          track.stop();
+        }
+        await testStream.dispose();
+        return (granted: true, shouldOpenSettingsHint: false);
+      } catch (_) {
+        return (granted: false, shouldOpenSettingsHint: true);
+      }
+    }
+    final status = await Permission.camera.request();
+    if (status.isGranted) {
+      return (granted: true, shouldOpenSettingsHint: false);
+    }
+    final needsSettings = status.isPermanentlyDenied || status.isRestricted;
+    return (granted: false, shouldOpenSettingsHint: needsSettings);
+  }
+
   Future<void> _showMicPermissionHint() async {
     if (!mounted || _showingMicHint) return;
     _showingMicHint = true;
@@ -257,6 +337,34 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
     _showingMicHint = false;
   }
 
+  Future<void> _showCameraPermissionHint() async {
+    if (!mounted || _showingCamHint) return;
+    _showingCamHint = true;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Нужен доступ к камере'),
+        content: const Text(
+          'Для видеозвонка разрешите доступ к камере в настройках.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Закрыть'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await openAppSettings();
+              if (ctx.mounted) Navigator.of(ctx).pop();
+            },
+            child: const Text('Настройки'),
+          ),
+        ],
+      ),
+    );
+    _showingCamHint = false;
+  }
+
   Future<void> _setSpeakerphone(bool enabled) async {
     if (kIsWeb) return;
     try {
@@ -273,6 +381,12 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
         await Helper.setSpeakerphoneOn(false);
       } catch (_) {}
     }
+    try {
+      _localRenderer.srcObject = null;
+      _remoteRenderer.srcObject = null;
+      await _localRenderer.dispose();
+      await _remoteRenderer.dispose();
+    } catch (_) {}
     try {
       await _localStream?.dispose();
     } catch (_) {}
@@ -481,50 +595,110 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final titlePrefix =
+        widget.isVideo || _localVideoEnabled ? 'Видеозвонок' : 'Звонок';
+    final showRemote = _remoteHasVideo && _remoteRenderer.srcObject != null;
+    final showLocal = _localVideoEnabled && _localRenderer.srcObject != null;
     return PopScope(
       canPop: !_busy,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) unawaited(_hangup());
       },
       child: Scaffold(
-        appBar: AppBar(title: Text('Звонок: ${widget.title}')),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.call, size: 56),
-                const SizedBox(height: 16),
-                Text(
-                  _stateText,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                if (!kIsWeb) ...[
-                  const SizedBox(height: 20),
-                  FilledButton.tonalIcon(
-                    onPressed: _busy
-                        ? null
-                        : () => unawaited(_setSpeakerphone(!_speakerOn)),
-                    icon: Icon(
-                      _speakerOn ? Icons.volume_up : Icons.phone_in_talk,
-                    ),
-                    label: Text(
-                      _speakerOn ? 'Громкая связь вкл.' : 'Громкая связь',
-                    ),
+        backgroundColor: const Color(0xFF0F1419),
+        appBar: AppBar(title: Text('$titlePrefix: ${widget.title}')),
+        body: Column(
+          children: [
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  ColoredBox(
+                    color: const Color(0xFF0F1419),
+                    child: showRemote
+                        ? RTCVideoView(
+                            _remoteRenderer,
+                            objectFit: RTCVideoViewObjectFit
+                                .RTCVideoViewObjectFitCover,
+                          )
+                        : Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  widget.isVideo || _localVideoEnabled
+                                      ? Icons.videocam_outlined
+                                      : Icons.call,
+                                  size: 56,
+                                  color: Colors.white54,
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  _stateText,
+                                  textAlign: TextAlign.center,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium
+                                      ?.copyWith(color: Colors.white),
+                                ),
+                              ],
+                            ),
+                          ),
                   ),
+                  if (showLocal)
+                    Positioned(
+                      right: 16,
+                      top: 48,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: SizedBox(
+                          width: 110,
+                          height: 160,
+                          child: RTCVideoView(
+                            _localRenderer,
+                            mirror: _usingFrontCamera,
+                            objectFit: RTCVideoViewObjectFit
+                                .RTCVideoViewObjectFitCover,
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
-                const SizedBox(height: 24),
-                FilledButton.icon(
-                  style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                  onPressed: _busy ? null : () => unawaited(_hangup()),
-                  icon: const Icon(Icons.call_end),
-                  label: const Text('Завершить'),
-                ),
-              ],
+              ),
             ),
-          ),
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    if (!kIsWeb)
+                      FilledButton.tonalIcon(
+                        onPressed: _busy
+                            ? null
+                            : () => unawaited(_setSpeakerphone(!_speakerOn)),
+                        icon: Icon(
+                          _speakerOn ? Icons.volume_up : Icons.phone_in_talk,
+                        ),
+                        label: Text(
+                          _speakerOn ? 'Громкая связь вкл.' : 'Громкая связь',
+                        ),
+                      ),
+                    FilledButton.icon(
+                      style:
+                          FilledButton.styleFrom(backgroundColor: Colors.red),
+                      onPressed: _busy ? null : () => unawaited(_hangup()),
+                      icon: const Icon(Icons.call_end),
+                      label: const Text('Завершить'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

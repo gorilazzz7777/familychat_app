@@ -1,7 +1,7 @@
 name: familychat_app
 description: Family Space — семейный мессенджер с родством.
 publish_to: 'none'
-version: 1.0.4+5
+version: 1.1.0+6
 
 environment:
   sdk: ^3.5.0
@@ -58,11 +58,20 @@ dependencies:
   camera: ^0.12.0+2
   flutter_image_compress: ^2.4.0
   drift: ^2.34.2
-  sqlite3_flutter_libs: ^0.6.0+eol
   path: ^1.9.1
   wakelock_plus: ^1.5.2
   real_page_flip: 1.12.14
   google_fonts: ^6.2.1
+  drift_flutter: ^0.3.1
+  sqlite3: ^3.5.1
+
+# sqlite3 3.x hooks download prebuilt .so from GitHub by default — that fails
+# when github.com is unreachable. Compile vendored amalgamation instead.
+hooks:
+  user_defines:
+    sqlite3:
+      source: source
+      path: third_party/sqlite/sqlite3.c
 
 dependency_overrides:
   # Upstream vosk_flutter_service has a web plugin manifest issue that makes

@@ -11,8 +11,7 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../../gallery/presentation/gallery_media_thumbnail.dart';
-import '../../gallery/presentation/widgets/gallery_date_scrubber.dart';
-import '../../gallery/presentation/widgets/gallery_mosaic_layout.dart';
+import '../../gallery/presentation/widgets/gallery_album_mosaic_body.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
 
@@ -447,115 +446,79 @@ class _ChildGalleryAlbumScreenState
                         ],
                       ),
                     )
-                  : Stack(
-                      children: [
-                        NotificationListener<ScrollNotification>(
-                          onNotification: (n) {
-                            if (n.metrics.pixels >
-                                    n.metrics.maxScrollExtent - 400 &&
-                                _hasMore &&
-                                !_loadingMore) {
-                              unawaited(_load(reset: false));
-                            }
-                            return false;
-                          },
-                          child: CustomScrollView(
-                            controller: _scrollController,
-                            slivers: [
-                              SliverPadding(
-                                padding: const EdgeInsets.all(
-                                  GalleryMosaicLayout.padding,
-                                ),
-                                sliver: SliverGrid(
-                                  gridDelegate:
-                                      GalleryMosaicLayout.delegate(),
-                                  delegate: SliverChildBuilderDelegate(
-                                    (context, index) {
-                                      final display = _displayPhotos;
-                                      final photo = display[index];
-                                      final id = _photoId(photo);
-                                      final selected = id != null &&
-                                          _selectedPhotoIds.contains(id);
-                                      return Material(
-                                        clipBehavior: Clip.antiAlias,
-                                        borderRadius: BorderRadius.circular(6),
-                                        child: InkWell(
-                                          onTap: () {
-                                            if (_selectionMode) {
-                                              if (id == null) return;
-                                              setState(() {
-                                                if (selected) {
-                                                  _selectedPhotoIds.remove(id);
-                                                } else {
-                                                  _selectedPhotoIds.add(id);
-                                                }
-                                              });
-                                              return;
-                                            }
-                                            _openViewer(index);
-                                          },
-                                          onLongPress: widget.canManage
-                                              ? () {
-                                                  if (id == null) return;
-                                                  setState(() {
-                                                    _selectionMode = true;
-                                                    _selectedPhotoIds.add(id);
-                                                  });
-                                                }
-                                              : null,
-                                          child: Stack(
-                                            fit: StackFit.expand,
-                                            children: [
-                                              _thumb(photo),
-                                              if (_selectionMode)
-                                                Positioned(
-                                                  top: 6,
-                                                  right: 6,
-                                                  child: Icon(
-                                                    selected
-                                                        ? Icons.check_circle
-                                                        : Icons
-                                                            .circle_outlined,
-                                                    color: selected
-                                                        ? Theme.of(context)
-                                                            .colorScheme
-                                                            .primary
-                                                        : Colors.white,
-                                                    shadows: const [
-                                                      Shadow(
-                                                        blurRadius: 4,
-                                                        color: Colors.black54,
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                            ],
-                                          ),
+                  : GalleryAlbumMosaicBody(
+                      scrollController: _scrollController,
+                      daySections: _daySections,
+                      photoCount: _displayPhotos.length,
+                      loadingMore: _loadingMore,
+                      onNearEnd: () {
+                        if (_hasMore && !_loadingMore) {
+                          unawaited(_load(reset: false));
+                        }
+                      },
+                      tileBuilder: (context, index) {
+                        final display = _displayPhotos;
+                        final photo = display[index];
+                        final id = _photoId(photo);
+                        final selected =
+                            id != null && _selectedPhotoIds.contains(id);
+                        return Material(
+                          clipBehavior: Clip.antiAlias,
+                          borderRadius: BorderRadius.circular(6),
+                          child: InkWell(
+                            onTap: () {
+                              if (_selectionMode) {
+                                if (id == null) return;
+                                setState(() {
+                                  if (selected) {
+                                    _selectedPhotoIds.remove(id);
+                                  } else {
+                                    _selectedPhotoIds.add(id);
+                                  }
+                                });
+                                return;
+                              }
+                              _openViewer(index);
+                            },
+                            onLongPress: widget.canManage
+                                ? () {
+                                    if (id == null) return;
+                                    setState(() {
+                                      _selectionMode = true;
+                                      _selectedPhotoIds.add(id);
+                                    });
+                                  }
+                                : null,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                _thumb(photo),
+                                if (_selectionMode)
+                                  Positioned(
+                                    top: 6,
+                                    right: 6,
+                                    child: Icon(
+                                      selected
+                                          ? Icons.check_circle
+                                          : Icons.circle_outlined,
+                                      color: selected
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .primary
+                                          : Colors.white,
+                                      shadows: const [
+                                        Shadow(
+                                          blurRadius: 4,
+                                          color: Colors.black54,
                                         ),
-                                      );
-                                    },
-                                    childCount: _displayPhotos.length,
-                                  ),
-                                ),
-                              ),
-                              if (_loadingMore)
-                                const SliverToBoxAdapter(
-                                  child: Padding(
-                                    padding: EdgeInsets.all(16),
-                                    child: Center(
-                                      child: CircularProgressIndicator(),
+                                      ],
                                     ),
                                   ),
-                                ),
-                            ],
+                              ],
+                            ),
                           ),
-                        ),
-                        if (_daySections.isNotEmpty)
-                          GalleryDateScrubber(
-                            sections: _daySections,
-                            scrollController: _scrollController,
-                          ),
-                      ],
+                        );
+                      },
                     ),
     );
   }
