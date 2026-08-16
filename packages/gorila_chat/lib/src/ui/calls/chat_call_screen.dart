@@ -204,10 +204,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
       };
 
       if (widget.isCaller) {
-        final started = await _repo.startCallWithOptions(
-          widget.threadId,
-          isVideo: widget.isVideo,
-        );
+        final started = await _repo.startCall(widget.threadId);
         _callId = _parseId(started['id']);
         if (_callId == null) {
           throw StateError('Сервер не вернул id звонка');

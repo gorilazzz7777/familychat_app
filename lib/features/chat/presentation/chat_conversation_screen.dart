@@ -3618,22 +3618,42 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                   ),
                 ),
                 actions: [
-                  if (_isDm && _canSend && !_loading) ...[
+                  if (_isDm && _canSend && !_loading)
                     IconButton(
-                      tooltip: 'Аудиозвонок',
+                      tooltip: 'Звонок',
                       onPressed: () => _startOutgoingCall(),
                       icon: const Icon(Icons.call_outlined),
                     ),
-                    IconButton(
-                      tooltip: 'Видеозвонок',
-                      onPressed: () => _startOutgoingCall(isVideo: true),
-                      icon: const Icon(Icons.videocam_outlined),
-                    ),
-                  ],
-                  IconButton(
-                    tooltip: 'Поиск',
-                    onPressed: _loading ? null : _openSearch,
-                    icon: const Icon(Icons.search),
+                  PopupMenuButton<String>(
+                    tooltip: 'Ещё',
+                    enabled: !_loading,
+                    onSelected: (value) {
+                      switch (value) {
+                        case 'video':
+                          _startOutgoingCall(isVideo: true);
+                        case 'search':
+                          unawaited(_openSearch());
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      if (_isDm && _canSend)
+                        const PopupMenuItem(
+                          value: 'video',
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.videocam_outlined),
+                            title: Text('Видеозвонок'),
+                          ),
+                        ),
+                      const PopupMenuItem(
+                        value: 'search',
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.search),
+                          title: Text('Поиск'),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),

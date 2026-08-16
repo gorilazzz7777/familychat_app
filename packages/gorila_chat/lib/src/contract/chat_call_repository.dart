@@ -1,17 +1,13 @@
 /// WebRTC call HTTP surface (paths differ per app; UI is shared).
+///
+/// Keep this surface minimal: [implements] adapters (TeamCoach) must match every
+/// member. Optional video is handled by app-specific call screens / HTTP bodies,
+/// not by extra interface methods with default bodies (those are not inherited
+/// under `implements`).
 abstract class ChatCallRepository {
   Future<List<Map<String, dynamic>>> iceServers(int threadId);
 
-  /// Start an audio call. Kept positional-only so TeamCoach adapters stay valid.
   Future<Map<String, dynamic>> startCall(int threadId);
-
-  /// Optional video entry-point. Default ignores [isVideo] and calls [startCall].
-  /// Family / video-capable apps override this; TeamCoach can leave the default.
-  Future<Map<String, dynamic>> startCallWithOptions(
-    int threadId, {
-    bool isVideo = false,
-  }) =>
-      startCall(threadId);
 
   Future<Map<String, dynamic>> callAction(int callId, String action);
 
