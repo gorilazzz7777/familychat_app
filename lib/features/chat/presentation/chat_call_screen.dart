@@ -144,10 +144,12 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
   }
 
   Map<String, dynamic> _videoConstraints() {
+    // Prefer ideal size (no hard crop). Fixed 640x480 made many phone cameras
+    // look digitally zoomed when shown with objectFit Cover.
     return {
       'facingMode': _usingFrontCamera ? 'user' : 'environment',
-      'width': 640,
-      'height': 480,
+      'width': {'ideal': 1280},
+      'height': {'ideal': 720},
     };
   }
 
@@ -812,7 +814,8 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
           child: showRemote
               ? RTCVideoView(
                   _remoteRenderer,
-                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  // Contain = full frame (no crop/"zoom"). Cover fills screen by cropping.
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
                 )
               : Center(
                   child: Column(
@@ -863,7 +866,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
                 child: RTCVideoView(
                   _localRenderer,
                   mirror: _usingFrontCamera,
-                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
                 ),
               ),
             ),
@@ -895,6 +898,48 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
     final titlePrefix = widget.isVideo || _localVideoEnabled
         ? 'Видеозвонок'
         : 'Звонок';
+    final stage = Column(
+      children: [
+        Expanded(child: _buildVideoStage(context)),
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                if (!kIsWeb)
+                  _circleControl(
+                    icon: _speakerOn
+                        ? Icons.volume_up
+                        : Icons.phone_in_talk,
+                    onPressed:
+                        _busy ? null : () => unawaited(_toggleSpeaker()),
+                  ),
+                _circleControl(
+                  icon: _localVideoEnabled
+                      ? Icons.videocam
+                      : Icons.videocam_off,
+                  onPressed:
+                      _busy ? null : () => unawaited(_toggleLocalVideo()),
+                ),
+                if (_localVideoEnabled)
+                  _circleControl(
+                    icon: Icons.cameraswitch,
+                    onPressed:
+                        _busy ? null : () => unawaited(_flipCamera()),
+                  ),
+                _circleControl(
+                  icon: Icons.call_end,
+                  background: Colors.red,
+                  onPressed: _busy ? null : () => unawaited(_hangup()),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
     return PopScope(
       canPop: !_busy,
       onPopInvokedWithResult: (didPop, _) {
@@ -905,48 +950,15 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
         appBar: FamilyAppBar.build(
           title: '$titlePrefix: ${widget.title}',
         ),
-        body: Column(
-          children: [
-            Expanded(child: _buildVideoStage(context)),
-            SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    if (!kIsWeb)
-                      _circleControl(
-                        icon: _speakerOn
-                            ? Icons.volume_up
-                            : Icons.phone_in_talk,
-                        onPressed:
-                            _busy ? null : () => unawaited(_toggleSpeaker()),
-                      ),
-                    _circleControl(
-                      icon: _localVideoEnabled
-                          ? Icons.videocam
-                          : Icons.videocam_off,
-                      onPressed:
-                          _busy ? null : () => unawaited(_toggleLocalVideo()),
-                    ),
-                    if (_localVideoEnabled)
-                      _circleControl(
-                        icon: Icons.cameraswitch,
-                        onPressed:
-                            _busy ? null : () => unawaited(_flipCamera()),
-                      ),
-                    _circleControl(
-                      icon: Icons.call_end,
-                      background: Colors.red,
-                      onPressed: _busy ? null : () => unawaited(_hangup()),
-                    ),
-                  ],
+        body: kIsWeb
+            ? Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: stage,
                 ),
-              ),
-            ),
-          ],
-        ),
+              )
+            : stage,
       ),
     );
   }

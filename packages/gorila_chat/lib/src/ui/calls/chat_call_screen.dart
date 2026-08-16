@@ -123,8 +123,8 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
   Map<String, dynamic> _videoConstraints() {
     return {
       'facingMode': _usingFrontCamera ? 'user' : 'environment',
-      'width': 640,
-      'height': 480,
+      'width': {'ideal': 1280},
+      'height': {'ideal': 720},
     };
   }
 
@@ -596,6 +596,98 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
         widget.isVideo || _localVideoEnabled ? 'Видеозвонок' : 'Звонок';
     final showRemote = _remoteHasVideo && _remoteRenderer.srcObject != null;
     final showLocal = _localVideoEnabled && _localRenderer.srcObject != null;
+    final stage = Column(
+      children: [
+        Expanded(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ColoredBox(
+                color: const Color(0xFF0F1419),
+                child: showRemote
+                    ? RTCVideoView(
+                        _remoteRenderer,
+                        objectFit: RTCVideoViewObjectFit
+                            .RTCVideoViewObjectFitContain,
+                      )
+                    : Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              widget.isVideo || _localVideoEnabled
+                                  ? Icons.videocam_outlined
+                                  : Icons.call,
+                              size: 56,
+                              color: Colors.white54,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              _stateText,
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(color: Colors.white),
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+              if (showLocal)
+                Positioned(
+                  right: 16,
+                  top: 48,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: SizedBox(
+                      width: 110,
+                      height: 160,
+                      child: RTCVideoView(
+                        _localRenderer,
+                        mirror: _usingFrontCamera,
+                        objectFit: RTCVideoViewObjectFit
+                            .RTCVideoViewObjectFitContain,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+            child: Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                if (!kIsWeb)
+                  FilledButton.tonalIcon(
+                    onPressed: _busy
+                        ? null
+                        : () => unawaited(_setSpeakerphone(!_speakerOn)),
+                    icon: Icon(
+                      _speakerOn ? Icons.volume_up : Icons.phone_in_talk,
+                    ),
+                    label: Text(
+                      _speakerOn ? 'Громкая связь вкл.' : 'Громкая связь',
+                    ),
+                  ),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                  onPressed: _busy ? null : () => unawaited(_hangup()),
+                  icon: const Icon(Icons.call_end),
+                  label: const Text('Завершить'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
     return PopScope(
       canPop: !_busy,
       onPopInvokedWithResult: (didPop, _) {
@@ -604,99 +696,15 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
       child: Scaffold(
         backgroundColor: const Color(0xFF0F1419),
         appBar: AppBar(title: Text('$titlePrefix: ${widget.title}')),
-        body: Column(
-          children: [
-            Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  ColoredBox(
-                    color: const Color(0xFF0F1419),
-                    child: showRemote
-                        ? RTCVideoView(
-                            _remoteRenderer,
-                            objectFit: RTCVideoViewObjectFit
-                                .RTCVideoViewObjectFitCover,
-                          )
-                        : Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  widget.isVideo || _localVideoEnabled
-                                      ? Icons.videocam_outlined
-                                      : Icons.call,
-                                  size: 56,
-                                  color: Colors.white54,
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  _stateText,
-                                  textAlign: TextAlign.center,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .titleMedium
-                                      ?.copyWith(color: Colors.white),
-                                ),
-                              ],
-                            ),
-                          ),
-                  ),
-                  if (showLocal)
-                    Positioned(
-                      right: 16,
-                      top: 48,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: SizedBox(
-                          width: 110,
-                          height: 160,
-                          child: RTCVideoView(
-                            _localRenderer,
-                            mirror: _usingFrontCamera,
-                            objectFit: RTCVideoViewObjectFit
-                                .RTCVideoViewObjectFitCover,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-                child: Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: [
-                    if (!kIsWeb)
-                      FilledButton.tonalIcon(
-                        onPressed: _busy
-                            ? null
-                            : () => unawaited(_setSpeakerphone(!_speakerOn)),
-                        icon: Icon(
-                          _speakerOn ? Icons.volume_up : Icons.phone_in_talk,
-                        ),
-                        label: Text(
-                          _speakerOn ? 'Громкая связь вкл.' : 'Громкая связь',
-                        ),
-                      ),
-                    FilledButton.icon(
-                      style:
-                          FilledButton.styleFrom(backgroundColor: Colors.red),
-                      onPressed: _busy ? null : () => unawaited(_hangup()),
-                      icon: const Icon(Icons.call_end),
-                      label: const Text('Завершить'),
-                    ),
-                  ],
+        body: kIsWeb
+            ? Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: stage,
                 ),
-              ),
-            ),
-          ],
-        ),
+              )
+            : stage,
       ),
     );
   }
