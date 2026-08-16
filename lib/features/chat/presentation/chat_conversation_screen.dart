@@ -60,6 +60,7 @@ import 'widgets/chat_pinned_bar.dart';
 import 'widgets/chat_reply_compose_bar.dart';
 import 'widgets/chat_call_history_banner.dart';
 import 'widgets/chat_birthday_welcome_banner.dart';
+import 'widgets/chat_day_separator.dart';
 import 'widgets/chat_system_message_banner.dart';
 
 class _PendingFileDraft {
@@ -160,6 +161,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _followLiveTail = true;
   Timer? _scrollToBottomHintTimer;
   double _lastScrollPixels = 0;
+  String? _stickyDayLabel;
+  bool _showStickyDay = false;
+  static const _stickyDayAwayPx = 40.0;
   String? _loadError;
   int? _currentUserId;
   int? _highlightMessageId;
@@ -788,6 +792,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   void _onScroll() {
     _updateScrollToBottomVisibility();
+    _scheduleStickyDayUpdate();
     if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder) {
       return;
     }
@@ -796,6 +801,71 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (pos.pixels >= pos.maxScrollExtent - 72) {
       unawaited(_loadOlder());
     }
+  }
+
+  DateTime? _dayOfTopmostVisibleMessage() {
+    if (!_scrollController.hasClients || _messages.isEmpty) return null;
+    final scrollCtx = _scrollController.position.context.notificationContext;
+    final viewport = scrollCtx?.findRenderObject() as RenderBox?;
+    if (viewport == null || !viewport.hasSize) return null;
+
+    final listTop = viewport.localToGlobal(Offset.zero).dy;
+    final listBottom = listTop + viewport.size.height;
+
+    DateTime? bestDay;
+    var bestTop = double.infinity;
+    for (final m in _messages) {
+      final msgId = chatAsInt(m['id']);
+      if (msgId == null) continue;
+      final ctx = _messageKeys[msgId]?.currentContext;
+      if (ctx == null) continue;
+      final box = ctx.findRenderObject() as RenderBox?;
+      if (box == null || !box.attached || !box.hasSize) continue;
+      final top = box.localToGlobal(Offset.zero).dy;
+      final bottom = top + box.size.height;
+      if (bottom <= listTop || top >= listBottom) continue;
+      if (top < bestTop) {
+        bestTop = top;
+        bestDay = chatMessageLocalDay(m);
+      }
+    }
+    return bestDay;
+  }
+
+  void _updateStickyDayHeader() {
+    if (!_scrollController.hasClients) {
+      if (_showStickyDay || _stickyDayLabel != null) {
+        setState(() {
+          _showStickyDay = false;
+          _stickyDayLabel = null;
+        });
+      }
+      return;
+    }
+    final away = _scrollController.position.pixels > _stickyDayAwayPx;
+    final day = away ? _dayOfTopmostVisibleMessage() : null;
+    final label = day == null ? null : formatChatDayLabel(day);
+    final show = away && label != null;
+    if (show == _showStickyDay && label == _stickyDayLabel) return;
+    setState(() {
+      _showStickyDay = show;
+      _stickyDayLabel = label;
+    });
+  }
+
+  void _scheduleStickyDayUpdate() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _updateStickyDayHeader();
+    });
+  }
+
+  bool _shouldShowDaySeparator(int msgIndex) {
+    if (msgIndex < 0 || msgIndex >= _messages.length) return false;
+    final day = chatMessageLocalDay(_messages[msgIndex]);
+    if (day == null) return false;
+    if (msgIndex == 0) return true;
+    return !chatSameCalendarDay(_messages[msgIndex - 1], _messages[msgIndex]);
   }
 
   Future<void> _persistMessageCache([List<Map<String, dynamic>>? messages]) async {
@@ -1466,6 +1536,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         }
         _hasMoreOlder = page.hasMore;
       });
+      _scheduleStickyDayUpdate();
       unawaited(_persistMessageCache());
       for (final message in older) {
         _maybeScheduleVoiceTranscriptPoll(message);
@@ -1630,6 +1701,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _hasMoreOlder = page.hasMore;
         _loadingOlder = false;
       });
+      _scheduleStickyDayUpdate();
       // reverse: true — низ остаётся на offset 0, компенсация не нужна.
     } catch (_) {
       if (mounted) setState(() => _loadingOlder = false);
@@ -3378,20 +3450,45 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   bool _showSenderAvatar(int index) {
     if (_isDm || _isMine(_messages[index])) return false;
-    final senderId = _senderId(_messages[index]);
-    if (senderId == null) return false;
-    final nextIndex = index + 1;
-    if (nextIndex >= _messages.length) return true;
-    if (_isMine(_messages[nextIndex])) return true;
-    return _senderId(_messages[nextIndex]) != senderId;
+    if (_senderId(_messages[index]) == null) return false;
+    // Аватар у последнего сообщения серии (как хвостик).
+    return !_clusteredWithNext(index);
+  }
+
+  static const _clusterMaxGap = Duration(minutes: 2);
+
+  bool _isClusterableMessage(Map<String, dynamic> m) {
+    if (m['is_system'] == true) return false;
+    return true;
+  }
+
+  bool _withinClusterGap(
+    Map<String, dynamic> older,
+    Map<String, dynamic> newer,
+  ) {
+    final a = DateTime.tryParse(older['created_at']?.toString() ?? '');
+    final b = DateTime.tryParse(newer['created_at']?.toString() ?? '');
+    if (a == null || b == null) return true;
+    return b.difference(a).abs() <= _clusterMaxGap;
   }
 
   bool _clusteredWithNext(int index) {
     final nextIndex = index + 1;
     if (nextIndex >= _messages.length) return false;
-    if (_isMine(_messages[index]) != _isMine(_messages[nextIndex]))
+    final cur = _messages[index];
+    final next = _messages[nextIndex];
+    if (!_isClusterableMessage(cur) || !_isClusterableMessage(next)) {
       return false;
-    return _senderId(_messages[index]) == _senderId(_messages[nextIndex]);
+    }
+    if (!chatSameCalendarDay(cur, next)) return false;
+    if (!_withinClusterGap(cur, next)) return false;
+    if (_isMine(cur) != _isMine(next)) return false;
+    return _senderId(cur) == _senderId(next);
+  }
+
+  bool _clusteredWithPrevious(int index) {
+    if (index <= 0) return false;
+    return _clusteredWithNext(index - 1);
   }
 
   bool _showGroupAvatarColumn(int index) {
@@ -3666,48 +3763,42 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                   messageMetadata,
                                 );
                                 final isSystem = m['is_system'] == true;
+                                late final Widget messageChild;
                                 if (isSystem) {
                                   final metadata = messageMetadata;
                                   if (metadata['kind']?.toString() == 'call' &&
                                       _currentUserId != null) {
-                                    return KeyedSubtree(
-                                      key: _messageKeys[msgId],
-                                      child: ChatCallHistoryBanner(
-                                        metadata: metadata,
-                                        currentUserId: _currentUserId!,
-                                        createdAt: created,
-                                        onRedial: _isDm ? _startOutgoingCall : null,
-                                      ),
+                                    messageChild = ChatCallHistoryBanner(
+                                      metadata: metadata,
+                                      currentUserId: _currentUserId!,
+                                      createdAt: created,
+                                      onRedial:
+                                          _isDm ? _startOutgoingCall : null,
                                     );
-                                  }
-                                  if (_isBirthdayCelebration &&
+                                  } else if (_isBirthdayCelebration &&
                                       metadata['subtype']?.toString() ==
                                           'welcome_prep') {
-                                    return KeyedSubtree(
-                                      key: _messageKeys[msgId],
-                                      child: ChatBirthdayWelcomeBanner(
-                                        body: m['body']?.toString() ?? '',
-                                        createdAt: created,
-                                        scheduled: _birthdayScheduled,
-                                        saving: _birthdayScheduledSaving,
-                                        onCompose: _birthdayScheduled?['can_write'] == true
-                                            ? _openBirthdayCongratulationDialog
-                                            : null,
-                                      ),
-                                    );
-                                  }
-                                  return KeyedSubtree(
-                                    key: _messageKeys[msgId],
-                                    child: ChatSystemMessageBanner(
+                                    messageChild = ChatBirthdayWelcomeBanner(
                                       body: m['body']?.toString() ?? '',
                                       createdAt: created,
-                                      highlighted: _highlightMessageId == msgId,
-                                    ),
-                                  );
-                                }
-                                return KeyedSubtree(
-                                  key: _messageKeys[msgId],
-                                  child: ChatMessageBubble(
+                                      scheduled: _birthdayScheduled,
+                                      saving: _birthdayScheduledSaving,
+                                      onCompose:
+                                          _birthdayScheduled?['can_write'] ==
+                                                  true
+                                              ? _openBirthdayCongratulationDialog
+                                              : null,
+                                    );
+                                  } else {
+                                    messageChild = ChatSystemMessageBanner(
+                                      body: m['body']?.toString() ?? '',
+                                      createdAt: created,
+                                      highlighted:
+                                          _highlightMessageId == msgId,
+                                    );
+                                  }
+                                } else {
+                                  messageChild = ChatMessageBubble(
                                     threadId: widget.threadId,
                                     isMine: isMine,
                                     body: m['body']?.toString() ?? '',
@@ -3743,8 +3834,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     senderAvatarUrl:
                                         m['sender_avatar_url']?.toString(),
                                     onSenderAvatarTap: senderUserId != null
-                                        ? () => _openSenderProfile(senderUserId)
+                                        ? () =>
+                                            _openSenderProfile(senderUserId)
                                         : null,
+                                    compactWithPrevious:
+                                        _clusteredWithPrevious(msgIndex),
                                     compactWithNext:
                                         _clusteredWithNext(msgIndex),
                                     highlighted: _highlightMessageId == msgId,
@@ -3762,7 +3856,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                             ? null
                                             : () => _openMessageMenu(m),
                                     onReplyTap: replyMessageId != null
-                                        ? () => _scrollToMessage(replyMessageId)
+                                        ? () =>
+                                            _scrollToMessage(replyMessageId)
                                         : null,
                                     onSwipeReply: _selectionMode ||
                                             m['_pending'] == true ||
@@ -3779,7 +3874,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                               a,
                                               messageId: msgId,
                                             ),
-                                  ),
+                                  );
+                                }
+                                final day = chatMessageLocalDay(m);
+                                final withDay = _shouldShowDaySeparator(
+                                            msgIndex) &&
+                                        day != null
+                                    ? Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          ChatDaySeparator(
+                                            label: formatChatDayLabel(day),
+                                          ),
+                                          messageChild,
+                                        ],
+                                      )
+                                    : messageChild;
+                                return KeyedSubtree(
+                                  key: _messageKeys[msgId],
+                                  child: withDay,
                                 );
                               },
                             ),
@@ -3794,6 +3907,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     duration: const Duration(milliseconds: 150),
                                     child: const LinearProgressIndicator(
                                       minHeight: 2,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                top: 8,
+                                child: IgnorePointer(
+                                  child: AnimatedOpacity(
+                                    opacity: _showStickyDay &&
+                                            (_stickyDayLabel?.isNotEmpty ??
+                                                false)
+                                        ? 1
+                                        : 0,
+                                    duration: const Duration(milliseconds: 160),
+                                    child: ChatDaySeparator(
+                                      label: _stickyDayLabel ?? '',
+                                      compact: true,
                                     ),
                                   ),
                                 ),

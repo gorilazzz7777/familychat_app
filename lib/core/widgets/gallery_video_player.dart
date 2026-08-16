@@ -15,6 +15,7 @@ class GalleryVideoPlayer extends StatefulWidget {
     this.muted = false,
     this.showControls = true,
     this.placeholder,
+    this.onResolvedSize,
   });
 
   final String url;
@@ -26,6 +27,7 @@ class GalleryVideoPlayer extends StatefulWidget {
   final bool muted;
   final bool showControls;
   final Widget? placeholder;
+  final ValueChanged<Size>? onResolvedSize;
 
   @override
   State<GalleryVideoPlayer> createState() => _GalleryVideoPlayerState();
@@ -110,6 +112,10 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
       }
       if (widget.showControls) {
         controller.addListener(_onTick);
+      }
+      final size = controller.value.size;
+      if (size.width > 0 && size.height > 0) {
+        widget.onResolvedSize?.call(size);
       }
       if (mounted) setState(() {});
     } catch (e) {

@@ -43,19 +43,30 @@ bool isSafeUiPreviewBytes(Object? value) {
       value.length <= kSafeLocalPreviewMaxBytes;
 }
 
+bool _pathLooksLikeVideo(String raw) {
+  final path = raw.toLowerCase().split('?').first.split('#').first;
+  return path.endsWith('.mp4') ||
+      path.endsWith('.mov') ||
+      path.endsWith('.webm') ||
+      path.endsWith('.3gp') ||
+      path.endsWith('.m4v');
+}
+
 bool isVideoAttachment(Map<String, dynamic> attachment) {
   final mediaType = attachment['media_type']?.toString();
   if (mediaType == 'video') return true;
+  final localKind = attachment['local_media_kind']?.toString();
+  if (localKind == 'video') return true;
   final kind = attachment['kind']?.toString();
   if (kind == 'video') return true;
   final ct = attachment['content_type']?.toString().toLowerCase() ?? '';
   if (ct.startsWith('video/')) return true;
-  final name = attachment['filename']?.toString().toLowerCase() ?? '';
-  return name.endsWith('.mp4') ||
-      name.endsWith('.mov') ||
-      name.endsWith('.webm') ||
-      name.endsWith('.3gp') ||
-      name.endsWith('.m4v');
+  final name = attachment['filename']?.toString() ?? '';
+  if (_pathLooksLikeVideo(name)) return true;
+  final url = galleryAttachmentUrl(attachment);
+  if (_pathLooksLikeVideo(url)) return true;
+  final local = galleryLocalDevicePath(attachment);
+  return _pathLooksLikeVideo(local);
 }
 
 bool isImageAttachment(Map<String, dynamic> attachment) {

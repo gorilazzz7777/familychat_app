@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
+import 'chat_media_layout.dart';
 import 'chat_network_image.dart';
 
 bool chatAttachmentLooksLikeImage(Map<String, dynamic> attachment) {
@@ -39,12 +40,13 @@ class ChatImageAlbum extends StatelessWidget {
     final radius = borderRadius ?? BorderRadius.circular(10);
     final width = maxWidth > 0 ? maxWidth : 200.0;
     if (count == 1) {
-      final height = _singleHeight(width);
-      return _tile(
-        attachments.first,
-        width: width,
-        height: height,
+      return _ChatSingleAspectThumb(
+        threadId: threadId,
+        attachment: attachments.first,
+        maxWidth: width,
+        maxHeight: chatMediaMaxThumbHeight(width),
         borderRadius: radius,
+        onImageTap: onImageTap,
       );
     }
 
@@ -58,9 +60,6 @@ class ChatImageAlbum extends StatelessWidget {
       ),
     );
   }
-
-  double _singleHeight(double width) =>
-      (width * 0.75).clamp(140.0, 280.0).toDouble();
 
   double _albumHeight(int count, double width) {
     if (count == 2) return (width * 0.55).clamp(120.0, 220.0).toDouble();
@@ -223,6 +222,114 @@ class ChatImageAlbum extends StatelessWidget {
 
     return GestureDetector(
       onTap: canOpen ? () => onImageTap!(attachment) : null,
+      behavior: HitTestBehavior.opaque,
+      child: child,
+    );
+  }
+}
+
+/// Одно фото: размер окна = пропорции кадра, без обрезки.
+class _ChatSingleAspectThumb extends StatefulWidget {
+  const _ChatSingleAspectThumb({
+    required this.threadId,
+    required this.attachment,
+    required this.maxWidth,
+    required this.maxHeight,
+    required this.borderRadius,
+    this.onImageTap,
+  });
+
+  final int threadId;
+  final Map<String, dynamic> attachment;
+  final double maxWidth;
+  final double maxHeight;
+  final BorderRadius borderRadius;
+  final void Function(Map<String, dynamic> attachment)? onImageTap;
+
+  @override
+  State<_ChatSingleAspectThumb> createState() => _ChatSingleAspectThumbState();
+}
+
+class _ChatSingleAspectThumbState extends State<_ChatSingleAspectThumb> {
+  late double _aspect;
+
+  @override
+  void initState() {
+    super.initState();
+    _aspect = chatAttachmentAspectRatio(widget.attachment) ?? (4 / 3);
+    _probeLocalBytes();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatSingleAspectThumb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.attachment['id'] != widget.attachment['id'] ||
+        oldWidget.attachment['file_url'] != widget.attachment['file_url'] ||
+        oldWidget.attachment['local_bytes'] != widget.attachment['local_bytes']) {
+      _aspect = chatAttachmentAspectRatio(widget.attachment) ?? _aspect;
+      _probeLocalBytes();
+    }
+  }
+
+  Future<void> _probeLocalBytes() async {
+    final local = widget.attachment['local_bytes'];
+    if (!isSafeUiPreviewBytes(local)) return;
+    final size = await chatDecodeImageSize(local as Uint8List);
+    if (!mounted || size == null || size.height <= 0) return;
+    _applyAspect(size.width / size.height);
+  }
+
+  void _applyAspect(double next) {
+    if (next <= 0 || !next.isFinite) return;
+    if ((next - _aspect).abs() < 0.01) return;
+    setState(() => _aspect = next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = chatFitMediaSize(
+      aspectRatio: _aspect,
+      maxWidth: widget.maxWidth,
+      maxHeight: widget.maxHeight,
+    );
+    final local = widget.attachment['local_bytes'];
+    final hasLocal = isSafeUiPreviewBytes(local);
+    final canOpen = widget.onImageTap != null && !hasLocal;
+
+    Widget image;
+    if (hasLocal) {
+      image = Image.memory(
+        local as Uint8List,
+        width: size.width,
+        height: size.height,
+        fit: BoxFit.contain,
+        gaplessPlayback: true,
+      );
+    } else {
+      image = ChatNetworkImage(
+        threadId: widget.threadId,
+        attachment: widget.attachment,
+        width: size.width,
+        height: size.height,
+        fit: BoxFit.contain,
+        onResolvedSize: (resolved) {
+          if (resolved.height <= 0) return;
+          _applyAspect(resolved.width / resolved.height);
+        },
+      );
+    }
+
+    Widget child = SizedBox(
+      width: size.width,
+      height: size.height,
+      child: image,
+    );
+
+    child = ClipRRect(borderRadius: widget.borderRadius, child: child);
+
+    if (!canOpen) return child;
+    return GestureDetector(
+      onTap: () => widget.onImageTap!(widget.attachment),
       behavior: HitTestBehavior.opaque,
       child: child,
     );

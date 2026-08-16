@@ -33,6 +33,7 @@ class ChatNetworkImage extends ConsumerStatefulWidget {
     this.height,
     this.width,
     this.fit = BoxFit.cover,
+    this.onResolvedSize,
   });
 
   final int threadId;
@@ -40,6 +41,7 @@ class ChatNetworkImage extends ConsumerStatefulWidget {
   final double? height;
   final double? width;
   final BoxFit fit;
+  final ValueChanged<Size>? onResolvedSize;
 
   @override
   ConsumerState<ChatNetworkImage> createState() => _ChatNetworkImageState();
@@ -50,8 +52,59 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   bool _bytesFailed = false;
   bool _loadStarted = false;
   bool _wantsNetworkLoad = false;
+  bool _sizeReported = false;
+  bool _sizeListenAttached = false;
 
   int? get _attachmentId => chatAsInt(widget.attachment['id']);
+
+  void _reportSize(int width, int height) {
+    if (_sizeReported || widget.onResolvedSize == null) return;
+    if (width <= 0 || height <= 0) return;
+    _sizeReported = true;
+    final size = Size(width.toDouble(), height.toDouble());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.onResolvedSize?.call(size);
+    });
+  }
+
+  void _listenProviderSize(ImageProvider provider) {
+    if (widget.onResolvedSize == null ||
+        _sizeReported ||
+        _sizeListenAttached) {
+      return;
+    }
+    _sizeListenAttached = true;
+    final stream = provider.resolve(const ImageConfiguration());
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) {
+        _reportSize(info.image.width, info.image.height);
+        stream.removeListener(listener);
+      },
+      onError: (_, __) {
+        stream.removeListener(listener);
+      },
+    );
+    stream.addListener(listener);
+  }
+
+  Widget _sizedImage({
+    required ImageProvider provider,
+    Key? key,
+    ImageErrorWidgetBuilder? errorBuilder,
+  }) {
+    _listenProviderSize(provider);
+    return Image(
+      key: key,
+      image: provider,
+      width: widget.width,
+      height: widget.height,
+      fit: widget.fit,
+      gaplessPlayback: true,
+      errorBuilder: errorBuilder,
+    );
+  }
 
   String? get _registryKey {
     final attachmentId = _attachmentId;
@@ -91,6 +144,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       _bytesFailed = false;
       _loadStarted = false;
       _wantsNetworkLoad = false;
+      _sizeReported = false;
+      _sizeListenAttached = false;
       if (_useBytesPath) {
         final cached = _cachedBytes();
         if (cached != null) {
@@ -300,13 +355,9 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         final bytes = _cachedBytes();
         if (bytes == null) return _framePlaceholder();
 
-        return Image.memory(
-          bytes,
+        return _sizedImage(
+          provider: MemoryImage(bytes),
           key: ValueKey('${widget.threadId}:${widget.attachment['id']}'),
-          height: widget.height,
-          width: widget.width,
-          fit: widget.fit,
-          gaplessPlayback: true,
           errorBuilder: (_, __, ___) => _errorBox(),
         );
       },
@@ -318,23 +369,23 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     MediaLocalIndex.hydrateAttachment(widget.attachment);
     final localPath = galleryLocalDevicePath(widget.attachment);
     if (localDeviceFileExists(localPath)) {
-      return localDeviceFileImage(
+      final localImage = localDeviceFileImage(
         path: localPath,
         width: widget.width,
         height: widget.height,
         fit: widget.fit,
         error: _errorBox(retryable: false),
       );
+      if (localImage is Image) {
+        _listenProviderSize(localImage.image);
+      }
+      return localImage;
     }
 
     final local = widget.attachment['local_bytes'];
     if (isSafeUiPreviewBytes(local)) {
-      return Image.memory(
-        local as Uint8List,
-        height: widget.height,
-        width: widget.width,
-        fit: widget.fit,
-        gaplessPlayback: true,
+      return _sizedImage(
+        provider: MemoryImage(local as Uint8List),
         errorBuilder: (_, __, ___) => _errorBox(retryable: false),
       );
     }
@@ -358,13 +409,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       errorWidget: (_, __, ___) => _errorBox(retryable: false),
       imageBuilder: (context, imageProvider) {
         unawaited(FamilyChatMediaCache.trimIfNeeded());
-        return Image(
-          image: imageProvider,
-          height: widget.height,
-          width: widget.width,
-          fit: widget.fit,
-          gaplessPlayback: true,
-        );
+        return _sizedImage(provider: imageProvider);
       },
     );
   }

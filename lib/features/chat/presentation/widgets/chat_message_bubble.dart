@@ -15,6 +15,7 @@ import 'chat_bubble_clipper.dart';
 import 'chat_image_album.dart';
 import 'chat_link_preview_card.dart';
 import 'chat_location_preview.dart';
+import 'chat_media_layout.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
 import 'chat_message_read_status_icon.dart';
@@ -41,6 +42,7 @@ class ChatMessageBubble extends StatelessWidget {
     this.senderName,
     this.senderAvatarUrl,
     this.onSenderAvatarTap,
+    this.compactWithPrevious = false,
     this.compactWithNext = false,
     this.highlighted = false,
     this.selectionMode = false,
@@ -73,6 +75,7 @@ class ChatMessageBubble extends StatelessWidget {
   final String? senderName;
   final String? senderAvatarUrl;
   final VoidCallback? onSenderAvatarTap;
+  final bool compactWithPrevious;
   final bool compactWithNext;
   final bool highlighted;
   final bool selectionMode;
@@ -111,16 +114,22 @@ class ChatMessageBubble extends StatelessWidget {
         ? theme.colorScheme.primary.withValues(alpha: 0.12)
         : Colors.transparent;
 
+    // Как в Telegram: хвостик только у последнего в серии одного автора.
     final showTail = !compactWithNext;
     const tailWidth = 8.0;
     final hasCaption = _showBody(body, forward);
     final hasVisualMedia = _hasVisualMedia();
     final framePad = hasVisualMedia ? 2.0 : 10.0;
-    final contentMaxWidth =
-        maxBubbleWidth - framePad * 2 - (showTail ? tailWidth : 0);
+    // Место под хвостик всегда — иначе пузыри без хвостика шире.
+    final contentMaxWidth = maxBubbleWidth - framePad * 2 - tailWidth;
 
     Widget bubble = ClipPath(
-      clipper: ChatBubbleClipper(isMine: isMine, showTail: showTail),
+      clipper: ChatBubbleClipper(
+        isMine: isMine,
+        showTail: showTail,
+        compactWithPrevious: compactWithPrevious,
+        compactWithNext: compactWithNext,
+      ),
       clipBehavior: Clip.antiAlias,
       child: Material(
         color: bubbleColor,
@@ -130,9 +139,9 @@ class ChatMessageBubble extends StatelessWidget {
           onLongPress: selectionMode ? null : onLongPress,
           child: Padding(
             padding: EdgeInsets.fromLTRB(
-              isMine ? framePad : framePad + (showTail ? tailWidth : 0),
+              isMine ? framePad : framePad + tailWidth,
               hasVisualMedia ? 2 : 8,
-              isMine ? framePad + (showTail ? tailWidth : 0) : framePad,
+              isMine ? framePad + tailWidth : framePad,
               6,
             ),
             child: Column(
@@ -552,7 +561,7 @@ class ChatMessageBubble extends StatelessWidget {
   }
 }
 
-class _ChatVideoAttachmentPreview extends ConsumerWidget {
+class _ChatVideoAttachmentPreview extends ConsumerStatefulWidget {
   const _ChatVideoAttachmentPreview({
     required this.threadId,
     required this.attachment,
@@ -570,50 +579,109 @@ class _ChatVideoAttachmentPreview extends ConsumerWidget {
   final VoidCallback? onOpen;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_ChatVideoAttachmentPreview> createState() =>
+      _ChatVideoAttachmentPreviewState();
+}
+
+class _ChatVideoAttachmentPreviewState
+    extends ConsumerState<_ChatVideoAttachmentPreview> {
+  late double _aspect;
+
+  @override
+  void initState() {
+    super.initState();
+    _aspect = chatAttachmentAspectRatio(widget.attachment) ?? (16 / 9);
+    _probeLocalBytes();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatVideoAttachmentPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.attachment['id'] != widget.attachment['id'] ||
+        oldWidget.attachment['file_url'] != widget.attachment['file_url'] ||
+        oldWidget.attachment['local_bytes'] !=
+            widget.attachment['local_bytes']) {
+      _aspect = chatAttachmentAspectRatio(widget.attachment) ?? _aspect;
+      _probeLocalBytes();
+    }
+  }
+
+  Future<void> _probeLocalBytes() async {
+    final local = widget.attachment['local_bytes'];
+    if (!isSafeUiPreviewBytes(local)) return;
+    final size = await chatDecodeImageSize(local as Uint8List);
+    if (!mounted || size == null || size.height <= 0) return;
+    _applyAspect(size.width / size.height);
+  }
+
+  void _applyAspect(double next) {
+    if (next <= 0 || !next.isFinite) return;
+    if ((next - _aspect).abs() < 0.01) return;
+    setState(() => _aspect = next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final attachment = widget.attachment;
+    final maxWidth = widget.maxWidth;
+    final circular = widget.circular;
     final localBytes = attachment['local_bytes'];
     final localPath = galleryLocalDevicePath(attachment);
     final url = chatAttachmentImageUrl(
       repo: ref.read(familychatRepositoryProvider),
-      threadId: threadId,
+      threadId: widget.threadId,
       attachment: attachment,
     );
-    final size = circular ? (maxWidth * 0.72).clamp(160.0, 220.0) : maxWidth;
-    final height = circular ? size : 180.0;
+    final size = circular
+        ? (maxWidth * 0.72).clamp(160.0, 220.0)
+        : maxWidth;
+    final fitted = circular
+        ? Size(size, size)
+        : chatFitMediaSize(
+            aspectRatio: _aspect,
+            maxWidth: size,
+            maxHeight: chatMediaMaxThumbHeight(size),
+          );
     final hasSource = localPath.isNotEmpty || url.isNotEmpty;
 
     Widget? placeholder;
     if (isSafeUiPreviewBytes(localBytes)) {
       placeholder = Image.memory(
         localBytes as Uint8List,
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         gaplessPlayback: true,
       );
     }
 
     final content = SizedBox(
-      width: size,
-      height: height,
+      width: fitted.width,
+      height: fitted.height,
       child: Stack(
         fit: StackFit.expand,
         children: [
           if (hasSource)
             IgnorePointer(
               child: GalleryVideoPlayer(
-              url: url,
-              localPath: localPath.isEmpty ? null : localPath,
-              autoplay: true,
-              looping: true,
-              muted: true,
-              showControls: false,
-              fit: BoxFit.cover,
-              placeholder: placeholder ??
-                  const ColoredBox(
-                    color: Colors.black26,
-                    child: Center(
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                url: url,
+                localPath: localPath.isEmpty ? null : localPath,
+                autoplay: true,
+                looping: true,
+                muted: true,
+                showControls: false,
+                fit: BoxFit.contain,
+                onResolvedSize: circular
+                    ? null
+                    : (resolved) {
+                        if (resolved.height <= 0) return;
+                        _applyAspect(resolved.width / resolved.height);
+                      },
+                placeholder: placeholder ??
+                    const ColoredBox(
+                      color: Colors.black26,
+                      child: Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
                     ),
-                  ),
               ),
             )
           else
@@ -640,12 +708,12 @@ class _ChatVideoAttachmentPreview extends ConsumerWidget {
     );
 
     return GestureDetector(
-      onTap: onOpen,
+      onTap: widget.onOpen,
       behavior: HitTestBehavior.opaque,
       child: circular
           ? ClipOval(child: content)
           : ClipRRect(
-              borderRadius: borderRadius ?? BorderRadius.circular(10),
+              borderRadius: widget.borderRadius ?? BorderRadius.circular(10),
               child: content,
             ),
     );

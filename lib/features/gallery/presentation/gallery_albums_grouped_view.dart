@@ -1,8 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/media/gallery_media_utils.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
 import 'gallery_media_thumbnail.dart';
+
+/// Cover из API/кэша часто приходит как Map, не `Map<String, dynamic>`;
+/// `thread_id` может быть null — для превью достаточно URL/local path.
+Map<String, dynamic>? galleryAlbumCoverMap(Map<String, dynamic> album) {
+  final raw = album['cover'];
+  if (raw is! Map) return null;
+  final cover = Map<String, dynamic>.from(raw);
+  if (galleryAttachmentUrl(cover).isEmpty &&
+      (cover['local_device_path']?.toString().trim().isEmpty ?? true)) {
+    return null;
+  }
+  return cover;
+}
+
+int? galleryAlbumCoverThreadId(Map<String, dynamic>? cover) {
+  if (cover == null) return null;
+  final raw = cover['thread_id'];
+  if (raw is int) return raw;
+  return int.tryParse('$raw');
+}
 
 Future<void> openProfileGalleryAlbum(
   BuildContext context, {
@@ -337,10 +358,7 @@ class _AllPhotosCard extends ConsumerWidget {
     final theme = Theme.of(context);
     final title = album['title']?.toString() ?? 'Все фото';
     final count = album['count']?.toString() ?? '0';
-    final cover = album['cover'] is Map<String, dynamic>
-        ? album['cover'] as Map<String, dynamic>
-        : null;
-    final threadId = cover?['thread_id'];
+    final cover = galleryAlbumCoverMap(album);
 
     return Material(
       color: theme.colorScheme.primaryContainer.withValues(alpha: 0.35),
@@ -371,10 +389,10 @@ class _AllPhotosCard extends ConsumerWidget {
               SizedBox(
                 width: 112,
                 height: 112,
-                child: cover != null && threadId is int
+                child: cover != null
                     ? GalleryMediaThumbnail(
                         attachment: cover,
-                        threadId: threadId,
+                        threadId: galleryAlbumCoverThreadId(cover),
                         fit: BoxFit.cover,
                       )
                     : ColoredBox(
@@ -524,9 +542,7 @@ class _AlbumCard extends StatelessWidget {
     final albumId = album['id']?.toString() ?? '';
     final canManage = album['can_manage'] == true;
     final canAddPhotos = album['can_add'] == true;
-    final cover = album['cover'] is Map<String, dynamic>
-        ? album['cover'] as Map<String, dynamic>
-        : null;
+    final cover = galleryAlbumCoverMap(album);
 
     return Material(
       color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
@@ -602,25 +618,12 @@ class _AlbumCover extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final threadId = cover?['thread_id'];
-    if (cover != null && threadId is int) {
+    if (cover != null) {
       return GalleryMediaThumbnail(
         attachment: cover!,
-        threadId: threadId,
+        threadId: galleryAlbumCoverThreadId(cover),
         fit: BoxFit.cover,
       );
-    }
-    final url = (cover?['file_url'] ?? cover?['url'] ?? '').toString();
-    if (url.isNotEmpty) {
-      return Image.network(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) {
-        return ColoredBox(
-          color: Theme.of(context).colorScheme.surfaceContainerHigh,
-          child: Center(
-            child: Icon(icon,
-                size: 40, color: Theme.of(context).colorScheme.primary),
-          ),
-        );
-      });
     }
     return ColoredBox(
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
