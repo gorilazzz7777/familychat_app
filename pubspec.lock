@@ -1407,10 +1407,9 @@ packages:
   real_page_flip:
     dependency: "direct main"
     description:
-      name: real_page_flip
-      sha256: "1a9502c98710d17d69f515e820c2746b470344e8a8bcde7d09ac51e6ab1e35fd"
-      url: "https://pub.dev"
-    source: hosted
+      path: "vendor/real_page_flip"
+      relative: true
+    source: path
     version: "1.12.14"
   recase:
     dependency: transitive

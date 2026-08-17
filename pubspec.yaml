@@ -60,7 +60,8 @@ dependencies:
   drift: ^2.34.2
   path: ^1.9.1
   wakelock_plus: ^1.5.2
-  real_page_flip: 1.12.14
+  real_page_flip:
+    path: vendor/real_page_flip
   google_fonts: ^6.2.1
   drift_flutter: ^0.3.1
   sqlite3: ^3.5.1

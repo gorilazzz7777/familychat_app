@@ -1,0 +1,5 @@
+Vendored real_page_flip 1.12.14.
+
+iOS fix for current Xcode: CHHapticEngine.createPlayer(with:) is no longer
+visible to Swift (use makePlayer(with:) instead). Upstream 2.x has the same
+rename but is a larger API jump for the scrapbook.
