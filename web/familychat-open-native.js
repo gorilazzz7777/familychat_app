@@ -1,7 +1,5 @@
-/* iOS/Android: web-push всегда открывает PWA. Сразу пробуем натив + отладка на экране. */
+/* iOS/Android: web-push открывает PWA — пробуем сразу уйти в натив. */
 (function (global) {
-  var DEBUG_VERSION = 'native-debug-2026-08-17e';
-  var logs = [];
   var pendingPayload = null;
   var lastDeep = '';
   var lastOpenAt = 0;
@@ -23,58 +21,6 @@
     } catch (e) {
       return false;
     }
-  }
-
-  function displayMode() {
-    try {
-      if (window.matchMedia('(display-mode: standalone)').matches) return 'standalone';
-      if (window.matchMedia('(display-mode: fullscreen)').matches) return 'fullscreen';
-      if (window.navigator.standalone) return 'ios-standalone';
-    } catch (e) {}
-    return 'browser';
-  }
-
-  function log(line) {
-    var row = new Date().toISOString().slice(11, 23) + ' ' + line;
-    logs.push(row);
-    if (logs.length > 30) logs.shift();
-    try {
-      localStorage.setItem('fc_native_debug_log', logs.join('\n'));
-    } catch (e) {}
-    render();
-  }
-
-  function panelEl() {
-    return document.getElementById('fc-native-debug');
-  }
-
-  function ensurePanel() {
-    if (panelEl()) return;
-    if (!document.body) {
-      document.addEventListener('DOMContentLoaded', ensurePanel);
-      return;
-    }
-    var el = document.createElement('div');
-    el.id = 'fc-native-debug';
-    el.setAttribute('style', [
-      'position:fixed',
-      'left:8px',
-      'right:8px',
-      'bottom:8px',
-      'z-index:2147483647',
-      'max-height:48vh',
-      'overflow:auto',
-      'padding:10px 12px',
-      'border-radius:12px',
-      'background:#1a1a1a',
-      'color:#ffe082',
-      'font:12px/1.35 ui-monospace,Menlo,monospace',
-      'white-space:pre-wrap',
-      'word-break:break-all',
-      'box-shadow:0 8px 24px rgba(0,0,0,.35)',
-    ].join(';'));
-    document.body.appendChild(el);
-    render();
   }
 
   function ensureOpenBar() {
@@ -100,7 +46,6 @@
     ].join(';'));
     openBarEl.addEventListener('click', function () {
       if (!lastDeep) return;
-      log('tap open-bar ' + lastDeep);
       location.href = lastDeep;
     });
     document.body.appendChild(openBarEl);
@@ -111,25 +56,6 @@
     ensureOpenBar();
     if (!openBarEl || !lastDeep) return;
     openBarEl.style.display = 'block';
-  }
-
-  function render() {
-    var el = panelEl();
-    if (!el) return;
-    var params = new URLSearchParams(location.search);
-    var header = [
-      'DEBUG ' + DEBUG_VERSION,
-      'url: ' + location.href,
-      'mode: ' + displayMode(),
-      'mobile: ' + isMobileNative() + ' android: ' + isAndroid(),
-      'fc_chat=' + (params.get('fc_chat') || '-') +
-        ' fc_call=' + (params.get('fc_call') || '-') +
-        ' thread=' + (params.get('thread_id') || '-') +
-        ' fc_web=' + (params.get('fc_web') || '-'),
-      'pending=' + (pendingPayload && pendingPayload.thread_id ? pendingPayload.thread_id : '-'),
-      '---',
-    ].join('\n');
-    el.textContent = header + '\n' + logs.join('\n');
   }
 
   function deepLinkFromParams(params) {
@@ -178,42 +104,25 @@
   }
 
   function tryOpenNativeApp(data) {
-    log('tryOpenNative source=' + (data ? 'push-data' : 'url'));
-    if (!isMobileNative()) {
-      log('skip: not iOS/Android');
-      return false;
-    }
-    if (skipNative()) {
-      log('skip: fc_web=1');
-      return false;
-    }
+    if (!isMobileNative()) return false;
+    if (skipNative()) return false;
     var deep = data
       ? deepLinkFromPushData(data)
       : deepLinkFromParams(new URLSearchParams(location.search));
-    if (!deep) {
-      log('skip: no fc_chat/fc_call+thread in URL/data');
-      return false;
-    }
+    if (!deep) return false;
     var now = Date.now();
     if (deep === lastDeep && now - lastOpenAt < 1500) {
-      log('skip: duplicate');
       showOpenBar(deep);
       return false;
     }
     lastDeep = deep;
     lastOpenAt = now;
     showOpenBar(deep);
-    if (document.visibilityState !== 'visible') {
-      log('stash, wait visible: ' + deep);
-      return false;
-    }
-    log('open ' + deep);
+    if (document.visibilityState !== 'visible') return false;
     try {
       location.href = deep;
-      log('location.href assigned');
       return true;
     } catch (e) {
-      log('error: ' + e);
       return false;
     }
   }
@@ -221,82 +130,38 @@
   function onPushPayload(data) {
     if (!data || typeof data !== 'object') return;
     pendingPayload = data;
-    log(
-      'payload type=' +
-        (data.type || '-') +
-        ' tap=' +
-        !!data.opened_from_tap +
-        ' thread=' +
-        (data.thread_id || '-'),
-    );
     tryOpenNativeApp(data);
   }
 
-  function scriptName(worker) {
-    if (!worker || !worker.scriptURL) return 'none';
-    var parts = String(worker.scriptURL).split('/');
-    return parts[parts.length - 1] || 'none';
-  }
-
   function askSwPending() {
-    if (!navigator.serviceWorker) {
-      log('no serviceWorker');
-      return;
-    }
+    if (!navigator.serviceWorker) return;
     navigator.serviceWorker.getRegistrations().then(function (regs) {
       var fcm = null;
-      var names = [];
       for (var i = 0; i < regs.length; i++) {
         var worker = regs[i].active || regs[i].waiting || regs[i].installing;
-        names.push(scriptName(worker));
         var url = (worker && worker.scriptURL) || '';
         if (url.indexOf('firebase-messaging-sw.js') !== -1) {
           fcm = regs[i].active || regs[i].waiting;
         }
       }
-      log(
-        'sw ctrl=' +
-          scriptName(navigator.serviceWorker.controller) +
-          ' regs=' +
-          names.join(',')
-      );
-      if (!fcm) {
-        log('no fcm sw');
-        return;
-      }
+      if (!fcm) return;
       var ch = new MessageChannel();
       ch.port1.onmessage = function (event) {
         var payload = event.data && event.data.payload;
-        log(
-          'sw-pending ' +
-            (payload && payload.thread_id ? payload.thread_id : 'empty') +
-            ' tap=' +
-            !!(payload && payload.opened_from_tap),
-        );
         if (payload) onPushPayload(payload);
       };
       fcm.postMessage({ type: 'familychat_get_pending_native' }, [ch.port2]);
-      log('asked fcm sw for pending');
-    }).catch(function (e) {
-      log('ask sw error: ' + e);
-    });
+    }).catch(function () {});
   }
 
   global.familyChatTryOpenNativeApp = tryOpenNativeApp;
-  global.familyChatNativeDebugLog = log;
 
   try {
-    var saved = localStorage.getItem('fc_native_debug_log');
-    if (saved) logs = saved.split('\n').slice(-20);
+    localStorage.removeItem('fc_native_debug_log');
   } catch (e) {}
 
-  log('script loaded');
-  ensurePanel();
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      ensurePanel();
-      ensureOpenBar();
-    });
+    document.addEventListener('DOMContentLoaded', ensureOpenBar);
   } else {
     ensureOpenBar();
   }
@@ -325,7 +190,6 @@
   }
 
   document.addEventListener('visibilitychange', function () {
-    log('visibility=' + document.visibilityState);
     if (document.visibilityState !== 'visible') return;
     if (pendingPayload) {
       tryOpenNativeApp(pendingPayload);

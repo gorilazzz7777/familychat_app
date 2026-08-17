@@ -37,18 +37,6 @@
       var data = event.data || {};
       if (!data || typeof data !== 'object') return;
       if (data.type === 'familychat_chat' || data.type === 'familychat_call') {
-        try {
-          if (typeof familyChatNativeDebugLog === 'function') {
-            familyChatNativeDebugLog(
-              'sw-message type=' +
-                data.type +
-                ' tap=' +
-                !!data.opened_from_tap +
-                ' thread=' +
-                (data.thread_id || '-'),
-            );
-          }
-        } catch (e) {}
         if (data.type === 'familychat_chat' && data.opened_from_tap) {
           try {
             sessionStorage.setItem(
