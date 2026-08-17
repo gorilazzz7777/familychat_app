@@ -63,6 +63,30 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="familychat" android:host="friend-invite" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="familychat" android:host="chat" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="familychat" android:host="call" />
+            </intent-filter>
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https" android:host="familychat-app.ru" android:pathPrefix="/familychat/open"/>
+            </intent-filter>
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https" android:host="remont-tracker.ru" android:pathPrefix="/familychat/open"/>
+            </intent-filter>
             <!-- Приём «Поделиться» из галереи, браузера и других приложений -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

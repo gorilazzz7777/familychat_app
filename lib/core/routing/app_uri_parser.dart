@@ -135,7 +135,9 @@ OAuthCallbackResult? parseOAuthCallback(Uri uri) {
 }
 
 Map<String, dynamic>? parseIncomingChatPushFromUri(Uri uri) {
-  if (uri.queryParameters['fc_chat'] != '1') return null;
+  final schemeChat = uri.scheme == 'familychat' && uri.host == 'chat';
+  final flagged = uri.queryParameters['fc_chat'] == '1';
+  if (!schemeChat && !flagged) return null;
   final threadId = uri.queryParameters['thread_id']?.trim();
   if (threadId == null || threadId.isEmpty) return null;
   return {
@@ -154,7 +156,9 @@ Map<String, dynamic>? parseIncomingChatPushFromUri(Uri uri) {
 }
 
 Map<String, dynamic>? parseIncomingCallPushFromUri(Uri uri) {
-  if (uri.queryParameters['fc_call'] != '1') return null;
+  final schemeCall = uri.scheme == 'familychat' && uri.host == 'call';
+  final flagged = uri.queryParameters['fc_call'] == '1';
+  if (!schemeCall && !flagged) return null;
   final sessionId = uri.queryParameters['session_id']?.trim();
   final threadId = uri.queryParameters['thread_id']?.trim();
   if (sessionId == null ||

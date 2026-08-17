@@ -117,6 +117,21 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       return;
     }
 
+    final incomingCall = parseIncomingCallPushFromUri(uri);
+    if (incomingCall != null) {
+      pendingCallPushData = incomingCall;
+      await bringAppToForeground();
+      if (_ready) flushPendingChatPush();
+      return;
+    }
+    final incomingChat = parseIncomingChatPushFromUri(uri);
+    if (incomingChat != null) {
+      pendingChatPushData = incomingChat;
+      await bringAppToForeground();
+      if (_ready) flushPendingChatPush();
+      return;
+    }
+
     final friendToken = extractFriendInviteToken(uri);
     if (friendToken != null) {
       final prefs = await SharedPreferences.getInstance();

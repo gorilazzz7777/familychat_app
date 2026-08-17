@@ -46,7 +46,7 @@ function buildCallLaunchUrl(data) {
   q.set('thread_id', d.thread_id);
   q.set('caller_user_id', d.caller_user_id);
   q.set('caller_name', d.caller_name);
-  return '/app/?' + q.toString();
+  return '/familychat/open/?' + q.toString();
 }
 
 function callNotificationOptions(data, notification) {
@@ -108,25 +108,36 @@ function stopCallRing(sessionId) {
     });
 }
 
-function focusClientWithCallData(data) {
-  var serialized = serializeCallData(data);
-  storePendingCall(serialized);
+function focusExistingWebClient(serialized) {
   return clients
     .matchAll({ type: 'window', includeUncontrolled: true })
     .then(function (list) {
-      if (list.length > 0) {
-        for (var i = 0; i < list.length; i++) {
-          var client = list[i];
+      for (var i = 0; i < list.length; i++) {
+        var client = list[i];
+        try {
           client.postMessage(
             Object.assign({ source: 'familychat-fcm-sw' }, serialized),
           );
-          if ('focus' in client) {
-            return client.focus();
-          }
+        } catch (e) {}
+        if ('focus' in client) {
+          return client.focus();
         }
       }
-      return clients.openWindow(buildCallLaunchUrl(serialized));
+      return null;
     });
+}
+
+function openNativeOrWeb(url, serialized) {
+  return clients.openWindow(url).then(function (opened) {
+    if (opened) return opened;
+    return focusExistingWebClient(serialized);
+  });
+}
+
+function focusClientWithCallData(data) {
+  var serialized = serializeCallData(data);
+  storePendingCall(serialized);
+  return openNativeOrWeb(buildCallLaunchUrl(serialized), serialized);
 }
 
 function unwrapPushData(raw) {
@@ -175,7 +186,7 @@ function buildChatLaunchUrl(data) {
   if (d.thread_title) q.set('thread_title', d.thread_title);
   if (d.thread_kind) q.set('thread_kind', d.thread_kind);
   if (d.peer_user_id) q.set('peer_user_id', d.peer_user_id);
-  return '/app/?' + q.toString();
+  return '/familychat/open/?' + q.toString();
 }
 
 function showChatNotification(data, notification) {
@@ -198,22 +209,7 @@ function showChatNotification(data, notification) {
 function focusClientWithChatData(data) {
   var serialized = serializeChatData(data);
   serialized.opened_from_tap = true;
-  return clients
-    .matchAll({ type: 'window', includeUncontrolled: true })
-    .then(function (list) {
-      if (list.length > 0) {
-        for (var i = 0; i < list.length; i++) {
-          var client = list[i];
-          client.postMessage(
-            Object.assign({ source: 'familychat-fcm-sw' }, serialized),
-          );
-          if ('focus' in client) {
-            return client.focus();
-          }
-        }
-      }
-      return clients.openWindow(buildChatLaunchUrl(serialized));
-    });
+  return openNativeOrWeb(buildChatLaunchUrl(serialized), serialized);
 }
 
 const messaging = firebase.messaging();
