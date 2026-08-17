@@ -128,10 +128,29 @@ function focusExistingWebClient(serialized) {
 }
 
 function openNativeOrWeb(url, serialized) {
-  return clients.openWindow(url).then(function (opened) {
-    if (opened) return opened;
-    return focusExistingWebClient(serialized);
-  });
+  var abs;
+  try {
+    abs = new URL(url, self.registration.scope).href;
+  } catch (e) {
+    abs = url;
+  }
+  return clients
+    .matchAll({ type: 'window', includeUncontrolled: true })
+    .then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        var client = list[i];
+        if (typeof client.navigate === 'function') {
+          return client.navigate(abs).then(function (opened) {
+            if (opened && 'focus' in opened) return opened.focus();
+            return opened;
+          });
+        }
+      }
+      return clients.openWindow(abs).then(function (opened) {
+        if (opened) return opened;
+        return focusExistingWebClient(serialized);
+      });
+    });
 }
 
 function focusClientWithCallData(data) {
