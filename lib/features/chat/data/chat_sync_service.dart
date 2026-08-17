@@ -256,6 +256,19 @@ class ChatSyncService {
     try {
       final page = await repo.threadMessages(threadId, limit: limit);
       await ChatLocalStore.instance.upsertMessages(threadId, page.messages);
+      final keepIds = <int>{
+        for (final m in page.messages)
+          if (chatAsInt(m['id']) != null && chatAsInt(m['id'])! > 0)
+            chatAsInt(m['id'])!,
+      };
+      if (keepIds.isNotEmpty) {
+        await ChatLocalStore.instance.deleteMissingFromWindow(
+          threadId: threadId,
+          minId: keepIds.reduce((a, b) => a < b ? a : b),
+          maxId: keepIds.reduce((a, b) => a > b ? a : b),
+          keepIds: keepIds,
+        );
+      }
       unawaited(MediaIncomingSync.ensureMessages(page.messages));
       await _reconcileThreadPending(threadId);
     } catch (e, st) {

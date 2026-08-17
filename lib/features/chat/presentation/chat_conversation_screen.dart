@@ -1325,6 +1325,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   void _removeMessagesLocally(List<int> ids) {
+    if (ids.isEmpty) return;
     setState(() {
       _messages = _messages.where((m) {
         final id = chatAsInt(m['id']);
@@ -1340,6 +1341,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _pinnedIndex = _pinnedMessages.isEmpty ? 0 : _pinnedMessages.length - 1;
       }
     });
+    if (_localFirst) {
+      unawaited(ChatLocalStore.instance.deleteMessages(widget.threadId, ids));
+    } else {
+      unawaited(_persistMessageCache());
+    }
   }
 
   void _setPinnedMessages(List<Map<String, dynamic>> pins) {

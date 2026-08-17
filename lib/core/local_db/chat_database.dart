@@ -335,6 +335,30 @@ class ChatDatabase extends _$ChatDatabase {
         .go();
   }
 
+  /// Drop server rows in [minId, maxId] that the latest API window no longer has.
+  Future<void> deleteMissingFromWindow({
+    required int threadId,
+    required int minId,
+    required int maxId,
+    required Set<int> keepIds,
+  }) async {
+    if (maxId < minId) return;
+    final rows = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) &
+                t.isPending.equals(false) &
+                t.messageId.isBiggerOrEqualValue(minId) &
+                t.messageId.isSmallerOrEqualValue(maxId),
+          ))
+        .get();
+    final toDelete = [
+      for (final row in rows)
+        if (!keepIds.contains(row.messageId)) row.messageId,
+    ];
+    await deleteMessages(threadId, toDelete);
+  }
+
   Future<void> patchMessageFields(
     int threadId,
     int messageId,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/media/gallery_media_export.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/media_incoming_sync.dart';
@@ -258,7 +259,11 @@ class _GalleryPhotoViewerScreenState
       final repo = ref.read(familychatRepositoryProvider);
       if (isPhysical) {
         await MediaIncomingSync.deleteFromPhone(_photo);
-        await repo.deleteChatAttachment(threadId, attachmentId);
+        final result = await repo.deleteChatAttachment(threadId, attachmentId);
+        final messageId = chatAsInt(result['message_id']) ?? chatAsInt(_photo['message_id']);
+        if (result['message_deleted'] == true && messageId != null) {
+          await ChatLocalStore.instance.deleteMessages(threadId, [messageId]);
+        }
       } else {
         await repo.hideGalleryPhoto(attachmentId);
       }

@@ -135,6 +135,21 @@ class ChatLocalStore {
     await db?.deleteMessages(threadId, messageIds);
   }
 
+  Future<void> deleteMissingFromWindow({
+    required int threadId,
+    required int minId,
+    required int maxId,
+    required Set<int> keepIds,
+  }) async {
+    final db = await ensureOpen();
+    await db?.deleteMissingFromWindow(
+      threadId: threadId,
+      minId: minId,
+      maxId: maxId,
+      keepIds: keepIds,
+    );
+  }
+
   Future<void> markMessagesRead(int threadId, List<int> messageIds) async {
     final db = await ensureOpen();
     await db?.markMessagesRead(threadId, messageIds);

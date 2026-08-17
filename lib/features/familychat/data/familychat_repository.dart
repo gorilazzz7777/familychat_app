@@ -1429,9 +1429,14 @@ class FamilyChatRepository {
     return res.data!;
   }
 
-  Future<void> deleteChatAttachment(int threadId, int attachmentId) async {
-    await _dio
-        .delete('familychat/chat/threads/$threadId/attachments/$attachmentId/');
+  Future<Map<String, dynamic>> deleteChatAttachment(
+    int threadId,
+    int attachmentId,
+  ) async {
+    final res = await _dio.delete<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/attachments/$attachmentId/',
+    );
+    return res.data ?? const {'ok': true};
   }
 
   Future<Map<String, dynamic>> galleryPhotoFaces(
