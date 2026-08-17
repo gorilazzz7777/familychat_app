@@ -38,17 +38,16 @@ target 'Runner' do
   pod 'share_handler_ios_models',
       :path => '.symlinks/plugins/share_handler_ios/ios/Models'
 
-  # Share Extension target (создаётся в Xcode, см. ios/ShareExtension).
-  # Раскомментируйте после File → New → Target → Share Extension.
-  # target 'ShareExtension' do
-  #   inherit! :search_paths
-  #   pod 'share_handler_ios_models',
-  #       :path => '.symlinks/plugins/share_handler_ios/ios/Models'
-  # end
-
   target 'RunnerTests' do
     inherit! :search_paths
   end
+end
+
+target 'ShareExtension' do
+  use_frameworks!
+  use_modular_headers!
+  pod 'share_handler_ios_models',
+      :path => '.symlinks/plugins/share_handler_ios/ios/Models'
 end
 
 post_install do |installer|
@@ -67,6 +66,11 @@ post_install do |installer|
       ]
       # Единый минимум с Runner / Firebase Messaging.
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+    end
+    next unless target.name == 'share_handler_ios_models'
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
+      config.build_settings['APPLICATION_EXTENSION_API_ONLY'] = 'YES'
     end
   end
 end

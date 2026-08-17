@@ -31,13 +31,21 @@ open Runner.xcworkspace
 
 ## Share Extension («Поделиться» → Family Chat)
 
-Файлы уже в `ios/ShareExtension/`. В Xcode:
+Target `ShareExtension` уже в Xcode-проекте. После `git pull` на Mac:
 
-1. File → New → Target → Share Extension, имя `ShareExtension`.
-2. Замените сгенерированные файлы содержимым из `ios/ShareExtension/`.
-3. Добавьте App Group `group.com.familychat.familychatApp` к Runner и ShareExtension.
-4. В `ios/Podfile` раскомментируйте блок `target 'ShareExtension'`.
-5. `pod install`, пересоберите.
+```bash
+cd familychat_app
+flutter pub get
+cd ios
+pod install
+open Runner.xcworkspace
+```
+
+В Xcode:
+
+1. Runner и ShareExtension → Signing & Capabilities: одна команда, App Group `group.com.familychat.familychatApp`.
+2. В Apple Developer для App ID `com.familychat.familychatApp.ShareExtension` включите App Groups (Automatic signing обычно создаёт ID сам).
+3. Соберите на устройство / TestFlight. Без новой iOS-сборки share sheet по-прежнему не откроет приложение.
 
 ## Universal Links
 
