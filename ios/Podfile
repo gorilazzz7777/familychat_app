@@ -1,5 +1,5 @@
 # Uncomment this line to define a global platform for your project
-platform :ios, '13.0'
+platform :ios, '14.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -64,12 +64,11 @@ post_install do |installer|
         'PERMISSION_LOCATION_WHENINUSE=1',
         'PERMISSION_NOTIFICATIONS=1',
       ]
-      # Единый минимум с Runner / Firebase Messaging.
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      # share_handler_ios_models требует iOS 14 — держим все поды на одном минимуме.
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
     end
     next unless target.name == 'share_handler_ios_models'
     target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
       config.build_settings['APPLICATION_EXTENSION_API_ONLY'] = 'YES'
     end
   end
