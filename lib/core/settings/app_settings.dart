@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'media_storage_options.dart';
 import 'screen_timeout.dart';
 
 @immutable
@@ -45,6 +46,9 @@ class FamilyChatAppSettings {
     this.menuCalendar = true,
     this.menuOrder = defaultMenuOrder,
     this.screenTimeout = ScreenTimeoutOption.system,
+    this.autoSaveIncomingToGallery = false,
+    this.mediaCacheStale = MediaCacheStaleOption.thirtyDays,
+    this.mediaCacheSize = MediaCacheSizeOption.gb2,
   });
 
   static const defaultMenuOrder = [
@@ -69,6 +73,9 @@ class FamilyChatAppSettings {
   final bool menuCalendar;
   final List<String> menuOrder;
   final ScreenTimeoutOption screenTimeout;
+  final bool autoSaveIncomingToGallery;
+  final MediaCacheStaleOption mediaCacheStale;
+  final MediaCacheSizeOption mediaCacheSize;
 
   FamilyChatAppSettings copyWith({
     bool? pushEnabled,
@@ -85,6 +92,9 @@ class FamilyChatAppSettings {
     bool? menuCalendar,
     List<String>? menuOrder,
     ScreenTimeoutOption? screenTimeout,
+    bool? autoSaveIncomingToGallery,
+    MediaCacheStaleOption? mediaCacheStale,
+    MediaCacheSizeOption? mediaCacheSize,
   }) {
     return FamilyChatAppSettings(
       pushEnabled: pushEnabled ?? this.pushEnabled,
@@ -101,6 +111,10 @@ class FamilyChatAppSettings {
       menuCalendar: menuCalendar ?? this.menuCalendar,
       menuOrder: menuOrder ?? this.menuOrder,
       screenTimeout: screenTimeout ?? this.screenTimeout,
+      autoSaveIncomingToGallery:
+          autoSaveIncomingToGallery ?? this.autoSaveIncomingToGallery,
+      mediaCacheStale: mediaCacheStale ?? this.mediaCacheStale,
+      mediaCacheSize: mediaCacheSize ?? this.mediaCacheSize,
     );
   }
 
@@ -137,6 +151,18 @@ class FamilyChatAppSettings {
       screenTimeout: ScreenTimeoutOptionX.fromStorage(
         json['screenTimeout'] ?? json['screen_timeout'],
       ),
+      autoSaveIncomingToGallery: _bool(
+        json,
+        'autoSaveIncomingToGallery',
+        'auto_save_incoming_to_gallery',
+        false,
+      ),
+      mediaCacheStale: MediaCacheStaleOptionX.fromStorage(
+        json['mediaCacheStale'] ?? json['media_cache_stale'],
+      ),
+      mediaCacheSize: MediaCacheSizeOptionX.fromStorage(
+        json['mediaCacheSize'] ?? json['media_cache_size'],
+      ),
     );
   }
 
@@ -163,6 +189,9 @@ class FamilyChatAppSettings {
         'canQuietHours': canQuietHours,
         'screenTimeout': screenTimeout.storageKey,
         'menuOrder': menuOrder,
+        'autoSaveIncomingToGallery': autoSaveIncomingToGallery,
+        'mediaCacheStale': mediaCacheStale.storageKey,
+        'mediaCacheSize': mediaCacheSize.storageKey,
       };
 
   static bool _bool(

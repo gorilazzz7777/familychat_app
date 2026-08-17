@@ -7,14 +7,13 @@ import 'gallery_device_media_store.dart';
 import 'gallery_media_export.dart';
 import 'gallery_media_utils.dart';
 import 'local_device_file.dart';
+import 'media_cache_policy.dart';
 import 'media_local_index.dart';
 
 /// Фоновая синхронизация чужих фото/видео в альбом FamilyChat.
 ///
-/// Сначала подхватываем уже лежащие локальные копии (FamilyChat / LittleOne),
-/// иначе скачиваем в Pictures/FamilyChat.
-/// Свои оригиналы не копируем. Если пользователь удалил файл из галереи
-/// телефона — в приложение не возвращаем, пока не нажмёт «Скачать».
+/// По умолчанию выключено (настройка «Сохранять входящие в Галерею»).
+/// Свои оригиналы не копируем. «Скачать» на полном экране пишет в альбом явно.
 abstract final class MediaIncomingSync {
   static final Set<String> _inflight = {};
 
@@ -83,6 +82,9 @@ abstract final class MediaIncomingSync {
         MediaLocalIndex.peekByFilename(attachment['filename']?.toString());
 
     if (rec?.isOutgoing == true || attachment['_outgoing_original'] == true) {
+      return;
+    }
+    if (!MediaCachePolicy.autoSaveIncomingToGallery) {
       return;
     }
     if (rec?.skipPhoneAlbum == true || attachment['skip_phone_album'] == true) {

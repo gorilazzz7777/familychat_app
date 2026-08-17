@@ -12,6 +12,7 @@ import 'theme_appearance_screen.dart';
 import 'notification_settings_screen.dart';
 import 'menu_sections_screen.dart';
 import 'screen_timeout_settings_screen.dart';
+import 'media_storage_settings_screen.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
@@ -601,6 +602,30 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) => const LocationSharingSettingsScreen(),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            Icons.photo_library_outlined,
+            color: theme.colorScheme.primary,
+          ),
+          title: const Text('Фото и кэш'),
+          subtitle: Text(
+            () {
+              final s = ref.watch(appSettingsProvider);
+              return s.autoSaveIncomingToGallery
+                  ? 'Входящие в Галерею · ${s.mediaCacheSize.label}'
+                  : 'Кэш ${s.mediaCacheStale.label} · ${s.mediaCacheSize.label}';
+            }(),
+          ),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const MediaStorageSettingsScreen(),
               ),
             );
           },
