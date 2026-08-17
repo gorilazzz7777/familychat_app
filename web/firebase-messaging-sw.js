@@ -119,9 +119,9 @@ function stopCallRing(sessionId) {
     });
 }
 
-function savePendingNative(serialized) {
+function savePendingNative(serialized, fromTap) {
   var payload = Object.assign({}, serialized, {
-    opened_from_tap: true,
+    opened_from_tap: !!fromTap,
     saved_at: Date.now(),
   });
   return caches.open(PENDING_CACHE).then(function (cache) {
@@ -167,6 +167,19 @@ function postToWindowClients(serialized) {
     });
 }
 
+function rememberPushPayload(data, notification) {
+  if (data.type === 'familychat_call') {
+    return savePendingNative(serializeCallData(data), false);
+  }
+  if (!isChatPush(data)) return Promise.resolve();
+  var serialized = serializeChatData(data);
+  if (notification) {
+    if (notification.title) serialized.title = String(notification.title);
+    if (notification.body) serialized.body = String(notification.body);
+  }
+  return savePendingNative(serialized, false);
+}
+
 function openNativeOrWeb(url, serialized) {
   serialized.opened_from_tap = true;
   var abs;
@@ -175,7 +188,7 @@ function openNativeOrWeb(url, serialized) {
   } catch (e) {
     abs = url;
   }
-  return savePendingNative(serialized)
+  return savePendingNative(serialized, true)
     .then(function () {
       return postToWindowClients(serialized);
     })
@@ -278,16 +291,43 @@ function focusClientWithChatData(data) {
 
 const messaging = firebase.messaging();
 
+function rawNotification(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.notification && typeof raw.notification === 'object') return raw.notification;
+  return null;
+}
+
 messaging.onBackgroundMessage(function (payload) {
   var data = unwrapPushData(Object.assign({}, payload.data || {}));
   if (data.type === 'familychat_call_stop') {
     return stopCallRing(data.session_id);
   }
   if (data.type === 'familychat_call') {
-    return startCallRing(data, payload.notification);
+    return Promise.all([
+      rememberPushPayload(data, payload.notification),
+      startCallRing(data, payload.notification),
+    ]);
   }
-  if (isChatPush(data) && !payload.notification) {
-    return showChatNotification(data, null);
+  if (isChatPush(data)) {
+    var shown = payload.notification
+      ? Promise.resolve()
+      : showChatNotification(data, null);
+    return Promise.all([rememberPushPayload(data, payload.notification), shown]);
+  }
+});
+
+self.addEventListener('push', function (event) {
+  var data = {};
+  var raw = {};
+  try {
+    raw = event.data ? event.data.json() : {};
+    data = unwrapPushData(Object.assign({}, raw.data || raw));
+  } catch (e) {
+    return;
+  }
+  if (data.type === 'familychat_call_stop') return;
+  if (data.type === 'familychat_call' || isChatPush(data)) {
+    event.waitUntil(rememberPushPayload(data, rawNotification(raw)));
   }
 });
 

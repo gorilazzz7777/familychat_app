@@ -1,6 +1,6 @@
 /* iOS/Android: web-push всегда открывает PWA. Сразу пробуем натив + отладка на экране. */
 (function (global) {
-  var DEBUG_VERSION = 'native-debug-2026-08-17c';
+  var DEBUG_VERSION = 'native-debug-2026-08-17d';
   var logs = [];
   var pendingPayload = null;
   var lastDeep = '';
@@ -245,7 +245,12 @@
     var ch = new MessageChannel();
     ch.port1.onmessage = function (event) {
       var payload = event.data && event.data.payload;
-      log('sw-pending ' + (payload && payload.thread_id ? payload.thread_id : 'empty'));
+      log(
+        'sw-pending ' +
+          (payload && payload.thread_id ? payload.thread_id : 'empty') +
+          ' tap=' +
+          !!(payload && payload.opened_from_tap),
+      );
       if (payload) onPushPayload(payload);
     };
     try {
@@ -275,6 +280,7 @@
     ensureOpenBar();
   }
   tryOpenNativeApp(null);
+  askSwPending();
 
   if (navigator.serviceWorker) {
     navigator.serviceWorker.addEventListener('message', function (event) {
