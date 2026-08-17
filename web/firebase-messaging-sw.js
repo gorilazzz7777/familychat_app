@@ -46,7 +46,7 @@ function buildCallLaunchUrl(data) {
   q.set('thread_id', d.thread_id);
   q.set('caller_user_id', d.caller_user_id);
   q.set('caller_name', d.caller_name);
-  return '/familychat/open/?' + q.toString();
+  return '/app/?' + q.toString();
 }
 
 function callNotificationOptions(data, notification) {
@@ -205,7 +205,7 @@ function buildChatLaunchUrl(data) {
   if (d.thread_title) q.set('thread_title', d.thread_title);
   if (d.thread_kind) q.set('thread_kind', d.thread_kind);
   if (d.peer_user_id) q.set('peer_user_id', d.peer_user_id);
-  return '/familychat/open/?' + q.toString();
+  return '/app/?' + q.toString();
 }
 
 function showChatNotification(data, notification) {

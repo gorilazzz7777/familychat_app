@@ -53,6 +53,13 @@
             );
           } catch (e) {}
         }
+        if (data.opened_from_tap || data.type === 'familychat_call') {
+          try {
+            if (typeof familyChatTryOpenNativeApp === 'function') {
+              familyChatTryOpenNativeApp(data);
+            }
+          } catch (e) {}
+        }
         postToApp(data);
       }
     });
