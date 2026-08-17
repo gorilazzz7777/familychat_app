@@ -20,10 +20,6 @@ self.addEventListener('install', function (event) {
   event.waitUntil(self.skipWaiting());
 });
 
-self.addEventListener('activate', function (event) {
-  event.waitUntil(self.clients.claim());
-});
-
 function callTag(sessionId) {
   return CALL_TAG_PREFIX + String(sessionId || '0');
 }
@@ -152,9 +148,7 @@ function takePendingNative() {
 }
 
 function postToWindowClients(serialized) {
-  var msg = Object.assign({ source: 'familychat-fcm-sw' }, serialized, {
-    opened_from_tap: true,
-  });
+  var msg = Object.assign({ source: 'familychat-fcm-sw' }, serialized);
   return clients
     .matchAll({ type: 'window', includeUncontrolled: true })
     .then(function (list) {
@@ -169,7 +163,10 @@ function postToWindowClients(serialized) {
 
 function rememberPushPayload(data, notification) {
   if (data.type === 'familychat_call') {
-    return savePendingNative(serializeCallData(data), false);
+    var callData = serializeCallData(data);
+    return savePendingNative(callData, false).then(function () {
+      return postToWindowClients(callData);
+    });
   }
   if (!isChatPush(data)) return Promise.resolve();
   var serialized = serializeChatData(data);
@@ -177,7 +174,9 @@ function rememberPushPayload(data, notification) {
     if (notification.title) serialized.title = String(notification.title);
     if (notification.body) serialized.body = String(notification.body);
   }
-  return savePendingNative(serialized, false);
+  return savePendingNative(serialized, false).then(function () {
+    return postToWindowClients(serialized);
+  });
 }
 
 function openNativeOrWeb(url, serialized) {

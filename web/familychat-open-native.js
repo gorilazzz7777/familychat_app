@@ -1,6 +1,6 @@
 /* iOS/Android: web-push всегда открывает PWA. Сразу пробуем натив + отладка на экране. */
 (function (global) {
-  var DEBUG_VERSION = 'native-debug-2026-08-17d';
+  var DEBUG_VERSION = 'native-debug-2026-08-17e';
   var logs = [];
   var pendingPayload = null;
   var lastDeep = '';
@@ -232,33 +232,54 @@
     tryOpenNativeApp(data);
   }
 
+  function scriptName(worker) {
+    if (!worker || !worker.scriptURL) return 'none';
+    var parts = String(worker.scriptURL).split('/');
+    return parts[parts.length - 1] || 'none';
+  }
+
   function askSwPending() {
     if (!navigator.serviceWorker) {
       log('no serviceWorker');
       return;
     }
-    var controller = navigator.serviceWorker.controller;
-    if (!controller) {
-      log('no sw controller');
-      return;
-    }
-    var ch = new MessageChannel();
-    ch.port1.onmessage = function (event) {
-      var payload = event.data && event.data.payload;
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      var fcm = null;
+      var names = [];
+      for (var i = 0; i < regs.length; i++) {
+        var worker = regs[i].active || regs[i].waiting || regs[i].installing;
+        names.push(scriptName(worker));
+        var url = (worker && worker.scriptURL) || '';
+        if (url.indexOf('firebase-messaging-sw.js') !== -1) {
+          fcm = regs[i].active || regs[i].waiting;
+        }
+      }
       log(
-        'sw-pending ' +
-          (payload && payload.thread_id ? payload.thread_id : 'empty') +
-          ' tap=' +
-          !!(payload && payload.opened_from_tap),
+        'sw ctrl=' +
+          scriptName(navigator.serviceWorker.controller) +
+          ' regs=' +
+          names.join(',')
       );
-      if (payload) onPushPayload(payload);
-    };
-    try {
-      controller.postMessage({ type: 'familychat_get_pending_native' }, [ch.port2]);
-      log('asked sw for pending');
-    } catch (e) {
+      if (!fcm) {
+        log('no fcm sw');
+        return;
+      }
+      var ch = new MessageChannel();
+      ch.port1.onmessage = function (event) {
+        var payload = event.data && event.data.payload;
+        log(
+          'sw-pending ' +
+            (payload && payload.thread_id ? payload.thread_id : 'empty') +
+            ' tap=' +
+            !!(payload && payload.opened_from_tap),
+        );
+        if (payload) onPushPayload(payload);
+      };
+      fcm.postMessage({ type: 'familychat_get_pending_native' }, [ch.port2]);
+      log('asked fcm sw for pending');
+    }).catch(function (e) {
       log('ask sw error: ' + e);
-    }
+    });
   }
 
   global.familyChatTryOpenNativeApp = tryOpenNativeApp;
@@ -281,6 +302,13 @@
   }
   tryOpenNativeApp(null);
   askSwPending();
+  setTimeout(askSwPending, 600);
+  setTimeout(askSwPending, 2000);
+  if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+    navigator.serviceWorker.ready.then(function () {
+      askSwPending();
+    }).catch(function () {});
+  }
 
   if (navigator.serviceWorker) {
     navigator.serviceWorker.addEventListener('message', function (event) {
