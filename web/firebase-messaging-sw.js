@@ -11,7 +11,18 @@ firebase.initializeApp({
 
 const CALL_TAG_PREFIX = 'familychat-call-';
 const CALL_RING_MS = 3000;
+const PENDING_CACHE = 'familychat-pending-native';
+const PENDING_URL = '/app/__pending_native_open';
+const PENDING_TTL_MS = 90 * 1000;
 const activeCallTimers = new Map();
+
+self.addEventListener('install', function (event) {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', function (event) {
+  event.waitUntil(self.clients.claim());
+});
 
 function callTag(sessionId) {
   return CALL_TAG_PREFIX + String(sessionId || '0');
@@ -108,47 +119,81 @@ function stopCallRing(sessionId) {
     });
 }
 
-function focusExistingWebClient(serialized) {
+function savePendingNative(serialized) {
+  var payload = Object.assign({}, serialized, {
+    opened_from_tap: true,
+    saved_at: Date.now(),
+  });
+  return caches.open(PENDING_CACHE).then(function (cache) {
+    return cache.put(
+      PENDING_URL,
+      new Response(JSON.stringify(payload), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  }).catch(function () {});
+}
+
+function takePendingNative() {
+  return caches.open(PENDING_CACHE).then(function (cache) {
+    return cache.match(PENDING_URL).then(function (res) {
+      if (!res) return null;
+      return res.json().then(function (data) {
+        return cache.delete(PENDING_URL).then(function () {
+          var savedAt = Number(data && data.saved_at) || 0;
+          if (!savedAt || Date.now() - savedAt > PENDING_TTL_MS) return null;
+          return data;
+        });
+      });
+    });
+  }).catch(function () {
+    return null;
+  });
+}
+
+function postToWindowClients(serialized) {
+  var msg = Object.assign({ source: 'familychat-fcm-sw' }, serialized, {
+    opened_from_tap: true,
+  });
   return clients
     .matchAll({ type: 'window', includeUncontrolled: true })
     .then(function (list) {
       for (var i = 0; i < list.length; i++) {
-        var client = list[i];
         try {
-          client.postMessage(
-            Object.assign({ source: 'familychat-fcm-sw' }, serialized),
-          );
+          list[i].postMessage(msg);
         } catch (e) {}
-        if ('focus' in client) {
-          return client.focus();
-        }
       }
-      return null;
+      return list;
     });
 }
 
 function openNativeOrWeb(url, serialized) {
+  serialized.opened_from_tap = true;
   var abs;
   try {
     abs = new URL(url, self.registration.scope).href;
   } catch (e) {
     abs = url;
   }
-  return clients
-    .matchAll({ type: 'window', includeUncontrolled: true })
+  return savePendingNative(serialized)
+    .then(function () {
+      return postToWindowClients(serialized);
+    })
     .then(function (list) {
-      for (var i = 0; i < list.length; i++) {
-        var client = list[i];
-        if (typeof client.navigate === 'function') {
-          return client.navigate(abs).then(function (opened) {
-            if (opened && 'focus' in opened) return opened.focus();
-            return opened;
-          });
-        }
+      if (!list.length) {
+        return clients.openWindow(abs);
       }
-      return clients.openWindow(abs).then(function (opened) {
-        if (opened) return opened;
-        return focusExistingWebClient(serialized);
+      var client = list[0];
+      var nav =
+        typeof client.navigate === 'function'
+          ? client.navigate(abs).catch(function () {
+              return client;
+            })
+          : Promise.resolve(client);
+      return nav.then(function (opened) {
+        var target = opened || client;
+        if (target && 'focus' in target) return target.focus();
+        return target;
       });
     });
 }
@@ -273,5 +318,22 @@ self.addEventListener('message', function (event) {
   var data = event.data || {};
   if (data.type === 'familychat_call_stop') {
     stopCallRing(data.session_id);
+    return;
+  }
+  if (data.type === 'familychat_get_pending_native') {
+    event.waitUntil(
+      takePendingNative().then(function (payload) {
+        var reply = {
+          source: 'familychat-fcm-sw',
+          pending: true,
+          payload: payload,
+        };
+        if (event.ports && event.ports[0]) {
+          event.ports[0].postMessage(reply);
+        } else if (event.source) {
+          event.source.postMessage(reply);
+        }
+      }),
+    );
   }
 });
