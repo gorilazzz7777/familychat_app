@@ -29,6 +29,8 @@ import '../data/chat_attach_local_cache.dart';
 import '../data/chat_location_utils.dart';
 import '../data/active_chat_context.dart';
 import '../data/chat_network_status.dart';
+import '../data/chat_local_mutations.dart';
+import '../data/chat_mutation_coordinator.dart';
 import '../data/chat_offline_outbox.dart';
 import '../data/chat_offline_prefetch.dart';
 import '../data/chat_offline_sync.dart';
@@ -172,6 +174,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   _PendingFileDraft? _pendingFileDraft;
   int _tempIdCounter = -1;
   int _loadGeneration = 0;
+  int _messagesWatchGen = 0;
+  bool _awaitingFirstThreadSync = false;
   bool _selectionMode = false;
   final Set<int> _selectedMessageIds = {};
   List<Map<String, dynamic>> _pinnedMessages = [];
@@ -313,6 +317,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _replaceOptimisticMessage(delivery.tempMessageId!, delivery.message!);
         changed = true;
       }
+      if (delivery.messageId != null &&
+          delivery.message != null &&
+          delivery.tempMessageId == null) {
+        setState(() {
+          _messages = _messages.map((m) {
+            if (chatAsInt(m['id']) == delivery.messageId) {
+              return {...m, ...delivery.message!};
+            }
+            return m;
+          }).toList();
+        });
+        changed = true;
+      }
       if (delivery.messageId != null && delivery.reactions != null) {
         _applyMessageReactions(
           delivery.messageId!,
@@ -323,11 +340,30 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         );
         changed = true;
       }
+      if (delivery.pinnedMessages != null) {
+        _setPinnedMessages(delivery.pinnedMessages!);
+        unawaited(
+          ChatLocalMutations.savePinnedMessagesLocal(
+            widget.threadId,
+            delivery.pinnedMessages!,
+          ),
+        );
+        changed = true;
+      }
+      if (delivery.deletedMessageIds != null &&
+          delivery.deletedMessageIds!.isNotEmpty) {
+        _removeMessagesLocally(delivery.deletedMessageIds!);
+        changed = true;
+      }
     }
     if (changed) {
       await _persistMessageCache();
     }
     if (!mounted) return;
+    if (_localFirst) {
+      unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      return;
+    }
     if (ChatOfflineSync.instance.isOnline) {
       await _load(silent: true);
     }
@@ -371,7 +407,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_localFirst) {
       await _bindLocalMessages();
       unawaited(_applyOfflineSyncResults());
-      unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      if (_awaitingFirstThreadSync) {
+        await ChatSyncService.instance.syncThread(widget.threadId);
+        if (mounted && _loading) {
+          setState(() => _loading = false);
+        }
+        _awaitingFirstThreadSync = false;
+      } else {
+        unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      }
       unawaited(
         ChatSyncService.instance.syncHistoriesInBackground(
           prioritizeThreadId: widget.threadId,
@@ -453,98 +497,232 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final initial = await ChatLocalStore.instance.readMessages(widget.threadId);
     if (!mounted) return;
     if (initial.isNotEmpty) {
-      final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
-        widget.threadId,
-        initial,
-      );
+      final applied = await _buildMessagesFromSqliteRows(initial);
       if (!mounted) return;
+      final pins = await ChatLocalMutations.readPinnedMessagesLocal(
+        widget.threadId,
+      );
       setState(() {
-        _messages = sortChatMessages(hydrated);
+        _messages = applied;
+        if (pins.isNotEmpty) {
+          _pinnedMessages = pins;
+        }
         _loading = false;
       });
       unawaited(_refreshHasMoreOlder());
     } else {
-      setState(() => _loading = false);
+      // Keep skeleton until first sync — avoid empty flash then pop-in.
+      _awaitingFirstThreadSync = true;
     }
 
     unawaited(_refreshHasMoreOlder());
 
     await _messagesSub?.cancel();
     _messagesSub =
-        ChatLocalStore.instance.watchMessages(widget.threadId).listen((rows) async {
-      if (!mounted) return;
-      // Skip expensive bin hydrate when display fingerprint is unchanged.
-      final pendingLocal = _messages.where(chatMessageIsPending).toList();
-      final previewMerged = pendingLocal.isEmpty
-          ? rows
-          : chatMergeMessageLists(
-              rows,
-              pendingLocal,
-              currentUserId: _currentUserId,
-            );
-      final previewNext = chatReconcilePendingDuplicates(
-        previewMerged,
-        currentUserId: _currentUserId,
-      );
-      if (chatMessageListsDisplayEqual(_messages, previewNext) && !_loading) {
-        return;
-      }
-      final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
+        ChatLocalStore.instance.watchMessages(widget.threadId).listen((rows) {
+      unawaited(_onLocalMessagesWatch(rows));
+    });
+  }
+
+  Future<void> _onLocalMessagesWatch(List<Map<String, dynamic>> rows) async {
+    if (!mounted) return;
+    final gen = ++_messagesWatchGen;
+
+    final previewNext = _mergeSqliteWithMemoryPending(rows);
+    if (chatMessageListsDisplayEqual(_messages, previewNext) && !_loading) {
+      return;
+    }
+
+    final next = await _buildMessagesFromSqliteRows(rows);
+    if (!mounted || gen != _messagesWatchGen) return;
+
+    List<Map<String, dynamic>>? localPins;
+    if (_localFirst) {
+      localPins = await ChatLocalMutations.readPinnedMessagesLocal(
         widget.threadId,
-        rows,
       );
-      if (!mounted) return;
-      // Keep in-flight optimistic rows until they land in SQLite.
-      final merged = pendingLocal.isEmpty
-          ? hydrated
-          : chatMergeMessageLists(
-              hydrated,
-              pendingLocal,
-              currentUserId: _currentUserId,
-            );
-      final next = chatReconcilePendingDuplicates(
-        merged,
-        currentUserId: _currentUserId,
-      );
-      if (_localFirst && next.length < merged.length) {
-        final keptIds = <int>{
-          for (final m in next)
-            if (chatAsInt(m['id']) != null) chatAsInt(m['id'])!,
-        };
-        final dropped = <int>[];
-        for (final m in merged) {
-          final id = chatAsInt(m['id']);
-          if (id == null) continue;
-          if (chatMessageIsPending(m) &&
-              m['_scheduled'] != true &&
-              !keptIds.contains(id)) {
-            dropped.add(id);
+      if (!mounted || gen != _messagesWatchGen) return;
+    }
+
+    if (_localFirst) {
+      _scheduleDropReconciledPending(rows, next);
+    }
+
+    if (chatMessageListsDisplayEqual(_messages, next) && !_loading) {
+      if (localPins != null &&
+          !_pinnedListsEqual(_pinnedMessages, localPins)) {
+        setState(() {
+          _pinnedMessages = localPins!;
+          if (_pinnedIndex >= _pinnedMessages.length) {
+            _pinnedIndex =
+                _pinnedMessages.isEmpty ? 0 : _pinnedMessages.length - 1;
           }
-        }
-        if (dropped.isNotEmpty) {
-          unawaited(
-            ChatLocalStore.instance.deleteMessages(widget.threadId, dropped),
-          );
-        }
+        });
       }
-      if (!_followLiveTail) return;
-      if (chatMessageListsDisplayEqual(_messages, next) && !_loading) return;
-      final wasEmpty = _messages.isEmpty;
-      final oldNewest = chatNewestServerMessageId(_messages);
-      final newNewest = chatNewestServerMessageId(next);
-      setState(() {
-        _messages = next;
-        _loading = false;
-      });
-      if (wasEmpty ||
-          (newNewest != null && (oldNewest == null || newNewest > oldNewest))) {
-        _scrollToBottom();
-      }
-      if (newNewest != null &&
-          (oldNewest == null || newNewest > oldNewest)) {
-        unawaited(_markLatestRead(messageId: newNewest));
+      return;
+    }
+
+    final wasEmpty = _messages.isEmpty;
+    final oldNewest = chatNewestServerMessageId(_messages);
+    final newNewest = chatNewestServerMessageId(next);
+    final followTail = _followLiveTail;
+    setState(() {
+      _messages = next;
+      _loading = false;
+      if (localPins != null &&
+          !_pinnedListsEqual(_pinnedMessages, localPins)) {
+        _pinnedMessages = localPins!;
+        if (_pinnedIndex >= _pinnedMessages.length) {
+          _pinnedIndex =
+              _pinnedMessages.isEmpty ? 0 : _pinnedMessages.length - 1;
+        }
       }
     });
+    _awaitingFirstThreadSync = false;
+
+    if (followTail &&
+        (wasEmpty ||
+            (newNewest != null &&
+                (oldNewest == null || newNewest > oldNewest)))) {
+      _scrollToBottom();
+    }
+    if (newNewest != null &&
+        (oldNewest == null || newNewest > oldNewest)) {
+      unawaited(_markLatestRead(messageId: newNewest));
+    }
+  }
+
+  List<Map<String, dynamic>> _mergeSqliteWithMemoryPending(
+    List<Map<String, dynamic>> rows,
+  ) {
+    final pendingLocal = chatPendingToReinject(
+      memoryMessages: _messages,
+      sqliteRows: rows,
+    );
+    final merged = pendingLocal.isEmpty
+        ? rows
+        : chatMergeMessageLists(
+            rows,
+            pendingLocal,
+            currentUserId: _currentUserId,
+          );
+    return chatReconcilePendingDuplicates(
+      merged,
+      currentUserId: _currentUserId,
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _buildMessagesFromSqliteRows(
+    List<Map<String, dynamic>> rows,
+  ) async {
+    final pendingLocal = chatPendingToReinject(
+      memoryMessages: _messages,
+      sqliteRows: rows,
+    );
+    final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
+      widget.threadId,
+      rows,
+    );
+    final withPreviews = _preserveLocalPreviews(_messages, hydrated);
+    final merged = pendingLocal.isEmpty
+        ? withPreviews
+        : chatMergeMessageLists(
+            withPreviews,
+            pendingLocal,
+            currentUserId: _currentUserId,
+          );
+    return chatReconcilePendingDuplicates(
+      merged,
+      currentUserId: _currentUserId,
+    );
+  }
+
+  /// Keep in-memory local_bytes across SQLite round-trips (JSON drops Uint8List).
+  List<Map<String, dynamic>> _preserveLocalPreviews(
+    List<Map<String, dynamic>> previous,
+    List<Map<String, dynamic>> incoming,
+  ) {
+    if (previous.isEmpty) return incoming;
+    final prevById = <int, Map<String, dynamic>>{
+      for (final m in previous)
+        if (chatAsInt(m['id']) != null) chatAsInt(m['id'])!: m,
+    };
+    return [
+      for (final message in incoming)
+        _mergeAttachmentPreviews(prevById[chatAsInt(message['id'])], message),
+    ];
+  }
+
+  Map<String, dynamic> _mergeAttachmentPreviews(
+    Map<String, dynamic>? previous,
+    Map<String, dynamic> incoming,
+  ) {
+    if (previous == null) return incoming;
+    final prevAtts = chatAttachmentsOf(previous);
+    final nextAtts = chatAttachmentsOf(incoming);
+    if (prevAtts.isEmpty || nextAtts.isEmpty) return incoming;
+    var changed = false;
+    final out = <Map<String, dynamic>>[];
+    for (var i = 0; i < nextAtts.length; i++) {
+      final att = Map<String, dynamic>.from(nextAtts[i]);
+      if (i < prevAtts.length) {
+        final prev = prevAtts[i];
+        final existing = att['local_bytes'];
+        if (!isSafeUiPreviewBytes(existing) &&
+            isSafeUiPreviewBytes(prev['local_bytes'])) {
+          att['local_bytes'] = prev['local_bytes'];
+          changed = true;
+        }
+        final path = att['local_device_path']?.toString().trim() ?? '';
+        final prevPath = prev['local_device_path']?.toString().trim() ?? '';
+        if (path.isEmpty && prevPath.isNotEmpty) {
+          att['local_device_path'] = prevPath;
+          changed = true;
+        }
+      }
+      out.add(att);
+    }
+    if (!changed) return incoming;
+    return {...incoming, 'attachments': out};
+  }
+
+  void _scheduleDropReconciledPending(
+    List<Map<String, dynamic>> sqliteRows,
+    List<Map<String, dynamic>> next,
+  ) {
+    final pendingLocal = chatPendingToReinject(
+      memoryMessages: _messages,
+      sqliteRows: sqliteRows,
+    );
+    final merged = pendingLocal.isEmpty
+        ? sqliteRows
+        : chatMergeMessageLists(
+            sqliteRows,
+            pendingLocal,
+            currentUserId: _currentUserId,
+          );
+    if (next.length >= merged.length) return;
+    final keptIds = <int>{
+      for (final m in next)
+        if (chatAsInt(m['id']) != null) chatAsInt(m['id'])!,
+    };
+    final dropped = <int>[];
+    for (final m in merged) {
+      final id = chatAsInt(m['id']);
+      if (id == null) continue;
+      if (chatMessageIsPending(m) &&
+          m['_scheduled'] != true &&
+          !keptIds.contains(id)) {
+        final status = m['read_status']?.toString();
+        if (status == 'sending' || status == 'queued') continue;
+        dropped.add(id);
+      }
+    }
+    if (dropped.isNotEmpty) {
+      unawaited(
+        ChatLocalStore.instance.deleteMessages(widget.threadId, dropped),
+      );
+    }
   }
 
   /// Не показываем кэш, если он отстаёт от last_message в списке чатов
@@ -617,6 +795,45 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _ensureMessageLoaded(int messageId) async {
     if (_hasMessage(messageId)) return;
+
+    if (_localFirst) {
+      final rows = await ChatLocalStore.instance.readMessages(widget.threadId);
+      if (rows.any((m) => chatAsInt(m['id']) == messageId)) {
+        await _onLocalMessagesWatch(rows);
+        if (_hasMessage(messageId)) return;
+      }
+
+      await ChatSyncService.instance.syncThreadOlder(
+        widget.threadId,
+        beforeId: messageId + 1,
+      );
+      var afterSync = await ChatLocalStore.instance.readMessages(widget.threadId);
+      if (afterSync.any((m) => chatAsInt(m['id']) == messageId)) {
+        await _onLocalMessagesWatch(afterSync);
+        if (_hasMessage(messageId)) return;
+      }
+
+      var guard = 0;
+      var cursor =
+          await ChatLocalStore.instance.oldestServerMessageId(widget.threadId);
+      while (cursor != null && cursor > messageId && guard < 40) {
+        guard += 1;
+        await ChatSyncService.instance.syncThreadOlder(
+          widget.threadId,
+          beforeId: cursor,
+        );
+        afterSync = await ChatLocalStore.instance.readMessages(widget.threadId);
+        if (afterSync.any((m) => chatAsInt(m['id']) == messageId)) {
+          await _onLocalMessagesWatch(afterSync);
+          if (_hasMessage(messageId)) return;
+        }
+        final nextCursor =
+            await ChatLocalStore.instance.oldestServerMessageId(widget.threadId);
+        if (nextCursor == null || nextCursor >= cursor) break;
+        cursor = nextCursor;
+      }
+      return;
+    }
 
     final repo = ref.read(familychatRepositoryProvider);
     try {
@@ -763,14 +980,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_localFirst) {
       final rows = await ChatLocalStore.instance.readMessages(widget.threadId);
       if (!mounted) return;
-      final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
-        widget.threadId,
-        rows,
-      );
+      final next = await _buildMessagesFromSqliteRows(rows);
       if (!mounted) return;
       setState(() {
-        _messages = sortChatMessages(hydrated);
+        _messages = next;
         _showScrollToBottom = false;
+        _loading = false;
       });
       _scrollToBottomHintTimer?.cancel();
       _scrollToBottomHintTimer = null;
@@ -1225,21 +1440,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
       final incomingId = chatAsInt(map['id']);
       if (_localFirst) {
-        // ChatSyncService already upserts SQLite; watchMessages updates UI.
-        if (_currentUserId != null && senderId == _currentUserId) {
-          unawaited(ChatLocalStore.instance.clearPendingForThread(widget.threadId));
-        }
+        // ChatSyncService upserts SQLite; watchMessages applies reconcile.
+        // Never clearPendingForThread — that wiped unrelated in-flight shares.
         _maybeScheduleVoiceTranscriptPoll(map);
         unawaited(_markLatestRead(messageId: incomingId));
         return;
       }
       if (!mounted) return;
       setState(() {
-        var next = _messages;
-        if (_currentUserId != null && senderId == _currentUserId) {
-          next = next.where((m) => m['_pending'] != true).toList();
-        }
-        _messages = chatUpsertMessage(next, map);
+        final withIncoming = chatUpsertMessage(_messages, map);
+        _messages = chatReconcilePendingDuplicates(
+          withIncoming,
+          currentUserId: _currentUserId,
+        );
       });
       _maybeScheduleVoiceTranscriptPoll(map);
       _scrollToBottom();
@@ -1370,6 +1583,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final previous = _lastMarkedReadId;
     if (previous != null && lastId <= previous) return;
     _lastMarkedReadId = lastId;
+
+    if (_localFirst) {
+      await ChatLocalMutations.markThreadReadLocal(
+        widget.threadId,
+        lastMessageId: lastId,
+      );
+      await ChatOfflineOutbox.enqueueMarkRead(
+        threadId: widget.threadId,
+        lastMessageId: lastId,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      return;
+    }
+
     try {
       await ref.read(familychatRepositoryProvider).markThreadRead(
             widget.threadId,
@@ -1530,6 +1759,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (oldestId == null || oldestId <= 0) return;
 
     final need = (target - _messages.length).clamp(1, pageSize);
+    if (_localFirst) {
+      await ChatSyncService.instance.syncThreadOlder(
+        widget.threadId,
+        beforeId: oldestId,
+      );
+      if (!mounted || generation != _loadGeneration) return;
+      final rows = await ChatLocalStore.instance.readMessages(widget.threadId);
+      final applied = await _buildMessagesFromSqliteRows(rows);
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() {
+        _messages = sortChatMessages(applied);
+        if (_messages.length > target) {
+          _messages = _messages.sublist(_messages.length - target);
+        }
+      });
+      await _refreshHasMoreOlder();
+      unawaited(_persistMessageCache());
+      return;
+    }
     try {
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
             widget.threadId,
@@ -1975,6 +2223,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     required List<_OutgoingAttachment> attachments,
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
+    bool notifySilent = false,
+    int? voiceDurationMs,
+    String? voiceTranscript,
+    int? videoNoteDurationMs,
   }) async {
     await ChatOfflineOutbox.enqueueMessage(
       threadId: widget.threadId,
@@ -1982,6 +2234,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       body: caption.isEmpty ? null : caption,
       replyToMessageId: replyToMessageId,
       mentionedUserIds: mentionedUserIds,
+      notifySilent: notifySilent,
+      voiceDurationMs: voiceDurationMs,
+      voiceTranscript: voiceTranscript,
+      videoNoteDurationMs: videoNoteDurationMs,
       attachments: attachments
           .map(
             (att) => ChatOutboxAttachment(
@@ -1995,11 +2251,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _markOptimisticQueued(tempId);
     await _persistMessageCache();
     if (!mounted) return true;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Сообщение будет отправлено при появлении сети'),
-      ),
-    );
+    if (!_localFirst) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Сообщение будет отправлено при появлении сети'),
+        ),
+      );
+    }
     return true;
   }
 
@@ -2025,6 +2283,24 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     String? voiceTranscript,
     int? videoNoteDurationMs,
   }) async {
+    if (_localFirst) {
+      await _enqueueOfflineMessage(
+        tempId: tempId,
+        caption: caption,
+        attachments: attachments,
+        replyToMessageId: replyToMessageId,
+        mentionedUserIds: mentionedUserIds,
+        notifySilent: notifySilent,
+        voiceDurationMs: voiceDurationMs,
+        voiceTranscript: voiceTranscript,
+        videoNoteDurationMs: videoNoteDurationMs,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      return true;
+    }
+
     final repo = ref.read(familychatRepositoryProvider);
     final online = await ChatOfflineSync.instance.refreshOnline(repo);
     if (!online) {
@@ -2155,6 +2431,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           'filename': filename,
           'content_type': contentType,
           'local_bytes': bytes,
+          '_pending': true,
         },
       ],
       replyTo: replySnapshot,
@@ -2319,6 +2596,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                 d.thumbnailBytes!.isNotEmpty &&
                 d.thumbnailBytes!.length <= kSafeLocalPreviewMaxBytes)
               'local_bytes': d.thumbnailBytes,
+            '_pending': true,
           },
       ],
       replyTo: replySnapshot,
@@ -2381,6 +2659,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         if (item.localPath != null && item.localPath!.trim().isNotEmpty)
           'local_device_path': item.localPath,
         if (preview != null) 'local_bytes': preview,
+        '_pending': true,
       });
     }
 
@@ -2519,6 +2798,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           'content_type': recording.contentType,
           // Не кладём сырое видео в Image.memory — только placeholder до ответа сервера.
           'is_video_note': true,
+          '_pending': true,
         },
       ],
       replyTo: replySnapshot,
@@ -2594,13 +2874,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
     final editingId = _editingMessageId;
     if (editingId != null && fileDraft == null) {
-      // Редактирование существующего текстового сообщения.
       if (body.isEmpty) return;
       _stopTypingLocal();
       _controller.clear();
       setState(() {
         _editingMessageId = null;
+        _messages = _messages.map((m) {
+          final id = chatAsInt(m['id']);
+          if (id == editingId) {
+            return {...m, 'body': body};
+          }
+          return m;
+        }).toList();
       });
+      if (_localFirst) {
+        await ChatLocalMutations.patchMessageLocal(
+          widget.threadId,
+          editingId,
+          {'body': body},
+        );
+        await ChatOfflineOutbox.enqueueEditMessage(
+          threadId: widget.threadId,
+          messageId: editingId,
+          body: body,
+        );
+        await _persistMessageCache();
+        ChatMutationCoordinator.scheduleSync(
+          ref.read(familychatRepositoryProvider),
+        );
+        return;
+      }
       try {
         final repo = ref.read(familychatRepositoryProvider);
         final updated = await repo.updateThreadMessage(
@@ -2673,6 +2976,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             {
               'kind': 'file',
               'filename': fileDraft.filename,
+              '_pending': true,
             },
           ];
 
@@ -3015,6 +3319,26 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _pinMessage(int messageId) async {
+    final msg = _messages.firstWhere(
+      (m) => chatAsInt(m['id']) == messageId,
+      orElse: () => const {},
+    );
+    if (_localFirst) {
+      final pinEntry = msg.isNotEmpty
+          ? Map<String, dynamic>.from(msg)
+          : {'id': messageId};
+      final pins = [..._pinnedMessages, pinEntry];
+      _setPinnedMessages(pins);
+      await ChatLocalMutations.savePinnedMessagesLocal(widget.threadId, pins);
+      await ChatOfflineOutbox.enqueuePin(
+        threadId: widget.threadId,
+        messageId: messageId,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      return;
+    }
     try {
       final pins = await ref
           .read(familychatRepositoryProvider)
@@ -3037,6 +3361,21 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _unpinMessage(int messageId) async {
+    if (_localFirst) {
+      final pins = _pinnedMessages
+          .where((m) => chatAsInt(m['id']) != messageId)
+          .toList();
+      _setPinnedMessages(pins);
+      await ChatLocalMutations.savePinnedMessagesLocal(widget.threadId, pins);
+      await ChatOfflineOutbox.enqueueUnpin(
+        threadId: widget.threadId,
+        messageId: messageId,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      return;
+    }
     try {
       final pins = await ref
           .read(familychatRepositoryProvider)
@@ -3077,6 +3416,26 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
     if (ok != true || !mounted) return;
 
+    if (_localFirst) {
+      _removeMessagesLocally(messageIds);
+      await ChatLocalMutations.removeMessagesLocal(
+        widget.threadId,
+        messageIds,
+      );
+      await ChatOfflineOutbox.enqueueHideMessagesForMe(
+        threadId: widget.threadId,
+        messageIds: messageIds,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сообщение удалено')),
+      );
+      return;
+    }
+
     try {
       final hidden =
           await ref.read(familychatRepositoryProvider).hideMessagesForMe(
@@ -3116,6 +3475,28 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (messageId <= 0) return;
     _applyReactionToggleLocal(messageId, emoji);
     final repo = ref.read(familychatRepositoryProvider);
+
+    if (_localFirst) {
+      await ChatOfflineOutbox.enqueueReaction(
+        threadId: widget.threadId,
+        messageId: messageId,
+        emoji: emoji,
+      );
+      final reactions = _messages
+          .firstWhere(
+            (m) => chatAsInt(m['id']) == messageId,
+            orElse: () => const {},
+          )['reactions'];
+      await ChatLocalMutations.patchMessageLocal(
+        widget.threadId,
+        messageId,
+        {'reactions': reactions},
+      );
+      await _persistMessageCache();
+      ChatMutationCoordinator.scheduleSync(repo);
+      return;
+    }
+
     final online = await ChatOfflineSync.instance.refreshOnline(repo);
     if (!online) {
       await ChatOfflineOutbox.enqueueReaction(
@@ -3235,6 +3616,26 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ),
     );
     if (ok != true || !mounted) return;
+
+    if (_localFirst) {
+      _removeMessagesLocally(messageIds);
+      await ChatLocalMutations.removeMessagesLocal(
+        widget.threadId,
+        messageIds,
+      );
+      await ChatOfflineOutbox.enqueueDeleteMessages(
+        threadId: widget.threadId,
+        messageIds: messageIds,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Сообщение удалено')),
+      );
+      return;
+    }
 
     try {
       final deleted =
@@ -4124,67 +4525,69 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                           ),
                         ),
                       if (_canSend)
-                        Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (_aiComposing)
-                                const Padding(
-                                  padding: EdgeInsets.only(bottom: 8),
-                                  child: LinearProgressIndicator(),
-                                ),
-                              IgnorePointer(
-                                ignoring: _aiComposing,
-                                child: Opacity(
-                                  opacity: _aiComposing ? 0.55 : 1,
-                                  child: _isGroupLike
-                                      ? ChatMentionComposeInput(
-                                          controller: _controller,
-                                          focusNode: _inputFocus,
-                                          onAttach: _pickAttachment,
-                                          onSend:
-                                              (options, mentionedUserIds) =>
-                                                  unawaited(
-                                            _handleComposeSend(
-                                              mentionedUserIds:
-                                                  mentionedUserIds,
-                                              options: options,
-                                            ),
-                                          ),
-                                          onVoiceComplete: _sendVoiceMessage,
-                                          forceSendButton:
-                                              _pendingFileDraft != null ||
-                                                  _editingMessageId != null,
-                                          voiceTranscriptionEnabled:
-                                              _voiceTranscriptionEnabled,
-                                          showAiAssist:
-                                              _viewerIndividualPremium,
-                                          participants: _mentionParticipants,
-                                          currentUserId: _currentUserId,
-                                        )
-                                      : ChatComposeInput(
-                                          controller: _controller,
-                                          focusNode: _inputFocus,
-                                          onAttach: _pickAttachment,
-                                          onSend: (options) => unawaited(
-                                            _handleComposeSend(
-                                              options: options,
-                                            ),
-                                          ),
-                                          onVoiceComplete: _sendVoiceMessage,
-                                          forceSendButton:
-                                              _pendingFileDraft != null ||
-                                                  _editingMessageId != null,
-                                          voiceTranscriptionEnabled:
-                                              _voiceTranscriptionEnabled,
-                                          showAiAssist:
-                                              _viewerIndividualPremium,
-                                        ),
-                                ),
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (_aiComposing)
+                              const Padding(
+                                padding: EdgeInsets.fromLTRB(8, 0, 8, 8),
+                                child: LinearProgressIndicator(),
                               ),
-                            ],
-                          ),
+                            IgnorePointer(
+                              ignoring: _aiComposing,
+                              child: Opacity(
+                                opacity: _aiComposing ? 0.55 : 1,
+                                child: _isGroupLike
+                                    ? ChatMentionComposeInput(
+                                        controller: _controller,
+                                        focusNode: _inputFocus,
+                                        onAttach: _pickAttachment,
+                                        onSend:
+                                            (options, mentionedUserIds) =>
+                                                unawaited(
+                                          _handleComposeSend(
+                                            mentionedUserIds:
+                                                mentionedUserIds,
+                                            options: options,
+                                          ),
+                                        ),
+                                          onVoiceComplete: _sendVoiceMessage,
+                                          onVideoCircleComplete:
+                                              _sendVideoCircleMessage,
+                                        forceSendButton:
+                                            _pendingFileDraft != null ||
+                                                _editingMessageId != null,
+                                        voiceTranscriptionEnabled:
+                                            _voiceTranscriptionEnabled,
+                                        showAiAssist:
+                                            _viewerIndividualPremium,
+                                        participants: _mentionParticipants,
+                                        currentUserId: _currentUserId,
+                                      )
+                                    : ChatComposeInput(
+                                        controller: _controller,
+                                        focusNode: _inputFocus,
+                                        onAttach: _pickAttachment,
+                                        onSend: (options) => unawaited(
+                                          _handleComposeSend(
+                                            options: options,
+                                          ),
+                                        ),
+                                          onVoiceComplete: _sendVoiceMessage,
+                                          onVideoCircleComplete:
+                                              _sendVideoCircleMessage,
+                                        forceSendButton:
+                                            _pendingFileDraft != null ||
+                                                _editingMessageId != null,
+                                        voiceTranscriptionEnabled:
+                                            _voiceTranscriptionEnabled,
+                                        showAiAssist:
+                                            _viewerIndividualPremium,
+                                      ),
+                              ),
+                            ),
+                          ],
                         ),
                     ],
                   ),

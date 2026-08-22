@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 
 import '../../../core/config/env.dart';
 import '../../../core/debug/upload_image_exif_log.dart';
+import '../../../core/media/direct_s3_upload.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/settings/app_settings.dart';
@@ -1184,6 +1186,95 @@ class FamilyChatRepository {
       filename: filename,
       readVia: 'upload_chat_attachment',
     );
+    try {
+      return await _uploadChatAttachmentDirect(
+        threadId,
+        bytes: bytes,
+        filename: filename,
+        contentType: contentType ?? 'application/octet-stream',
+        photoExif: photoExif,
+        onSendProgress: onSendProgress,
+      );
+    } catch (e, st) {
+      debugPrint(
+        'Direct S3 chat upload failed, legacy fallback: $e\n$st',
+      );
+      return _uploadChatAttachmentLegacy(
+        threadId,
+        bytes: bytes,
+        filename: filename,
+        contentType: contentType,
+        photoExif: photoExif,
+        onSendProgress: onSendProgress,
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>> _uploadChatAttachmentDirect(
+    int threadId, {
+    required Uint8List bytes,
+    required String filename,
+    required String contentType,
+    Map<String, dynamic>? photoExif,
+    void Function(int sent, int total)? onSendProgress,
+  }) async {
+    final hash = sha256Hex(bytes);
+    final prepareBody = <String, dynamic>{
+      'filename': filename,
+      'content_type': contentType,
+      'content_hash': hash,
+    };
+    if (photoExif != null && photoExif.isNotEmpty) {
+      prepareBody['photo_exif'] = jsonEncode(photoExif);
+    }
+    final prepare = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/attachments/prepare/',
+      data: prepareBody,
+    );
+    final data = prepare.data ?? {};
+    if (data['status'] == 'ready') {
+      final att = data['attachment'];
+      if (att is Map<String, dynamic>) return att;
+      throw StateError('prepare ready without attachment');
+    }
+    final uploadUrl = data['upload_url']?.toString() ?? '';
+    final storageKey = data['storage_key']?.toString() ?? '';
+    if (uploadUrl.isEmpty || storageKey.isEmpty) {
+      throw StateError('prepare missing upload_url');
+    }
+    final headers = data['headers'];
+    await putBytesToPresignedUrl(
+      uploadUrl: uploadUrl,
+      bytes: bytes,
+      headers: headers is Map ? Map<String, dynamic>.from(headers) : const {},
+      onSendProgress: onSendProgress,
+    );
+    final completeBody = <String, dynamic>{
+      'storage_key': storageKey,
+      'content_hash': hash,
+      'filename': filename,
+      'content_type': contentType,
+      'size_bytes': bytes.length,
+      'kind': data['kind']?.toString() ?? 'file',
+    };
+    if (photoExif != null && photoExif.isNotEmpty) {
+      completeBody['photo_exif'] = jsonEncode(photoExif);
+    }
+    final complete = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/attachments/complete/',
+      data: completeBody,
+    );
+    return complete.data!;
+  }
+
+  Future<Map<String, dynamic>> _uploadChatAttachmentLegacy(
+    int threadId, {
+    required Uint8List bytes,
+    required String filename,
+    String? contentType,
+    Map<String, dynamic>? photoExif,
+    void Function(int sent, int total)? onSendProgress,
+  }) async {
     final formMap = <String, dynamic>{
       'file': MultipartFile.fromBytes(
         bytes,

@@ -6,6 +6,8 @@ import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/media/media_incoming_sync.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'active_chat_context.dart';
+import 'chat_bootstrap_coordinator.dart';
+import 'chat_local_mutations.dart';
 import 'chat_realtime_utils.dart';
 import 'familychat_realtime.dart';
 
@@ -192,6 +194,9 @@ class ChatSyncService {
       if (chatMessageIsPending(row) &&
           row['_scheduled'] != true &&
           !keptIds.contains(id)) {
+        final status = row['read_status']?.toString();
+        // Активный outbox не трогаем по слабому матчу — только после deliver.
+        if (status == 'sending' || status == 'queued') continue;
         toDelete.add(id);
       }
     }
@@ -204,10 +209,20 @@ class ChatSyncService {
     var repo = _repo;
     if (!isSupported) return;
     if (repo == null) {
-      // Hub may open before ChatSyncService.start(); allow a one-shot no-op.
       debugPrint('[ChatSyncService] syncHub skipped: repo not attached yet');
       return;
     }
+    if (_syncingHub) return;
+    await ChatBootstrapCoordinator.instance.syncHubOnce(
+      repo,
+      body: () => _syncHubBody(repo, prefetchMessages: prefetchMessages),
+    );
+  }
+
+  Future<void> _syncHubBody(
+    FamilyChatRepository repo, {
+    required bool prefetchMessages,
+  }) async {
     if (_syncingHub) return;
     _syncingHub = true;
     try {
@@ -224,6 +239,8 @@ class ChatSyncService {
         for (final thread in threads) {
           final id = chatAsInt(thread['id']);
           if (id == null) continue;
+          final unread = chatAsInt(thread['unread_count']) ?? 0;
+          if (unread <= 0) continue;
           unawaited(syncThread(id));
         }
       }
@@ -256,6 +273,12 @@ class ChatSyncService {
     try {
       final page = await repo.threadMessages(threadId, limit: limit);
       await ChatLocalStore.instance.upsertMessages(threadId, page.messages);
+      if (page.pinnedMessages.isNotEmpty) {
+        await ChatLocalMutations.savePinnedMessagesLocal(
+          threadId,
+          page.pinnedMessages,
+        );
+      }
       final keepIds = <int>{
         for (final m in page.messages)
           if (chatAsInt(m['id']) != null && chatAsInt(m['id'])! > 0)
@@ -323,7 +346,7 @@ class ChatSyncService {
         await syncThread(id, limit: 80);
         await syncThreadHistory(
           id,
-          maxPages: isPriority ? 24 : 4,
+          maxPages: isPriority ? 6 : 2,
         );
         if (!isPriority) othersDone += 1;
         // Yield so UI/WS stay responsive.

@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
+import '../../../core/local_db/chat_local_store.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_network_status.dart';
 import 'chat_offline_outbox.dart';
 import 'chat_offline_prefetch.dart';
+import 'chat_realtime_utils.dart';
 import 'chat_scheduled_send_service.dart';
 
 /// Координатор офлайн-кэша чатов и синхронизации очереди.
@@ -68,6 +72,20 @@ class ChatOfflineSync extends ChangeNotifier {
       }
 
       await ChatOfflinePrefetch.run(repo);
+      if (ChatLocalStore.isSupported) {
+        final threads = await ChatLocalStore.instance.readThreads();
+        final unreadIds = <int>[];
+        for (final thread in threads) {
+          final id = chatAsInt(thread['id']);
+          if (id == null) continue;
+          if ((chatAsInt(thread['unread_count']) ?? 0) > 0) {
+            unreadIds.add(id);
+          }
+        }
+        if (unreadIds.isNotEmpty) {
+          unawaited(ChatOfflinePrefetch.prefetchThreads(repo, unreadIds));
+        }
+      }
       await ChatScheduledSendService.instance.dispatchDue();
       notifyListeners();
     } finally {

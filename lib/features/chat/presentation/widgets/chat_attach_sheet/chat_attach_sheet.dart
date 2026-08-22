@@ -251,7 +251,6 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
                         onSelectedChanged: _setSelected,
                         scrollController: scrollController,
                         expanded: _expanded,
-                        onRecordVideoCircle: widget.onRecordVideoCircle,
                       ),
                     ChatAttachMode.file => AttachFileTab(
                         selected: _selected,

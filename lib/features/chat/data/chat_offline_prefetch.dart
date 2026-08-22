@@ -23,7 +23,45 @@ abstract final class ChatOfflinePrefetch {
       ]);
       final threads = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
-      // SQLite is source of truth — no dual-write to JSON for chat lists/messages.
+      await ChatLocalStore.instance.replaceThreads(threads);
+      await ChatLocalStore.instance.replaceMembers(members);
+    } catch (_) {}
+  }
+
+  /// Сообщения и медиа — только для указанных чатов (unread / открытый).
+  static Future<void> prefetchThreads(
+    FamilyChatRepository repo,
+    Iterable<int> threadIds,
+  ) async {
+    final ids = threadIds.toSet();
+    if (ids.isEmpty) return;
+    try {
+      for (final threadId in ids) {
+        try {
+          final page = await repo.threadMessages(
+            threadId,
+            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
+          );
+          await ChatLocalStore.instance.upsertMessages(
+            threadId,
+            page.messages,
+          );
+          unawaited(MediaIncomingSync.ensureMessages(page.messages));
+          await prefetchThreadMedia(repo, threadId, page.messages);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  @Deprecated('Use run() + prefetchThreads()')
+  static Future<void> runWithAllThreadMessages(FamilyChatRepository repo) async {
+    try {
+      final results = await Future.wait([
+        repo.chatThreads(),
+        repo.members(),
+      ]);
+      final threads = (results[0] as List).cast<Map<String, dynamic>>();
+      final members = (results[1] as List).cast<Map<String, dynamic>>();
       await ChatLocalStore.instance.replaceThreads(threads);
       await ChatLocalStore.instance.replaceMembers(members);
 

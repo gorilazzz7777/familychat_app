@@ -1,7 +1,7 @@
 name: familychat_app
 description: Family Space — семейный мессенджер с родством.
 publish_to: 'none'
-version: 1.1.0+6
+version: 1.2.0+7
 
 environment:
   sdk: ^3.5.0

@@ -3,12 +3,15 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../../../core/widgets/family_input_styles.dart';
+import '../../../profile/presentation/widgets/chat_avatar.dart';
+import '../../data/chat_send_options.dart';
+import '../record_video_circle_screen.dart';
+import 'chat_circle_recording_overlay.dart';
 import 'chat_compose_action_button.dart';
 import 'chat_compose_circle_button.dart';
 import 'chat_emoji_picker_sheet.dart';
+import 'chat_video_circle_session.dart';
 import 'chat_voice_recording_compose_slot.dart';
-import '../../data/chat_send_options.dart';
-import '../../../profile/presentation/widgets/chat_avatar.dart';
 
 /// Участник чата для автодополнения @упоминаний.
 class ChatMentionParticipant {
@@ -32,6 +35,7 @@ class ChatMentionComposeInput extends StatefulWidget {
     required this.onAttach,
     required this.onSend,
     required this.onVoiceComplete,
+    this.onVideoCircleComplete,
     this.forceSendButton = false,
     this.voiceTranscriptionEnabled = false,
     this.showAiAssist = false,
@@ -49,6 +53,8 @@ class ChatMentionComposeInput extends StatefulWidget {
     int durationMs, {
     String? encoderName,
   }) onVoiceComplete;
+  final Future<void> Function(VideoCircleRecording recording)?
+      onVideoCircleComplete;
   final bool forceSendButton;
   final bool voiceTranscriptionEnabled;
   final bool showAiAssist;
@@ -64,26 +70,96 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
   final Set<int> _mentionedUserIds = {};
   int? _mentionAtIndex;
   String _mentionQuery = '';
+  final _recordingHost = ChatComposeRecordingHost();
+  final _circleSession = ChatVideoCircleSession();
   ChatVoiceRecordingChange _recording = const ChatVoiceRecordingChange(
     isRecording: false,
     durationMs: 0,
   );
+  bool _emojiOpen = false;
+  OverlayEntry? _circleOverlay;
 
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_onTextChanged);
+    widget.focusNode.addListener(_onFocusChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatMentionComposeInput oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.focusNode != widget.focusNode) {
+      oldWidget.focusNode.removeListener(_onFocusChanged);
+      widget.focusNode.addListener(_onFocusChanged);
+    }
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_onTextChanged);
+    widget.focusNode.removeListener(_onFocusChanged);
+    _removeCircleOverlay();
+    _circleSession.dispose();
     super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (widget.focusNode.hasFocus && _emojiOpen) {
+      setState(() => _emojiOpen = false);
+    }
   }
 
   void _onRecordingChanged(ChatVoiceRecordingChange change) {
     if (!mounted) return;
-    setState(() => _recording = change);
+    setState(() {
+      _recording = change;
+      if (change.isRecording) _emojiOpen = false;
+    });
+    _syncCircleOverlay();
+  }
+
+  void _removeCircleOverlay() {
+    _circleOverlay?.remove();
+    _circleOverlay = null;
+  }
+
+  void _syncCircleOverlay() {
+    final need = _recording.isRecording &&
+        _recording.kind == ChatComposeRecordKind.circle;
+    if (!need) {
+      _removeCircleOverlay();
+      return;
+    }
+    if (_circleOverlay == null) {
+      _circleOverlay = OverlayEntry(
+        builder: (ctx) {
+          return IgnorePointer(
+            ignoring: !_recording.locked,
+            child: ChatCircleRecordingOverlay(
+              session: _circleSession,
+              durationMs: _recording.durationMs,
+              locked: _recording.locked,
+              onCancel: () => _recordingHost.cancelLocked?.call(),
+              onSend: () => _recordingHost.sendLocked?.call(),
+            ),
+          );
+        },
+      );
+      Overlay.of(context, rootOverlay: true).insert(_circleOverlay!);
+    } else {
+      _circleOverlay!.markNeedsBuild();
+    }
+  }
+
+  void _toggleEmoji() {
+    if (_emojiOpen) {
+      setState(() => _emojiOpen = false);
+      widget.focusNode.requestFocus();
+      return;
+    }
+    widget.focusNode.unfocus();
+    setState(() => _emojiOpen = true);
   }
 
   List<ChatMentionParticipant> get _suggestions {
@@ -185,99 +261,127 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (suggestions.isNotEmpty)
-          Material(
-            elevation: 2,
-            borderRadius: BorderRadius.circular(12),
-            color: theme.colorScheme.surface,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 220),
-              child: ListView.separated(
-                shrinkWrap: true,
-                padding: EdgeInsets.zero,
-                itemCount: suggestions.length,
-                separatorBuilder: (_, __) => Divider(
-                  height: 1,
-                  color: theme.colorScheme.outlineVariant.withValues(alpha: 0.4),
-                ),
-                itemBuilder: (context, index) {
-                  final p = suggestions[index];
-                  return ListTile(
-                    dense: true,
-                    leading: ChatAvatar(
-                      name: p.displayName,
-                      avatarUrl: p.avatarUrl.isEmpty ? null : p.avatarUrl,
-                      radius: 16,
-                    ),
-                    title: Text(
-                      p.displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    onTap: () => _insertMention(p),
-                  );
-                },
-              ),
-            ),
-          ),
-        if (suggestions.isNotEmpty) const SizedBox(height: 6),
-        Material(
-          type: MaterialType.transparency,
-          clipBehavior: Clip.none,
-          child: DecoratedBox(
-            decoration: FamilyInputStyles.composeShellDecoration(theme),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                if (!_recording.isRecording)
-                  ChatComposeCircleButton(
-                    tooltip: 'Вложение',
-                    icon: Icons.attach_file,
-                    iconColor: theme.colorScheme.onSurface,
-                    onTap: widget.onAttach,
-                  ),
-                Expanded(
-                  child: _recording.isRecording
-                      ? ChatVoiceRecordingComposeSlot(
-                          durationMs: _recording.durationMs,
-                          willCancel: _recording.willCancel,
-                        )
-                      : TextField(
-                          controller: widget.controller,
-                          focusNode: widget.focusNode,
-                          keyboardType: TextInputType.multiline,
-                          minLines: 1,
-                          maxLines: 5,
-                          textInputAction: TextInputAction.newline,
-                          decoration: InputDecoration(
-                            hintText: widget.hintText,
-                            border: InputBorder.none,
-                            enabledBorder: InputBorder.none,
-                            focusedBorder: InputBorder.none,
-                            contentPadding:
-                                const EdgeInsets.fromLTRB(0, 10, 0, 10),
-                            isDense: true,
+        Padding(
+          padding: EdgeInsets.fromLTRB(8, 8, 8, _emojiOpen ? 0 : 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (suggestions.isNotEmpty)
+                Material(
+                  elevation: 2,
+                  borderRadius: BorderRadius.circular(12),
+                  color: theme.colorScheme.surface,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      padding: EdgeInsets.zero,
+                      itemCount: suggestions.length,
+                      separatorBuilder: (_, __) => Divider(
+                        height: 1,
+                        color: theme.colorScheme.outlineVariant
+                            .withValues(alpha: 0.4),
+                      ),
+                      itemBuilder: (context, index) {
+                        final p = suggestions[index];
+                        return ListTile(
+                          dense: true,
+                          leading: ChatAvatar(
+                            name: p.displayName,
+                            avatarUrl:
+                                p.avatarUrl.isEmpty ? null : p.avatarUrl,
+                            radius: 16,
                           ),
-                        ),
-                ),
-                if (!_recording.isRecording)
-                  ChatComposeEmojiButton(
-                    controller: widget.controller,
-                    focusNode: widget.focusNode,
+                          title: Text(
+                            p.displayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          onTap: () => _insertMention(p),
+                        );
+                      },
+                    ),
                   ),
-                ChatComposeActionButton(
-                  controller: widget.controller,
-                  onSend: (options) => _handleSend(options),
-                  onVoiceComplete: widget.onVoiceComplete,
-                  forceSendButton: widget.forceSendButton,
-                  voiceTranscriptionEnabled: widget.voiceTranscriptionEnabled,
-                  showAiAssist: widget.showAiAssist,
-                  onRecordingChanged: _onRecordingChanged,
                 ),
-              ],
-            ),
+              if (suggestions.isNotEmpty) const SizedBox(height: 6),
+              Material(
+                type: MaterialType.transparency,
+                clipBehavior: Clip.none,
+                child: DecoratedBox(
+                  decoration: FamilyInputStyles.composeShellDecoration(theme),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (!_recording.isRecording)
+                        ChatComposeCircleButton(
+                          tooltip: 'Вложение',
+                          icon: Icons.attach_file,
+                          iconColor: theme.colorScheme.onSurface,
+                          onTap: widget.onAttach,
+                        ),
+                      Expanded(
+                        child: _recording.isRecording
+                            ? ChatVoiceRecordingComposeSlot(
+                                durationMs: _recording.durationMs,
+                                willCancel: _recording.willCancel,
+                                locked: _recording.locked,
+                                kind: _recording.kind,
+                                onCancel: () =>
+                                    _recordingHost.cancelLocked?.call(),
+                              )
+                            : TextField(
+                                controller: widget.controller,
+                                focusNode: widget.focusNode,
+                                keyboardType: TextInputType.multiline,
+                                minLines: 1,
+                                maxLines: 5,
+                                textInputAction: TextInputAction.newline,
+                                readOnly: _emojiOpen,
+                                showCursor: true,
+                                onTap: () {
+                                  if (_emojiOpen) {
+                                    setState(() => _emojiOpen = false);
+                                  }
+                                },
+                                decoration: InputDecoration(
+                                  hintText: widget.hintText,
+                                  border: InputBorder.none,
+                                  enabledBorder: InputBorder.none,
+                                  focusedBorder: InputBorder.none,
+                                  contentPadding:
+                                      const EdgeInsets.fromLTRB(0, 10, 0, 10),
+                                  isDense: true,
+                                ),
+                              ),
+                      ),
+                      if (!_recording.isRecording)
+                        ChatComposeEmojiButton(
+                          open: _emojiOpen,
+                          onPressed: _toggleEmoji,
+                        ),
+                      ChatComposeActionButton(
+                        controller: widget.controller,
+                        onSend: (options) => _handleSend(options),
+                        onVoiceComplete: widget.onVoiceComplete,
+                        onVideoCircleComplete: widget.onVideoCircleComplete,
+                        forceSendButton: widget.forceSendButton,
+                        voiceTranscriptionEnabled:
+                            widget.voiceTranscriptionEnabled,
+                        showAiAssist: widget.showAiAssist,
+                        onRecordingChanged: _onRecordingChanged,
+                        circleSession: _circleSession,
+                        recordingHost: _recordingHost,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
+        if (_emojiOpen && !_recording.isRecording)
+          ChatEmojiPickerPanel(controller: widget.controller),
       ],
     );
   }

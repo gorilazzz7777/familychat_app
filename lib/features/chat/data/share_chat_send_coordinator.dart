@@ -100,8 +100,17 @@ class ShareChatSendCoordinator {
             final path = local['local_device_path']?.toString().trim() ?? '';
             if (path.isNotEmpty) att['local_device_path'] = path;
             final bytes = local['local_bytes'];
+            final attachmentId = chatAsInt(att['id']);
             if (isSafeUiPreviewBytes(bytes)) {
-              att['local_bytes'] = bytes;
+              final preview = bytes as Uint8List;
+              if (attachmentId != null && attachmentId > 0) {
+                await FamilyChatLocalCache.saveAttachmentBytes(
+                  threadId,
+                  attachmentId,
+                  preview,
+                );
+              }
+              att['local_bytes'] = preview;
             }
           }
           nextAtts.add(att);

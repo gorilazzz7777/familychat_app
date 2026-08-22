@@ -59,6 +59,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   List<Map<String, dynamic>> _threads = [];
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
   bool _loading = true;
+  bool _hubBootstrapDone = false;
   bool _searchVisible = false;
   String _searchQuery = '';
   final _searchController = TextEditingController();
@@ -79,10 +80,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   /// Обновить список чатов (например при возврате на вкладку).
   Future<void> refresh({bool silent = true}) async {
     if (_localFirst) {
-      await ChatSyncService.instance.syncHub(prefetchMessages: true);
-      if (_threads.isEmpty) {
-        await _load(silent: silent);
+      await _hydrateFromCache();
+      if (_threads.isEmpty && mounted) {
+        setState(() => _loading = true);
       }
+      final repo = ref.read(familychatRepositoryProvider);
+      unawaited(ChatSyncService.instance.syncHub(prefetchMessages: false));
+      unawaited(ChatOfflineSync.instance.run(repo));
       return;
     }
     await _load(silent: silent);
@@ -106,20 +110,25 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     }
   }
 
-  /// Open SQLite, sync via ChatSyncService when ready, else HTTP [_load].
   Future<void> _bootstrapLocalHub() async {
     final db = await ChatLocalStore.instance.ensureOpen();
     if (!mounted) return;
     if (db == null) {
-      // Drift/Wasm failed — fall back to network list.
+      _hubBootstrapDone = true;
       await _load(silent: false);
       return;
     }
+    final existing = await ChatLocalStore.instance.readThreads();
+    if (existing.isEmpty && mounted) {
+      setState(() => _loading = true);
+    }
     await ChatSyncService.instance.syncHub(prefetchMessages: true);
     if (!mounted) return;
-    if (_threads.isEmpty) {
-      // Sync may have no-op'd before ChatSyncService.start() set the repo.
-      await _load(silent: true);
+    final repo = ref.read(familychatRepositoryProvider);
+    unawaited(ChatOfflineSync.instance.run(repo));
+    _hubBootstrapDone = true;
+    if (_loading && _threads.isNotEmpty && mounted) {
+      setState(() => _loading = false);
     }
   }
 
@@ -246,7 +255,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     if (!mounted) return;
     if (ChatOfflineSync.instance.isOnline) {
       if (_localFirst) {
-        unawaited(ChatSyncService.instance.syncHub(prefetchMessages: true));
+        unawaited(ChatSyncService.instance.syncHub(prefetchMessages: false));
+        final repo = ref.read(familychatRepositoryProvider);
+        unawaited(ChatOfflineSync.instance.run(repo));
       } else {
         unawaited(_load(silent: true));
       }
@@ -258,7 +269,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       if (!mounted) return;
       setState(() {
         _threads = _sortedThreads(threads);
-        _loading = false;
+        // Empty emission before bootstrap must not flash "Нет чатов".
+        if (threads.isNotEmpty || _hubBootstrapDone) {
+          _loading = false;
+        }
       });
       invalidateChatUnreadTotal(ref);
     });

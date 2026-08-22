@@ -9,9 +9,12 @@ class AttachCameraTile extends StatelessWidget {
   const AttachCameraTile({
     super.key,
     required this.onTap,
+    this.onLongPress,
   });
 
   final VoidCallback onTap;
+  /// Долгое нажатие — запись видео (системная камера).
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -19,6 +22,7 @@ class AttachCameraTile extends StatelessWidget {
       color: Colors.black,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Stack(
           fit: StackFit.expand,
           children: [

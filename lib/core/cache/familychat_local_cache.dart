@@ -194,7 +194,18 @@ abstract final class FamilyChatLocalCache {
         }
         final att = chatNormalizeMap(Map<dynamic, dynamic>.from(item));
         final existing = att['local_bytes'];
-        if (existing is! Uint8List || existing.isEmpty) {
+        Uint8List? asBytes;
+        if (existing is Uint8List && existing.isNotEmpty) {
+          asBytes = existing;
+        } else if (existing is List && existing.isNotEmpty) {
+          try {
+            asBytes = Uint8List.fromList(existing.cast<int>());
+            att['local_bytes'] = asBytes;
+          } catch (_) {
+            asBytes = null;
+          }
+        }
+        if (asBytes == null || asBytes.isEmpty) {
           final attachmentId = chatAsInt(att['id']);
           if (attachmentId != null && attachmentId > 0) {
             final stored = await readAttachmentBytes(threadId, attachmentId);

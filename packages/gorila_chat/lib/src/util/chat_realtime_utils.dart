@@ -51,6 +51,15 @@ bool chatMessageIsPending(Map<String, dynamic> message) {
 /// True when [pending] is an optimistic/outbox row that already landed as [server].
 ///
 /// Used to drop stuck "sending" duplicates after offline delivery or WS echo.
+///
+/// Must stay strict: media shares often have empty body + N attachments and would
+/// otherwise match an older photo/video from the same user and vanish from the UI.
+///
+/// Server echo may arrive slightly before local `created_at` (clock / network),
+/// but must not match a share that is clearly older than the optimistic row.
+const int kChatPendingMatchMaxFutureSkewMs = 90 * 1000;
+const int kChatPendingMatchMaxPastSkewMs = 2 * 1000;
+
 bool chatPendingMatchesServer(
   Map<String, dynamic> pending,
   Map<String, dynamic> server, {
@@ -74,6 +83,19 @@ bool chatPendingMatchesServer(
     return false;
   }
 
+  final pendingCreated =
+      DateTime.tryParse(pending['created_at']?.toString() ?? '');
+  final serverCreated =
+      DateTime.tryParse(server['created_at']?.toString() ?? '');
+  if (pendingCreated != null && serverCreated != null) {
+    final deltaMs =
+        serverCreated.difference(pendingCreated).inMilliseconds;
+    // Server older than pending → previous share, not this delivery.
+    if (deltaMs < -kChatPendingMatchMaxPastSkewMs) return false;
+    // Server too far in the future relative to pending → unrelated.
+    if (deltaMs > kChatPendingMatchMaxFutureSkewMs) return false;
+  }
+
   final pendingBody = (pending['body']?.toString() ?? '').trim();
   final serverBody = (server['body']?.toString() ?? '').trim();
   if (pendingBody != serverBody) return false;
@@ -90,9 +112,7 @@ bool chatPendingMatchesServer(
   );
   if (pendingReply != serverReply) return false;
 
-  if (chatAttachmentsOf(pending).length != chatAttachmentsOf(server).length) {
-    return false;
-  }
+  if (!_chatPendingAttachmentsMatch(pending, server)) return false;
 
   // Location / voice metadata fingerprint (when present on either side).
   final pendingMeta = pending['metadata'];
@@ -111,6 +131,72 @@ bool chatPendingMatchesServer(
     if (pVoice != sVoice) return false;
   }
 
+  return true;
+}
+
+bool _chatPendingAttachmentsMatch(
+  Map<String, dynamic> pending,
+  Map<String, dynamic> server,
+) {
+  final pendingAtts = chatAttachmentsOf(pending);
+  final serverAtts = chatAttachmentsOf(server);
+  if (pendingAtts.length != serverAtts.length) return false;
+  if (pendingAtts.isEmpty) return true;
+
+  // Upload-in-flight share: filename may change after compress; match kind only.
+  // Directional time in chatPendingMatchesServer blocks older same-shape media.
+  final uploading = pendingAtts.any((a) => a['_pending'] == true);
+
+  for (var i = 0; i < pendingAtts.length; i++) {
+    final p = pendingAtts[i];
+    final s = serverAtts[i];
+    final pKind = (p['kind']?.toString() ?? '').trim();
+    final sKind = (s['kind']?.toString() ?? '').trim();
+    // If optimistic side knows the kind, server must match (empty ≠ wildcard).
+    if (pKind.isNotEmpty && pKind != sKind) {
+      return false;
+    }
+    if (uploading) continue;
+    final pName = (p['filename']?.toString() ?? '').trim();
+    final sName = (s['filename']?.toString() ?? '').trim();
+    // Same for filename: missing server name must not match a named pending
+    // share (local cache often omits filenames on older rows).
+    if (pName.isNotEmpty && pName != sName) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Pending rows from in-memory UI that should be merged back into a SQLite
+/// snapshot. Share uploads are always seeded first — if the temp id is gone
+/// from SQLite, [replacePending] already finished and reinject would duplicate.
+List<Map<String, dynamic>> chatPendingToReinject({
+  required List<Map<String, dynamic>> memoryMessages,
+  required List<Map<String, dynamic>> sqliteRows,
+}) {
+  final sqliteIds = <int>{
+    for (final row in sqliteRows)
+      if (chatAsInt(row['id']) != null) chatAsInt(row['id'])!,
+  };
+  return [
+    for (final message in memoryMessages)
+      if (chatMessageIsPending(message) &&
+          message['_scheduled'] != true &&
+          _shouldReinjectPending(message, sqliteIds))
+        message,
+  ];
+}
+
+bool _shouldReinjectPending(Map<String, dynamic> pending, Set<int> sqliteIds) {
+  final id = chatAsInt(pending['id']);
+  if (id == null) return true;
+  if (sqliteIds.contains(id)) return true;
+  final uploading =
+      chatAttachmentsOf(pending).any((a) => a['_pending'] == true);
+  // Share media: seeded before UI; absence means deliver replaced it.
+  if (uploading) return false;
+  // Text/file optimistic may exist only in memory for one frame before upsert.
   return true;
 }
 

@@ -23,6 +23,7 @@ import 'chat_message_tap_target.dart';
 import 'chat_mention_text.dart';
 import 'chat_network_image.dart';
 import 'chat_swipe_to_reply.dart';
+import 'chat_video_note_player.dart';
 import 'chat_voice_message_player.dart';
 
 class ChatMessageBubble extends StatelessWidget {
@@ -96,6 +97,54 @@ class ChatMessageBubble extends StatelessWidget {
 
   static const double _avatarSize = 32;
 
+  bool _attachmentIsVideoNote(Map<String, dynamic> a) {
+    if (a['kind'] != 'video' && !isVideoAttachment(a)) return false;
+    final videoNote = messageMetadata['video_note'];
+    return a['is_video_note'] == true ||
+        a['is_video_note'] == 'true' ||
+        videoNote is Map;
+  }
+
+  Map<String, dynamic>? _videoNoteAttachment() {
+    for (final a in attachments) {
+      if (_attachmentIsVideoNote(a)) return a;
+    }
+    return null;
+  }
+
+  int? _videoNoteDurationMs() {
+    final videoNote = messageMetadata['video_note'];
+    if (videoNote is Map) {
+      final raw = videoNote['duration_ms'];
+      if (raw is int) return raw;
+      return int.tryParse('$raw');
+    }
+    return null;
+  }
+
+  /// Кружок без подписи и другого контента — рисуем без цветного пузыря.
+  bool _isStandaloneVideoNote() {
+    final note = _videoNoteAttachment();
+    if (note == null) return false;
+    if (_showBody(body, forward)) return false;
+    if (replyTo != null || forward != null || location != null) return false;
+    if (_linkPreviewUrl() != null) return false;
+    var skippedNote = false;
+    for (final a in attachments) {
+      if (_attachmentIsVideoNote(a) &&
+          !skippedNote &&
+          (note['id'] == null || a['id'] == note['id'])) {
+        skippedNote = true;
+        continue;
+      }
+      if (isVoiceAttachment(a, messageMetadata: messageMetadata)) return false;
+      if (chatAttachmentLooksLikeImage(a)) return false;
+      if (a['kind'] == 'video' || isVideoAttachment(a)) return false;
+      if (a['kind'] == 'file') return false;
+    }
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -119,11 +168,67 @@ class ChatMessageBubble extends StatelessWidget {
     const tailWidth = 8.0;
     final hasCaption = _showBody(body, forward);
     final hasVisualMedia = _hasVisualMedia();
+    final standaloneVideoNote = _isStandaloneVideoNote();
     final framePad = hasVisualMedia ? 2.0 : 10.0;
     // Место под хвостик всегда — иначе пузыри без хвостика шире.
     final contentMaxWidth = maxBubbleWidth - framePad * 2 - tailWidth;
 
-    Widget bubble = ClipPath(
+    final Widget bubble;
+    if (standaloneVideoNote) {
+      final note = _videoNoteAttachment()!;
+      final noteMetaColor = isMine
+          ? theme.colorScheme.primary.withValues(alpha: 0.9)
+          : theme.colorScheme.onSurfaceVariant;
+      bubble = ChatMessageTapTarget(
+        // Короткий тап — воспроизведение кружка; меню — по long-press.
+        onTap: selectionMode ? onTap : null,
+        onLongPress: selectionMode ? null : onLongPress,
+        child: Column(
+          crossAxisAlignment:
+              isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ChatVideoNotePlayer(
+              threadId: threadId,
+              attachment: note,
+              durationMs: _videoNoteDurationMs(),
+              interactive: !selectionMode,
+            ),
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (scheduledAt != null) ...[
+                    Icon(Icons.schedule, size: 13, color: noteMetaColor),
+                    const SizedBox(width: 4),
+                    Text(
+                      timeFmt.format(scheduledAt!.toLocal()),
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: noteMetaColor),
+                    ),
+                  ] else if (createdAt != null)
+                    Text(
+                      timeFmt.format(createdAt!.toLocal()),
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: noteMetaColor),
+                    ),
+                  if (isMine && readStatus != null) ...[
+                    const SizedBox(width: 4),
+                    ChatMessageReadStatusIcon(
+                      status: readStatus!,
+                      color: noteMetaColor,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    } else {
+      bubble = ClipPath(
       clipper: ChatBubbleClipper(
         isMine: isMine,
         showTail: showTail,
@@ -263,6 +368,7 @@ class ChatMessageBubble extends StatelessWidget {
         ),
       ),
     );
+    }
 
     return ChatSwipeToReply(
       onReply: selectionMode ? null : onSwipeReply,
@@ -332,7 +438,11 @@ class ChatMessageBubble extends StatelessWidget {
                           ? Alignment.centerRight
                           : Alignment.centerLeft,
                       child: ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+                        constraints: BoxConstraints(
+                          maxWidth: standaloneVideoNote
+                              ? screenWidth - 16
+                              : maxBubbleWidth,
+                        ),
                         child: Stack(
                           clipBehavior: Clip.none,
                           children: [
@@ -518,20 +628,29 @@ class ChatMessageBubble extends StatelessWidget {
           ),
         );
       } else if (a['kind'] == 'video' || isVideoAttachment(a)) {
-        final videoNote = messageMetadata['video_note'];
-        final isCircle = a['is_video_note'] == true ||
-            videoNote is Map ||
-            a['is_video_note'] == 'true';
-        out.add(
-          _ChatVideoAttachmentPreview(
-            threadId: threadId,
-            attachment: a,
-            maxWidth: maxWidth,
-            circular: isCircle,
-            borderRadius: mediaRadius,
-            onOpen: onImageTap != null ? () => onImageTap!(a) : null,
-          ),
-        );
+        final isCircle = _attachmentIsVideoNote(a);
+        if (isCircle) {
+          out.add(
+            ChatVideoNotePlayer(
+              threadId: threadId,
+              attachment: a,
+              durationMs: _videoNoteDurationMs(),
+              idleSize: (maxWidth * 0.72).clamp(160.0, 220.0),
+              interactive: !selectionMode,
+            ),
+          );
+        } else {
+          out.add(
+            _ChatVideoAttachmentPreview(
+              threadId: threadId,
+              attachment: a,
+              maxWidth: maxWidth,
+              circular: false,
+              borderRadius: mediaRadius,
+              onOpen: onImageTap != null ? () => onImageTap!(a) : null,
+            ),
+          );
+        }
       } else {
         out.add(
           InkWell(

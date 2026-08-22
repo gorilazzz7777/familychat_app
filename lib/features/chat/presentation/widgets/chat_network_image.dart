@@ -113,7 +113,6 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   bool get _useBytesPath {
-    if (kIsWeb) return true;
     return _imageUrl(ref.read(familychatRepositoryProvider)).isEmpty;
   }
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../../core/cache/familychat_local_cache.dart';
@@ -62,6 +63,10 @@ class ChatOfflineOutbox {
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
     List<ChatOutboxAttachment> attachments = const [],
+    bool notifySilent = false,
+    int? voiceDurationMs,
+    String? voiceTranscript,
+    int? videoNoteDurationMs,
   }) async {
     final items = await _readItems();
     final attachmentMeta = <Map<String, dynamic>>[];
@@ -85,6 +90,158 @@ class ChatOfflineOutbox {
       if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
       if (mentionedUserIds.isNotEmpty) 'mentioned_user_ids': mentionedUserIds,
       if (attachmentMeta.isNotEmpty) 'attachments': attachmentMeta,
+      if (notifySilent) 'notify_silent': true,
+      if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
+      if (voiceTranscript != null && voiceTranscript.isNotEmpty)
+        'voice_transcript': voiceTranscript,
+      if (videoNoteDurationMs != null)
+        'video_note_duration_ms': videoNoteDurationMs,
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueueMarkRead({
+    required int threadId,
+    required int lastMessageId,
+  }) async {
+    final items = await _readItems();
+    items.removeWhere(
+      (item) =>
+          item['kind']?.toString() == 'mark_read' &&
+          chatAsInt(item['thread_id']) == threadId,
+    );
+    items.add({
+      'id': _nextId(),
+      'kind': 'mark_read',
+      'thread_id': threadId,
+      'last_message_id': lastMessageId,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueueDeleteMessages({
+    required int threadId,
+    required List<int> messageIds,
+  }) async {
+    if (messageIds.isEmpty) return;
+    final items = await _readItems();
+    items.add({
+      'id': _nextId(),
+      'kind': 'delete_messages',
+      'thread_id': threadId,
+      'message_ids': messageIds,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueueHideMessagesForMe({
+    required int threadId,
+    required List<int> messageIds,
+  }) async {
+    if (messageIds.isEmpty) return;
+    final items = await _readItems();
+    items.add({
+      'id': _nextId(),
+      'kind': 'hide_messages',
+      'thread_id': threadId,
+      'message_ids': messageIds,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueuePin({
+    required int threadId,
+    required int messageId,
+  }) async {
+    final items = await _readItems();
+    items.add({
+      'id': _nextId(),
+      'kind': 'pin',
+      'thread_id': threadId,
+      'message_id': messageId,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueueUnpin({
+    required int threadId,
+    required int messageId,
+  }) async {
+    final items = await _readItems();
+    items.add({
+      'id': _nextId(),
+      'kind': 'unpin',
+      'thread_id': threadId,
+      'message_id': messageId,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueueEditMessage({
+    required int threadId,
+    required int messageId,
+    required String body,
+  }) async {
+    final items = await _readItems();
+    items.add({
+      'id': _nextId(),
+      'kind': 'edit_message',
+      'thread_id': threadId,
+      'message_id': messageId,
+      'body': body,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueueMute({
+    required int threadId,
+    required String muteKey,
+  }) async {
+    final items = await _readItems();
+    items.add({
+      'id': _nextId(),
+      'kind': 'mute',
+      'thread_id': threadId,
+      'mute': muteKey,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueueQuietHours({
+    required int threadId,
+    required String start,
+    required String end,
+    required int utcOffsetMinutes,
+  }) async {
+    final items = await _readItems();
+    items.add({
+      'id': _nextId(),
+      'kind': 'quiet_hours',
+      'thread_id': threadId,
+      'start': start,
+      'end': end,
+      'utc_offset_minutes': utcOffsetMinutes,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
+    await _writeItems(items);
+  }
+
+  static Future<void> enqueueClearQuietHours({
+    required int threadId,
+  }) async {
+    final items = await _readItems();
+    items.add({
+      'id': _nextId(),
+      'kind': 'clear_quiet_hours',
+      'thread_id': threadId,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
     });
     await _writeItems(items);
   }
@@ -162,6 +319,47 @@ class ChatOfflineOutbox {
           if (result != null) delivered.add(result);
           continue;
         }
+        if (kind == 'mark_read') {
+          await _deliverMarkRead(repo, item);
+          continue;
+        }
+        if (kind == 'delete_messages') {
+          final result = await _deliverDeleteMessages(repo, item);
+          if (result != null) delivered.add(result);
+          continue;
+        }
+        if (kind == 'hide_messages') {
+          final result = await _deliverHideMessages(repo, item);
+          if (result != null) delivered.add(result);
+          continue;
+        }
+        if (kind == 'pin') {
+          final result = await _deliverPin(repo, item, pin: true);
+          if (result != null) delivered.add(result);
+          continue;
+        }
+        if (kind == 'unpin') {
+          final result = await _deliverPin(repo, item, pin: false);
+          if (result != null) delivered.add(result);
+          continue;
+        }
+        if (kind == 'edit_message') {
+          final result = await _deliverEditMessage(repo, item);
+          if (result != null) delivered.add(result);
+          continue;
+        }
+        if (kind == 'mute') {
+          await _deliverMute(repo, item);
+          continue;
+        }
+        if (kind == 'quiet_hours') {
+          await _deliverQuietHours(repo, item);
+          continue;
+        }
+        if (kind == 'clear_quiet_hours') {
+          await _deliverClearQuietHours(repo, item);
+          continue;
+        }
         remaining.add(item);
       } catch (error) {
         remaining.add(item);
@@ -214,6 +412,10 @@ class ChatOfflineOutbox {
       attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
       replyToMessageId: replyTo,
       mentionedUserIds: mentioned.isEmpty ? null : mentioned,
+      notifySilent: item['notify_silent'] == true,
+      voiceDurationMs: chatAsInt(item['voice_duration_ms']),
+      voiceTranscript: item['voice_transcript']?.toString(),
+      videoNoteDurationMs: chatAsInt(item['video_note_duration_ms']),
     );
 
     if (ChatLocalStore.isSupported) {
@@ -257,6 +459,132 @@ class ChatOfflineOutbox {
           .toList(),
     );
   }
+
+  static Future<void> _deliverMarkRead(
+    FamilyChatRepository repo,
+    Map<String, dynamic> item,
+  ) async {
+    final threadId = chatAsInt(item['thread_id']);
+    final lastId = chatAsInt(item['last_message_id']);
+    if (threadId == null || lastId == null) return;
+    await repo.markThreadRead(threadId, lastMessageId: lastId);
+  }
+
+  static Future<ChatOutboxDelivery?> _deliverDeleteMessages(
+    FamilyChatRepository repo,
+    Map<String, dynamic> item,
+  ) async {
+    final threadId = chatAsInt(item['thread_id']);
+    final ids = chatAsIntList(item['message_ids']);
+    if (threadId == null || ids.isEmpty) return null;
+    final deleted = await repo.deleteMessages(threadId, ids);
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.deleteMessages(threadId, deleted);
+    }
+    return ChatOutboxDelivery(
+      threadId: threadId,
+      deletedMessageIds: deleted,
+    );
+  }
+
+  static Future<ChatOutboxDelivery?> _deliverHideMessages(
+    FamilyChatRepository repo,
+    Map<String, dynamic> item,
+  ) async {
+    final threadId = chatAsInt(item['thread_id']);
+    final ids = chatAsIntList(item['message_ids']);
+    if (threadId == null || ids.isEmpty) return null;
+    final hidden = await repo.hideMessagesForMe(threadId, ids);
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.deleteMessages(threadId, hidden);
+    }
+    return ChatOutboxDelivery(
+      threadId: threadId,
+      deletedMessageIds: hidden,
+    );
+  }
+
+  static Future<ChatOutboxDelivery?> _deliverPin(
+    FamilyChatRepository repo,
+    Map<String, dynamic> item, {
+    required bool pin,
+  }) async {
+    final threadId = chatAsInt(item['thread_id']);
+    final messageId = chatAsInt(item['message_id']);
+    if (threadId == null || messageId == null) return null;
+    final pins = pin
+        ? await repo.pinMessage(threadId, messageId)
+        : await repo.unpinMessage(threadId, messageId);
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.metaSet(
+        'pins_v1_$threadId',
+        jsonEncode(pins),
+      );
+    }
+    return ChatOutboxDelivery(
+      threadId: threadId,
+      pinnedMessages: pins,
+    );
+  }
+
+  static Future<ChatOutboxDelivery?> _deliverEditMessage(
+    FamilyChatRepository repo,
+    Map<String, dynamic> item,
+  ) async {
+    final threadId = chatAsInt(item['thread_id']);
+    final messageId = chatAsInt(item['message_id']);
+    final body = item['body']?.toString() ?? '';
+    if (threadId == null || messageId == null || body.isEmpty) return null;
+    final updated = await repo.updateThreadMessage(
+      threadId,
+      messageId,
+      body: body,
+    );
+    if (ChatLocalStore.isSupported) {
+      await ChatLocalStore.instance.upsertMessage({
+        ...updated,
+        'thread_id': threadId,
+      });
+    }
+    return ChatOutboxDelivery(
+      threadId: threadId,
+      messageId: messageId,
+      message: updated,
+    );
+  }
+
+  static Future<void> _deliverMute(
+    FamilyChatRepository repo,
+    Map<String, dynamic> item,
+  ) async {
+    final threadId = chatAsInt(item['thread_id']);
+    final mute = item['mute']?.toString() ?? 'off';
+    if (threadId == null) return;
+    await repo.setThreadMute(threadId, mute);
+  }
+
+  static Future<void> _deliverQuietHours(
+    FamilyChatRepository repo,
+    Map<String, dynamic> item,
+  ) async {
+    final threadId = chatAsInt(item['thread_id']);
+    if (threadId == null) return;
+    await repo.setThreadQuietHours(
+      threadId,
+      start: item['start']?.toString() ?? '22:00',
+      end: item['end']?.toString() ?? '08:00',
+      utcOffsetMinutes: chatAsInt(item['utc_offset_minutes']) ?? 180,
+    );
+  }
+
+  static Future<void> _deliverClearQuietHours(
+    FamilyChatRepository repo,
+    Map<String, dynamic> item,
+  ) async {
+    final threadId = chatAsInt(item['thread_id']);
+    if (threadId == null) return;
+    await repo.clearThreadQuietHours(threadId);
+  }
 }
 
 class ChatOutboxAttachment {
@@ -278,6 +606,8 @@ class ChatOutboxDelivery {
     this.message,
     this.messageId,
     this.reactions,
+    this.deletedMessageIds,
+    this.pinnedMessages,
   });
 
   final int threadId;
@@ -285,4 +615,6 @@ class ChatOutboxDelivery {
   final Map<String, dynamic>? message;
   final int? messageId;
   final List<Map<String, dynamic>>? reactions;
+  final List<int>? deletedMessageIds;
+  final List<Map<String, dynamic>>? pinnedMessages;
 }

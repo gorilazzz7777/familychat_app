@@ -18,6 +18,12 @@ import 'chat_call_screen.dart';
 import 'widgets/chat_image_viewer.dart';
 import 'widgets/chat_link_preview_tile.dart';
 import 'widgets/chat_network_image.dart';
+import '../../../core/local_db/chat_local_store.dart';
+import '../data/chat_local_mutations.dart';
+import '../data/chat_mutation_coordinator.dart';
+import '../data/chat_offline_outbox.dart';
+import '../data/chat_offline_sync.dart';
+import '../../familychat/data/familychat_repository.dart';
 import '../../gallery/presentation/gallery_media_thumbnail.dart';
 import '../../gallery/presentation/widgets/gallery_mosaic_layout.dart';
 
@@ -319,10 +325,32 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   }
 
   Future<void> _mute(String key) async {
+    final repo = ref.read(familychatRepositoryProvider);
+    if (ChatLocalStore.isSupported) {
+      setState(() {
+        _notificationsEnabled = key == 'off';
+      });
+      await ChatLocalMutations.patchThreadNotificationsLocal(
+        widget.threadId,
+        {'notifications_enabled': key == 'off'},
+      );
+      await ChatOfflineOutbox.enqueueMute(
+        threadId: widget.threadId,
+        muteKey: key,
+      );
+      ChatMutationCoordinator.scheduleSync(repo);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(key == 'off'
+              ? 'Уведомления включены'
+              : 'Уведомления отключены'),
+        ),
+      );
+      return;
+    }
     try {
-      await ref
-          .read(familychatRepositoryProvider)
-          .setThreadMute(widget.threadId, key);
+      await repo.setThreadMute(widget.threadId, key);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -430,6 +458,38 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     if (!mounted || saved == null) return;
     try {
       final repo = ref.read(familychatRepositoryProvider);
+      if (ChatLocalStore.isSupported) {
+        if (saved) {
+          await ChatOfflineOutbox.enqueueQuietHours(
+            threadId: widget.threadId,
+            start: _formatHm(start),
+            end: _formatHm(end),
+            utcOffsetMinutes: DateTime.now().timeZoneOffset.inMinutes,
+          );
+          setState(() {
+            _quietHoursStart = _formatHm(start);
+            _quietHoursEnd = _formatHm(end);
+          });
+        } else {
+          await ChatOfflineOutbox.enqueueClearQuietHours(
+            threadId: widget.threadId,
+          );
+          setState(() {
+            _quietHoursStart = null;
+            _quietHoursEnd = null;
+          });
+        }
+        ChatMutationCoordinator.scheduleSync(repo);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(saved
+                ? 'Тихие часы: с ${_formatHm(start)} до ${_formatHm(end)}'
+                : 'Тихие часы отключены'),
+          ),
+        );
+        return;
+      }
       if (saved) {
         await repo.setThreadQuietHours(
           widget.threadId,

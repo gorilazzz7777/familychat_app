@@ -55,6 +55,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
   final List<Map<String, dynamic>> _pendingSignals = [];
   final List<Map<String, dynamic>> _pendingIce = [];
   bool _speakerOn = false;
+  bool _micMuted = false;
   bool _showingMicHint = false;
   bool _showingCamHint = false;
   bool _localVideoEnabled = false;
@@ -372,6 +373,16 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
     }
   }
 
+  void _toggleMic() {
+    final stream = _localStream;
+    if (stream == null || _busy) return;
+    final nextMuted = !_micMuted;
+    for (final track in stream.getAudioTracks()) {
+      track.enabled = !nextMuted;
+    }
+    setState(() => _micMuted = nextMuted);
+  }
+
   Future<void> _cleanup() async {
     if (!kIsWeb) {
       try {
@@ -664,6 +675,11 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
               spacing: 12,
               runSpacing: 12,
               children: [
+                FilledButton.tonalIcon(
+                  onPressed: _busy ? null : _toggleMic,
+                  icon: Icon(_micMuted ? Icons.mic_off : Icons.mic),
+                  label: Text(_micMuted ? 'Микрофон выкл.' : 'Микрофон'),
+                ),
                 if (!kIsWeb)
                   FilledButton.tonalIcon(
                     onPressed: _busy

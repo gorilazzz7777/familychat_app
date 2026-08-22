@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -12,6 +14,7 @@ import '../../../../profile/presentation/read_picked_image_bytes.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
 import '../../../../../core/media/image_upload_pipeline.dart';
 import '../../../../../core/widgets/app_skeletons.dart';
+import 'attach_camera_capture_screen.dart';
 import 'attach_camera_tile.dart';
 import 'chat_attach_models.dart';
 
@@ -24,14 +27,12 @@ class AttachGalleryTab extends StatefulWidget {
     required this.onSelectedChanged,
     required this.scrollController,
     required this.expanded,
-    this.onRecordVideoCircle,
   });
 
   final List<ChatAttachSelectionItem> selected;
   final AttachItemsChanged onSelectedChanged;
   final ScrollController scrollController;
   final bool expanded;
-  final VoidCallback? onRecordVideoCircle;
 
   @override
   State<AttachGalleryTab> createState() => _AttachGalleryTabState();
@@ -468,80 +469,63 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     widget.onSelectedChanged([...widget.selected, item]);
   }
 
-  Future<void> _openCamera() async {
-    final mode = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('Фото'),
-              onTap: () => Navigator.pop(ctx, 'photo'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.videocam_outlined),
-              title: const Text('Видео'),
-              onTap: () => Navigator.pop(ctx, 'video'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.radio_button_checked),
-              title: const Text('Кружок'),
-              onTap: () => Navigator.pop(ctx, 'circle'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (mode == null || !mounted) return;
-    if (mode == 'circle') {
-      widget.onRecordVideoCircle?.call();
+  Future<void> _openCameraCapture() async {
+    if (kIsWeb) {
+      await _openCameraPhotoWeb();
       return;
     }
+    final item = await AttachCameraCaptureScreen.open(context);
+    if (item == null || !mounted) return;
+    widget.onSelectedChanged([...widget.selected, item]);
+  }
+
+  /// Web: системный пикер (свой camera-screen на web не используем).
+  Future<void> _openCameraPhotoWeb() async {
     final picker = ImagePicker();
-    if (mode == 'video') {
-      final picked = await picker.pickVideo(
-        source: ImageSource.camera,
-        maxDuration: const Duration(minutes: 30),
-      );
-      if (picked == null) return;
-      final bytes = await readPickedImageBytes(picked);
-      if (bytes.isEmpty) return;
-      final item = ChatAttachSelectionItem(
-        id: 'cam_v_${DateTime.now().microsecondsSinceEpoch}',
-        filename: picked.name,
-        bytes: bytes,
-        contentType: picked.mimeType ?? contentTypeForFilename(picked.name),
-        localPath: picked.path,
-        kind: 'video',
-      );
-      widget.onSelectedChanged([...widget.selected, item]);
-    } else {
-      final picked = await picker.pickImage(
-        source: ImageSource.camera,
-        requestFullMetadata: true,
-      );
-      if (picked == null) return;
-      final bytes = await readPickedImageBytes(picked);
-      if (bytes.isEmpty) return;
-      final thumb = await compressImageBytes(
-        bytes,
-        maxSide: 200,
-        quality: 55,
-        localPath: picked.path,
-      );
-      final item = ChatAttachSelectionItem(
-        id: 'cam_i_${DateTime.now().microsecondsSinceEpoch}',
-        filename: picked.name,
-        bytes: bytes,
-        thumbnailBytes: thumb,
-        contentType: picked.mimeType ?? contentTypeForFilename(picked.name),
-        localPath: picked.path,
-        kind: 'image',
-      );
-      widget.onSelectedChanged([...widget.selected, item]);
-    }
+    final picked = await picker.pickImage(
+      source: ImageSource.camera,
+      requestFullMetadata: true,
+    );
+    if (picked == null) return;
+    final bytes = await readPickedImageBytes(picked);
+    if (bytes.isEmpty) return;
+    final thumb = await compressImageBytes(
+      bytes,
+      maxSide: 200,
+      quality: 55,
+      localPath: picked.path,
+    );
+    final item = ChatAttachSelectionItem(
+      id: 'cam_i_${DateTime.now().microsecondsSinceEpoch}',
+      filename: picked.name,
+      bytes: bytes,
+      thumbnailBytes: thumb,
+      contentType: picked.mimeType ?? contentTypeForFilename(picked.name),
+      localPath: picked.path,
+      kind: 'image',
+    );
+    widget.onSelectedChanged([...widget.selected, item]);
+  }
+
+  Future<void> _openCameraVideoWeb() async {
+    HapticFeedback.mediumImpact();
+    final picker = ImagePicker();
+    final picked = await picker.pickVideo(
+      source: ImageSource.camera,
+      maxDuration: const Duration(minutes: 30),
+    );
+    if (picked == null) return;
+    final bytes = await readPickedImageBytes(picked);
+    if (bytes.isEmpty) return;
+    final item = ChatAttachSelectionItem(
+      id: 'cam_v_${DateTime.now().microsecondsSinceEpoch}',
+      filename: picked.name,
+      bytes: bytes,
+      contentType: picked.mimeType ?? contentTypeForFilename(picked.name),
+      localPath: picked.path,
+      kind: 'video',
+    );
+    widget.onSelectedChanged([...widget.selected, item]);
   }
 
   Future<void> _webPickGallery() async {
@@ -593,7 +577,12 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
             child: Row(
               children: [
                 Expanded(
-                  child: AttachCameraTile(onTap: _openCamera),
+                  child: AttachCameraTile(
+                    onTap: () => unawaited(_openCameraCapture()),
+                    onLongPress: kIsWeb
+                        ? () => unawaited(_openCameraVideoWeb())
+                        : () => unawaited(_openCameraCapture()),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -723,7 +712,12 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
               itemCount: _assets.length + 1 + (_loadingMore ? 1 : 0),
               itemBuilder: (context, index) {
                 if (index == 0) {
-                  return AttachCameraTile(onTap: _openCamera);
+                  return AttachCameraTile(
+                    onTap: () => unawaited(_openCameraCapture()),
+                    onLongPress: kIsWeb
+                        ? () => unawaited(_openCameraVideoWeb())
+                        : () => unawaited(_openCameraCapture()),
+                  );
                 }
                 final assetIndex = index - 1;
                 if (assetIndex >= _assets.length) {

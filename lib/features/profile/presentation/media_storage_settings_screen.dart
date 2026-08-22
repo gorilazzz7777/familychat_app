@@ -12,87 +12,299 @@ class MediaStorageSettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(appSettingsProvider);
     final theme = Theme.of(context);
-    final muted = theme.textTheme.bodyMedium?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-    );
 
     return Scaffold(
       appBar: FamilyAppBar.build(title: 'Фото и кэш'),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(8, 8, 8, 32),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
-          SwitchListTile(
-            value: settings.autoSaveIncomingToGallery,
-            title: const Text('Сохранять входящие в Галерею'),
-            subtitle: const Text(
-              'Чужие фото и видео копируются в альбом FamilyChat. '
-              'Свои с этого телефона не дублируются. '
-              '«Скачать» на полном экране работает всегда.',
+          _SettingsCard(
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Сохранять входящие в Галерею',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+                _HelpButton(
+                  title: 'Сохранять входящие в Галерею',
+                  body:
+                      'Чужие фото и видео копируются в альбом FamilyChat. '
+                      'Свои с этого телефона не дублируются. '
+                      '«Скачать» на полном экране работает всегда.',
+                ),
+                Switch.adaptive(
+                  value: settings.autoSaveIncomingToGallery,
+                  onChanged: (value) {
+                    ref
+                        .read(appSettingsProvider.notifier)
+                        .setAutoSaveIncomingToGallery(value);
+                  },
+                ),
+              ],
             ),
-            onChanged: (value) {
-              ref
-                  .read(appSettingsProvider.notifier)
-                  .setAutoSaveIncomingToGallery(value);
-            },
           ),
-          const Divider(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: Text('Срок кэша', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 20),
+          _SectionHeader(
+            title: 'Срок кэша',
+            help:
+                'Превью в чате и альбомах. После срока файл удаляется, '
+                'пока снова не откроете фото.',
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text(
-              'Превью в чате и альбомах. После срока файл удаляется, '
-              'пока снова не откроете фото.',
-              style: muted,
-            ),
-          ),
-          RadioGroup<MediaCacheStaleOption>(
-            groupValue: settings.mediaCacheStale,
+          const SizedBox(height: 8),
+          _OptionSelect<MediaCacheStaleOption>(
+            value: settings.mediaCacheStale,
+            options: MediaCacheStaleOption.values,
+            labelOf: (option) => option.label,
+            sheetTitle: 'Срок кэша',
             onChanged: (next) {
-              if (next == null) return;
               ref.read(appSettingsProvider.notifier).setMediaCacheStale(next);
             },
-            child: Column(
-              children: [
-                for (final option in MediaCacheStaleOption.values)
-                  RadioListTile<MediaCacheStaleOption>(
-                    value: option,
-                    title: Text(option.label),
-                  ),
-              ],
-            ),
           ),
-          const Divider(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: Text('Размер кэша', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 20),
+          _SectionHeader(
+            title: 'Размер кэша',
+            help:
+                'Когда место кончится, сначала уйдут давно не открывавшиеся файлы.',
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text(
-              'Когда место кончится, сначала уйдут давно не открывавшиеся файлы.',
-              style: muted,
-            ),
-          ),
-          RadioGroup<MediaCacheSizeOption>(
-            groupValue: settings.mediaCacheSize,
+          const SizedBox(height: 8),
+          _OptionSelect<MediaCacheSizeOption>(
+            value: settings.mediaCacheSize,
+            options: MediaCacheSizeOption.values,
+            labelOf: (option) => option.label,
+            sheetTitle: 'Размер кэша',
             onChanged: (next) {
-              if (next == null) return;
               ref.read(appSettingsProvider.notifier).setMediaCacheSize(next);
             },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsCard extends StatelessWidget {
+  const _SettingsCard({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+        child: child,
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title, required this.help});
+
+  final String title;
+  final String help;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, right: 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          _HelpButton(title: title, body: help),
+        ],
+      ),
+    );
+  }
+}
+
+class _HelpButton extends StatelessWidget {
+  const _HelpButton({required this.title, required this.body});
+
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return IconButton(
+      tooltip: 'Справка',
+      visualDensity: VisualDensity.compact,
+      icon: Icon(
+        Icons.help_outline_rounded,
+        size: 22,
+        color: scheme.onSurfaceVariant,
+      ),
+      onPressed: () => _showHelp(context, title: title, body: body),
+    );
+  }
+}
+
+Future<void> _showHelp(
+  BuildContext context, {
+  required String title,
+  required String body,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder: (ctx) {
+      return AlertDialog(
+        icon: const Icon(Icons.help_outline_rounded),
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Понятно'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+class _OptionSelect<T> extends StatelessWidget {
+  const _OptionSelect({
+    required this.value,
+    required this.options,
+    required this.labelOf,
+    required this.sheetTitle,
+    required this.onChanged,
+  });
+
+  final T value;
+  final List<T> options;
+  final String Function(T) labelOf;
+  final String sheetTitle;
+  final ValueChanged<T> onChanged;
+
+  Future<void> _open(BuildContext context) async {
+    final picked = await showModalBottomSheet<T>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        final scheme = theme.colorScheme;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (final option in MediaCacheSizeOption.values)
-                  RadioListTile<MediaCacheSizeOption>(
-                    value: option,
-                    title: Text(option.label),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
+                  child: Text(
+                    sheetTitle,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                for (final option in options)
+                  _SelectOptionTile(
+                    label: labelOf(option),
+                    selected: option == value,
+                    onTap: () => Navigator.of(ctx).pop(option),
+                    scheme: scheme,
                   ),
               ],
             ),
           ),
-        ],
+        );
+      },
+    );
+    if (picked != null && picked != value) onChanged(picked);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Material(
+      color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: () => _open(context),
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  labelOf(value),
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Icon(
+                Icons.expand_more_rounded,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectOptionTile extends StatelessWidget {
+  const _SelectOptionTile({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    required this.scheme,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final ColorScheme scheme;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: selected
+            ? scheme.primaryContainer.withValues(alpha: 0.7)
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    label,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+                if (selected)
+                  Icon(Icons.check_rounded, color: scheme.primary),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

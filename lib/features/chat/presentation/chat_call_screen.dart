@@ -56,6 +56,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
   final List<Map<String, dynamic>> _pendingIce = [];
   int? _myUserId;
   bool _speakerOn = false;
+  bool _micMuted = false;
   bool _localVideoEnabled = false;
   bool _usingFrontCamera = true;
   bool _remoteHasVideo = false;
@@ -433,6 +434,16 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
 
   Future<void> _toggleSpeaker() async {
     await _setSpeakerphone(!_speakerOn);
+  }
+
+  void _toggleMic() {
+    final stream = _localStream;
+    if (stream == null || _busy) return;
+    final nextMuted = !_micMuted;
+    for (final track in stream.getAudioTracks()) {
+      track.enabled = !nextMuted;
+    }
+    setState(() => _micMuted = nextMuted);
   }
 
   Future<void> _renegotiateAsOfferer() async {
@@ -908,6 +919,13 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
+                _circleControl(
+                  icon: _micMuted ? Icons.mic_off : Icons.mic,
+                  background: _micMuted
+                      ? const Color(0xFF5A2A2A)
+                      : const Color(0xFF2A2F36),
+                  onPressed: _busy ? null : _toggleMic,
+                ),
                 if (!kIsWeb)
                   _circleControl(
                     icon: _speakerOn

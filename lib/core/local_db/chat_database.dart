@@ -212,12 +212,13 @@ class ChatDatabase extends _$ChatDatabase {
       messageId: messageId,
       incoming: message,
     );
+    final payload = _sanitizeMessagePayloadForSqlite(merged, pending: pending);
     await into(chatMessageRows).insertOnConflictUpdate(
       ChatMessageRowsCompanion.insert(
         threadId: threadId,
         messageId: messageId,
-        payloadJson: jsonEncode(merged),
-        createdAtMs: Value(_createdAtMs(merged['created_at']) ?? 0),
+        payloadJson: jsonEncode(payload),
+        createdAtMs: Value(_createdAtMs(payload['created_at']) ?? 0),
         isPending: Value(pending),
       ),
     );
@@ -242,12 +243,14 @@ class ChatDatabase extends _$ChatDatabase {
           messageId: messageId,
           incoming: copy,
         );
+        final payload =
+            _sanitizeMessagePayloadForSqlite(merged, pending: pending);
         await into(chatMessageRows).insertOnConflictUpdate(
           ChatMessageRowsCompanion.insert(
             threadId: threadId,
             messageId: messageId,
-            payloadJson: jsonEncode(merged),
-            createdAtMs: Value(_createdAtMs(merged['created_at']) ?? 0),
+            payloadJson: jsonEncode(payload),
+            createdAtMs: Value(_createdAtMs(payload['created_at']) ?? 0),
             isPending: Value(pending),
           ),
         );
@@ -474,7 +477,85 @@ class ChatDatabase extends _$ChatDatabase {
   }
 
   Map<String, dynamic> _decodeMessage(ChatMessageRow row) {
-    return Map<String, dynamic>.from(jsonDecode(row.payloadJson) as Map);
+    final map =
+        Map<String, dynamic>.from(jsonDecode(row.payloadJson) as Map);
+    return _coerceMessageLocalBytes(map);
+  }
+
+  /// Strip ephemeral preview bytes from confirmed server rows (bin hydrate).
+  /// Pending rows keep a small preview so share/optimistic paint without reinject.
+  Map<String, dynamic> _sanitizeMessagePayloadForSqlite(
+    Map<String, dynamic> message, {
+    required bool pending,
+  }) {
+    final copy = Map<String, dynamic>.from(message);
+    final attachments = copy['attachments'];
+    if (attachments is! List) return copy;
+    final nextAtts = <dynamic>[];
+    for (final item in attachments) {
+      if (item is! Map) {
+        nextAtts.add(item);
+        continue;
+      }
+      final att = Map<String, dynamic>.from(item);
+      if (!pending) {
+        att.remove('local_bytes');
+        att.remove('local_bytes_b64');
+      } else {
+        final coerced = _coerceBytes(att['local_bytes']);
+        if (coerced == null ||
+            coerced.isEmpty ||
+            coerced.length > 400 * 1024) {
+          att.remove('local_bytes');
+        } else {
+          att['local_bytes'] = coerced;
+        }
+        att.remove('local_bytes_b64');
+      }
+      nextAtts.add(att);
+    }
+    copy['attachments'] = nextAtts;
+    return copy;
+  }
+
+  Map<String, dynamic> _coerceMessageLocalBytes(Map<String, dynamic> message) {
+    final attachments = message['attachments'];
+    if (attachments is! List) return message;
+    var changed = false;
+    final next = <dynamic>[];
+    for (final item in attachments) {
+      if (item is! Map) {
+        next.add(item);
+        continue;
+      }
+      final att = Map<String, dynamic>.from(item);
+      final coerced = _coerceBytes(att['local_bytes']);
+      if (coerced != null && !identical(coerced, att['local_bytes'])) {
+        att['local_bytes'] = coerced;
+        changed = true;
+      } else if (att['local_bytes'] != null && coerced == null) {
+        att.remove('local_bytes');
+        changed = true;
+      }
+      next.add(att);
+    }
+    if (!changed) return message;
+    return {...message, 'attachments': next};
+  }
+
+  Uint8List? _coerceBytes(Object? raw) {
+    if (raw is Uint8List) {
+      return raw.isEmpty ? null : raw;
+    }
+    if (raw is List) {
+      if (raw.isEmpty) return null;
+      try {
+        return Uint8List.fromList(raw.cast<int>());
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
   }
 
   static int? _asInt(Object? value) {
