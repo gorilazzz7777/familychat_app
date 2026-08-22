@@ -2,9 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../cache/familychat_local_cache.dart';
 import '../notifications/familychat_notifications.dart';
 import '../../features/chat/data/active_chat_context.dart';
+import '../../features/chat/data/chat_local_reads.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../../features/calendar/presentation/calendar_screen.dart';
 import '../../features/chat/presentation/chat_conversation_screen.dart';
@@ -160,25 +160,20 @@ Future<Map<String, dynamic>> _hydrateChatPushPayload(
   final hasKind = (payload['thread_kind']?.toString().trim() ?? '').isNotEmpty;
   if (hasTitle && hasKind) return payload;
   try {
-    final threads = await FamilyChatLocalCache.readChatThreads();
-    if (threads == null) return payload;
-    for (final thread in threads) {
-      final id = thread['id'];
-      final parsed = id is int ? id : int.tryParse('$id');
-      if (parsed != threadId) continue;
-      return {
-        ...payload,
-        if (!hasTitle)
-          'thread_title': thread['custom_title'] ??
-              thread['title'] ??
-              thread['default_title'] ??
-              payload['thread_title'],
-        if (!hasKind) 'thread_kind': thread['kind'] ?? payload['thread_kind'],
-        if (payload['peer_user_id'] == null ||
-            payload['peer_user_id'].toString().isEmpty)
-          'peer_user_id': thread['peer_user_id'],
-      };
-    }
+    final thread = await ChatLocalReads.threadById(threadId);
+    if (thread == null) return payload;
+    return {
+      ...payload,
+      if (!hasTitle)
+        'thread_title': thread['custom_title'] ??
+            thread['title'] ??
+            thread['default_title'] ??
+            payload['thread_title'],
+      if (!hasKind) 'thread_kind': thread['kind'] ?? payload['thread_kind'],
+      if (payload['peer_user_id'] == null ||
+          payload['peer_user_id'].toString().isEmpty)
+        'peer_user_id': thread['peer_user_id'],
+    };
   } catch (_) {}
   return payload;
 }

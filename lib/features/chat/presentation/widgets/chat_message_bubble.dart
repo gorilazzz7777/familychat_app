@@ -6,8 +6,6 @@ import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
-import '../../../../core/providers/app_providers.dart';
-import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import '../../data/chat_location_utils.dart';
 import '../../data/chat_voice_utils.dart';
@@ -21,7 +19,6 @@ import 'chat_message_reactions.dart';
 import 'chat_message_read_status_icon.dart';
 import 'chat_message_tap_target.dart';
 import 'chat_mention_text.dart';
-import 'chat_network_image.dart';
 import 'chat_swipe_to_reply.dart';
 import 'chat_video_note_player.dart';
 import 'chat_voice_message_player.dart';
@@ -745,12 +742,6 @@ class _ChatVideoAttachmentPreviewState
     final maxWidth = widget.maxWidth;
     final circular = widget.circular;
     final localBytes = attachment['local_bytes'];
-    final localPath = galleryLocalDevicePath(attachment);
-    final url = chatAttachmentImageUrl(
-      repo: ref.read(familychatRepositoryProvider),
-      threadId: widget.threadId,
-      attachment: attachment,
-    );
     final size = circular
         ? (maxWidth * 0.72).clamp(160.0, 220.0)
         : maxWidth;
@@ -761,8 +752,6 @@ class _ChatVideoAttachmentPreviewState
             maxWidth: size,
             maxHeight: chatMediaMaxThumbHeight(size),
           );
-    final hasSource = localPath.isNotEmpty || url.isNotEmpty;
-
     Widget? placeholder;
     if (isSafeUiPreviewBytes(localBytes)) {
       placeholder = Image.memory(
@@ -777,49 +766,28 @@ class _ChatVideoAttachmentPreviewState
       height: fitted.height,
       child: Stack(
         fit: StackFit.expand,
+        alignment: Alignment.center,
         children: [
-          if (hasSource)
-            IgnorePointer(
-              child: GalleryVideoPlayer(
-                url: url,
-                localPath: localPath.isEmpty ? null : localPath,
-                autoplay: true,
-                looping: true,
-                muted: true,
-                showControls: false,
-                fit: BoxFit.contain,
-                onResolvedSize: circular
-                    ? null
-                    : (resolved) {
-                        if (resolved.height <= 0) return;
-                        _applyAspect(resolved.width / resolved.height);
-                      },
-                placeholder: placeholder ??
-                    const ColoredBox(
-                      color: Colors.black26,
-                      child: Center(
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ),
-              ),
-            )
+          if (placeholder != null)
+            placeholder
           else
-            placeholder ??
-                const ColoredBox(
-                  color: Colors.black26,
-                  child: Center(
-                    child: Icon(Icons.videocam_outlined, color: Colors.white54),
-                  ),
-                ),
-          const Align(
-            alignment: Alignment.bottomLeft,
-            child: Padding(
-              padding: EdgeInsets.all(8),
-              child: Icon(
-                Icons.volume_off_rounded,
-                color: Colors.white70,
-                size: 18,
+            const ColoredBox(
+              color: Colors.black26,
+              child: Center(
+                child: Icon(Icons.videocam_outlined, color: Colors.white54),
               ),
+            ),
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.42),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.play_arrow_rounded,
+              color: Colors.white,
+              size: 28,
             ),
           ),
         ],

@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 
 import '../../../core/media/gallery_device_media_store.dart';
 import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/gallery_photo_local_state.dart';
 import '../../../core/media/gallery_video_thumbnail.dart';
 import '../../../core/media/local_device_file.dart';
 import '../../../core/media/media_local_index.dart';
 import '../../../core/widgets/family_public_image.dart';
+import '../../../core/widgets/lazy_visibility.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 
 /// Превью медиа в сетке галереи: фото или кадр видео с иконкой play.
@@ -20,6 +22,7 @@ class GalleryMediaThumbnail extends StatefulWidget {
     this.width,
     this.height,
     this.fit = BoxFit.cover,
+    this.lazyPreview = true,
   });
 
   final Map<String, dynamic> attachment;
@@ -27,6 +30,8 @@ class GalleryMediaThumbnail extends StatefulWidget {
   final double? width;
   final double? height;
   final BoxFit fit;
+  /// Отложить генерацию превью, пока ячейка не видна в viewport.
+  final bool lazyPreview;
 
   @override
   State<GalleryMediaThumbnail> createState() => _GalleryMediaThumbnailState();
@@ -35,22 +40,50 @@ class GalleryMediaThumbnail extends StatefulWidget {
 class _GalleryMediaThumbnailState extends State<GalleryMediaThumbnail> {
   String? _videoThumbPath;
   bool _videoThumbLoading = false;
-  int _gen = 0;
+  int _videoGen = 0;
+  int _photoGen = 0;
+  bool _previewRequested = false;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_loadVideoThumbIfNeeded());
+    if (!widget.lazyPreview) {
+      _requestPreviews();
+    }
   }
 
   @override
   void didUpdateWidget(covariant GalleryMediaThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (_sameMedia(oldWidget.attachment, widget.attachment) &&
-        oldWidget.threadId == widget.threadId) {
+        oldWidget.threadId == widget.threadId &&
+        oldWidget.lazyPreview == widget.lazyPreview) {
       return;
     }
+    if (!widget.lazyPreview || _previewRequested) {
+      unawaited(_ensurePhotoPreview());
+      unawaited(_loadVideoThumbIfNeeded());
+    }
+  }
+
+  void _requestPreviews() {
+    if (_previewRequested) return;
+    _previewRequested = true;
+    unawaited(_ensurePhotoPreview());
     unawaited(_loadVideoThumbIfNeeded());
+  }
+
+  Future<void> _ensurePhotoPreview() async {
+    if (isVideoAttachment(widget.attachment)) return;
+    if (GalleryPhotoLocalState.previewBytesOf(widget.attachment) != null) {
+      return;
+    }
+    final gen = ++_photoGen;
+    await GalleryPhotoLocalState.hydratePreviewBytes(widget.attachment);
+    if (!mounted || gen != _photoGen) return;
+    if (GalleryPhotoLocalState.previewBytesOf(widget.attachment) != null) {
+      setState(() {});
+    }
   }
 
   bool _sameMedia(Map<String, dynamic> a, Map<String, dynamic> b) {
@@ -65,6 +98,10 @@ class _GalleryMediaThumbnailState extends State<GalleryMediaThumbnail> {
     final raw = attachment['thread_id'];
     if (raw is int) return raw;
     return int.tryParse('$raw');
+  }
+
+  bool _hasRemoteVideoThumb(Map<String, dynamic> attachment) {
+    return attachment['thumbnail_url']?.toString().trim().isNotEmpty ?? false;
   }
 
   Future<void> _loadVideoThumbIfNeeded() async {
@@ -82,25 +119,39 @@ class _GalleryMediaThumbnailState extends State<GalleryMediaThumbnail> {
       return;
     }
 
-    final thumbUrl = attachment['thumbnail_url']?.toString().trim() ?? '';
-    if (thumbUrl.isNotEmpty) return;
+    if (_hasRemoteVideoThumb(attachment)) return;
     if (isSafeUiPreviewBytes(attachment['local_bytes']) ||
         isSafeUiPreviewBytes(attachment['thumbnail_bytes'])) {
       return;
     }
 
-    final gen = ++_gen;
+    final gen = ++_videoGen;
     setState(() => _videoThumbLoading = true);
     final path = await GalleryVideoThumbnail.ensureForAttachment(attachment);
-    if (!mounted || gen != _gen) return;
+    if (!mounted || gen != _videoGen) return;
     setState(() {
       _videoThumbPath = path;
       _videoThumbLoading = false;
     });
   }
 
+  Key get _visibilityKey {
+    final id = widget.attachment['id'];
+    return ValueKey('gallery_thumb_$id');
+  }
+
   @override
   Widget build(BuildContext context) {
+    final content = _buildContent();
+    if (!widget.lazyPreview) return content;
+    return LazyVisibility(
+      visibilityKey: _visibilityKey,
+      onVisible: _requestPreviews,
+      child: content,
+    );
+  }
+
+  Widget _buildContent() {
     final attachment = widget.attachment;
     MediaLocalIndex.hydrateAttachment(attachment);
     final fit = widget.fit;
@@ -182,6 +233,17 @@ class _GalleryMediaThumbnailState extends State<GalleryMediaThumbnail> {
   }
 
   Widget _photo(Map<String, dynamic> attachment, BoxFit fit) {
+    final preview = GalleryPhotoLocalState.previewBytesOf(attachment);
+    if (preview != null) {
+      return Image.memory(
+        preview,
+        width: widget.width,
+        height: widget.height,
+        fit: fit,
+        gaplessPlayback: true,
+      );
+    }
+
     final threadId = _threadIdOf(attachment);
     if (threadId != null) {
       return ChatNetworkImage(

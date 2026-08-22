@@ -14,12 +14,13 @@ import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/push/push_navigation.dart';
 import '../../../core/push/push_message_handler.dart';
-import '../../../core/local_db/chat_local_store.dart';
 import 'chat_conversation_screen.dart';
+import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../profile/data/album_upload_coordinator.dart';
 import '../../profile/presentation/custom_album_dialog.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
+import '../data/chat_local_reads.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/share_attachment_loader.dart';
 import '../data/share_chat_send_coordinator.dart';
@@ -123,7 +124,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
     _myUserId = raw is int ? raw : int.tryParse('$raw');
   }
 
-  /// Быстрый путь: SQLite (+ JSON-кэш) без сети.
+  /// Быстрый путь: SQLite (native) или JSON-кэш (web) без сети.
   Future<void> _hydrateTargetsFromLocal() async {
     try {
       final cachedStatus = await FamilyChatLocalCache.readStatus();
@@ -131,30 +132,8 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
         setState(() => _applyStatusMap(cachedStatus));
       }
 
-      var threads = <Map<String, dynamic>>[];
-      var members = <Map<String, dynamic>>[];
-
-      if (ChatLocalStore.isSupported) {
-        final results = await Future.wait([
-          ChatLocalStore.instance.readThreads(),
-          ChatLocalStore.instance.readMembers(),
-        ]);
-        threads = results[0];
-        members = results[1];
-      }
-
-      if (threads.isEmpty) {
-        final cachedThreads = await FamilyChatLocalCache.readChatThreads();
-        if (cachedThreads != null && cachedThreads.isNotEmpty) {
-          threads = cachedThreads;
-        }
-      }
-      if (members.isEmpty) {
-        final cachedMembers = await FamilyChatLocalCache.readChatMembers();
-        if (cachedMembers != null && cachedMembers.isNotEmpty) {
-          members = cachedMembers;
-        }
-      }
+      final threads = await ChatLocalReads.threads();
+      final members = await ChatLocalReads.members();
 
       if (!mounted) return;
       if (threads.isNotEmpty || members.isNotEmpty) {
@@ -224,8 +203,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
       final list = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
 
-      await ChatLocalStore.instance.replaceThreads(list);
-      await ChatLocalStore.instance.replaceMembers(members);
+      await ChatLocalReads.saveThreadsAndMembers(
+        threads: list,
+        members: members,
+      );
 
       if (!mounted) return;
       setState(() {
@@ -436,12 +417,19 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
           if (resolvedImages.isNotEmpty) {
             final photos = resolvedImages
                 .map(
-                  (att) => AlbumUploadPhoto(
-                    bytes: Uint8List.fromList(att.bytes),
-                    filename: att.filename,
-                    contentType: att.contentType ?? 'image/jpeg',
-                    localPath: att.localPath,
-                  ),
+                  (att) {
+                    final bytes = Uint8List.fromList(att.bytes);
+                    return AlbumUploadPhoto(
+                      bytes: bytes,
+                      filename: att.filename,
+                      contentType: att.contentType ?? 'image/jpeg',
+                      localPath: att.localPath,
+                      thumbnailBytes: safeUiPreviewBytes(
+                        bytes: bytes,
+                        kind: 'image',
+                      ),
+                    );
+                  },
                 )
                 .toList();
             final batch = FeedPhotoBatchSession(

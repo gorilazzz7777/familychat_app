@@ -7,11 +7,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/share/share_to_diary_prefs.dart';
 import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/media/gallery_photo_local_state.dart';
 import '../../../core/media/gallery_media_export.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/gallery_photo_date.dart';
 import '../../../core/media/media_incoming_sync.dart';
-import '../../../core/media/media_local_index.dart';
 import '../../../core/media/image_upload_pipeline.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/app_skeletons.dart';
@@ -427,6 +427,12 @@ class _ProfileGalleryAlbumScreenState
     );
   }
 
+  Future<void> _hydrateGalleryPreviews(List<Map<String, dynamic>> photos) async {
+    if (photos.isEmpty || !mounted) return;
+    await GalleryPhotoLocalState.hydratePreviewBytesBatch(photos);
+    if (mounted) setState(() {});
+  }
+
   Future<void> _load({required bool reset}) async {
     final canCacheFirstPage = reset &&
         _query.trim().isEmpty &&
@@ -449,8 +455,9 @@ class _ProfileGalleryAlbumScreenState
         final cachedPage = cached;
         final rawBatch = (cachedPage['photos'] as List<dynamic>? ?? [])
             .cast<Map<String, dynamic>>();
-        final batch = _applyUploadOwnerFilter(rawBatch);
-        MediaLocalIndex.hydrateAttachments(batch);
+        final filtered = _applyUploadOwnerFilter(rawBatch);
+        final batch = await GalleryPhotoLocalState.indexPhotos(filtered);
+        unawaited(_hydrateGalleryPreviews(batch));
         unawaited(MediaIncomingSync.ensureGalleryPhotos(batch));
         setState(() {
           _photos
@@ -504,8 +511,13 @@ class _ProfileGalleryAlbumScreenState
       if (!mounted) return;
       final rawBatch =
           (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
-      final batch = _applyUploadOwnerFilter(rawBatch);
-      MediaLocalIndex.hydrateAttachments(batch);
+      final filtered = _applyUploadOwnerFilter(rawBatch);
+      final previous = reset ? List<Map<String, dynamic>>.from(_photos) : null;
+      final batch = await GalleryPhotoLocalState.indexPhotos(
+        filtered,
+        previous: previous,
+      );
+      unawaited(_hydrateGalleryPreviews(batch));
       unawaited(MediaIncomingSync.ensureGalleryPhotos(batch));
       setState(() {
         _total = data['total'] is int
@@ -626,36 +638,18 @@ class _ProfileGalleryAlbumScreenState
   }
 
   void _replaceOptimisticPhoto(String optimisticKey, Map<String, dynamic> photo) {
+    Map<String, dynamic>? old;
     setState(() {
       final idx = _photos.indexWhere(
         (p) => p['_optimistic_key']?.toString() == optimisticKey,
       );
       if (idx >= 0) {
-        final old = _photos[idx];
-        final local = old['local_bytes'];
-        if (isSafeUiPreviewBytes(local)) {
-          photo = Map<String, dynamic>.from(photo)..['local_bytes'] = local;
-          final threadId = photo['thread_id'] is int
-              ? photo['thread_id'] as int
-              : int.tryParse('${photo['thread_id']}');
-          final id = _photoId(photo);
-          if (threadId != null && id != null) {
-            unawaited(
-              FamilyChatLocalCache.saveAttachmentBytes(
-                threadId,
-                id,
-                local as Uint8List,
-              ),
-            );
-          }
-        }
-        final localPath = old['local_device_path'];
-        if (localPath != null && '$localPath'.trim().isNotEmpty) {
-          photo = Map<String, dynamic>.from(photo)
-            ..['local_device_path'] = localPath
-            ..['_outgoing_original'] = true;
-        }
-        _photos[idx] = photo;
+        old = _photos[idx];
+        final merged = Map<String, dynamic>.from(photo);
+        GalleryPhotoLocalState.mergeFromPrevious(merged, old);
+        GalleryPhotoLocalState.applyIndex(merged);
+        _photos[idx] = merged;
+        photo = merged;
       } else {
         final id = _photoId(photo);
         if (id != null && !_currentPhotoIds.contains(id)) {
@@ -666,6 +660,25 @@ class _ProfileGalleryAlbumScreenState
       }
       _rebuildDaySections();
     });
+    if (old == null) return;
+    final merged = photo;
+    final localPath = merged['local_device_path']?.toString();
+    final assetId = merged['local_asset_id']?.toString();
+    final preview = GalleryPhotoLocalState.previewBytesOf(merged);
+    unawaited(
+      GalleryPhotoLocalState.persistOutgoing(
+        uploaded: merged,
+        localPath: localPath != null && localPath.trim().isNotEmpty
+            ? localPath.trim()
+            : null,
+        assetId: assetId != null && assetId.trim().isNotEmpty
+            ? assetId.trim()
+            : null,
+        filename: merged['filename']?.toString() ?? 'photo.jpg',
+        kind: merged['kind']?.toString() ?? 'image',
+        previewBytes: preview,
+      ),
+    );
   }
 
   int _nextOptimisticId() =>
@@ -795,6 +808,8 @@ class _ProfileGalleryAlbumScreenState
         if (preview != null) 'local_bytes': preview,
         if (item.localPath != null && item.localPath!.trim().isNotEmpty)
           'local_device_path': item.localPath!.trim(),
+        if (item.assetId != null && item.assetId!.trim().isNotEmpty)
+          'local_asset_id': item.assetId!.trim(),
         '_optimistic_key': key,
         '_pending': true,
         '_outgoing_original': true,
@@ -807,6 +822,7 @@ class _ProfileGalleryAlbumScreenState
               item.contentType ?? _imageContentTypeForFilename(item.filename),
           kind: item.kind,
           localPath: item.localPath,
+          assetId: item.assetId,
           thumbnailBytes: item.thumbnailBytes ?? preview,
           optimisticKey: key,
         ),

@@ -11,7 +11,7 @@ import '../../../../core/media/local_device_file.dart';
 import '../../../../core/providers/app_providers.dart';
 import 'chat_network_image.dart';
 
-/// Видео-кружок в чате: круг, тап — увеличение и проигрывание с кольцом прогресса.
+/// Видео-кружок в чате: превью в списке, проигрывание только по тапу.
 class ChatVideoNotePlayer extends ConsumerStatefulWidget {
   const ChatVideoNotePlayer({
     super.key,
@@ -47,6 +47,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
   Object? _error;
   bool _expanded = false;
   bool _ready = false;
+  bool _initializing = false;
   bool _collapsing = false;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
@@ -59,7 +60,6 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     if (ms != null && ms > 0) {
       _duration = Duration(milliseconds: ms);
     }
-    _init();
   }
 
   @override
@@ -69,23 +69,16 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
         oldWidget.attachment['file_url'] != widget.attachment['file_url'] ||
         oldWidget.attachment['local_device_path'] !=
             widget.attachment['local_device_path']) {
-      _disposeController();
-      _ready = false;
-      _expanded = false;
-      _init();
+      _resetPlayback();
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final c = _controller;
-    if (c == null || !c.value.isInitialized) return;
+    if (c == null || !c.value.isInitialized || !_expanded) return;
     if (state == AppLifecycleState.resumed) {
-      if (_expanded) {
-        c.play();
-      } else if (!c.value.isPlaying) {
-        c.play();
-      }
+      if (!c.value.isPlaying) unawaited(c.play());
     } else {
       c.pause();
     }
@@ -98,13 +91,45 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     super.dispose();
   }
 
+  void _resetPlayback() {
+    _disposeController();
+    _ready = false;
+    _expanded = false;
+    _initializing = false;
+    _collapsing = false;
+    _position = Duration.zero;
+    _error = null;
+    final ms = widget.durationMs;
+    if (ms != null && ms > 0) {
+      _duration = Duration(milliseconds: ms);
+    }
+  }
+
   void _disposeController() {
     _controller?.removeListener(_onTick);
     _controller?.dispose();
     _controller = null;
   }
 
-  Future<void> _init() async {
+  Future<void> _ensureExpandedPlayback() async {
+    if (_initializing) return;
+    final existing = _controller;
+    if (existing != null && existing.value.isInitialized) {
+      setState(() => _expanded = true);
+      await existing.setLooping(false);
+      await existing.setVolume(1);
+      await existing.seekTo(Duration.zero);
+      await existing.play();
+      if (mounted) setState(() {});
+      return;
+    }
+
+    setState(() {
+      _expanded = true;
+      _initializing = true;
+      _error = null;
+    });
+
     final localPath = galleryLocalDevicePath(widget.attachment);
     VideoPlayerController? controller;
     if (localPath.isNotEmpty) {
@@ -117,42 +142,58 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
         attachment: widget.attachment,
       );
       if (url.isEmpty) {
-        if (mounted) setState(() => _error = StateError('Нет видео'));
+        if (mounted) {
+          setState(() {
+            _initializing = false;
+            _expanded = false;
+            _error = StateError('Нет видео');
+          });
+        }
         return;
       }
       controller = VideoPlayerController.networkUrl(Uri.parse(url));
     }
+
     _controller = controller;
     try {
       await controller.initialize();
       if (!mounted) return;
       final d = controller.value.duration;
       if (d > Duration.zero) _duration = d;
-      await controller.setLooping(true);
-      await controller.setVolume(0);
-      await controller.play();
+      await controller.setLooping(false);
+      await controller.setVolume(1);
       controller.addListener(_onTick);
+      await controller.play();
       if (mounted) {
         setState(() {
           _ready = true;
+          _initializing = false;
           _error = null;
         });
       }
     } catch (e) {
-      if (mounted) setState(() => _error = e);
+      if (mounted) {
+        setState(() {
+          _initializing = false;
+          _expanded = false;
+          _error = e;
+        });
+      }
+      _disposeController();
+      _ready = false;
     }
   }
 
   void _onTick() {
     final c = _controller;
-    if (!mounted || c == null || !c.value.isInitialized) return;
+    if (!mounted || c == null || !c.value.isInitialized || !_expanded) return;
     final pos = c.value.position;
     final dur = c.value.duration;
     setState(() {
       _position = pos;
       if (dur > Duration.zero) _duration = dur;
     });
-    if (!_expanded || _collapsing) return;
+    if (_collapsing) return;
     if (dur <= Duration.zero) return;
     final atEnd = pos >= dur - const Duration(milliseconds: 200);
     if (atEnd && !c.value.isPlaying) {
@@ -164,15 +205,11 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
   }
 
   Future<void> _collapseToIdle() async {
-    final c = _controller;
-    if (c == null || !c.value.isInitialized) return;
-    await c.setVolume(0);
-    await c.setLooping(true);
-    await c.seekTo(Duration.zero);
-    await c.play();
+    _disposeController();
     if (mounted) {
       setState(() {
         _expanded = false;
+        _ready = false;
         _position = Duration.zero;
       });
     }
@@ -180,29 +217,26 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
 
   Future<void> _onTap() async {
     if (!widget.interactive) return;
-    final c = _controller;
-    if (c == null || !c.value.isInitialized) return;
 
-    if (_expanded) {
-      if (c.value.isPlaying) {
-        await c.pause();
-        if (mounted) setState(() {});
-      } else {
-        final dur = c.value.duration;
-        if (dur > Duration.zero &&
-            c.value.position >= dur - const Duration(milliseconds: 120)) {
-          await c.seekTo(Duration.zero);
-        }
-        await c.play();
-        if (mounted) setState(() {});
-      }
+    if (!_expanded) {
+      await _ensureExpandedPlayback();
       return;
     }
 
-    setState(() => _expanded = true);
-    await c.setLooping(false);
-    await c.setVolume(1);
-    await c.seekTo(Duration.zero);
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+
+    if (c.value.isPlaying) {
+      await c.pause();
+      if (mounted) setState(() {});
+      return;
+    }
+
+    final dur = c.value.duration;
+    if (dur > Duration.zero &&
+        c.value.position >= dur - const Duration(milliseconds: 120)) {
+      await c.seekTo(Duration.zero);
+    }
     await c.play();
     if (mounted) setState(() {});
   }
@@ -213,21 +247,25 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     return (_position.inMilliseconds / total).clamp(0.0, 1.0);
   }
 
+  Widget? _idlePlaceholder() {
+    final localBytes = widget.attachment['local_bytes'];
+    if (isSafeUiPreviewBytes(localBytes)) {
+      return Image.memory(
+        localBytes as Uint8List,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+      );
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = _expanded
         ? (widget.expandedSize ??
             ChatVideoNotePlayer.defaultExpandedSize(context))
         : widget.idleSize;
-    final localBytes = widget.attachment['local_bytes'];
-    Widget? placeholder;
-    if (isSafeUiPreviewBytes(localBytes)) {
-      placeholder = Image.memory(
-        localBytes as Uint8List,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-      );
-    }
+    final placeholder = _idlePlaceholder();
 
     return GestureDetector(
       onTap: _onTap,
@@ -272,35 +310,19 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
                   child: SizedBox(width: size, height: size),
                 ),
               ),
-            if (_ready && !_expanded)
+            if (!_expanded || (_expanded && _ready && !(_controller?.value.isPlaying ?? false)))
               IgnorePointer(
                 child: Container(
-                  width: 44,
-                  height: 44,
+                  width: _expanded ? 48 : 44,
+                  height: _expanded ? 48 : 44,
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.35),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(
-                    Icons.play_arrow_rounded,
+                  child: Icon(
+                    _initializing ? Icons.hourglass_top_rounded : Icons.play_arrow_rounded,
                     color: Colors.white,
-                    size: 30,
-                  ),
-                ),
-              ),
-            if (_expanded && _ready && !(_controller?.value.isPlaying ?? false))
-              IgnorePointer(
-                child: Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.35),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.play_arrow_rounded,
-                    color: Colors.white,
-                    size: 32,
+                    size: _expanded ? 32 : 30,
                   ),
                 ),
               ),
@@ -311,7 +333,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
   }
 
   Widget _buildVideo(Widget? placeholder) {
-    if (_error != null) {
+    if (_error != null && !_expanded) {
       return ColoredBox(
         color: Colors.black26,
         child: Center(
@@ -320,20 +342,27 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
         ),
       );
     }
+
     final c = _controller;
-    if (!_ready || c == null || !c.value.isInitialized) {
+    if (!_expanded || _initializing || c == null || !c.value.isInitialized) {
       return ColoredBox(
         color: Colors.black26,
         child: Center(
           child: placeholder ??
-              const SizedBox(
-                width: 28,
-                height: 28,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white70,
-                ),
-              ),
+              (_initializing
+                  ? const SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white70,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.videocam_outlined,
+                      color: Colors.white54,
+                      size: 36,
+                    )),
         ),
       );
     }

@@ -31,6 +31,8 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   List<Map<String, dynamic>> _albums = [];
   String _faceHintMessage = '';
   bool _showFaceHint = false;
+  int _loadGen = 0;
+  Future<void>? _loadInFlight;
 
   List<Map<String, dynamic>> _filterCommonAlbums(
       List<Map<String, dynamic>> albums) {
@@ -58,8 +60,25 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   Future<void> refresh({bool silent = false}) => _load(silent: silent);
 
   Future<void> _load({bool silent = false}) async {
+    if (_loadInFlight != null) {
+      return _loadInFlight!;
+    }
+    final future = _loadBody(silent: silent);
+    _loadInFlight = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_loadInFlight, future)) {
+        _loadInFlight = null;
+      }
+    }
+  }
+
+  Future<void> _loadBody({required bool silent}) async {
+    final gen = ++_loadGen;
     final cached = await FamilyChatLocalCache.readFamilyAlbums();
-    if (cached != null && mounted) {
+    if (gen != _loadGen || !mounted) return;
+    if (cached != null) {
       final next = _filterCommonAlbums(galleryAlbumsAsMaps(cached['albums']));
       final hint = cached['face_hint_message']?.toString() ?? '';
       final showHint = cached['show_face_hint'] == true;
@@ -84,8 +103,8 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
     try {
       final data =
           await ref.read(familychatRepositoryProvider).familyGalleryAlbums();
+      if (gen != _loadGen || !mounted) return;
       await FamilyChatLocalCache.saveFamilyAlbums(data);
-      if (!mounted) return;
       final next = _filterCommonAlbums(galleryAlbumsAsMaps(data['albums']));
       final hint = data['face_hint_message']?.toString() ?? '';
       final showHint = data['show_face_hint'] == true;
@@ -103,7 +122,7 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
         _error = null;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (gen != _loadGen || !mounted) return;
       if (cached == null) {
         setState(() {
           _loading = false;

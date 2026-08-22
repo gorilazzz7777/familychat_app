@@ -4,9 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/feed/feed_photo_batch_session.dart';
+import '../../../core/media/gallery_photo_local_state.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
-import '../../../core/media/media_local_index.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/push/push_message_handler.dart';
 import '../../familychat/data/familychat_repository.dart';
@@ -19,6 +19,7 @@ class AlbumUploadPhoto {
     this.photoExif,
     this.kind = 'image',
     this.localPath,
+    this.assetId,
     this.thumbnailBytes,
     this.optimisticKey,
   });
@@ -29,6 +30,7 @@ class AlbumUploadPhoto {
   final Map<String, dynamic>? photoExif;
   final String kind;
   final String? localPath;
+  final String? assetId;
   final Uint8List? thumbnailBytes;
   /// Ключ optimistic-превью в UI альбома (заменяется после upload).
   final String? optimisticKey;
@@ -168,6 +170,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
               batchId: session.batchSession.batchId,
               shareToDiary: session.shareToDiary,
               photoExif: prepared.photoExif,
+              thumbnailBytes: prepared.thumbnailBytes,
             );
             if (photo.optimisticKey != null) {
               uploaded['_optimistic_key'] = photo.optimisticKey;
@@ -178,13 +181,20 @@ class AlbumUploadCoordinator extends ChangeNotifier {
                 ? uploaded['id'] as int
                 : int.tryParse('${uploaded['id']}');
             final localPath = photo.localPath?.trim() ?? '';
-            if (uploadedId != null && localPath.isNotEmpty) {
+            if (uploadedId != null) {
               unawaited(
-                MediaLocalIndex.saveOutgoing(
-                  attachmentId: uploadedId,
-                  localPath: localPath,
+                GalleryPhotoLocalState.persistOutgoing(
+                  uploaded: uploaded,
+                  localPath: localPath.isEmpty ? null : localPath,
+                  assetId: photo.assetId,
                   filename: photo.filename,
                   kind: photo.kind,
+                  previewBytes: photo.thumbnailBytes ??
+                      safeUiPreviewBytes(
+                        thumbnailBytes: photo.thumbnailBytes,
+                        bytes: photo.kind == 'image' ? photo.bytes : null,
+                        kind: photo.kind,
+                      ),
                 ),
               );
             }
@@ -251,6 +261,8 @@ class AlbumUploadCoordinator extends ChangeNotifier {
         kind: 'video',
         optimisticKey: photo.optimisticKey,
         localPath: photo.localPath,
+        assetId: photo.assetId,
+        thumbnailBytes: photo.thumbnailBytes,
       );
     }
     final draft = await prepareImageUploadDraft(
@@ -269,6 +281,8 @@ class AlbumUploadCoordinator extends ChangeNotifier {
       kind: 'image',
       optimisticKey: photo.optimisticKey,
       localPath: photo.localPath,
+      assetId: photo.assetId,
+      thumbnailBytes: photo.thumbnailBytes ?? draft.thumbnailBytes,
     );
   }
 }

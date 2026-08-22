@@ -184,15 +184,26 @@ class ChatDatabase extends _$ChatDatabase {
     );
   }
 
+  /// SQLite PK for chat members. Children have no user_id — use negative child_id.
+  static int? _memberRowKey(Map<String, dynamic> member) {
+    final userId = _asInt(member['user_id']);
+    if (userId != null && userId > 0) return userId;
+    if (member['is_child'] == true) {
+      final childId = _asInt(member['child_id']);
+      if (childId != null && childId > 0) return -childId;
+    }
+    return null;
+  }
+
   Future<void> replaceMembers(List<Map<String, dynamic>> members) async {
     await transaction(() async {
       await delete(chatMemberRows).go();
       for (final member in members) {
-        final userId = _asInt(member['user_id']);
-        if (userId == null) continue;
+        final rowKey = _memberRowKey(member);
+        if (rowKey == null) continue;
         await into(chatMemberRows).insertOnConflictUpdate(
           ChatMemberRowsCompanion.insert(
-            userId: Value(userId),
+            userId: Value(rowKey),
             payloadJson: jsonEncode(member),
           ),
         );

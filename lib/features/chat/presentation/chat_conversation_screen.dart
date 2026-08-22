@@ -30,6 +30,7 @@ import '../data/chat_location_utils.dart';
 import '../data/active_chat_context.dart';
 import '../data/chat_network_status.dart';
 import '../data/chat_local_mutations.dart';
+import '../data/chat_local_reads.dart';
 import '../data/chat_mutation_coordinator.dart';
 import '../data/chat_offline_outbox.dart';
 import '../data/chat_offline_prefetch.dart';
@@ -85,6 +86,7 @@ class _OutgoingAttachment {
     this.photoExif,
     this.kind = 'file',
     this.localPath,
+    this.thumbnailBytes,
   });
 
   final Uint8List bytes;
@@ -93,6 +95,7 @@ class _OutgoingAttachment {
   final Map<String, dynamic>? photoExif;
   final String kind;
   final String? localPath;
+  final Uint8List? thumbnailBytes;
 }
 
 String? _imageContentTypeForFilename(String filename) {
@@ -236,6 +239,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   String? _peerStatusLabel;
   Timer? _peerStatusTimer;
+  Timer? _stickyDayThrottle;
 
   @override
   void initState() {
@@ -533,7 +537,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       return;
     }
 
-    final next = await _buildMessagesFromSqliteRows(rows);
+    final next = await _buildMessagesFromSqliteRows(
+      rows,
+      hydrateAttachments: false,
+    );
     if (!mounted || gen != _messagesWatchGen) return;
 
     List<Map<String, dynamic>>? localPins;
@@ -613,17 +620,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<List<Map<String, dynamic>>> _buildMessagesFromSqliteRows(
-    List<Map<String, dynamic>> rows,
-  ) async {
+    List<Map<String, dynamic>> rows, {
+    bool hydrateAttachments = true,
+  }) async {
     final pendingLocal = chatPendingToReinject(
       memoryMessages: _messages,
       sqliteRows: rows,
     );
-    final hydrated = await FamilyChatLocalCache.hydrateAttachmentBytes(
-      widget.threadId,
-      rows,
-    );
-    final withPreviews = _preserveLocalPreviews(_messages, hydrated);
+    final base = hydrateAttachments
+        ? await FamilyChatLocalCache.hydrateAttachmentBytes(
+            widget.threadId,
+            rows,
+          )
+        : rows;
+    final withPreviews = _preserveLocalPreviews(_messages, base);
     final merged = pendingLocal.isEmpty
         ? withPreviews
         : chatMergeMessageLists(
@@ -737,13 +747,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
 
     try {
-      final threads = await FamilyChatLocalCache.readChatThreads();
-      if (threads == null) return true;
       Map<String, dynamic>? thread;
-      for (final t in threads) {
-        if (chatAsInt(t['id']) == widget.threadId) {
-          thread = t;
-          break;
+      if (_localFirst) {
+        thread = await ChatLocalReads.threadById(widget.threadId);
+      } else {
+        final threads = await FamilyChatLocalCache.readChatThreads();
+        if (threads != null) {
+          for (final t in threads) {
+            if (chatAsInt(t['id']) == widget.threadId) {
+              thread = t;
+              break;
+            }
+          }
         }
       }
       final last = thread?['last_message'];
@@ -1085,7 +1100,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   void _scheduleStickyDayUpdate() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (_stickyDayThrottle?.isActive ?? false) return;
+    _stickyDayThrottle = Timer(const Duration(milliseconds: 48), () {
       if (!mounted) return;
       _updateStickyDayHeader();
     });
@@ -1125,6 +1141,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _inputFocus.dispose();
     if (ActiveChatContext.instance.openThreadId == widget.threadId) {
       ActiveChatContext.instance.setOpenThread(null);
+      unawaited(ChatSyncService.instance.flushDeferredHubSync());
     }
     unawaited(_messagesSub?.cancel() ?? Future<void>.value());
     FamilyChatRealtime.instance.removeListener(_onRealtime);
@@ -1132,6 +1149,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     ChatScheduledSendService.instance.removeListener(_onScheduledSend);
     _transcriptPollTimer?.cancel();
     _scrollToBottomHintTimer?.cancel();
+    _stickyDayThrottle?.cancel();
     unawaited(_speakPlayer?.dispose() ?? Future<void>.value());
     _controller.dispose();
     _scrollController.dispose();
@@ -1147,6 +1165,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_markLatestRead());
+      if (_localFirst) {
+        unawaited(_refreshFromLocalStore());
+        unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      }
+    }
+  }
+
+  Future<void> _refreshFromLocalStore() async {
+    if (!_localFirst) return;
+    final rows = await ChatLocalReads.messages(widget.threadId);
+    await _onLocalMessagesWatch(rows);
+    final pins = await ChatLocalMutations.readPinnedMessagesLocal(
+      widget.threadId,
+    );
+    if (!mounted) return;
+    if (!_pinnedListsEqual(_pinnedMessages, pins)) {
+      _setPinnedMessages(pins);
     }
   }
 
@@ -2322,6 +2357,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           filename: att.filename,
           contentType: att.contentType,
           photoExif: att.photoExif,
+          thumbnailBytes: att.thumbnailBytes,
         );
         final id = chatAsInt(uploaded['id']);
         if (id != null) ids.add(id);
@@ -2617,6 +2653,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               photoExif: d.geo?.toPhotoExif(),
               kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
               localPath: d.localPath,
+              thumbnailBytes: d.thumbnailBytes,
             ),
       ],
       replyToMessageId: replyId,
@@ -2734,6 +2771,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               photoExif: d.geo?.toPhotoExif(),
               kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
               localPath: d.localPath,
+              thumbnailBytes: d.thumbnailBytes,
             ),
         ],
         replyToMessageId: replyId,

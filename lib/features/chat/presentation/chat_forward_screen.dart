@@ -3,11 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/cache/familychat_local_cache.dart';
-import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
+import '../data/chat_local_reads.dart';
 import '../data/chat_realtime_utils.dart';
 import 'widgets/chat_thread_select_tile.dart';
 
@@ -89,22 +88,8 @@ class _ChatForwardScreenState extends ConsumerState<ChatForwardScreen> {
 
   Future<void> _hydrateFromLocal() async {
     try {
-      var threads = <Map<String, dynamic>>[];
-      var members = <Map<String, dynamic>>[];
-      if (ChatLocalStore.isSupported) {
-        final results = await Future.wait([
-          ChatLocalStore.instance.readThreads(),
-          ChatLocalStore.instance.readMembers(),
-        ]);
-        threads = results[0];
-        members = results[1];
-      }
-      if (threads.isEmpty) {
-        threads = await FamilyChatLocalCache.readChatThreads() ?? [];
-      }
-      if (members.isEmpty) {
-        members = await FamilyChatLocalCache.readChatMembers() ?? [];
-      }
+      final threads = await ChatLocalReads.threads();
+      final members = await ChatLocalReads.members();
       if (!mounted) return;
       if (threads.isEmpty && members.isEmpty) return;
       setState(() {
@@ -126,8 +111,10 @@ class _ChatForwardScreenState extends ConsumerState<ChatForwardScreen> {
       ]);
       final list = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
-      await ChatLocalStore.instance.replaceThreads(list);
-      await ChatLocalStore.instance.replaceMembers(members);
+      await ChatLocalReads.saveThreadsAndMembers(
+        threads: list,
+        members: members,
+      );
       if (!mounted) return;
       setState(() {
         _threads = _sorted(_withoutSource(list));

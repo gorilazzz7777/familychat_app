@@ -8,6 +8,7 @@ import 'package:dio/dio.dart';
 import '../../../core/config/env.dart';
 import '../../../core/debug/upload_image_exif_log.dart';
 import '../../../core/media/direct_s3_upload.dart';
+import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/settings/app_settings.dart';
@@ -1179,6 +1180,7 @@ class FamilyChatRepository {
     required String filename,
     String? contentType,
     Map<String, dynamic>? photoExif,
+    Uint8List? thumbnailBytes,
     void Function(int sent, int total)? onSendProgress,
   }) async {
     await logUploadImageExifDiagnostics(
@@ -1193,6 +1195,7 @@ class FamilyChatRepository {
         filename: filename,
         contentType: contentType ?? 'application/octet-stream',
         photoExif: photoExif,
+        thumbnailBytes: thumbnailBytes,
         onSendProgress: onSendProgress,
       );
     } catch (e, st) {
@@ -1216,6 +1219,7 @@ class FamilyChatRepository {
     required String filename,
     required String contentType,
     Map<String, dynamic>? photoExif,
+    Uint8List? thumbnailBytes,
     void Function(int sent, int total)? onSendProgress,
   }) async {
     final hash = sha256Hex(bytes);
@@ -1249,6 +1253,24 @@ class FamilyChatRepository {
       headers: headers is Map ? Map<String, dynamic>.from(headers) : const {},
       onSendProgress: onSendProgress,
     );
+    final thumbUploadUrl = data['thumbnail_upload_url']?.toString() ?? '';
+    final thumbStorageKey = data['thumbnail_storage_key']?.toString() ?? '';
+    final preview = safeUiPreviewBytes(
+      bytes: thumbnailBytes,
+      kind: 'image',
+    );
+    if (thumbUploadUrl.isNotEmpty &&
+        thumbStorageKey.isNotEmpty &&
+        preview != null) {
+      final thumbHeaders = data['thumbnail_headers'];
+      await putBytesToPresignedUrl(
+        uploadUrl: thumbUploadUrl,
+        bytes: preview,
+        headers: thumbHeaders is Map
+            ? Map<String, dynamic>.from(thumbHeaders)
+            : const {'Content-Type': 'image/jpeg'},
+      );
+    }
     final completeBody = <String, dynamic>{
       'storage_key': storageKey,
       'content_hash': hash,
@@ -1257,6 +1279,9 @@ class FamilyChatRepository {
       'size_bytes': bytes.length,
       'kind': data['kind']?.toString() ?? 'file',
     };
+    if (thumbStorageKey.isNotEmpty && preview != null) {
+      completeBody['thumbnail_storage_key'] = thumbStorageKey;
+    }
     if (photoExif != null && photoExif.isNotEmpty) {
       completeBody['photo_exif'] = jsonEncode(photoExif);
     }
@@ -1654,6 +1679,7 @@ class FamilyChatRepository {
     String? batchId,
     bool shareToDiary = false,
     Map<String, dynamic>? photoExif,
+    Uint8List? thumbnailBytes,
     void Function(int sent, int total)? onSendProgress,
   }) async {
     await logUploadImageExifDiagnostics(
@@ -1661,6 +1687,7 @@ class FamilyChatRepository {
       filename: filename,
       readVia: 'upload_custom_album',
     );
+    final preview = safeUiPreviewBytes(bytes: thumbnailBytes, kind: 'image');
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
         bytes,
@@ -1668,6 +1695,12 @@ class FamilyChatRepository {
         contentType:
             contentType != null ? DioMediaType.parse(contentType) : null,
       ),
+      if (preview != null)
+        'thumbnail': MultipartFile.fromBytes(
+          preview,
+          filename: 'thumb.jpg',
+          contentType: DioMediaType.parse('image/jpeg'),
+        ),
       if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
       if (shareToDiary) 'share_to_diary': '1',
       if (photoExif != null && photoExif.isNotEmpty)

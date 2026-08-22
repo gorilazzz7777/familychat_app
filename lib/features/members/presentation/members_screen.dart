@@ -4,11 +4,12 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/cache/familychat_local_cache.dart';
+import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_tab_bar.dart';
+import '../../chat/data/chat_local_reads.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../location/presentation/family_map_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
@@ -42,32 +43,142 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
   bool _importing = false;
   bool _viewerIndividualPremium = false;
   String _query = '';
+  StreamSubscription<List<Map<String, dynamic>>>? _membersSub;
+  int _loadGen = 0;
+  Future<void>? _networkRefreshInFlight;
+
+  bool get _useLocalWatch => ChatLocalStore.isSupported;
 
   @override
   void initState() {
     super.initState();
     _tabs = TabController(length: 2, vsync: this);
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
-    _load();
+    if (_useLocalWatch) {
+      _bindLocalMembers();
+      unawaited(_refreshFromNetwork());
+    } else {
+      unawaited(_loadHybrid());
+    }
   }
 
   @override
   void dispose() {
     ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
+    unawaited(_membersSub?.cancel() ?? Future<void>.value());
     _tabs.dispose();
     super.dispose();
+  }
+
+  void _bindLocalMembers() {
+    _membersSub = ChatLocalStore.instance.watchMembers().listen((members) {
+      if (!mounted) return;
+      if (_membersFingerprint(_members) == _membersFingerprint(members) &&
+          !_loading) {
+        return;
+      }
+      setState(() {
+        _members = members;
+        if (members.isNotEmpty) {
+          _loading = false;
+        }
+      });
+    });
   }
 
   void _onOfflineStateChanged() {
     if (!mounted) return;
     if (ChatOfflineSync.instance.isOnline) {
-      unawaited(_load());
+      unawaited(_refreshFromNetwork());
     }
   }
 
-  Future<void> _load() async {
-    final cached = await FamilyChatLocalCache.readChatMembers();
-    if (cached != null && cached.isNotEmpty && mounted) {
+  Future<void> _load() => _useLocalWatch ? _refreshFromNetwork() : _loadHybrid();
+
+  Future<void> _refreshFromNetwork() async {
+    if (_networkRefreshInFlight != null) {
+      return _networkRefreshInFlight!;
+    }
+    final future = _refreshFromNetworkBody();
+    _networkRefreshInFlight = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_networkRefreshInFlight, future)) {
+        _networkRefreshInFlight = null;
+      }
+    }
+  }
+
+  Future<void> _refreshFromNetworkBody() async {
+    final gen = ++_loadGen;
+    final repo = ref.read(familychatRepositoryProvider);
+    if (_members.isEmpty && mounted) {
+      setState(() => _loading = true);
+    }
+    try {
+      final list = await repo.members();
+      if (gen != _loadGen || !mounted) return;
+
+      await ChatLocalReads.saveMembers(list);
+
+      var importable = _importableBabies;
+      final hasChild = list.any((m) => m['is_child'] == true);
+      if (hasChild) {
+        importable = const [];
+      } else {
+        try {
+          importable = await repo.childrenImportable();
+        } catch (_) {}
+      }
+      if (gen != _loadGen || !mounted) return;
+
+      var premium = _viewerIndividualPremium;
+      for (final m in list) {
+        if (m['user_id'] == widget.currentUserId) {
+          final entitlements = m['entitlements'];
+          if (entitlements is Map) {
+            premium = entitlements['individual_premium'] == true;
+          }
+          break;
+        }
+      }
+
+      if (!_useLocalWatch) {
+        final sameMembers =
+            _membersFingerprint(_members) == _membersFingerprint(list);
+        if (!sameMembers || _loading) {
+          setState(() {
+            _members = list;
+            _loading = false;
+          });
+        }
+      }
+
+      final importableChanged =
+          _importableFingerprint(importable) !=
+              _importableFingerprint(_importableBabies);
+      if (importableChanged ||
+          premium != _viewerIndividualPremium ||
+          _loading) {
+        setState(() {
+          _importableBabies = importable;
+          _viewerIndividualPremium = premium;
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (gen != _loadGen || !mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
+  /// Web: cache + network (no SQLite watch).
+  Future<void> _loadHybrid() async {
+    final gen = ++_loadGen;
+    final cached = await ChatLocalReads.members();
+    if (gen != _loadGen || !mounted) return;
+    if (cached.isNotEmpty) {
       setState(() {
         _members = cached;
         _loading = false;
@@ -80,14 +191,20 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
     }
     try {
       final list = await repo.members();
-      await FamilyChatLocalCache.saveChatMembers(list);
-      var importable = <Map<String, dynamic>>[];
+      if (gen != _loadGen || !mounted) return;
+      await ChatLocalReads.saveMembers(list);
+
+      var importable = _importableBabies;
       final hasChild = list.any((m) => m['is_child'] == true);
-      if (!hasChild) {
+      if (hasChild) {
+        importable = const [];
+      } else {
         try {
           importable = await repo.childrenImportable();
         } catch (_) {}
       }
+      if (gen != _loadGen || !mounted) return;
+
       var premium = _viewerIndividualPremium;
       for (final m in list) {
         if (m['user_id'] == widget.currentUserId) {
@@ -98,12 +215,16 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
           break;
         }
       }
-      if (!mounted) return;
-      final same = _membersFingerprint(_members) == _membersFingerprint(list);
-      if (same &&
-          !_loading &&
-          importable.length == _importableBabies.length &&
-          premium == _viewerIndividualPremium) {
+
+      final sameMembers =
+          _membersFingerprint(_members) == _membersFingerprint(list);
+      final importableChanged =
+          _importableFingerprint(importable) !=
+              _importableFingerprint(_importableBabies);
+      if (sameMembers &&
+          !importableChanged &&
+          premium == _viewerIndividualPremium &&
+          !_loading) {
         return;
       }
       setState(() {
@@ -113,14 +234,22 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
         _loading = false;
       });
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (gen != _loadGen || !mounted) return;
+      setState(() => _loading = false);
     }
   }
 
   String _membersFingerprint(List<Map<String, dynamic>> members) {
     return members
         .map((m) =>
-            '${m['user_id']}|${m['child_id']}|${m['display_name']}|${m['avatar_url']}|${m['kinship_label']}|${m['is_online']}|${m['last_seen']}')
+            '${m['user_id']}|${m['child_id']}|${m['display_name']}|${m['avatar_url']}|${m['kinship_label']}|${m['is_online']}|${m['last_seen']}|${m['is_child']}')
+        .join(';');
+  }
+
+  String _importableFingerprint(List<Map<String, dynamic>> babies) {
+    return babies
+        .map((b) =>
+            '${b['id']}|${b['child_id']}|${b['display_name']}|${b['birthday_display']}')
         .join(';');
   }
 

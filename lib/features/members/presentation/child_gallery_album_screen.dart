@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/media/gallery_photo_date.dart';
+import '../../../core/media/gallery_photo_local_state.dart';
 import '../../../core/media/media_incoming_sync.dart';
-import '../../../core/media/media_local_index.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
@@ -123,19 +123,26 @@ class _ChildGalleryAlbumScreenState
       final batch = (gallery['photos'] as List?)
               ?.cast<Map<String, dynamic>>() ??
           const <Map<String, dynamic>>[];
-      MediaLocalIndex.hydrateAttachments(batch);
-      unawaited(MediaIncomingSync.ensureGalleryPhotos(batch));
+      final previous = reset ? List<Map<String, dynamic>>.from(_photos) : null;
+      final enriched = await GalleryPhotoLocalState.indexPhotos(
+        batch,
+        previous: previous,
+      );
+      unawaited(GalleryPhotoLocalState.hydratePreviewBytesBatch(enriched).then((_) {
+        if (mounted) setState(() {});
+      }));
+      unawaited(MediaIncomingSync.ensureGalleryPhotos(enriched));
       setState(() {
         if (reset) {
           _photos
             ..clear()
-            ..addAll(batch);
+            ..addAll(enriched);
         } else {
-          _photos.addAll(batch);
+          _photos.addAll(enriched);
         }
         _rebuildDaySections();
-        if (batch.isNotEmpty) {
-          _beforeId = _photoId(batch.last);
+        if (enriched.isNotEmpty) {
+          _beforeId = _photoId(enriched.last);
         }
         _hasMore = batch.length >= _pageSize;
         _loading = false;
@@ -183,12 +190,15 @@ class _ChildGalleryAlbumScreenState
           final id = uploaded['id'];
           final attachmentId = id is int ? id : int.tryParse('$id');
           final localPath = item.localPath?.trim() ?? '';
-          if (attachmentId != null && localPath.isNotEmpty) {
-            await MediaLocalIndex.saveOutgoing(
-              attachmentId: attachmentId,
-              localPath: localPath,
+          final assetId = item.assetId?.trim() ?? '';
+          if (attachmentId != null) {
+            await GalleryPhotoLocalState.persistOutgoing(
+              uploaded: uploaded,
+              localPath: localPath.isEmpty ? null : localPath,
+              assetId: assetId.isEmpty ? null : assetId,
               filename: item.filename,
               kind: item.kind,
+              previewBytes: item.previewBytes.isEmpty ? null : item.previewBytes,
             );
           }
           ok++;

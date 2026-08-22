@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -12,6 +13,27 @@ import 'gallery_media_utils.dart';
 abstract final class GalleryVideoThumbnail {
   static final Map<String, Future<String?>> _inflight = {};
   static Directory? _cacheDir;
+  static const _maxConcurrent = 2;
+  static int _active = 0;
+  static final List<Completer<void>> _waiters = [];
+
+  static Future<void> _acquireSlot() async {
+    if (_active < _maxConcurrent) {
+      _active++;
+      return;
+    }
+    final waiter = Completer<void>();
+    _waiters.add(waiter);
+    await waiter.future;
+  }
+
+  static void _releaseSlot() {
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0).complete();
+      return;
+    }
+    _active = (_active - 1).clamp(0, _maxConcurrent);
+  }
 
   static Future<Directory> _dir() async {
     final existing = _cacheDir;
@@ -51,16 +73,27 @@ abstract final class GalleryVideoThumbnail {
     final existing = _inflight[key];
     if (existing != null) return existing;
 
-    final future = _generate(
-      attachment,
-      maxWidth: maxWidth,
-      timeMs: timeMs,
+    final future = _withSlot(
+      () => _generate(
+        attachment,
+        maxWidth: maxWidth,
+        timeMs: timeMs,
+      ),
     );
     _inflight[key] = future;
     try {
       return await future;
     } finally {
       _inflight.remove(key);
+    }
+  }
+
+  static Future<String?> _withSlot(Future<String?> Function() fn) async {
+    await _acquireSlot();
+    try {
+      return await fn();
+    } finally {
+      _releaseSlot();
     }
   }
 
@@ -94,10 +127,11 @@ abstract final class GalleryVideoThumbnail {
       }
 
       final local = GalleryDeviceMediaStore.existingLocalPath(attachment);
-      final source = (local != null && local.isNotEmpty)
-          ? local
-          : galleryAttachmentUrl(attachment).trim();
-      if (source.isEmpty) return null;
+      if (local == null || local.isEmpty) {
+        // Без локального файла не качаем видео с S3 ради кадра — ждём thumbnail_url.
+        return null;
+      }
+      final source = local;
 
       final generated = await VideoThumbnail.thumbnailFile(
         video: source,

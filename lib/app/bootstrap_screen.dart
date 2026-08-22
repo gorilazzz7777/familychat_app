@@ -287,6 +287,96 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
   }
 
+  /// Background status refresh after cache-first entry (no spinner).
+  void _applyFreshStatus(Map<String, dynamic> status) {
+    if (!mounted) return;
+    final wasReady = _ready;
+    final ready = status['onboarding_complete'] == true &&
+        status['has_family'] == true;
+    setState(() {
+      _status = status;
+      _ready = ready;
+      _bootError = null;
+    });
+    ChatOfflineSync.instance.setOnline(true);
+    unawaited(FamilyChatLocalCache.saveStatus(status));
+    unawaited(ref.read(themeSeedProvider.notifier).syncFromStatus(status));
+    _syncAppActions();
+    if (ready && !wasReady) {
+      unawaited(ref.read(appSettingsProvider.notifier).syncFromServer());
+      unawaited(_maybeHandleFriendInvite());
+      unawaited(_maybeHandleFamilyTransfer());
+    }
+  }
+
+  Future<void> _startSessionServices() async {
+    final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
+    if (token != null && token.isNotEmpty) {
+      unawaited(FamilyChatRealtime.instance.connect(token));
+    }
+    unawaited(PushRegistrationService.registerIfPossible(
+      client: ref.read(apiClientProvider),
+      repository: ref.read(familychatRepositoryProvider),
+    ));
+    unawaited(_validatePendingInvitesInBackground());
+  }
+
+  /// Network status check. [background]: UI already shown from cached status.
+  Future<void> _finishBootFromNetwork({required bool background}) async {
+    Map<String, dynamic>? st;
+    Object? statusError;
+    try {
+      st = await ref.read(familychatRepositoryProvider).status();
+      if (st != null) {
+        try {
+          await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
+        } catch (_) {}
+      }
+    } catch (e) {
+      statusError = e;
+    }
+
+    if (!mounted) return;
+
+    if (!await _hasSession()) {
+      await _showLogin();
+      return;
+    }
+
+    await _startSessionServices();
+
+    if (!mounted) return;
+
+    if (st != null) {
+      if (background) {
+        _applyFreshStatus(st);
+      } else {
+        _enterWithStatus(st, fromCache: false);
+      }
+      return;
+    }
+
+    if (_isAuthFailure(statusError)) {
+      await ref.read(apiClientProvider).tokenStorage.clear();
+      await FamilyChatLocalCache.clearStatus();
+      await _showLogin();
+      return;
+    }
+
+    if (background) {
+      // Cached UI stays; offline until next successful refresh.
+      return;
+    }
+
+    setState(() {
+      _checking = false;
+      _loggedIn = true;
+      _bootError = statusError is DioException
+          ? 'Ошибка загрузки (${statusError.response?.statusCode ?? 'сеть'})'
+          : 'Не удалось загрузить данные';
+    });
+  }
+
   Future<void> _showLogin() async {
     if (!mounted) return;
     setState(() {
@@ -316,52 +406,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       return;
     }
 
-    // Токен есть — спиннер, пока проверяем status.
-    Map<String, dynamic>? st;
-    Object? statusError;
-    try {
-      st = await ref.read(familychatRepositoryProvider).status();
-      try {
-        await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
-      } catch (_) {}
-    } catch (e) {
-      statusError = e;
-    }
-
-    if (!mounted) return;
-
-    // Сессию могли сбросить interceptor'ом во время status/refresh.
-    if (!await _hasSession()) {
-      await _showLogin();
-      return;
-    }
-
-    final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
-    if (token != null && token.isNotEmpty) {
-      unawaited(FamilyChatRealtime.instance.connect(token));
-    }
-    unawaited(PushRegistrationService.registerIfPossible(
-      client: ref.read(apiClientProvider),
-      repository: ref.read(familychatRepositoryProvider),
-    ));
-    unawaited(_validatePendingInvitesInBackground());
-
-    if (!mounted) return;
-
-    if (st != null) {
-      _enterWithStatus(st, fromCache: false);
-      return;
-    }
-
-    // Auth fail → сразу login (без экрана ошибки и без сетевого logout).
-    if (_isAuthFailure(statusError)) {
-      await ref.read(apiClientProvider).tokenStorage.clear();
-      await FamilyChatLocalCache.clearStatus();
-      await _showLogin();
-      return;
-    }
-
-    // Сеть/прочее → пробуем кэш status (офлайн-старт как в shell).
+    // Cache-first: повторный запуск — Shell сразу, status в фоне.
     final cached = await FamilyChatLocalCache.readStatus();
     if (cached != null && cached.isNotEmpty) {
       try {
@@ -369,17 +414,12 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       } catch (_) {}
       if (!mounted) return;
       _enterWithStatus(cached, fromCache: true);
+      unawaited(_finishBootFromNetwork(background: true));
       return;
     }
 
-    // Нет кэша — оставляем retry.
-    setState(() {
-      _checking = false;
-      _loggedIn = true;
-      _bootError = statusError is DioException
-          ? 'Ошибка загрузки (${statusError.response?.statusCode ?? 'сеть'})'
-          : 'Не удалось загрузить данные';
-    });
+    // Первый вход / нет кэша — ждём status (спиннер).
+    await _finishBootFromNetwork(background: false);
   }
 
   Future<void> _maybeHandleFamilyTransfer() async {
@@ -484,8 +524,18 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       await FamilyChatLocalCache.saveStatus(st);
       ChatOfflineSync.instance.setOnline(true);
       if (!mounted) return;
-      setState(() => _status = st);
+      final wasReady = _ready;
+      final ready = st['onboarding_complete'] == true && st['has_family'] == true;
+      setState(() {
+        _status = st;
+        _ready = ready;
+      });
       _syncAppActions();
+      if (ready && !wasReady) {
+        unawaited(ref.read(appSettingsProvider.notifier).syncFromServer());
+        unawaited(_maybeHandleFriendInvite());
+        unawaited(_maybeHandleFamilyTransfer());
+      }
     } catch (_) {}
   }
 

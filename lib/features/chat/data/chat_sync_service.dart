@@ -21,6 +21,8 @@ class ChatSyncService {
   bool _listening = false;
   bool _syncingHub = false;
   bool _historySyncing = false;
+  bool _deferredHubSync = false;
+  bool _deferredHubPrefetch = false;
   Timer? _historyTimer;
   final Set<int> _syncingThreads = <int>{};
   final Map<int, Future<void>> _threadQueues = <int, Future<void>>{};
@@ -105,7 +107,7 @@ class ChatSyncService {
       if (threadId != null) {
         unawaited(syncThread(threadId));
       } else {
-        unawaited(syncHub(prefetchMessages: true));
+        unawaited(syncHub(prefetchMessages: true, force: false));
       }
     }
   }
@@ -138,8 +140,22 @@ class ChatSyncService {
       thread['unread_count'] = unread;
       await ChatLocalStore.instance.upsertThread(thread);
     } else {
-      unawaited(syncHub());
+      unawaited(syncHub(force: false));
     }
+  }
+
+  void _deferHubSync({bool prefetchMessages = false}) {
+    _deferredHubSync = true;
+    if (prefetchMessages) _deferredHubPrefetch = true;
+  }
+
+  /// Run hub sync that was skipped while the user was inside a conversation.
+  Future<void> flushDeferredHubSync() async {
+    if (!_deferredHubSync) return;
+    _deferredHubSync = false;
+    final prefetch = _deferredHubPrefetch;
+    _deferredHubPrefetch = false;
+    await syncHub(prefetchMessages: prefetch, force: true);
   }
 
   /// Remove optimistic/outbox rows that duplicate a confirmed server message.
@@ -205,11 +221,21 @@ class ChatSyncService {
     }
   }
 
-  Future<void> syncHub({bool prefetchMessages = false}) async {
+  Future<void> syncHub({
+    bool prefetchMessages = false,
+    bool force = false,
+  }) async {
     var repo = _repo;
     if (!isSupported) return;
     if (repo == null) {
       debugPrint('[ChatSyncService] syncHub skipped: repo not attached yet');
+      return;
+    }
+    if (!force && ActiveChatContext.instance.openThreadId != null) {
+      _deferHubSync(prefetchMessages: prefetchMessages);
+      return;
+    }
+    if (!force && ChatBootstrapCoordinator.instance.hubRecentlySynced) {
       return;
     }
     if (_syncingHub) return;
@@ -327,7 +353,9 @@ class ChatSyncService {
     if (_historySyncing) return;
     _historySyncing = true;
     try {
-      await syncHub();
+      if (ActiveChatContext.instance.openThreadId == null) {
+        await syncHub(force: false);
+      }
       final threads = await ChatLocalStore.instance.readThreads();
       final ids = <int>[
         if (prioritizeThreadId != null) prioritizeThreadId,
