@@ -3,11 +3,13 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../../../core/widgets/family_input_styles.dart';
+import '../../data/chat_gif_item.dart';
 import '../../data/chat_send_options.dart';
 import '../record_video_circle_screen.dart';
 import 'chat_circle_recording_overlay.dart';
 import 'chat_compose_action_button.dart';
 import 'chat_compose_circle_button.dart';
+import 'chat_compose_picker_panel.dart';
 import 'chat_emoji_picker_sheet.dart';
 import 'chat_video_circle_session.dart';
 import 'chat_voice_recording_compose_slot.dart';
@@ -22,6 +24,7 @@ class ChatComposeInput extends StatefulWidget {
     required this.onSend,
     required this.onVoiceComplete,
     this.onVideoCircleComplete,
+    this.onGifSelected,
     this.forceSendButton = false,
     this.voiceTranscriptionEnabled = false,
     this.showAiAssist = false,
@@ -39,6 +42,7 @@ class ChatComposeInput extends StatefulWidget {
   }) onVoiceComplete;
   final Future<void> Function(VideoCircleRecording recording)?
       onVideoCircleComplete;
+  final void Function(ChatGifItem item)? onGifSelected;
   final bool forceSendButton;
   final bool voiceTranscriptionEnabled;
   final bool showAiAssist;
@@ -55,7 +59,8 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
     isRecording: false,
     durationMs: 0,
   );
-  bool _emojiOpen = false;
+  bool _pickerOpen = false;
+  ChatComposePickerTab _pickerTab = ChatComposePickerTab.emoji;
   OverlayEntry? _circleOverlay;
 
   @override
@@ -82,8 +87,8 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
   }
 
   void _onFocusChanged() {
-    if (widget.focusNode.hasFocus && _emojiOpen) {
-      setState(() => _emojiOpen = false);
+    if (widget.focusNode.hasFocus && _pickerOpen) {
+      setState(() => _pickerOpen = false);
     }
   }
 
@@ -91,7 +96,7 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
     if (!mounted) return;
     setState(() {
       _recording = change;
-      if (change.isRecording) _emojiOpen = false;
+      if (change.isRecording) _pickerOpen = false;
     });
     _syncCircleOverlay();
   }
@@ -130,14 +135,22 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
     }
   }
 
-  void _toggleEmoji() {
-    if (_emojiOpen) {
-      setState(() => _emojiOpen = false);
+  void _togglePicker() {
+    if (_pickerOpen) {
+      setState(() => _pickerOpen = false);
       widget.focusNode.requestFocus();
       return;
     }
     widget.focusNode.unfocus();
-    setState(() => _emojiOpen = true);
+    setState(() {
+      _pickerOpen = true;
+      _pickerTab = ChatComposePickerTab.emoji;
+    });
+  }
+
+  void _collapsePicker() {
+    setState(() => _pickerOpen = false);
+    widget.focusNode.requestFocus();
   }
 
   @override
@@ -150,7 +163,7 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: EdgeInsets.fromLTRB(8, 8, 8, _emojiOpen ? 0 : 8),
+          padding: EdgeInsets.fromLTRB(8, 8, 8, _pickerOpen ? 0 : 8),
           child: Material(
             type: MaterialType.transparency,
             clipBehavior: Clip.none,
@@ -183,11 +196,11 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
                             minLines: 1,
                             maxLines: 5,
                             textInputAction: TextInputAction.newline,
-                            readOnly: _emojiOpen,
+                            readOnly: _pickerOpen,
                             showCursor: true,
                             onTap: () {
-                              if (_emojiOpen) {
-                                setState(() => _emojiOpen = false);
+                              if (_pickerOpen) {
+                                setState(() => _pickerOpen = false);
                               }
                             },
                             decoration: InputDecoration(
@@ -205,8 +218,8 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
                   ),
                   if (!recording)
                     ChatComposeEmojiButton(
-                      open: _emojiOpen,
-                      onPressed: _toggleEmoji,
+                      open: _pickerOpen,
+                      onPressed: _togglePicker,
                     ),
                   ChatComposeActionButton(
                     controller: widget.controller,
@@ -226,13 +239,16 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
             ),
           ),
         ),
-        if (_emojiOpen && !recording)
-          ChatEmojiPickerPanel(
-            controller: widget.controller,
-            onCollapse: () {
-              setState(() => _emojiOpen = false);
-              widget.focusNode.requestFocus();
+        if (_pickerOpen && !recording)
+          ChatComposePickerPanel(
+            tab: _pickerTab,
+            onTabChanged: (tab) => setState(() => _pickerTab = tab),
+            emojiController: widget.controller,
+            onGifSelected: (item) {
+              _collapsePicker();
+              widget.onGifSelected?.call(item);
             },
+            onCollapse: _collapsePicker,
           ),
       ],
     );

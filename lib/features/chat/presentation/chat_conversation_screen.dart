@@ -40,6 +40,7 @@ import '../data/chat_offline_sync.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/chat_scheduled_send_service.dart';
 import '../data/chat_send_options.dart';
+import '../data/chat_gif_item.dart';
 import '../data/chat_typing_utils.dart';
 import '../data/chat_voice_transcription.dart';
 import '../data/chat_voice_utils.dart';
@@ -2549,6 +2550,71 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
+  Future<void> _sendGifMessage(ChatGifItem gif) async {
+    if (gif.url.isEmpty) return;
+    final tempId = _nextTempId();
+    final replySnapshot = _replyTo;
+    final replyMessageId = chatAsInt(replySnapshot?['message_id']);
+    final preview = gif.previewUrl.isNotEmpty ? gif.previewUrl : gif.url;
+    _addOptimisticMessage(
+      tempId,
+      body: '',
+      attachments: [
+        {
+          'kind': 'image',
+          'content_type': gif.contentType,
+          'url': preview,
+          'filename': 'gif.gif',
+        },
+      ],
+      replyTo: replySnapshot,
+      metadata: {
+        'gif': {
+          'source': 'klipy',
+          if (gif.id.isNotEmpty) 'id': gif.id,
+          if (gif.slug.isNotEmpty) 'slug': gif.slug,
+        },
+      },
+    );
+    if (_replyTo != null) {
+      setState(() => _replyTo = null);
+    }
+
+    final repo = ref.read(familychatRepositoryProvider);
+    final online = await ChatOfflineSync.instance.refreshOnline(repo);
+    if (!online) {
+      _markOptimisticFailed(tempId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('GIF можно отправить только при наличии сети'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final msg = await repo.sendThreadGif(
+        widget.threadId,
+        url: gif.url,
+        id: gif.id,
+        slug: gif.slug,
+        title: gif.title,
+        replyToMessageId: replyMessageId,
+      );
+      if (!mounted) return;
+      _replaceOptimisticMessage(tempId, msg);
+      _scrollToBottom();
+      await _persistMessageCache();
+    } catch (_) {
+      if (!mounted) return;
+      _markOptimisticFailed(tempId);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось отправить GIF')),
+      );
+    }
+  }
+
   Map<String, dynamic> _attachmentForFaceTagging(int attachmentId) {
     for (final m in _messages) {
       for (final a in chatAttachmentsOf(m)) {
@@ -4685,6 +4751,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                           onVoiceComplete: _sendVoiceMessage,
                                           onVideoCircleComplete:
                                               _sendVideoCircleMessage,
+                                          onGifSelected: (gif) => unawaited(
+                                            _sendGifMessage(gif),
+                                          ),
                                         forceSendButton:
                                             _pendingFileDraft != null ||
                                                 _editingMessageId != null,
@@ -4707,6 +4776,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                           onVoiceComplete: _sendVoiceMessage,
                                           onVideoCircleComplete:
                                               _sendVideoCircleMessage,
+                                          onGifSelected: (gif) => unawaited(
+                                            _sendGifMessage(gif),
+                                          ),
                                         forceSendButton:
                                             _pendingFileDraft != null ||
                                                 _editingMessageId != null,

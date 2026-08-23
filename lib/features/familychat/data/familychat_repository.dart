@@ -1871,6 +1871,50 @@ class FamilyChatRepository {
     return preview;
   }
 
+  /// Каталог GIF (Klipy через бэкенд). [q] пустой → trending.
+  Future<Map<String, dynamic>> fetchGifCatalog({
+    String query = '',
+    int page = 1,
+    int perPage = 24,
+  }) async {
+    final q = query.trim();
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/gifs/',
+      queryParameters: {
+        if (q.isNotEmpty) 'q': q,
+        'page': page,
+        'per_page': perPage,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  /// Скачать выбранную гифку на сервере → S3 (dedup) → сообщение в чат.
+  Future<Map<String, dynamic>> sendThreadGif(
+    int threadId, {
+    required String url,
+    String id = '',
+    String slug = '',
+    String title = '',
+    int? replyToMessageId,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/threads/$threadId/gifs/',
+      data: {
+        'url': url,
+        if (id.isNotEmpty) 'id': id,
+        if (slug.isNotEmpty) 'slug': slug,
+        if (title.isNotEmpty) 'title': title,
+        if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
+      },
+      options: Options(
+        sendTimeout: const Duration(minutes: 2),
+        receiveTimeout: const Duration(minutes: 2),
+      ),
+    );
+    return res.data!;
+  }
+
   Future<FamilyChatAppSettings> updateAppSettings(
     FamilyChatAppSettings settings,
   ) async {
