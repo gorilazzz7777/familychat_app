@@ -4,6 +4,8 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/media/local_device_file.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../data/chat_voice_transcription_prefs.dart';
 import '../../data/chat_voice_utils.dart';
@@ -82,9 +84,19 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
       return;
     }
 
+    final mime = voicePlaybackMimeType(
+      filename: widget.attachment['filename']?.toString(),
+      contentType: widget.attachment['content_type']?.toString(),
+    );
+    final localPath = galleryLocalDevicePath(widget.attachment);
+    if (localPath.isNotEmpty && localDeviceFileExists(localPath)) {
+      await _player.play(DeviceFileSource(localPath, mimeType: mime));
+      return;
+    }
+
     final localBytes = widget.attachment['local_bytes'];
     if (localBytes is Uint8List && localBytes.isNotEmpty) {
-      await _player.play(BytesSource(localBytes));
+      await _player.play(BytesSource(localBytes, mimeType: mime));
       return;
     }
 
@@ -95,7 +107,7 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
       attachment: widget.attachment,
     );
     if (url.isEmpty) return;
-    await _player.play(UrlSource(url));
+    await _player.play(UrlSource(url, mimeType: mime));
   }
 
   @override

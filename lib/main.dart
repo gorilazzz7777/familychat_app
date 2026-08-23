@@ -17,6 +17,7 @@ import 'core/share/incoming_share_bus.dart';
 import 'core/media/media_local_index.dart';
 import 'core/settings/screen_timeout_guard.dart';
 import 'core/theme/app_theme.dart';
+import 'core/theme/appearance_prefs.dart';
 import 'core/theme/theme_seed_controller.dart';
 
 Future<void> main() async {
@@ -47,6 +48,7 @@ class FamilyChatApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final seedColor = ref.watch(themeSeedProvider);
+    final fontScale = ref.watch(appearanceFontScaleProvider);
 
     return MaterialApp(
       title: 'Family Space',
@@ -65,12 +67,29 @@ class FamilyChatApp extends ConsumerWidget {
         final content = ScreenTimeoutGuard(
           child: child ?? const SizedBox.shrink(),
         );
-        if (!kIsWeb) return content;
+        MediaQueryData withFontScale(MediaQueryData mq) {
+          if (fontScale == null) return mq;
+          return mq.copyWith(textScaler: TextScaler.linear(fontScale));
+        }
+
+        if (!kIsWeb) {
+          if (fontScale == null) return content;
+          return MediaQuery(
+            data: withFontScale(MediaQuery.of(context)),
+            child: content,
+          );
+        }
 
         // Phone-width column on desktop so the UI does not stretch edge-to-edge.
         const maxWidth = 560.0;
         final mq = MediaQuery.of(context);
-        if (mq.size.width <= maxWidth) return content;
+        if (mq.size.width <= maxWidth) {
+          if (fontScale == null) return content;
+          return MediaQuery(
+            data: withFontScale(mq),
+            child: content,
+          );
+        }
 
         final scheme = Theme.of(context).colorScheme;
         // Explicit height is required: Center alone gives unbounded height and
@@ -82,7 +101,9 @@ class FamilyChatApp extends ConsumerWidget {
               width: maxWidth,
               height: mq.size.height,
               child: MediaQuery(
-                data: mq.copyWith(size: Size(maxWidth, mq.size.height)),
+                data: withFontScale(
+                  mq.copyWith(size: Size(maxWidth, mq.size.height)),
+                ),
                 child: ColoredBox(
                   color: scheme.surface,
                   child: content,

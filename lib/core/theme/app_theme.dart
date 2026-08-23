@@ -23,6 +23,13 @@ class AppTheme {
     return ThemeData(
       colorScheme: colorScheme,
       useMaterial3: true,
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Colors.white,
+        foregroundColor: Color(0xFF1C1B1F),
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+      ),
       inputDecorationTheme: FamilyInputStyles.decorationTheme(colorScheme),
       tabBarTheme: const TabBarThemeData(
         indicatorSize: TabBarIndicatorSize.tab,

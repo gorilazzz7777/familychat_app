@@ -346,6 +346,8 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                                 },
                                 decoration: InputDecoration(
                                   hintText: widget.hintText,
+                                  filled: true,
+                                  fillColor: Colors.white,
                                   border: InputBorder.none,
                                   enabledBorder: InputBorder.none,
                                   focusedBorder: InputBorder.none,
@@ -381,7 +383,13 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
           ),
         ),
         if (_emojiOpen && !_recording.isRecording)
-          ChatEmojiPickerPanel(controller: widget.controller),
+          ChatEmojiPickerPanel(
+            controller: widget.controller,
+            onCollapse: () {
+              setState(() => _emojiOpen = false);
+              widget.focusNode.requestFocus();
+            },
+          ),
       ],
     );
   }

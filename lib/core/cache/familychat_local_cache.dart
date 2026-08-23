@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/chat/data/chat_realtime_utils.dart';
+import '../media/gallery_media_utils.dart';
 
 /// Локальный JSON-кэш метаданных (сообщения, списки альбомов) для офлайн-доступа.
 abstract final class FamilyChatLocalCache {
@@ -209,10 +210,14 @@ abstract final class FamilyChatLocalCache {
           final attachmentId = chatAsInt(att['id']);
           if (attachmentId != null && attachmentId > 0) {
             final stored = await readAttachmentBytes(threadId, attachmentId);
-            if (stored != null && stored.isNotEmpty) {
+            if (stored != null &&
+                stored.isNotEmpty &&
+                isSafeUiPreviewBytes(stored)) {
               att['local_bytes'] = stored;
             }
           }
+        } else if (!isSafeUiPreviewBytes(asBytes)) {
+          att.remove('local_bytes');
         }
         nextAtts.add(att);
       }
@@ -246,7 +251,12 @@ abstract final class FamilyChatLocalCache {
           } catch (_) {}
         }
       }
-      if (bytes == null || bytes.isEmpty) continue;
+      if (bytes == null ||
+          bytes.isEmpty ||
+          looksLikeVideoBytes(bytes) ||
+          !looksLikeImageBytes(bytes)) {
+        continue;
+      }
       try {
         await saveAttachmentBytes(threadId, attachmentId, bytes);
       } catch (_) {}
@@ -385,7 +395,11 @@ abstract final class FamilyChatLocalCache {
     int attachmentId,
     Uint8List bytes,
   ) async {
-    if (bytes.isEmpty || bytes.length > maxCachedAttachmentBytes) return;
+    if (bytes.isEmpty ||
+        bytes.length > maxCachedAttachmentBytes ||
+        looksLikeVideoBytes(bytes)) {
+      return;
+    }
     final relative = _attachmentBytesKey(threadId, attachmentId);
     if (kIsWeb) {
       final prefs = await SharedPreferences.getInstance();

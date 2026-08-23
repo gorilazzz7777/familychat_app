@@ -9,6 +9,8 @@ import '../../../core/media/video_upload_pipeline.dart';
 import '../../familychat/data/familychat_repository.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/chat_sync_service.dart';
+import '../data/chat_voice_utils.dart';
+import '../data/ogg_container_duration.dart';
 import '../data/share_attachment_loader.dart';
 
 /// Оптимистичная отправка share → чат: сразу локальный bubble, upload в фоне.
@@ -22,23 +24,54 @@ class ShareChatSendCoordinator {
     return -DateTime.now().microsecondsSinceEpoch - _tempSeq;
   }
 
+  static bool isVoiceShare(ShareAttachmentData att) {
+    if (att.isImage || att.isVideo) return false;
+    return att.isAudio ||
+        looksLikeVoiceShare(
+          filename: att.filename,
+          contentType: att.contentType,
+          bytes: att.bytes.isEmpty ? null : att.bytes,
+        );
+  }
+
+  static int? standaloneVoiceDurationMs(List<ShareAttachmentData> attachments) {
+    if (attachments.length != 1) return null;
+    final att = attachments.first;
+    if (!isVoiceShare(att)) return null;
+    return att.durationMs ??
+        (att.bytes.isEmpty ? null : oggContainerDurationMs(att.bytes));
+  }
+
   static List<Map<String, dynamic>> buildPendingAttachments(
     List<ShareAttachmentData> attachments,
   ) {
     final out = <Map<String, dynamic>>[];
+    final standaloneVoice = standaloneVoiceDurationMs(attachments);
     for (final att in attachments) {
+      final voice = isVoiceShare(att);
       final kind = att.isVideo
           ? 'video'
           : (att.isImage ? 'image' : 'file');
       final path = att.localPath?.trim() ?? '';
+      var filename = att.filename;
+      var contentType = att.contentType;
+      if (voice) {
+        final ext = voiceFilenameExtension(filename, contentType: contentType);
+        contentType ??= voiceContentTypeForExtension(ext);
+        if (standaloneVoice != null &&
+            standaloneVoice > 0 &&
+            !filename.toLowerCase().startsWith('voice_')) {
+          filename = voiceMessageFilename(standaloneVoice, extension: ext);
+        }
+      }
       final preview = safeUiPreviewBytes(
         bytes: att.bytes.isEmpty ? null : Uint8List.fromList(att.bytes),
         kind: kind,
       );
       out.add({
         'kind': kind,
-        'filename': att.filename,
-        if (att.contentType != null) 'content_type': att.contentType,
+        'filename': filename,
+        if (contentType != null) 'content_type': contentType,
         if (path.isNotEmpty) 'local_device_path': path,
         if (preview != null) 'local_bytes': preview,
         '_pending': true,
@@ -53,6 +86,7 @@ class ShareChatSendCoordinator {
     required int? senderUserId,
     required String caption,
     required List<Map<String, dynamic>> attachments,
+    int? voiceDurationMs,
   }) {
     return {
       'id': tempId,
@@ -65,6 +99,10 @@ class ShareChatSendCoordinator {
       'sender_avatar_url': '',
       'attachments': attachments,
       'read_status': 'sending',
+      if (voiceDurationMs != null && voiceDurationMs > 0)
+        'metadata': {
+          'voice': {'duration_ms': voiceDurationMs},
+        },
     };
   }
 
@@ -177,11 +215,22 @@ class ShareChatSendCoordinator {
       );
     }
 
+    final voiceDurationMs = standaloneVoiceDurationMs(resolved);
+
     final attachmentIds = <int>[];
     for (final att in resolved) {
       Uint8List bytes = Uint8List.fromList(att.bytes);
       var filename = att.filename;
       var contentType = att.contentType;
+      if (isVoiceShare(att)) {
+        final ext = voiceFilenameExtension(filename, contentType: contentType);
+        contentType ??= voiceContentTypeForExtension(ext);
+        if (voiceDurationMs != null &&
+            voiceDurationMs > 0 &&
+            !filename.toLowerCase().startsWith('voice_')) {
+          filename = voiceMessageFilename(voiceDurationMs, extension: ext);
+        }
+      }
 
       if (att.isImage && bytes.isNotEmpty) {
         try {
@@ -194,9 +243,7 @@ class ShareChatSendCoordinator {
           bytes = draft.bytesForUpload;
           filename = draft.filename;
           contentType = draft.contentType;
-        } catch (_) {
-          // Keep original bytes.
-        }
+        } catch (_) {}
       } else if (att.isVideo && bytes.isNotEmpty) {
         try {
           final draft = await prepareVideoUploadDraft(
@@ -223,12 +270,12 @@ class ShareChatSendCoordinator {
       if (id == null) continue;
       attachmentIds.add(id);
       final path = att.localPath?.trim() ?? '';
-      if (path.isNotEmpty && (att.isImage || att.isVideo)) {
+      if (path.isNotEmpty && (att.isImage || att.isVideo || isVoiceShare(att))) {
         await MediaLocalIndex.saveOutgoing(
           attachmentId: id,
           localPath: path,
           filename: filename,
-          kind: att.isVideo ? 'video' : 'image',
+          kind: att.isVideo ? 'video' : (att.isImage ? 'image' : 'file'),
         );
       }
     }
@@ -237,6 +284,7 @@ class ShareChatSendCoordinator {
       threadId,
       body: caption.isEmpty ? null : caption,
       attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
+      voiceDurationMs: voiceDurationMs,
     );
     await replacePendingMessage(
       threadId: threadId,

@@ -15,12 +15,14 @@ class VideoCircleRecording {
     required this.durationMs,
     required this.filename,
     this.contentType = 'video/mp4',
+    this.localPath,
   });
 
   final Uint8List bytes;
   final int durationMs;
   final String filename;
   final String contentType;
+  final String? localPath;
 }
 
 /// Запись видео-кружка — та же схема превью, что в Diary (milestone wish).
@@ -214,6 +216,7 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
           bytes: bytes,
           durationMs: _videoDurationMs > 0 ? _videoDurationMs : _elapsedMs,
           filename: 'circle_${DateTime.now().millisecondsSinceEpoch}.mp4',
+          localPath: _videoPath,
         ),
       );
     } catch (e) {

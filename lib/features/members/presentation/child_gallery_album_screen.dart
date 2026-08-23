@@ -118,6 +118,7 @@ class _ChildGalleryAlbumScreenState
                 albumId: widget.albumId == 'all' ? null : widget.albumId,
                 limit: _pageSize,
                 beforeId: reset ? null : _beforeId,
+                offset: reset ? 0 : _photos.length,
               );
       if (!mounted) return;
       final batch = (gallery['photos'] as List?)

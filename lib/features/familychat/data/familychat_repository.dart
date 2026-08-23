@@ -13,6 +13,7 @@ import '../../../core/network/api_client.dart';
 import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/settings/app_settings.dart';
 import '../../chat/data/link_preview_service.dart';
+import '../../gallery/data/gallery_diary_album_bridge.dart';
 
 class ThreadMessagesPage {
   const ThreadMessagesPage({
@@ -359,8 +360,16 @@ class FamilyChatRepository {
     int childId, {
     int limit = 50,
     int? beforeId,
+    int offset = 0,
     String? albumId,
   }) async {
+    if (albumId != null && isDiaryAlbumId(albumId)) {
+      return familyGalleryPhotos(
+        albumId,
+        offset: offset,
+        limit: limit,
+      );
+    }
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/children/$childId/gallery/photos/',
       queryParameters: {
@@ -571,9 +580,25 @@ class FamilyChatRepository {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/children/$childId/gallery/albums/',
     );
-    final albums = res.data?['albums'];
-    if (albums is! List) return [];
-    return albums.cast<Map<String, dynamic>>();
+    final fcAlbums = galleryAlbumMapsOf(res.data?['albums']);
+    var linkedToDiary = false;
+    try {
+      final child = await childDetail(childId);
+      linkedToDiary = child['diary_baby_id'] != null ||
+          child['diary_family_id'] != null;
+    } catch (_) {}
+    if (!linkedToDiary) return fcAlbums;
+
+    try {
+      final diaryRes =
+          await _dio.get<Map<String, dynamic>>('littleone-diary/gallery/albums/');
+      return mergeDiaryCustomAlbums(
+        familychatAlbums: fcAlbums,
+        diaryAlbums: galleryAlbumMapsOf(diaryRes.data?['albums']),
+      );
+    } catch (_) {
+      return fcAlbums;
+    }
   }
 
   Future<Map<String, dynamic>> familyTree() async {
@@ -1387,7 +1412,12 @@ class FamilyChatRepository {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/members/$userId/gallery/albums/',
     );
-    return res.data!;
+    return _mergeDiaryGalleryAlbums(
+      res.data ?? {},
+      () => _dio.get<Map<String, dynamic>>(
+        'littleone-diary/members/$userId/gallery/albums/',
+      ),
+    );
   }
 
   Future<Map<String, dynamic>> memberGalleryPhotos(
@@ -1399,7 +1429,9 @@ class FamilyChatRepository {
     int? personUserId,
     bool personUnidentified = false,
   }) async {
-    final encodedAlbum = Uri.encodeComponent(albumId);
+    final encodedAlbum = Uri.encodeComponent(
+      isDiaryAlbumId(albumId) ? fromDiaryAlbumId(albumId) : albumId,
+    );
     final params = <String, dynamic>{'offset': offset, 'limit': limit};
     if (query != null && query.trim().isNotEmpty) params['q'] = query.trim();
     if (personUnidentified) {
@@ -1407,8 +1439,9 @@ class FamilyChatRepository {
     } else if (personUserId != null) {
       params['person_user_id'] = personUserId;
     }
+    final prefix = isDiaryAlbumId(albumId) ? 'littleone-diary' : 'familychat';
     final res = await _dio.get<Map<String, dynamic>>(
-      'familychat/members/$userId/gallery/albums/$encodedAlbum/photos/',
+      '$prefix/members/$userId/gallery/albums/$encodedAlbum/photos/',
       queryParameters: params,
     );
     return res.data!;
@@ -1764,7 +1797,10 @@ class FamilyChatRepository {
   Future<Map<String, dynamic>> familyGalleryAlbums() async {
     final res =
         await _dio.get<Map<String, dynamic>>('familychat/gallery/albums/');
-    return res.data!;
+    return _mergeDiaryGalleryAlbums(
+      res.data ?? {},
+      () => _dio.get<Map<String, dynamic>>('littleone-diary/gallery/albums/'),
+    );
   }
 
   Future<Map<String, dynamic>> familyGalleryPhotos(
@@ -1775,7 +1811,9 @@ class FamilyChatRepository {
     int? personUserId,
     bool personUnidentified = false,
   }) async {
-    final encodedAlbum = Uri.encodeComponent(albumId);
+    final encodedAlbum = Uri.encodeComponent(
+      isDiaryAlbumId(albumId) ? fromDiaryAlbumId(albumId) : albumId,
+    );
     final params = <String, dynamic>{'offset': offset, 'limit': limit};
     if (query != null && query.trim().isNotEmpty) params['q'] = query.trim();
     if (personUnidentified) {
@@ -1783,11 +1821,31 @@ class FamilyChatRepository {
     } else if (personUserId != null) {
       params['person_user_id'] = personUserId;
     }
+    final prefix = isDiaryAlbumId(albumId) ? 'littleone-diary' : 'familychat';
     final res = await _dio.get<Map<String, dynamic>>(
-      'familychat/gallery/albums/$encodedAlbum/photos/',
+      '$prefix/gallery/albums/$encodedAlbum/photos/',
       queryParameters: params,
     );
     return res.data!;
+  }
+
+  Future<Map<String, dynamic>> _mergeDiaryGalleryAlbums(
+    Map<String, dynamic> familychatData,
+    Future<Response<Map<String, dynamic>>> Function() loadDiary,
+  ) async {
+    try {
+      final diaryRes = await loadDiary();
+      final merged = mergeDiaryCustomAlbums(
+        familychatAlbums: galleryAlbumMapsOf(familychatData['albums']),
+        diaryAlbums: galleryAlbumMapsOf(diaryRes.data?['albums']),
+      );
+      return {
+        ...familychatData,
+        'albums': merged,
+      };
+    } catch (_) {
+      return familychatData;
+    }
   }
 
   Future<Map<String, dynamic>> diaryShareStatus() async {

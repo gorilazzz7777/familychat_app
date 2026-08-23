@@ -27,6 +27,17 @@ abstract final class GalleryMediaExport {
   /// Session cache: normalized filename -> MediaStore / Photos asset id.
   static final Map<String, String> _knownAppAlbumAssetIds = {};
 
+  /// Cached Photos album localIdentifier so we reuse one FamilyChat album.
+  /// iOS [createAlbum] always creates a *new* collection (same title allowed).
+  static String? _cachedIosAppAlbumId;
+
+  /// Serializes album lookup/create — concurrent saves otherwise each call
+  /// [createAlbum] and produce one album per photo.
+  static Future<AssetPathEntity?>? _iosAppAlbumEnsureInflight;
+
+  /// After a successful consolidate this session, skip re-scanning duplicates.
+  static bool _iosDuplicatesCleaned = false;
+
   static String filenameFor(Map<String, dynamic> attachment, {int? id}) {
     final raw = attachment['filename']?.toString().trim() ?? '';
     if (raw.isNotEmpty) return raw;
@@ -320,22 +331,153 @@ abstract final class GalleryMediaExport {
   static Future<void> tryAddToIosAlbum(AssetEntity entity) async {
     if (!Platform.isIOS && !Platform.isMacOS) return;
     try {
-      AssetPathEntity? album;
-      final paths = await PhotoManager.getAssetPathList(type: RequestType.common);
-      for (final path in paths) {
-        if (path.name == appAlbumName) {
-          album = path;
-          break;
-        }
-      }
-      album ??= await PhotoManager.editor.darwin.createAlbum(appAlbumName);
+      final album = await _ensureIosAppAlbum();
       if (album == null) return;
       await PhotoManager.editor.copyAssetToPath(
         asset: entity,
         pathEntity: album,
       );
-    } catch (_) {
-      // Уже лежит в общей галерее.
+    } catch (e) {
+      // Уже лежит в общей галерее / нет прав на альбом.
+      debugPrint('[GalleryMediaExport] tryAddToIosAlbum failed: $e');
+    }
+  }
+
+  /// One shared user album named [appAlbumName], created at most once.
+  static Future<AssetPathEntity?> _ensureIosAppAlbum() {
+    final inflight = _iosAppAlbumEnsureInflight;
+    if (inflight != null) return inflight;
+
+    final future = _ensureIosAppAlbumImpl();
+    _iosAppAlbumEnsureInflight = future;
+    future.whenComplete(() {
+      if (identical(_iosAppAlbumEnsureInflight, future)) {
+        _iosAppAlbumEnsureInflight = null;
+      }
+    });
+    return future;
+  }
+
+  static Future<AssetPathEntity?> _ensureIosAppAlbumImpl() async {
+    final cachedId = _cachedIosAppAlbumId?.trim() ?? '';
+    if (cachedId.isNotEmpty) {
+      try {
+        final cached = await AssetPathEntity.fromId(cachedId);
+        if (cached.id.isNotEmpty) {
+          _cachedIosAppAlbumId = cached.id;
+          if (!_iosDuplicatesCleaned) {
+            await _consolidateIosAppAlbumsKeeping(cached);
+            _iosDuplicatesCleaned = true;
+          }
+          return cached;
+        }
+      } catch (_) {
+        _cachedIosAppAlbumId = null;
+      }
+    }
+
+    final matches = await _listIosAppAlbumsByName();
+    if (matches.isNotEmpty) {
+      final keeper = await _consolidateIosAppAlbums(matches);
+      _cachedIosAppAlbumId = keeper.id;
+      _iosDuplicatesCleaned = true;
+      return keeper;
+    }
+
+    final created =
+        await PhotoManager.editor.darwin.createAlbum(appAlbumName);
+    if (created != null) {
+      _cachedIosAppAlbumId = created.id;
+      _iosDuplicatesCleaned = true;
+    }
+    return created;
+  }
+
+  static Future<List<({AssetPathEntity path, int count})>>
+      _listIosAppAlbumsByName() async {
+    final paths = await PhotoManager.getAssetPathList(
+      type: RequestType.common,
+      pathFilterOption: const PMPathFilter(
+        darwin: PMDarwinPathFilter(
+          type: [PMDarwinAssetCollectionType.album],
+          subType: [PMDarwinAssetCollectionSubtype.any],
+        ),
+      ),
+    );
+
+    final out = <({AssetPathEntity path, int count})>[];
+    for (final path in paths) {
+      if (path.name != appAlbumName) continue;
+      final count = await path.assetCountAsync;
+      out.add((path: path, count: count));
+    }
+    return out;
+  }
+
+  /// Keep the fullest album, move photos from the rest, delete duplicates.
+  static Future<AssetPathEntity> _consolidateIosAppAlbums(
+    List<({AssetPathEntity path, int count})> matches,
+  ) async {
+    if (matches.length == 1) return matches.first.path;
+
+    matches.sort((a, b) => b.count.compareTo(a.count));
+    final keeper = matches.first.path;
+    final duplicates = matches.skip(1).map((m) => m.path).toList();
+    await _mergeAndDeleteIosAlbums(keeper: keeper, duplicates: duplicates);
+    return keeper;
+  }
+
+  static Future<void> _consolidateIosAppAlbumsKeeping(
+    AssetPathEntity keeper,
+  ) async {
+    final matches = await _listIosAppAlbumsByName();
+    if (matches.length <= 1) return;
+    final duplicates = <AssetPathEntity>[];
+    for (final m in matches) {
+      if (m.path.id == keeper.id) continue;
+      duplicates.add(m.path);
+    }
+    if (duplicates.isEmpty) return;
+    await _mergeAndDeleteIosAlbums(keeper: keeper, duplicates: duplicates);
+  }
+
+  static Future<void> _mergeAndDeleteIosAlbums({
+    required AssetPathEntity keeper,
+    required List<AssetPathEntity> duplicates,
+  }) async {
+    for (final dup in duplicates) {
+      try {
+        final count = await dup.assetCountAsync;
+        if (count > 0) {
+          const pageSize = 80;
+          for (var start = 0; start < count; start += pageSize) {
+            final end = start + pageSize > count ? count : start + pageSize;
+            final assets =
+                await dup.getAssetListRange(start: start, end: end);
+            for (final asset in assets) {
+              try {
+                await PhotoManager.editor.copyAssetToPath(
+                  asset: asset,
+                  pathEntity: keeper,
+                );
+              } catch (_) {
+                // Уже в keeper / нет прав — пропускаем кадр.
+              }
+            }
+          }
+        }
+        final deleted =
+            await PhotoManager.editor.darwin.deletePath(dup);
+        if (!deleted) {
+          debugPrint(
+            '[GalleryMediaExport] could not delete duplicate album id=${dup.id}',
+          );
+        }
+      } catch (e) {
+        debugPrint(
+          '[GalleryMediaExport] consolidate album failed id=${dup.id}: $e',
+        );
+      }
     }
   }
 

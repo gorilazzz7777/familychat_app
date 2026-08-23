@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/media/gallery_media_utils.dart';
 import '../../profile/presentation/profile_gallery_album_screen.dart';
-import 'gallery_media_thumbnail.dart';
+import '../data/gallery_diary_album_bridge.dart';
+import 'gallery_album_cover.dart';
+import 'gallery_albums_tab_body.dart';
 
 /// Cover из API/кэша часто приходит как Map, не `Map<String, dynamic>`;
 /// `thread_id` может быть null — для превью достаточно URL/local path.
@@ -118,7 +120,8 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
   @override
   void didUpdateWidget(covariant GalleryAlbumsGroupedView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.albums != widget.albums) {
+    if (galleryAlbumsFingerprint(oldWidget.albums) !=
+        galleryAlbumsFingerprint(widget.albums)) {
       _rebuildGroups();
     }
   }
@@ -132,7 +135,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
     Map<String, dynamic>? allAlbum;
 
     for (final album in widget.albums) {
-      final kind = album['kind']?.toString() ?? '';
+      final kind = galleryAlbumKindOf(album);
       if (kind == 'all') {
         allAlbum = album;
         continue;
@@ -140,13 +143,26 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
       byKind.putIfAbsent(kind, () => []).add(album);
     }
 
+    final leftover = <Map<String, dynamic>>[
+      for (final entry in byKind.entries)
+        if (entry.key != 'custom' &&
+            entry.key != 'face' &&
+            entry.key != 'place' &&
+            entry.key != 'year')
+          ...entry.value,
+    ];
+    final customAlbums = [
+      ...byKind['custom'] ?? const <Map<String, dynamic>>[],
+      ...leftover,
+    ];
+
     final groups = <_GalleryAlbumGroup>[
-      if (widget.alwaysShowCustomGroup || (byKind['custom'] ?? []).isNotEmpty)
+      if (widget.alwaysShowCustomGroup || customAlbums.isNotEmpty)
         _GalleryAlbumGroup(
           id: 'custom',
           label: widget.customTabLabel,
           icon: Icons.collections_bookmark_outlined,
-          albums: List<Map<String, dynamic>>.from(byKind['custom'] ?? const []),
+          albums: customAlbums,
         ),
       if ((byKind['face'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(
@@ -389,20 +405,10 @@ class _AllPhotosCard extends ConsumerWidget {
               SizedBox(
                 width: 112,
                 height: 112,
-                child: cover != null
-                    ? GalleryMediaThumbnail(
-                        attachment: cover,
-                        threadId: galleryAlbumCoverThreadId(cover),
-                        fit: BoxFit.cover,
-                      )
-                    : ColoredBox(
-                        color: theme.colorScheme.primaryContainer,
-                        child: Icon(
-                          Icons.photo_library_outlined,
-                          size: 40,
-                          color: theme.colorScheme.primary,
-                        ),
-                      ),
+                child: GalleryAlbumCover(
+                  cover: cover,
+                  fallbackIcon: Icons.photo_library_outlined,
+                ),
               ),
               Expanded(
                 child: Padding(
@@ -493,7 +499,9 @@ class _AlbumGrid extends StatelessWidget {
       itemBuilder: (context, index) {
         final album = albums[index];
         final canManage = album['can_manage'] == true;
+        final albumId = album['id']?.toString() ?? '';
         return _AlbumCard(
+          key: ValueKey(albumId.isEmpty ? 'album_$index' : albumId),
           album: album,
           icon: iconForKind(album['kind']?.toString()),
           userId: userId,
@@ -513,6 +521,7 @@ class _AlbumGrid extends StatelessWidget {
 
 class _AlbumCard extends StatelessWidget {
   const _AlbumCard({
+    super.key,
     required this.album,
     required this.icon,
     required this.userId,
@@ -618,19 +627,9 @@ class _AlbumCover extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (cover != null) {
-      return GalleryMediaThumbnail(
-        attachment: cover!,
-        threadId: galleryAlbumCoverThreadId(cover),
-        fit: BoxFit.cover,
-      );
-    }
-    return ColoredBox(
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Center(
-        child:
-            Icon(icon, size: 40, color: Theme.of(context).colorScheme.primary),
-      ),
+    return GalleryAlbumCover(
+      cover: cover,
+      fallbackIcon: icon,
     );
   }
 }

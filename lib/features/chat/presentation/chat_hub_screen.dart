@@ -746,6 +746,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         profileName: widget.profileName,
         profileAvatarUrl: widget.profileAvatarUrl,
         onProfileTap: widget.onProfileTap,
+        titleStyle: theme.textTheme.titleLarge?.copyWith(
+          color: const Color(0xFF4A9ED8),
+          fontWeight: FontWeight.w600,
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.search),

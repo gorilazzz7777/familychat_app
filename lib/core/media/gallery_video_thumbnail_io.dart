@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
+import '../cache/familychat_media_cache.dart';
 import 'gallery_device_media_store.dart';
 import 'gallery_media_utils.dart';
 
@@ -59,7 +60,11 @@ abstract final class GalleryVideoThumbnail {
     int maxWidth = 512,
     int timeMs = 500,
   }) async {
-    if (kIsWeb || !isVideoAttachment(attachment)) return null;
+    if (kIsWeb) return null;
+    final isVideo = isVideoAttachment(attachment) ||
+        attachment['is_video_note'] == true ||
+        attachment['is_video_note'] == 'true';
+    if (!isVideo) return null;
 
     final explicit =
         attachment['local_video_thumb_path']?.toString().trim() ?? '';
@@ -126,12 +131,30 @@ abstract final class GalleryVideoThumbnail {
         } catch (_) {}
       }
 
-      final local = GalleryDeviceMediaStore.existingLocalPath(attachment);
-      if (local == null || local.isEmpty) {
-        // Без локального файла не качаем видео с S3 ради кадра — ждём thumbnail_url.
-        return null;
+      final local = GalleryDeviceMediaStore.existingLocalPath(attachment) ??
+          () {
+            final path = galleryLocalDevicePath(attachment);
+            if (path.isEmpty) return null;
+            try {
+              return File(path).existsSync() ? path : null;
+            } catch (_) {
+              return null;
+            }
+          }();
+      String? source = local;
+      if (source == null || source.isEmpty) {
+        final url = galleryAttachmentUrl(attachment);
+        if (url.isEmpty) return null;
+        try {
+          // Один раз качаем в disk-cache менеджера, кадр кэшируем как JPEG.
+          final file =
+              await FamilyChatMediaCache.fullscreen.getSingleFile(url);
+          if (!await file.exists() || await file.length() == 0) return null;
+          source = file.path;
+        } catch (_) {
+          return null;
+        }
       }
-      final source = local;
 
       final generated = await VideoThumbnail.thumbnailFile(
         video: source,

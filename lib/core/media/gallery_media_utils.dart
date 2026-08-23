@@ -16,6 +16,47 @@ String galleryLocalDevicePath(Map<String, dynamic> attachment) {
 /// Потолок для [Image.memory]: полный кадр/видео в UI валит процесс (OOM).
 const int kSafeLocalPreviewMaxBytes = 400 * 1024;
 
+/// JPEG / PNG / GIF / WebP — то, что [Image.memory] реально декодирует.
+bool looksLikeImageBytes(Uint8List bytes) {
+  if (bytes.length < 12) return false;
+  if (bytes[0] == 0xFF && bytes[1] == 0xD8) return true; // JPEG
+  if (bytes[0] == 0x89 &&
+      bytes[1] == 0x50 &&
+      bytes[2] == 0x4E &&
+      bytes[3] == 0x47) {
+    return true; // PNG
+  }
+  if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46) {
+    return true; // GIF
+  }
+  if (bytes[0] == 0x52 &&
+      bytes[1] == 0x49 &&
+      bytes[2] == 0x46 &&
+      bytes[3] == 0x46 &&
+      bytes[8] == 0x57 &&
+      bytes[9] == 0x45 &&
+      bytes[10] == 0x42 &&
+      bytes[11] == 0x50) {
+    return true; // RIFF WEBP
+  }
+  return false;
+}
+
+/// ISO BMFF (mp4/mov) — нельзя кормить в [Image.memory].
+bool looksLikeVideoBytes(Uint8List bytes) {
+  if (bytes.length < 12) return false;
+  if (bytes[4] != 0x66 ||
+      bytes[5] != 0x74 ||
+      bytes[6] != 0x79 ||
+      bytes[7] != 0x70) {
+    return false;
+  }
+  final brand =
+      String.fromCharCodes(bytes.sublist(8, 12)).toLowerCase().trim();
+  const imageBrands = {'heic', 'heix', 'hevc', 'hevx', 'heif', 'mif1', 'msf1'};
+  return !imageBrands.contains(brand);
+}
+
 /// Байты, безопасные для превью в UI (миниатюра или уже маленький файл).
 Uint8List? safeUiPreviewBytes({
   Uint8List? thumbnailBytes,
@@ -25,13 +66,15 @@ Uint8List? safeUiPreviewBytes({
   final thumb = thumbnailBytes;
   if (thumb != null &&
       thumb.isNotEmpty &&
-      thumb.length <= kSafeLocalPreviewMaxBytes) {
+      thumb.length <= kSafeLocalPreviewMaxBytes &&
+      looksLikeImageBytes(thumb)) {
     return thumb;
   }
   if (kind == 'video' || kind == 'file') return null;
   if (bytes != null &&
       bytes.isNotEmpty &&
-      bytes.length <= 120 * 1024) {
+      bytes.length <= 120 * 1024 &&
+      looksLikeImageBytes(bytes)) {
     return bytes;
   }
   return null;
@@ -40,7 +83,8 @@ Uint8List? safeUiPreviewBytes({
 bool isSafeUiPreviewBytes(Object? value) {
   return value is Uint8List &&
       value.isNotEmpty &&
-      value.length <= kSafeLocalPreviewMaxBytes;
+      value.length <= kSafeLocalPreviewMaxBytes &&
+      looksLikeImageBytes(value);
 }
 
 bool _pathLooksLikeVideo(String raw) {
@@ -101,5 +145,11 @@ String contentTypeForFilename(String name) {
   if (lower.endsWith('.3gp')) return 'video/3gpp';
   if (lower.endsWith('.m4v')) return 'video/x-m4v';
   if (lower.endsWith('.mp4')) return 'video/mp4';
+  if (lower.endsWith('.ogg') || lower.endsWith('.oga')) return 'audio/ogg';
+  if (lower.endsWith('.opus')) return 'audio/opus';
+  if (lower.endsWith('.m4a')) return 'audio/mp4';
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.wav')) return 'audio/wav';
+  if (lower.endsWith('.aac')) return 'audio/aac';
   return 'image/jpeg';
 }

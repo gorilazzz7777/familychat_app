@@ -54,24 +54,16 @@ abstract final class NotificationInlineReply {
     }
   }
 
-  /// Отдельное соединение: в фоне нельзя трогать singleton основного isolate.
+  /// Отдельное соединение больше не открываем — второй NativeDatabase давал SQLITE_BUSY.
   static Future<void> _persistInBackground(
     int threadId,
     Map<String, dynamic> payload,
   ) async {
     if (!ChatLocalStore.isSupported) return;
     try {
-      final db = await ChatLocalStore.instance.openWithExecutor().timeout(
-        const Duration(seconds: 3),
-      );
-      if (db == null) return;
-      try {
-        await db.upsertMessages(threadId, [payload]).timeout(
-          const Duration(seconds: 3),
-        );
-      } finally {
-        await db.close();
-      }
+      await ChatLocalStore.instance
+          .upsertMessages(threadId, [payload])
+          .timeout(const Duration(seconds: 3));
     } catch (e) {
       debugPrint('[NotificationInlineReply] local upsert failed: $e');
     }

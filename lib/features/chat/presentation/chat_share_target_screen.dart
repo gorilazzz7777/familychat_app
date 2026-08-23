@@ -377,6 +377,8 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
           senderUserId: myUserId,
           caption: caption,
           attachments: optimisticAtts,
+          voiceDurationMs:
+              ShareChatSendCoordinator.standaloneVoiceDurationMs(pending),
         );
         await ShareChatSendCoordinator.seedPendingMessage(message);
         pendingByThread[threadId] = (tempId: tempId, atts: optimisticAtts);
@@ -726,7 +728,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.insert_drive_file_outlined, size: 22),
+          Icon(
+            att.isAudio ? Icons.mic_none_rounded : Icons.insert_drive_file_outlined,
+            size: 22,
+          ),
           const SizedBox(height: 4),
           Text(
             att.filename,

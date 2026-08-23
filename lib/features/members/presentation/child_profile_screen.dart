@@ -57,13 +57,20 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
     super.initState();
     final initial = widget.initialTabIndex.clamp(0, 1);
     _tabs = TabController(length: 2, vsync: this, initialIndex: initial);
+    _tabs.addListener(_onTabChanged);
     _child = widget.initialMember;
     _syncHeaderFields();
     _load();
   }
 
+  void _onTabChanged() {
+    if (_tabs.indexIsChanging) return;
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    _tabs.removeListener(_onTabChanged);
     _tabs.dispose();
     _milestoneSearchCtrl.dispose();
     _nameCtrl.dispose();
@@ -632,6 +639,16 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
       appBar: FamilyAppBar.build(
         title: _displayName,
         bottom: tabBar,
+        actions: [
+          if (_isCustodian && _tabs.index == 1)
+            IconButton(
+              tooltip: 'Новый альбом',
+              onPressed: () => unawaited(
+                _galleryKey.currentState?.createAlbum() ?? Future<void>.value(),
+              ),
+              icon: const Icon(Icons.add),
+            ),
+        ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())

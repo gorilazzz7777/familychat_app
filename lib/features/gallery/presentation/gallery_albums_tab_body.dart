@@ -1,8 +1,13 @@
 /// Shared helpers for family / profile / child gallery album tabs.
 String galleryAlbumsFingerprint(List<Map<String, dynamic>> albums) {
   return albums
-      .map((a) =>
-          '${a['id']}|${a['title']}|${a['cover_attachment_id']}|${a['photos_count']}|${a['kind']}')
+      .map((a) {
+        final cover = a['cover'];
+        final coverId = a['cover_attachment_id'] ??
+            (cover is Map ? cover['id'] : null);
+        final count = a['count'] ?? a['photos_count'];
+        return '${a['id']}|${a['title']}|$coverId|$count|${a['kind']}';
+      })
       .join(';');
 }
 

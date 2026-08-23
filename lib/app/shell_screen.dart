@@ -74,6 +74,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   late Map<String, dynamic> _status;
   final _feedKey = GlobalKey<FeedScreenState>();
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
+  final _galleryMenuKey = GlobalKey<State<GalleryMenuScreen>>();
   final _tabRefreshedAt = <int, DateTime>{};
   /// Чат (главная) + лента сразу; остальные — при первом заходе.
   final _visitedTabs = <int>{_chatTabIndex, _feedTabIndex};
@@ -135,6 +136,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
     ShellRefresh.instance.register(_refreshMainTabs);
     _startPresenceHeartbeat();
+    AppActions.bindShell(selectSection: _selectSection);
   }
 
   void _startPresenceHeartbeat() {
@@ -279,6 +281,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     ChatScheduledSendService.instance.stop();
     LocationShareCoordinator.instance.detach();
     ShellRefresh.instance.unregister();
+    AppActions.clearShell();
     super.dispose();
   }
 
@@ -514,7 +517,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
             ? const DeferredPlaceholder(
                 child: Center(child: CircularProgressIndicator()),
               )
-            : GalleryMenuScreen(currentUserId: userId);
+            : GalleryMenuScreen(
+                key: _galleryMenuKey,
+                currentUserId: userId,
+              );
       case _calendarTabIndex:
         return const CalendarScreen();
       default:
@@ -648,8 +654,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   @override
   Widget build(BuildContext context) {
-    final chatUnread = ref.watch(chatUnreadTotalProvider).value ?? 0;
-    final chatBadgeLabel = chatUnread > 99 ? '99+' : '$chatUnread';
     final showingNestedScreen = _hideShellAppBar;
     final layout = ShellNavLayout.fromSettings(ref.watch(appSettingsProvider));
     final current = _sectionOf(_index);
@@ -710,11 +714,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         children: List<Widget>.generate(5, _buildTab),
       ),
       bottomNavigationBar: layout.showBar && layout.barSections.isNotEmpty
-          ? ShellNavBar(
+          ? _ShellNavBarWithUnread(
               layout: layout,
               selectedIndex: selectedIndex.clamp(0, layout.barSections.length),
-              chatUnread: chatUnread,
-              chatBadgeLabel: chatBadgeLabel,
               onDestinationSelected: (i) =>
                   _onBarDestinationSelected(i, layout),
               onBarReorder: (oldIndex, newIndex) {
@@ -730,6 +732,34 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
               },
             )
           : null,
+    );
+  }
+}
+
+class _ShellNavBarWithUnread extends ConsumerWidget {
+  const _ShellNavBarWithUnread({
+    required this.layout,
+    required this.selectedIndex,
+    required this.onDestinationSelected,
+    required this.onBarReorder,
+  });
+
+  final ShellNavLayout layout;
+  final int selectedIndex;
+  final ValueChanged<int> onDestinationSelected;
+  final void Function(int oldIndex, int newIndex) onBarReorder;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final chatUnread = ref.watch(chatUnreadTotalProvider).value ?? 0;
+    final chatBadgeLabel = chatUnread > 99 ? '99+' : '$chatUnread';
+    return ShellNavBar(
+      layout: layout,
+      selectedIndex: selectedIndex,
+      chatUnread: chatUnread,
+      chatBadgeLabel: chatBadgeLabel,
+      onDestinationSelected: onDestinationSelected,
+      onBarReorder: onBarReorder,
     );
   }
 }

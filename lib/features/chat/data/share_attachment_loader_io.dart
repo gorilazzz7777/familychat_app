@@ -1,8 +1,11 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:share_handler/share_handler.dart';
 
 import '../../../core/debug/upload_image_exif_log.dart';
+import 'chat_voice_utils.dart';
+import 'ogg_container_duration.dart';
 import 'share_attachment_bytes_reader.dart';
 import 'share_attachment_data.dart';
 
@@ -21,13 +24,50 @@ Future<List<ShareAttachmentData>> loadShareAttachments(SharedMedia media) async 
         (contentType?.startsWith('image/') ?? false);
     final isVideo = attachment?.type == SharedAttachmentType.video ||
         (contentType?.startsWith('video/') ?? false);
+    var isAudio = !isImage &&
+        !isVideo &&
+        (attachment?.type == SharedAttachmentType.audio ||
+            looksLikeVoiceShare(filename: filename, contentType: contentType));
+    Uint8List? audioBytes;
+    int? durationMs;
+    if (!isImage && !isVideo) {
+      try {
+        if (isAudio) {
+          final raw = await file.readAsBytes();
+          audioBytes = raw;
+          durationMs = oggContainerDurationMs(raw);
+          if (bytesLookLikeOgg(raw)) isAudio = true;
+        } else {
+          final raf = await file.open();
+          try {
+            final head = await raf.read(4);
+            if (bytesLookLikeOgg(head)) {
+              isAudio = true;
+              await raf.setPosition(0);
+              audioBytes = await raf.read(await file.length());
+              durationMs = oggContainerDurationMs(audioBytes);
+            }
+          } finally {
+            await raf.close();
+          }
+        }
+      } catch (_) {}
+    }
     result.add(
       ShareAttachmentData(
         filename: filename,
-        contentType: contentType,
+        contentType: isAudio
+            ? (contentType ??
+                voiceContentTypeForExtension(
+                  voiceFilenameExtension(filename, contentType: contentType),
+                ))
+            : contentType,
         isImage: isImage,
         isVideo: isVideo,
+        isAudio: isAudio,
+        durationMs: durationMs,
         localPath: path,
+        bytes: audioBytes ?? const [],
       ),
     );
   }
@@ -42,6 +82,7 @@ Future<ShareAttachmentData> resolveShareAttachmentBytes(
   if (path == null || path.isEmpty) return attachment;
   final file = File(path);
   if (!await file.exists()) return attachment;
+  if (attachment.bytes.isNotEmpty) return attachment;
   final fallbackBytes = await file.readAsBytes();
   final loaded = await readShareAttachmentBytes(
     index: index,
@@ -56,12 +97,26 @@ Future<ShareAttachmentData> resolveShareAttachmentBytes(
       readVia: loaded.readVia,
     );
   }
+  var contentType = attachment.contentType;
+  var isAudio = attachment.isAudio ||
+      looksLikeVoiceShare(
+        filename: attachment.filename,
+        contentType: contentType,
+        bytes: loaded.bytes,
+      );
+  if (isAudio) {
+    contentType ??= voiceContentTypeForExtension(
+      voiceFilenameExtension(attachment.filename, contentType: contentType),
+    );
+  }
   return ShareAttachmentData(
     bytes: loaded.bytes,
     filename: attachment.filename,
-    contentType: attachment.contentType,
+    contentType: contentType,
     isImage: attachment.isImage,
     isVideo: attachment.isVideo,
+    isAudio: isAudio,
+    durationMs: attachment.durationMs ?? oggContainerDurationMs(loaded.bytes),
     localPath: attachment.localPath,
   );
 }
@@ -88,8 +143,9 @@ String? _contentTypeFor(String filename, SharedAttachmentType? type) {
       return _contentTypeFromName(filename) ?? 'image/jpeg';
     case SharedAttachmentType.video:
       return _contentTypeFromName(filename) ?? 'video/mp4';
-    case SharedAttachmentType.file:
     case SharedAttachmentType.audio:
+      return _contentTypeFromName(filename) ?? 'audio/ogg';
+    case SharedAttachmentType.file:
     case null:
       return _contentTypeFromName(filename) ?? 'application/octet-stream';
   }
@@ -105,5 +161,10 @@ String? _contentTypeFromName(String name) {
   if (lower.endsWith('.mov')) return 'video/quicktime';
   if (lower.endsWith('.pdf')) return 'application/pdf';
   if (lower.endsWith('.txt')) return 'text/plain';
+  if (lower.endsWith('.ogg') || lower.endsWith('.oga')) return 'audio/ogg';
+  if (lower.endsWith('.opus')) return 'audio/opus';
+  if (lower.endsWith('.m4a')) return 'audio/mp4';
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.wav')) return 'audio/wav';
   return null;
 }

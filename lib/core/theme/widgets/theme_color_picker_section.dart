@@ -1,143 +1,354 @@
 import 'package:flutter/material.dart';
 
 import '../app_theme.dart';
+import '../appearance_prefs.dart';
 import '../../widgets/family_input_styles.dart';
 
-/// Горизонтальная линия оттенков + превью и кнопка применения.
-class ThemeColorPickerBody extends StatefulWidget {
-  const ThemeColorPickerBody({
+/// Настройки оформления (без превью) — оттенок, шрифт, фон.
+class ThemeAppearanceSettingsPanel extends StatelessWidget {
+  const ThemeAppearanceSettingsPanel({
     super.key,
-    required this.currentSeedColor,
-    required this.onApply,
+    required this.hue,
+    required this.onHueChanged,
+    required this.fontScale,
+    required this.onFontScaleChanged,
+    required this.wallpaperId,
+    required this.onWallpaperChanged,
   });
 
-  final Color currentSeedColor;
-  final Future<void> Function(Color seedColor) onApply;
+  final double hue;
+  final ValueChanged<double> onHueChanged;
+  final double? fontScale;
+  final ValueChanged<double?> onFontScaleChanged;
+  final String wallpaperId;
+  final ValueChanged<String> onWallpaperChanged;
 
   @override
-  State<ThemeColorPickerBody> createState() => _ThemeColorPickerBodyState();
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      children: [
+        _SettingsBlock(
+          title: 'Оттенок',
+          child: _HueGradientSlider(
+            hue: hue,
+            onChanged: onHueChanged,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _SettingsBlock(
+          title: 'Размер шрифта',
+          child: _FontSizeSlider(
+            fontScale: fontScale,
+            onChanged: onFontScaleChanged,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _CollapsibleSettingsBlock(
+          title: 'Фон чата',
+          initiallyExpanded: false,
+          child: GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: ChatWallpaperCatalog.all.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+            ),
+            itemBuilder: (context, index) {
+              final item = ChatWallpaperCatalog.all[index];
+              final selected = item.id == wallpaperId;
+              return InkWell(
+                onTap: () => onWallpaperChanged(item.id),
+                borderRadius: BorderRadius.circular(14),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: selected
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.outlineVariant,
+                      width: selected ? 2.5 : 1,
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: ChatWallpaperBackdrop(
+                      wallpaperId: item.id,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
 }
 
-class _ThemeColorPickerBodyState extends State<ThemeColorPickerBody> {
-  late double _hue;
-  bool _applying = false;
+class _FontSizeSlider extends StatelessWidget {
+  const _FontSizeSlider({
+    required this.fontScale,
+    required this.onChanged,
+  });
+
+  final double? fontScale;
+  final ValueChanged<double?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final fontSize = AppearanceFontScaleController.fontSizeFromScale(fontScale);
+    final min = AppearanceFontScaleController.minFontSize.toDouble();
+    final max = AppearanceFontScaleController.maxFontSize.toDouble();
+
+    return Row(
+      children: [
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 3,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 18),
+              activeTrackColor: cs.primary,
+              inactiveTrackColor: cs.outlineVariant.withValues(alpha: 0.55),
+              thumbColor: cs.primary,
+              overlayColor: cs.primary.withValues(alpha: 0.12),
+            ),
+            child: Slider(
+              min: min,
+              max: max,
+              divisions: (max - min).round(),
+              value: fontSize.toDouble(),
+              onChanged: (value) {
+                onChanged(
+                  AppearanceFontScaleController.scaleFromFontSize(
+                    value.round(),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+        SizedBox(
+          width: 28,
+          child: Text(
+            '$fontSize',
+            textAlign: TextAlign.end,
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: cs.primary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class ThemeAppearancePreviewPanel extends StatelessWidget {
+  const ThemeAppearancePreviewPanel({
+    super.key,
+    required this.seedColor,
+    required this.fontScale,
+    required this.wallpaperId,
+    required this.applying,
+    required this.onSave,
+  });
+
+  final Color seedColor;
+  final double? fontScale;
+  final String wallpaperId;
+  final bool applying;
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    final draftScheme = ColorScheme.fromSeed(seedColor: seedColor);
+
+    return Material(
+      elevation: 6,
+      color: Theme.of(context).colorScheme.surface,
+      shadowColor: Colors.black26,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _ThemePreview(
+                seedColor: seedColor,
+                fontScale: fontScale,
+                wallpaperId: wallpaperId,
+              ),
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: applying ? null : onSave,
+                style: FilledButton.styleFrom(
+                  backgroundColor: draftScheme.primary,
+                  foregroundColor: draftScheme.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                child: applying
+                    ? SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: draftScheme.onPrimary,
+                        ),
+                      )
+                    : const Text('Сохранить'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsBlock extends StatelessWidget {
+  const _SettingsBlock({
+    required this.title,
+    required this.child,
+  });
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              title,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 10),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CollapsibleSettingsBlock extends StatefulWidget {
+  const _CollapsibleSettingsBlock({
+    required this.title,
+    required this.child,
+    this.subtitle,
+    this.initiallyExpanded = false,
+  });
+
+  final String title;
+  final String? subtitle;
+  final Widget child;
+  final bool initiallyExpanded;
+
+  @override
+  State<_CollapsibleSettingsBlock> createState() =>
+      _CollapsibleSettingsBlockState();
+}
+
+class _CollapsibleSettingsBlockState extends State<_CollapsibleSettingsBlock> {
+  late bool _expanded;
 
   @override
   void initState() {
     super.initState();
-    _hue = AppTheme.hueFromSeedColor(widget.currentSeedColor);
-  }
-
-  @override
-  void didUpdateWidget(covariant ThemeColorPickerBody oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.currentSeedColor != widget.currentSeedColor && !_applying) {
-      _hue = AppTheme.hueFromSeedColor(widget.currentSeedColor);
-    }
-  }
-
-  Color get _draftSeed => AppTheme.seedColorFromHue(_hue);
-
-  Future<void> _apply() async {
-    setState(() => _applying = true);
-    try {
-      await widget.onApply(_draftSeed);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Цвет темы сохранён')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось сохранить цвет: $e')),
-      );
-    } finally {
-      if (mounted) setState(() => _applying = false);
-    }
+    _expanded = widget.initiallyExpanded;
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final draftSeed = _draftSeed;
-    final draftScheme = ColorScheme.fromSeed(seedColor: draftSeed);
+    final cs = theme.colorScheme;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Выберите основной цвет — остальные оттенки подстроятся автоматически.',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-            height: 1.4,
-          ),
-        ),
-        const SizedBox(height: 20),
-        Text(
-          'Оттенок',
-          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 10),
-        _HueGradientSlider(
-          hue: _hue,
-          onChanged: (value) => setState(() => _hue = value),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                color: draftSeed,
-                shape: BoxShape.circle,
-                border: Border.all(color: theme.colorScheme.outlineVariant),
-                boxShadow: [
-                  BoxShadow(
-                    color: draftSeed.withValues(alpha: 0.35),
-                    blurRadius: 10,
-                    offset: const Offset(0, 3),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(16),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(14, 12, 10, _expanded ? 10 : 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.title,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (!_expanded && widget.subtitle != null) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            widget.subtitle!,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: cs.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  AnimatedRotation(
+                    turns: _expanded ? 0.5 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      color: cs.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(width: 12),
-            Text(
-              AppTheme.colorToHex(draftSeed),
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.4,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 24),
-        Text(
-          'Как будет выглядеть приложение',
-          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 12),
-        _ThemePreview(seedColor: draftSeed),
-        const SizedBox(height: 20),
-        FilledButton(
-          onPressed: _applying ? null : _apply,
-          style: FilledButton.styleFrom(
-            backgroundColor: draftScheme.primary,
-            foregroundColor: draftScheme.onPrimary,
-            padding: const EdgeInsets.symmetric(vertical: 14),
           ),
-          child: _applying
-              ? SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: draftScheme.onPrimary,
-                  ),
-                )
-              : const Text('Применить цвет'),
-        ),
-      ],
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              child: widget.child,
+            ),
+            crossFadeState: _expanded
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            duration: const Duration(milliseconds: 200),
+            sizeCurve: Curves.easeOutCubic,
+          ),
+        ],
+      ),
     );
   }
 }
@@ -227,51 +438,62 @@ class _HueGradientSlider extends StatelessWidget {
 }
 
 class _ThemePreview extends StatelessWidget {
-  const _ThemePreview({required this.seedColor});
+  const _ThemePreview({
+    required this.seedColor,
+    required this.fontScale,
+    required this.wallpaperId,
+  });
 
   final Color seedColor;
+  final double? fontScale;
+  final String wallpaperId;
 
   @override
   Widget build(BuildContext context) {
     final previewTheme = AppTheme.lightTheme(seedColor);
+    final media = MediaQuery.of(context);
+    final scaled = fontScale == null
+        ? media
+        : media.copyWith(textScaler: TextScaler.linear(fontScale!));
 
-    return Theme(
-      data: previewTheme,
-      child: Builder(
-        builder: (context) {
-          final theme = Theme.of(context);
-          final scheme = theme.colorScheme;
+    return MediaQuery(
+      data: scaled,
+      child: Theme(
+        data: previewTheme,
+        child: Builder(
+          builder: (context) {
+            final theme = Theme.of(context);
+            final scheme = theme.colorScheme;
 
-          return DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: scheme.outlineVariant),
-              boxShadow: [
-                BoxShadow(
-                  color: scheme.primary.withValues(alpha: 0.08),
-                  blurRadius: 24,
-                  offset: const Offset(0, 10),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: ColoredBox(
-                color: scheme.surface,
+            return DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: scheme.outlineVariant),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     _PreviewAppBar(scheme: scheme, theme: theme),
-                    _PreviewChatList(scheme: scheme, theme: theme),
-                    _PreviewConversation(scheme: scheme, theme: theme),
-                    _PreviewControls(scheme: scheme, theme: theme),
+                    SizedBox(
+                      height: 168,
+                      child: ChatWallpaperBackdrop(
+                        wallpaperId: wallpaperId,
+                        child: _PreviewConversation(
+                          scheme: scheme,
+                          theme: theme,
+                        ),
+                      ),
+                    ),
                     _PreviewBottomNav(scheme: scheme, theme: theme),
                   ],
                 ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
@@ -287,7 +509,7 @@ class _PreviewAppBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       color: scheme.surface,
-      padding: const EdgeInsets.fromLTRB(16, 14, 8, 12),
+      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
       child: Row(
         children: [
           Expanded(
@@ -298,145 +520,9 @@ class _PreviewAppBar extends StatelessWidget {
               ),
             ),
           ),
-          Icon(Icons.search, color: scheme.onSurfaceVariant, size: 22),
+          Icon(Icons.search, color: scheme.onSurfaceVariant, size: 20),
           const SizedBox(width: 4),
-          Icon(Icons.more_vert, color: scheme.onSurfaceVariant, size: 22),
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewChatList extends StatelessWidget {
-  const _PreviewChatList({required this.scheme, required this.theme});
-
-  final ColorScheme scheme;
-  final ThemeData theme;
-
-  @override
-  Widget build(BuildContext context) {
-    return ColoredBox(
-      color: scheme.surfaceContainerLowest,
-      child: Column(
-        children: [
-          _PreviewChatRow(
-            scheme: scheme,
-            theme: theme,
-            title: 'Семейная группа',
-            subtitle: 'Мама: Доброе утро!',
-            time: '09:41',
-            unread: 2,
-            selected: true,
-          ),
-          Divider(height: 1, color: scheme.outlineVariant.withValues(alpha: 0.5)),
-          _PreviewChatRow(
-            scheme: scheme,
-            theme: theme,
-            title: 'Папа',
-            subtitle: 'Фото с праздника',
-            time: 'Вчера',
-            hasPhoto: true,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewChatRow extends StatelessWidget {
-  const _PreviewChatRow({
-    required this.scheme,
-    required this.theme,
-    required this.title,
-    required this.subtitle,
-    required this.time,
-    this.unread = 0,
-    this.selected = false,
-    this.hasPhoto = false,
-  });
-
-  final ColorScheme scheme;
-  final ThemeData theme;
-  final String title;
-  final String subtitle;
-  final String time;
-  final int unread;
-  final bool selected;
-  final bool hasPhoto;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: selected ? scheme.primaryContainer.withValues(alpha: 0.35) : null,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 22,
-            backgroundColor: scheme.primaryContainer,
-            child: Icon(Icons.group, color: scheme.onPrimaryContainer, size: 22),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Row(
-                  children: [
-                    if (hasPhoto) ...[
-                      Icon(Icons.image_outlined, size: 14, color: scheme.primary),
-                      const SizedBox(width: 4),
-                    ],
-                    Expanded(
-                      child: Text(
-                        subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                time,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: unread > 0 ? scheme.primary : scheme.onSurfaceVariant,
-                  fontWeight: unread > 0 ? FontWeight.w700 : FontWeight.w400,
-                ),
-              ),
-              if (unread > 0) ...[
-                const SizedBox(height: 6),
-                CircleAvatar(
-                  radius: 10,
-                  backgroundColor: scheme.primary,
-                  child: Text(
-                    '$unread',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: scheme.onPrimary,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
+          Icon(Icons.more_vert, color: scheme.onSurfaceVariant, size: 20),
         ],
       ),
     );
@@ -451,19 +537,18 @@ class _PreviewConversation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: scheme.surface,
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Align(
             alignment: Alignment.centerLeft,
             child: Container(
-              constraints: const BoxConstraints(maxWidth: 240),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              constraints: const BoxConstraints(maxWidth: 210),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
               decoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest,
+                color: scheme.surface,
                 borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(16),
                   topRight: Radius.circular(16),
@@ -481,8 +566,8 @@ class _PreviewConversation extends StatelessWidget {
           Align(
             alignment: Alignment.centerRight,
             child: Container(
-              constraints: const BoxConstraints(maxWidth: 240),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              constraints: const BoxConstraints(maxWidth: 210),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
               decoration: BoxDecoration(
                 color: scheme.primary,
                 borderRadius: const BorderRadius.only(
@@ -500,58 +585,22 @@ class _PreviewConversation extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          const Spacer(),
           DecoratedBox(
             decoration: FamilyInputStyles.composeShellDecoration(theme),
             child: Row(
               children: [
                 Expanded(
-                  child: TextField(
-                    enabled: false,
-                    decoration: const InputDecoration(
-                      hintText: 'Сообщение...',
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      contentPadding: EdgeInsets.fromLTRB(16, 10, 0, 10),
-                      isDense: true,
+                  child: Text(
+                    'Сообщение...',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
                     ),
                   ),
                 ),
-                Icon(Icons.send_rounded, color: scheme.primary),
+                Icon(Icons.send_rounded, color: scheme.primary, size: 20),
                 const SizedBox(width: 8),
               ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PreviewControls extends StatelessWidget {
-  const _PreviewControls({required this.scheme, required this.theme});
-
-  final ColorScheme scheme;
-  final ThemeData theme;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-      child: Row(
-        children: [
-          Expanded(
-            child: FilledButton(
-              onPressed: () {},
-              child: const Text('Сохранить'),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: OutlinedButton(
-              onPressed: () {},
-              child: const Text('Отмена'),
             ),
           ),
         ],
@@ -575,7 +624,7 @@ class _PreviewBottomNav extends StatelessWidget {
           top: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
         ),
       ),
-      padding: const EdgeInsets.fromLTRB(8, 8, 8, 10),
+      padding: const EdgeInsets.fromLTRB(6, 6, 6, 8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
@@ -585,7 +634,6 @@ class _PreviewBottomNav extends StatelessWidget {
             scheme: scheme,
             theme: theme,
             selected: true,
-            badge: '2',
           ),
           _PreviewNavItem(
             icon: Icons.dynamic_feed_outlined,
@@ -624,7 +672,6 @@ class _PreviewNavItem extends StatelessWidget {
     required this.scheme,
     required this.theme,
     this.selected = false,
-    this.badge,
   });
 
   final IconData icon;
@@ -632,45 +679,21 @@ class _PreviewNavItem extends StatelessWidget {
   final ColorScheme scheme;
   final ThemeData theme;
   final bool selected;
-  final String? badge;
 
   @override
   Widget build(BuildContext context) {
     final color = selected ? scheme.primary : scheme.onSurfaceVariant;
-
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Icon(icon, size: 22, color: color),
-            if (badge != null)
-              Positioned(
-                right: -8,
-                top: -4,
-                child: CircleAvatar(
-                  radius: 8,
-                  backgroundColor: scheme.primary,
-                  child: Text(
-                    badge!,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: scheme.onPrimary,
-                      fontSize: 9,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-        const SizedBox(height: 4),
+        Icon(icon, size: 18, color: color),
+        const SizedBox(height: 2),
         Text(
           label,
           style: theme.textTheme.labelSmall?.copyWith(
             color: color,
             fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            fontSize: 10,
+            fontSize: 9,
           ),
         ),
       ],

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../core/settings/shell_nav_layout.dart';
 import '../features/profile/presentation/profile_screen.dart';
 
 /// Сессия приложения: профиль и выход доступны с любого экрана (в т.ч. push-маршрутов).
@@ -9,6 +10,7 @@ abstract final class AppActions {
   static Map<String, dynamic> _status = {};
   static Future<void> Function() _onLogout = () async {};
   static Future<void> Function() _onStatusChanged = () async {};
+  static void Function(ShellSection section)? _selectShellSection;
 
   static void bind({
     required Map<String, dynamic> status,
@@ -18,6 +20,20 @@ abstract final class AppActions {
     _status = status;
     _onLogout = onLogout;
     _onStatusChanged = onStatusChanged;
+  }
+
+  static void bindShell({
+    required void Function(ShellSection section) selectSection,
+  }) {
+    _selectShellSection = selectSection;
+  }
+
+  static void clearShell() {
+    _selectShellSection = null;
+  }
+
+  static void openChatTab() {
+    _selectShellSection?.call(ShellSection.chat);
   }
 
   static String get displayName => _status['display_name']?.toString() ?? '';

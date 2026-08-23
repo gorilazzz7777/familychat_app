@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
@@ -22,6 +23,7 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/theme/appearance_prefs.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/face_tagging_sheet.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
@@ -41,6 +43,7 @@ import '../data/chat_send_options.dart';
 import '../data/chat_typing_utils.dart';
 import '../data/chat_voice_transcription.dart';
 import '../data/chat_voice_utils.dart';
+import '../data/ogg_container_duration.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_thread_avatars.dart';
 import 'chat_forward_screen.dart';
@@ -2222,13 +2225,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final mergedAtts = serverAtts.asMap().entries.map((entry) {
       final att = Map<String, dynamic>.from(entry.value);
       if (entry.key < optimisticAtts.length) {
-        final local = optimisticAtts[entry.key]['local_bytes'];
+        final localAtt = optimisticAtts[entry.key];
+        final local = localAtt['local_bytes'];
         if (local is Uint8List &&
             local.isNotEmpty &&
             (isVoiceAttachment(att, messageMetadata: mergedMeta) ||
                 chatAttachmentLooksLikeImage(att) ||
                 att['kind'] == 'image')) {
           att['local_bytes'] = local;
+        }
+        final localPath = localAtt['local_device_path']?.toString().trim() ?? '';
+        if (localPath.isNotEmpty) {
+          att['local_device_path'] = localPath;
         }
       }
       return att;
@@ -2689,10 +2697,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         bytes: item.bytes,
         kind: item.kind,
       );
+      var filename = item.filename;
+      var contentType = item.contentType;
+      if (looksLikeVoiceShare(
+        filename: filename,
+        contentType: contentType,
+        bytes: item.bytes,
+      )) {
+        final ext = voiceFilenameExtension(filename, contentType: contentType);
+        contentType ??= voiceContentTypeForExtension(ext);
+      }
       previewAttachments.add({
         'kind': item.kind,
-        'filename': item.filename,
-        'content_type': item.contentType,
+        'filename': filename,
+        'content_type': contentType,
         if (item.localPath != null && item.localPath!.trim().isNotEmpty)
           'local_device_path': item.localPath,
         if (preview != null) 'local_bytes': preview,
@@ -2700,11 +2718,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       });
     }
 
+    int? voiceDurationMs;
+    Map<String, dynamic>? voiceMetadata;
+    if (items.length == 1 &&
+        looksLikeVoiceShare(
+          filename: items.first.filename,
+          contentType: items.first.contentType,
+          bytes: items.first.bytes,
+        )) {
+      voiceDurationMs = oggContainerDurationMs(items.first.bytes);
+      if (voiceDurationMs != null && voiceDurationMs > 0) {
+        final ext = voiceFilenameExtension(
+          items.first.filename,
+          contentType: items.first.contentType,
+        );
+        previewAttachments[0]['filename'] =
+            voiceMessageFilename(voiceDurationMs, extension: ext);
+        previewAttachments[0]['content_type'] =
+            voiceContentTypeForExtension(ext);
+        voiceMetadata = {
+          'voice': {'duration_ms': voiceDurationMs},
+        };
+      }
+    }
+
     _addOptimisticMessage(
       tempId,
       body: caption,
       attachments: previewAttachments,
       replyTo: replySnapshot,
+      metadata: voiceMetadata,
     );
     if (_replyTo != null) {
       setState(() => _replyTo = null);
@@ -2737,8 +2780,38 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             MediaUploadDraft(
               id: item.id,
               kind: MediaDraftKind.file,
-              filename: item.filename,
-              contentType: item.contentType ?? contentTypeForFilename(item.filename),
+              filename: () {
+                if (items.length == 1 &&
+                    voiceDurationMs != null &&
+                    voiceDurationMs > 0 &&
+                    looksLikeVoiceShare(
+                      filename: item.filename,
+                      contentType: item.contentType,
+                      bytes: item.bytes,
+                    )) {
+                  return voiceMessageFilename(
+                    voiceDurationMs,
+                    extension: voiceFilenameExtension(
+                      item.filename,
+                      contentType: item.contentType,
+                    ),
+                  );
+                }
+                return item.filename;
+              }(),
+              contentType: item.contentType ??
+                  (looksLikeVoiceShare(
+                        filename: item.filename,
+                        contentType: item.contentType,
+                        bytes: item.bytes,
+                      )
+                      ? voiceContentTypeForExtension(
+                          voiceFilenameExtension(
+                            item.filename,
+                            contentType: item.contentType,
+                          ),
+                        )
+                      : contentTypeForFilename(item.filename)),
               originalBytes: item.bytes,
               preparedBytes: item.bytes,
               localPath: item.localPath,
@@ -2775,6 +2848,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             ),
         ],
         replyToMessageId: replyId,
+        voiceDurationMs: voiceDurationMs,
       );
     } catch (e, st) {
       debugPrint('_sendAttachItems failed: $e\n$st');
@@ -2826,6 +2900,27 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final metadata = {
       'video_note': {'duration_ms': recording.durationMs},
     };
+
+    Uint8List? thumbBytes;
+    final localPath = recording.localPath?.trim() ?? '';
+    if (!kIsWeb && localPath.isNotEmpty) {
+      try {
+        final raw = await VideoThumbnail.thumbnailData(
+          video: localPath,
+          imageFormat: ImageFormat.JPEG,
+          maxWidth: 256,
+          timeMs: 0,
+          quality: 75,
+        );
+        if (raw != null &&
+            raw.isNotEmpty &&
+            raw.length <= kSafeLocalPreviewMaxBytes &&
+            looksLikeImageBytes(raw)) {
+          thumbBytes = raw;
+        }
+      } catch (_) {}
+    }
+
     _addOptimisticMessage(
       tempId,
       body: '',
@@ -2834,8 +2929,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           'kind': 'video',
           'filename': recording.filename,
           'content_type': recording.contentType,
-          // Не кладём сырое видео в Image.memory — только placeholder до ответа сервера.
           'is_video_note': true,
+          if (localPath.isNotEmpty) 'local_device_path': localPath,
+          if (thumbBytes != null) 'local_bytes': thumbBytes,
           '_pending': true,
         },
       ],
@@ -2855,6 +2951,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           filename: recording.filename,
           contentType: recording.contentType,
           kind: 'video',
+          localPath: localPath.isEmpty ? null : localPath,
+          thumbnailBytes: thumbBytes,
         ),
       ],
       replyToMessageId: replyId,
@@ -3104,30 +3202,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     });
   }
 
-  List<int> get _selectableMessageIds => _messages
-      .map((m) => chatAsInt(m['id']))
-      .whereType<int>()
-      .where((id) => _messageById(id)?['_pending'] != true)
-      .toList();
-
-  bool get _allMessagesSelected {
-    final ids = _selectableMessageIds;
-    return ids.isNotEmpty && ids.every(_selectedMessageIds.contains);
-  }
-
-  void _toggleSelectAllMessages() {
-    final ids = _selectableMessageIds;
-    setState(() {
-      if (_allMessagesSelected) {
-        _selectedMessageIds.removeAll(ids);
-        if (_selectedMessageIds.isEmpty) _selectionMode = false;
-      } else {
-        _selectionMode = true;
-        _selectedMessageIds.addAll(ids);
-      }
-    });
-  }
-
   bool _canDeleteMessage(Map<String, dynamic> message) {
     return _isMine(message) && message['_pending'] != true;
   }
@@ -3158,9 +3232,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     return message != null && _canDeleteMessage(message);
   }
 
-  bool get _canDeleteSelection =>
+  bool _canHideMessageId(int id) {
+    final message = _messageById(id);
+    return message != null && _canDeleteMessageForMe(message);
+  }
+
+  bool get _hasDeletableSelection =>
       _selectedMessageIds.isNotEmpty &&
-      _selectedMessageIds.every(_canDeleteMessageId);
+      _selectedMessageIds.any(
+        (id) => _canDeleteMessageId(id) || _canHideMessageId(id),
+      );
 
   bool _pinnedListsEqual(
     List<Map<String, dynamic>> a,
@@ -3735,7 +3816,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _deleteSelected() async {
-    await _deleteMessages(_selectedMessageIds.toList()..sort());
+    final ids = _selectedMessageIds.toList()..sort();
+    final forEveryone = ids.where(_canDeleteMessageId).toList();
+    final forMe = ids.where(_canHideMessageId).toList();
+    if (forEveryone.isNotEmpty) {
+      await _deleteMessages(forEveryone);
+    }
+    if (forMe.isNotEmpty && mounted) {
+      await _hideMessagesForMe(forMe);
+    }
   }
 
   void _applyThreadMeta(Map<String, dynamic> thread) {
@@ -3966,6 +4055,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   @override
   Widget build(BuildContext context) {
+    final wallpaperId = ref.watch(chatWallpaperIdProvider);
     return PopScope(
       canPop: !_selectionMode,
       onPopInvokedWithResult: (didPop, _) {
@@ -3983,27 +4073,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                   icon: const Icon(Icons.close),
                 ),
                 actions: [
-                  TextButton(
-                    onPressed: _selectableMessageIds.isEmpty
-                        ? null
-                        : _toggleSelectAllMessages,
-                    child: Text(
-                        _allMessagesSelected ? 'Снять все' : 'Выбрать все'),
+                  IconButton(
+                    tooltip: 'Удалить',
+                    onPressed:
+                        _hasDeletableSelection ? _deleteSelected : null,
+                    icon: const Icon(Icons.delete_outline),
                   ),
-                  if (_canUseSpeak)
-                    IconButton(
-                      tooltip: 'Озвучить',
-                      onPressed: _selectedMessageIds.isEmpty || _speaking
-                          ? null
-                          : () => unawaited(_speakSelected()),
-                      icon: const Icon(Icons.record_voice_over_outlined),
-                    ),
-                  if (_canDeleteSelection)
-                    IconButton(
-                      tooltip: 'Удалить',
-                      onPressed: _deleteSelected,
-                      icon: const Icon(Icons.delete_outline),
-                    ),
                   IconButton(
                     tooltip: 'Скопировать',
                     onPressed:
@@ -4134,56 +4209,66 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                 ),
               )
             else ...[
-              if (!_selectionMode && _pinnedMessages.isNotEmpty)
-                ChatPinnedBar(
-                  message: _pinnedMessages[_pinnedIndex.clamp(
-                    0,
-                    _pinnedMessages.length - 1,
-                  )],
-                  index: _pinnedIndex.clamp(0, _pinnedMessages.length - 1),
-                  total: _pinnedMessages.length,
-                  previewText: _messagePreviewText(
-                    _pinnedMessages[_pinnedIndex.clamp(
-                      0,
-                      _pinnedMessages.length - 1,
-                    )],
-                  ),
-                  onTap: () => unawaited(_cyclePinnedOrScroll()),
-                  onClose: () {
-                    final pin = _pinnedMessages[_pinnedIndex.clamp(
-                      0,
-                      _pinnedMessages.length - 1,
-                    )];
-                    final id = chatAsInt(pin['id']);
-                    if (id != null) unawaited(_unpinMessage(id));
-                  },
-                ),
               Expanded(
-                child: _loading
-                    ? const DeferredPlaceholder(child: ChatMessagesSkeleton())
-                    : _loadError != null && _messages.isEmpty
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    _loadError!,
-                                    textAlign: TextAlign.center,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  FilledButton(
-                                    onPressed: _load,
-                                    child: const Text('Повторить'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                        : Stack(
-                            children: [
-                              RefreshIndicator(
+                child: ChatWallpaperBackdrop(
+                  wallpaperId: wallpaperId,
+                  child: Column(
+                    children: [
+                      if (!_selectionMode && _pinnedMessages.isNotEmpty)
+                        ChatPinnedBar(
+                          message: _pinnedMessages[_pinnedIndex.clamp(
+                            0,
+                            _pinnedMessages.length - 1,
+                          )],
+                          index: _pinnedIndex.clamp(
+                            0,
+                            _pinnedMessages.length - 1,
+                          ),
+                          total: _pinnedMessages.length,
+                          previewText: _messagePreviewText(
+                            _pinnedMessages[_pinnedIndex.clamp(
+                              0,
+                              _pinnedMessages.length - 1,
+                            )],
+                          ),
+                          onTap: () => unawaited(_cyclePinnedOrScroll()),
+                          onClose: () {
+                            final pin = _pinnedMessages[_pinnedIndex.clamp(
+                              0,
+                              _pinnedMessages.length - 1,
+                            )];
+                            final id = chatAsInt(pin['id']);
+                            if (id != null) unawaited(_unpinMessage(id));
+                          },
+                        ),
+                      Expanded(
+                        child: _loading
+                            ? const DeferredPlaceholder(
+                                child: ChatMessagesSkeleton(),
+                              )
+                            : _loadError != null && _messages.isEmpty
+                                ? Center(
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(24),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            _loadError!,
+                                            textAlign: TextAlign.center,
+                                          ),
+                                          const SizedBox(height: 12),
+                                          FilledButton(
+                                            onPressed: _load,
+                                            child: const Text('Повторить'),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  )
+                                : Stack(
+                                    children: [
+                                      RefreshIndicator(
                             onRefresh: _onPullRefresh,
                             // reverse-list: жест обновления у верхнего края истории.
                             edgeOffset: 12,
@@ -4451,8 +4536,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               ),
                             ],
                           ),
-              ),
-              if (_selectionMode)
+                      ),
+                      if (_selectionMode)
                 SafeArea(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
@@ -4460,40 +4545,47 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                       children: [
                         if (_canUseSpeak) ...[
                           Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed:
-                                  _selectedMessageIds.isEmpty || _speaking
-                                      ? null
-                                      : () => unawaited(_speakSelected()),
-                              icon: const Icon(
-                                Icons.record_voice_over_outlined,
+                            child: Tooltip(
+                              message: 'Озвучить',
+                              child: OutlinedButton(
+                                onPressed:
+                                    _selectedMessageIds.isEmpty || _speaking
+                                        ? null
+                                        : () => unawaited(_speakSelected()),
+                                child: const Icon(
+                                  Icons.record_voice_over_outlined,
+                                ),
                               ),
-                              label: const Text('Озвучить'),
                             ),
                           ),
                           const SizedBox(width: 8),
                         ],
                         if (_selectedMessageIds.length == 1) ...[
                           Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () {
-                                final msg =
-                                    _messageById(_selectedMessageIds.first);
-                                if (msg != null) _startReply(msg);
-                              },
-                              icon: const Icon(Icons.reply_outlined),
-                              label: const Text('Ответить'),
+                            child: Tooltip(
+                              message: 'Ответить',
+                              child: OutlinedButton(
+                                onPressed: () {
+                                  final msg = _messageById(
+                                    _selectedMessageIds.first,
+                                  );
+                                  if (msg != null) _startReply(msg);
+                                },
+                                child: const Icon(Icons.reply_outlined),
+                              ),
                             ),
                           ),
                           const SizedBox(width: 8),
                         ],
                         Expanded(
-                          child: FilledButton.icon(
-                            onPressed: _selectedMessageIds.isEmpty
-                                ? null
-                                : _forwardSelected,
-                            icon: const Icon(Icons.forward_outlined),
-                            label: const Text('Переслать'),
+                          child: Tooltip(
+                            message: 'Переслать',
+                            child: FilledButton(
+                              onPressed: _selectedMessageIds.isEmpty
+                                  ? null
+                                  : _forwardSelected,
+                              child: const Icon(Icons.forward_outlined),
+                            ),
                           ),
                         ),
                       ],
@@ -4630,6 +4722,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                     ],
                   ),
                 ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ],
         ),

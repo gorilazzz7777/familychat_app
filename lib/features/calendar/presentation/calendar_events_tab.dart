@@ -255,6 +255,7 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                               final isCustom = kind == 'custom';
                               final isBirthday = kind == 'birthday';
                               final isTappable = isCustom || isBirthday;
+                              final isPast = isCalendarEventPast(e);
                               final date = e['date']?.toString() ?? '';
                               final showDateHeader = i == 0 ||
                                   _events[i - 1]['date']?.toString() != date;
@@ -263,6 +264,8 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                               final subtitle = isCustom && startIso != endIso
                                   ? formatCalendarDateRange(startIso, endIso)
                                   : null;
+                              final pastTint = const Color(0xFFE8F5E9);
+                              final pastFg = const Color(0xFF5A8F6A);
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
@@ -279,15 +282,39 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                                   ],
                                   Card(
                                     margin: const EdgeInsets.only(bottom: 8),
+                                    color: isPast ? pastTint : null,
                                     child: ListTile(
                                       leading: Icon(
                                         _iconForKind(kind),
-                                        color: _iconColor(context, kind),
+                                        color: isPast
+                                            ? pastFg
+                                            : _iconColor(context, kind),
                                       ),
-                                      title: Text(e['title']?.toString() ?? ''),
-                                      subtitle: subtitle != null ? Text(subtitle) : null,
+                                      title: Text(
+                                        e['title']?.toString() ?? '',
+                                        style: isPast
+                                            ? theme.textTheme.bodyLarge?.copyWith(
+                                                color: pastFg,
+                                              )
+                                            : null,
+                                      ),
+                                      subtitle: subtitle != null
+                                          ? Text(
+                                              subtitle,
+                                              style: isPast
+                                                  ? TextStyle(
+                                                      color: pastFg.withValues(
+                                                        alpha: 0.8,
+                                                      ),
+                                                    )
+                                                  : null,
+                                            )
+                                          : null,
                                       trailing: isTappable
-                                          ? const Icon(Icons.chevron_right)
+                                          ? Icon(
+                                              Icons.chevron_right,
+                                              color: isPast ? pastFg : null,
+                                            )
                                           : null,
                                       onTap: isCustom
                                           ? () => _openCustomEvent(e)
@@ -305,4 +332,65 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
       ],
     );
   }
+}
+
+/// Событие считается прошедшим, если его конец уже раньше [now].
+///
+/// Если есть только дата (без времени), границей считается конец этого дня
+/// в локальной зоне. Если есть только старт — используется старт (или конец
+/// дня, когда у старта нет времени).
+bool isCalendarEventPast(Map<String, dynamic> event, {DateTime? now}) {
+  final cutoff = calendarEventCutoff(event);
+  if (cutoff == null) return false;
+  return cutoff.isBefore(now ?? DateTime.now());
+}
+
+DateTime? calendarEventCutoff(Map<String, dynamic> event) {
+  final endRaw = _firstNonEmpty(event, const ['end_date', 'end_at', 'ends_at']);
+  if (endRaw != null) {
+    return _parseEventCutoff(endRaw, timeHHmm: _nonEmpty(event['end_time']));
+  }
+
+  final startRaw = _firstNonEmpty(
+    event,
+    const ['start_date', 'start_at', 'starts_at', 'date'],
+  );
+  if (startRaw != null) {
+    return _parseEventCutoff(startRaw, timeHHmm: _nonEmpty(event['start_time']));
+  }
+  return null;
+}
+
+String? _firstNonEmpty(Map<String, dynamic> event, List<String> keys) {
+  for (final key in keys) {
+    final value = _nonEmpty(event[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+String? _nonEmpty(Object? raw) {
+  final value = raw?.toString().trim() ?? '';
+  return value.isEmpty ? null : value;
+}
+
+DateTime? _parseEventCutoff(String raw, {String? timeHHmm}) {
+  final parsed = DateTime.tryParse(raw);
+  if (parsed == null) return null;
+  final local = parsed.isUtc ? parsed.toLocal() : parsed;
+
+  if (timeHHmm != null) {
+    final parts = timeHHmm.split(':');
+    final hour = int.tryParse(parts[0]) ?? 0;
+    final minute = parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0;
+    return DateTime(local.year, local.month, local.day, hour, minute);
+  }
+
+  final hasClockTime = raw.contains('T') ||
+      RegExp(r'\d{4}-\d{2}-\d{2}\s+\d').hasMatch(raw);
+  if (hasClockTime) {
+    return local;
+  }
+
+  return DateTime(local.year, local.month, local.day, 23, 59, 59, 999);
 }

@@ -53,6 +53,13 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen>
         profileName: AppActions.displayName,
         profileAvatarUrl: AppActions.avatarUrl,
         onProfileTap: () => AppActions.openProfile(context),
+        actions: [
+          IconButton(
+            tooltip: 'Новое событие',
+            onPressed: _createEvent,
+            icon: const Icon(Icons.add),
+          ),
+        ],
         bottom: FamilyTabBar.build(
           controller: _tabs,
           tabs: const [
@@ -68,11 +75,6 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen>
           CalendarEventsTab(reloadToken: _reloadToken),
           CalendarMonthsTab(reloadToken: _reloadToken),
         ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _createEvent,
-        icon: const Icon(Icons.add),
-        label: const Text('Событие'),
       ),
     );
   }

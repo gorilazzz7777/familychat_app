@@ -2,13 +2,16 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/media/gallery_video_thumbnail.dart';
 import '../../../../core/media/local_device_file.dart';
 import '../../../../core/providers/app_providers.dart';
+import '../../../../core/widgets/family_public_image.dart';
 import 'chat_network_image.dart';
 
 /// Видео-кружок в чате: превью в списке, проигрывание только по тапу.
@@ -52,6 +55,11 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
 
+  Uint8List? _thumbBytes;
+  String? _thumbPath;
+  String? _thumbUrl;
+  int _thumbGen = 0;
+
   @override
   void initState() {
     super.initState();
@@ -60,6 +68,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     if (ms != null && ms > 0) {
       _duration = Duration(milliseconds: ms);
     }
+    unawaited(_loadIdleThumb());
   }
 
   @override
@@ -68,8 +77,13 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     if (oldWidget.attachment['id'] != widget.attachment['id'] ||
         oldWidget.attachment['file_url'] != widget.attachment['file_url'] ||
         oldWidget.attachment['local_device_path'] !=
-            widget.attachment['local_device_path']) {
+            widget.attachment['local_device_path'] ||
+        oldWidget.attachment['thumbnail_url'] !=
+            widget.attachment['thumbnail_url'] ||
+        oldWidget.attachment['local_bytes'] !=
+            widget.attachment['local_bytes']) {
       _resetPlayback();
+      unawaited(_loadIdleThumb());
     }
   }
 
@@ -99,6 +113,9 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     _collapsing = false;
     _position = Duration.zero;
     _error = null;
+    _thumbBytes = null;
+    _thumbPath = null;
+    _thumbUrl = null;
     final ms = widget.durationMs;
     if (ms != null && ms > 0) {
       _duration = Duration(milliseconds: ms);
@@ -109,6 +126,60 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     _controller?.removeListener(_onTick);
     _controller?.dispose();
     _controller = null;
+  }
+
+  Future<void> _loadIdleThumb() async {
+    final att = widget.attachment;
+    final gen = ++_thumbGen;
+
+    final localPreview = safeUiPreviewBytes(
+      thumbnailBytes: att['thumbnail_bytes'] is Uint8List
+          ? att['thumbnail_bytes'] as Uint8List
+          : null,
+      bytes: att['local_bytes'] is Uint8List
+          ? att['local_bytes'] as Uint8List
+          : null,
+      kind: 'image',
+    );
+    if (localPreview != null) {
+      if (!mounted || gen != _thumbGen) return;
+      setState(() {
+        _thumbBytes = localPreview;
+        _thumbPath = null;
+        _thumbUrl = null;
+      });
+      return;
+    }
+
+    final thumbUrl = att['thumbnail_url']?.toString().trim() ?? '';
+    if (thumbUrl.isNotEmpty) {
+      if (!mounted || gen != _thumbGen) return;
+      setState(() {
+        _thumbBytes = null;
+        _thumbPath = null;
+        _thumbUrl = thumbUrl;
+      });
+      return;
+    }
+
+    if (kIsWeb) return;
+
+    final forThumb = Map<String, dynamic>.from(att);
+    if (forThumb['kind']?.toString() != 'video') {
+      forThumb['kind'] = 'video';
+    }
+    final path = await GalleryVideoThumbnail.ensureForAttachment(
+      forThumb,
+      maxWidth: 256,
+      timeMs: 0,
+    );
+    if (!mounted || gen != _thumbGen) return;
+    if (path == null || path.isEmpty) return;
+    setState(() {
+      _thumbBytes = null;
+      _thumbUrl = null;
+      _thumbPath = path;
+    });
   }
 
   Future<void> _ensureExpandedPlayback() async {
@@ -247,13 +318,33 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     return (_position.inMilliseconds / total).clamp(0.0, 1.0);
   }
 
-  Widget? _idlePlaceholder() {
-    final localBytes = widget.attachment['local_bytes'];
-    if (isSafeUiPreviewBytes(localBytes)) {
+  Widget? _idlePlaceholder(BuildContext context) {
+    final bytes = _thumbBytes;
+    if (bytes != null && bytes.isNotEmpty) {
+      final dpr = MediaQuery.devicePixelRatioOf(context);
+      final px = (widget.idleSize * dpr).round().clamp(64, 512);
       return Image.memory(
-        localBytes as Uint8List,
+        bytes,
         fit: BoxFit.cover,
         gaplessPlayback: true,
+        filterQuality: FilterQuality.low,
+        cacheWidth: px,
+        cacheHeight: px,
+      );
+    }
+    final path = _thumbPath;
+    if (path != null && path.isNotEmpty && localDeviceFileExists(path)) {
+      return localDeviceFileImage(
+        path: path,
+        fit: BoxFit.cover,
+      );
+    }
+    final url = _thumbUrl;
+    if (url != null && url.isNotEmpty) {
+      return FamilyPublicImage(
+        url: url,
+        fit: BoxFit.cover,
+        error: const SizedBox.shrink(),
       );
     }
     return null;
@@ -265,114 +356,107 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
         ? (widget.expandedSize ??
             ChatVideoNotePlayer.defaultExpandedSize(context))
         : widget.idleSize;
-    final placeholder = _idlePlaceholder();
+    final placeholder = _idlePlaceholder(context);
+    final c = _controller;
+    final showPlayer =
+        _expanded && !_initializing && c != null && c.value.isInitialized;
 
-    return GestureDetector(
-      onTap: _onTap,
-      behavior: HitTestBehavior.opaque,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        width: size,
-        height: size,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            ClipOval(
-              child: SizedBox(
-                width: size,
-                height: size,
-                child: _buildVideo(placeholder),
-              ),
-            ),
-            if (_expanded)
-              IgnorePointer(
-                child: CustomPaint(
-                  size: Size(size, size),
-                  painter: _VideoNoteProgressPainter(
-                    progress: _progress,
-                    trackColor: Colors.white.withValues(alpha: 0.28),
-                    progressColor: Colors.white,
-                    strokeWidth: 3.2,
+    return RepaintBoundary(
+      child: GestureDetector(
+        onTap: _onTap,
+        behavior: HitTestBehavior.opaque,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          width: size,
+          height: size,
+          clipBehavior: (showPlayer || placeholder != null)
+              ? Clip.antiAlias
+              : Clip.none,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.black26,
+            border: _expanded
+                ? null
+                : Border.all(
+                    color: Colors.white.withValues(alpha: 0.35),
+                    width: 1.5,
                   ),
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            fit: StackFit.expand,
+            children: [
+              if (showPlayer)
+                FittedBox(
+                  fit: BoxFit.cover,
+                  child: SizedBox(
+                    width: c.value.size.width,
+                    height: c.value.size.height,
+                    child: VideoPlayer(c),
+                  ),
+                )
+              else if (placeholder != null)
+                placeholder
+              else
+                Center(
+                  child: _error != null && !_expanded
+                      ? const Icon(
+                          Icons.videocam_off_outlined,
+                          color: Colors.white54,
+                        )
+                      : (_initializing
+                          ? const SizedBox(
+                              width: 28,
+                              height: 28,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white70,
+                              ),
+                            )
+                          : const Icon(
+                              Icons.videocam_outlined,
+                              color: Colors.white54,
+                              size: 36,
+                            )),
                 ),
-              )
-            else
-              IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.35),
-                      width: 1.5,
+              if (_expanded)
+                IgnorePointer(
+                  child: CustomPaint(
+                    painter: _VideoNoteProgressPainter(
+                      progress: _progress,
+                      trackColor: Colors.white.withValues(alpha: 0.28),
+                      progressColor: Colors.white,
+                      strokeWidth: 3.2,
                     ),
                   ),
-                  child: SizedBox(width: size, height: size),
                 ),
-              ),
-            if (!_expanded || (_expanded && _ready && !(_controller?.value.isPlaying ?? false)))
-              IgnorePointer(
-                child: Container(
-                  width: _expanded ? 48 : 44,
-                  height: _expanded ? 48 : 44,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.35),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    _initializing ? Icons.hourglass_top_rounded : Icons.play_arrow_rounded,
-                    color: Colors.white,
-                    size: _expanded ? 32 : 30,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildVideo(Widget? placeholder) {
-    if (_error != null && !_expanded) {
-      return ColoredBox(
-        color: Colors.black26,
-        child: Center(
-          child: placeholder ??
-              const Icon(Icons.videocam_off_outlined, color: Colors.white54),
-        ),
-      );
-    }
-
-    final c = _controller;
-    if (!_expanded || _initializing || c == null || !c.value.isInitialized) {
-      return ColoredBox(
-        color: Colors.black26,
-        child: Center(
-          child: placeholder ??
-              (_initializing
-                  ? const SizedBox(
-                      width: 28,
-                      height: 28,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white70,
+              if (!_expanded ||
+                  (_expanded &&
+                      _ready &&
+                      !(_controller?.value.isPlaying ?? false)))
+                IgnorePointer(
+                  child: Center(
+                    child: Container(
+                      width: _expanded ? 48 : 44,
+                      height: _expanded ? 48 : 44,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.35),
+                        shape: BoxShape.circle,
                       ),
-                    )
-                  : const Icon(
-                      Icons.videocam_outlined,
-                      color: Colors.white54,
-                      size: 36,
-                    )),
+                      child: Icon(
+                        _initializing
+                            ? Icons.hourglass_top_rounded
+                            : Icons.play_arrow_rounded,
+                        color: Colors.white,
+                        size: _expanded ? 32 : 30,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
-      );
-    }
-
-    return FittedBox(
-      fit: BoxFit.cover,
-      child: SizedBox(
-        width: c.value.size.width,
-        height: c.value.size.height,
-        child: VideoPlayer(c),
       ),
     );
   }

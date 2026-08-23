@@ -151,9 +151,11 @@ class _ShellNavButton extends StatelessWidget {
     final navTheme = NavigationBarTheme.of(context);
     final indicatorColor =
         navTheme.indicatorColor ?? scheme.secondaryContainer;
+    final foreground =
+        selected ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
     Widget iconWidget = Icon(
       selected ? selectedIcon : icon,
-      color: selected ? scheme.onSecondaryContainer : scheme.onSurfaceVariant,
+      color: foreground,
     );
     if (badgeLabel != null) {
       iconWidget = Badge(
@@ -162,36 +164,59 @@ class _ShellNavButton extends StatelessWidget {
       );
     }
 
+    // Скруглённый овал вокруг иконки + подписи с запасом по краям.
     return Semantics(
       button: true,
       selected: selected,
       label: label,
       child: InkWell(
         onTap: onTap,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeOut,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-              decoration: ShapeDecoration(
-                color: selected ? indicatorColor : Colors.transparent,
-                shape: navTheme.indicatorShape ?? const StadiumBorder(),
-              ),
-              child: iconWidget,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelMedium?.copyWith(
-                color: selected ? scheme.onSurface : scheme.onSurfaceVariant,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              ),
-            ),
-          ],
+        splashColor: Colors.transparent,
+        highlightColor: Colors.transparent,
+        overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return Center(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                  constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  decoration: ShapeDecoration(
+                    color: selected ? indicatorColor : Colors.transparent,
+                    // Крупный радиус + запас вокруг иконки/текста (не «впритык»).
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      iconWidget,
+                      const SizedBox(height: 4),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          softWrap: false,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: foreground,
+                            fontWeight: selected
+                                ? FontWeight.w600
+                                : FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
         ),
       ),
     );

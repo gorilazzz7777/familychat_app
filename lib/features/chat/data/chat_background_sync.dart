@@ -24,7 +24,7 @@ abstract final class ChatBackgroundSync {
         return;
       }
 
-      final db = await ChatLocalStore.instance.openWithExecutor();
+      final db = await ChatLocalStore.instance.ensureOpen();
       if (db == null) return;
 
       final api = ApiClient();
@@ -46,7 +46,8 @@ abstract final class ChatBackgroundSync {
         break;
       }
 
-      await db.close();
+      // Don't close: on the UI isolate this is the app DB; the FCM isolate
+      // is torn down after the handler anyway.
       debugPrint('[ChatBackgroundSync] synced thread=$threadId msgs=${page.messages.length}');
     } catch (e, st) {
       debugPrint('[ChatBackgroundSync] failed: $e\n$st');

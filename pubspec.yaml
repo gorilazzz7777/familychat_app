@@ -101,6 +101,7 @@ flutter:
     - assets/logo/ya.png
     - assets/chat/birthday_celebration_avatar.jpg
     - assets/chat/family_chat_avatar.jpg
+    - assets/chat/wallpapers/
     - assets/voice/vosk-model-small-ru-0.22.zip
 
 # Генерация иконок: dart run flutter_launcher_icons

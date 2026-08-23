@@ -150,7 +150,7 @@ class ChatMessageBubble extends StatelessWidget {
     final maxBubbleWidth = screenWidth * 0.78;
     final bubbleColor = isMine
         ? theme.colorScheme.primary
-        : theme.colorScheme.surfaceContainerHighest;
+        : Colors.white;
     final textColor = isMine ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface;
     final metaColor = isMine
         ? theme.colorScheme.onPrimary.withValues(alpha: 0.75)

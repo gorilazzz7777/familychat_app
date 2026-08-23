@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 import 'chat_database.dart';
-import 'chat_database_connection.dart';
 import 'chat_json_migrator.dart';
 
 /// Native SQLite facade for chat threads/messages. Web: unsupported for now.
@@ -16,8 +15,23 @@ class ChatLocalStore {
   ChatDatabase? _db;
   Future<ChatDatabase?>? _opening;
   bool _started = false;
+  Future<void> _writeChain = Future<void>.value();
 
   static bool get isSupported => ChatDatabase.isSupported;
+
+  Future<void> _enqueueWrite(Future<void> Function(ChatDatabase db) op) {
+    final done = Completer<void>();
+    _writeChain = _writeChain.then((_) async {
+      try {
+        final db = await ensureOpen();
+        if (db != null) await op(db);
+        if (!done.isCompleted) done.complete();
+      } catch (e, st) {
+        if (!done.isCompleted) done.completeError(e, st);
+      }
+    });
+    return done.future;
+  }
 
   Future<ChatDatabase?> ensureOpen() async {
     if (!isSupported) return null;
@@ -44,18 +58,9 @@ class ChatLocalStore {
     }
   }
 
-  /// Open with an explicit executor (FCM background isolate).
-  Future<ChatDatabase?> openWithExecutor() async {
-    if (!isSupported) return null;
-    try {
-      final db = ChatDatabase.executor(openChatDatabaseConnection());
-      await ChatJsonMigrator.migrateIfNeeded(db);
-      return db;
-    } catch (e, st) {
-      debugPrint('[ChatLocalStore] background open failed: $e\n$st');
-      return null;
-    }
-  }
+  /// Same connection as [ensureOpen]. A second NativeDatabase on this file
+  /// is what caused SQLITE_BUSY / "database is locked".
+  Future<ChatDatabase?> openWithExecutor() => ensureOpen();
 
   Future<List<Map<String, dynamic>>> readThreads() async {
     final db = await ensureOpen();
@@ -102,37 +107,31 @@ class ChatLocalStore {
     yield* db.watchMessages(threadId);
   }
 
-  Future<void> upsertThread(Map<String, dynamic> thread) async {
-    final db = await ensureOpen();
-    await db?.upsertThread(thread);
+  Future<void> upsertThread(Map<String, dynamic> thread) {
+    return _enqueueWrite((db) => db.upsertThread(thread));
   }
 
-  Future<void> replaceThreads(List<Map<String, dynamic>> threads) async {
-    final db = await ensureOpen();
-    await db?.replaceThreads(threads);
+  Future<void> replaceThreads(List<Map<String, dynamic>> threads) {
+    return _enqueueWrite((db) => db.replaceThreads(threads));
   }
 
-  Future<void> replaceMembers(List<Map<String, dynamic>> members) async {
-    final db = await ensureOpen();
-    await db?.replaceMembers(members);
+  Future<void> replaceMembers(List<Map<String, dynamic>> members) {
+    return _enqueueWrite((db) => db.replaceMembers(members));
   }
 
-  Future<void> upsertMessage(Map<String, dynamic> message) async {
-    final db = await ensureOpen();
-    await db?.upsertMessage(message);
+  Future<void> upsertMessage(Map<String, dynamic> message) {
+    return _enqueueWrite((db) => db.upsertMessage(message));
   }
 
   Future<void> upsertMessages(
     int threadId,
     List<Map<String, dynamic>> messages,
-  ) async {
-    final db = await ensureOpen();
-    await db?.upsertMessages(threadId, messages);
+  ) {
+    return _enqueueWrite((db) => db.upsertMessages(threadId, messages));
   }
 
-  Future<void> deleteMessages(int threadId, List<int> messageIds) async {
-    final db = await ensureOpen();
-    await db?.deleteMessages(threadId, messageIds);
+  Future<void> deleteMessages(int threadId, List<int> messageIds) {
+    return _enqueueWrite((db) => db.deleteMessages(threadId, messageIds));
   }
 
   Future<void> deleteMissingFromWindow({
@@ -140,28 +139,29 @@ class ChatLocalStore {
     required int minId,
     required int maxId,
     required Set<int> keepIds,
-  }) async {
-    final db = await ensureOpen();
-    await db?.deleteMissingFromWindow(
-      threadId: threadId,
-      minId: minId,
-      maxId: maxId,
-      keepIds: keepIds,
+  }) {
+    return _enqueueWrite(
+      (db) => db.deleteMissingFromWindow(
+        threadId: threadId,
+        minId: minId,
+        maxId: maxId,
+        keepIds: keepIds,
+      ),
     );
   }
 
-  Future<void> markMessagesRead(int threadId, List<int> messageIds) async {
-    final db = await ensureOpen();
-    await db?.markMessagesRead(threadId, messageIds);
+  Future<void> markMessagesRead(int threadId, List<int> messageIds) {
+    return _enqueueWrite((db) => db.markMessagesRead(threadId, messageIds));
   }
 
   Future<void> patchMessageFields(
     int threadId,
     int messageId,
     Map<String, dynamic> patch,
-  ) async {
-    final db = await ensureOpen();
-    await db?.patchMessageFields(threadId, messageId, patch);
+  ) {
+    return _enqueueWrite(
+      (db) => db.patchMessageFields(threadId, messageId, patch),
+    );
   }
 
   Future<String?> metaGet(String key) async {
@@ -169,9 +169,8 @@ class ChatLocalStore {
     return db?.metaGet(key);
   }
 
-  Future<void> metaSet(String key, String value) async {
-    final db = await ensureOpen();
-    await db?.metaSet(key, value);
+  Future<void> metaSet(String key, String value) {
+    return _enqueueWrite((db) => db.metaSet(key, value));
   }
 
   Future<List<Map<String, dynamic>>> readOutboxItems() async {
@@ -180,14 +179,14 @@ class ChatLocalStore {
     return db.readOutboxItems();
   }
 
-  Future<void> writeOutboxItems(List<Map<String, dynamic>> items) async {
-    final db = await ensureOpen();
-    await db?.writeOutboxItems(items);
+  Future<void> writeOutboxItems(List<Map<String, dynamic>> items) {
+    return _enqueueWrite((db) => db.writeOutboxItems(items));
   }
 
-  Future<void> saveOutboxBlob(String storageKey, List<int> bytes) async {
-    final db = await ensureOpen();
-    await db?.saveOutboxBlob(storageKey, Uint8List.fromList(bytes));
+  Future<void> saveOutboxBlob(String storageKey, List<int> bytes) {
+    return _enqueueWrite(
+      (db) => db.saveOutboxBlob(storageKey, Uint8List.fromList(bytes)),
+    );
   }
 
   Future<Uint8List?> readOutboxBlob(String storageKey) async {
@@ -195,9 +194,8 @@ class ChatLocalStore {
     return db?.readOutboxBlob(storageKey);
   }
 
-  Future<void> deleteOutboxBlob(String storageKey) async {
-    final db = await ensureOpen();
-    await db?.deleteOutboxBlob(storageKey);
+  Future<void> deleteOutboxBlob(String storageKey) {
+    return _enqueueWrite((db) => db.deleteOutboxBlob(storageKey));
   }
 
   Future<Map<String, Map<String, dynamic>>> readAllMediaIndex() async {
@@ -209,26 +207,22 @@ class ChatLocalStore {
   Future<void> upsertMediaIndexRow(
     String key,
     Map<String, dynamic> payload,
-  ) async {
-    final db = await ensureOpen();
-    await db?.upsertMediaIndexRow(key, payload);
+  ) {
+    return _enqueueWrite((db) => db.upsertMediaIndexRow(key, payload));
   }
 
-  Future<void> deleteMediaIndexRow(String key) async {
-    final db = await ensureOpen();
-    await db?.deleteMediaIndexRow(key);
+  Future<void> deleteMediaIndexRow(String key) {
+    return _enqueueWrite((db) => db.deleteMediaIndexRow(key));
   }
 
   Future<void> replaceAllMediaIndex(
     Map<String, Map<String, dynamic>> all,
-  ) async {
-    final db = await ensureOpen();
-    await db?.replaceAllMediaIndex(all);
+  ) {
+    return _enqueueWrite((db) => db.replaceAllMediaIndex(all));
   }
 
-  Future<void> clearPendingForThread(int threadId) async {
-    final db = await ensureOpen();
-    await db?.clearPendingForThread(threadId);
+  Future<void> clearPendingForThread(int threadId) {
+    return _enqueueWrite((db) => db.clearPendingForThread(threadId));
   }
 
   Future<int?> oldestServerMessageId(int threadId) async {

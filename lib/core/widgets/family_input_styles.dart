@@ -35,7 +35,7 @@ class FamilyInputStyles {
   }) {
     final cs = theme.colorScheme;
     return BoxDecoration(
-      color: fillColor ?? cs.surfaceContainerHighest,
+      color: fillColor ?? Colors.white,
       borderRadius: BorderRadius.circular(radius),
       border: Border.all(
         color: borderColor ?? cs.outlineVariant.withValues(alpha: 0.55),

@@ -155,12 +155,12 @@ class ChatDatabase extends _$ChatDatabase {
   }
 
   Future<void> replaceThreads(List<Map<String, dynamic>> threads) async {
-    await transaction(() async {
+    await _retryIfLocked(() => transaction(() async {
       await delete(chatThreadRows).go();
       for (final thread in threads) {
         await upsertThread(thread);
       }
-    });
+    }));
   }
 
   Future<void> upsertThread(Map<String, dynamic> thread) async {
@@ -196,7 +196,7 @@ class ChatDatabase extends _$ChatDatabase {
   }
 
   Future<void> replaceMembers(List<Map<String, dynamic>> members) async {
-    await transaction(() async {
+    await _retryIfLocked(() => transaction(() async {
       await delete(chatMemberRows).go();
       for (final member in members) {
         final rowKey = _memberRowKey(member);
@@ -208,7 +208,7 @@ class ChatDatabase extends _$ChatDatabase {
           ),
         );
       }
-    });
+    }));
   }
 
   Future<void> upsertMessage(Map<String, dynamic> message) async {
@@ -235,12 +235,32 @@ class ChatDatabase extends _$ChatDatabase {
     );
   }
 
+  static bool _isDatabaseLocked(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('database is locked') ||
+        text.contains('sqliteexception(5)');
+  }
+
+  Future<T> _retryIfLocked<T>(Future<T> Function() action) async {
+    const delaysMs = [50, 100, 200, 400, 800];
+    var attempt = 0;
+    while (true) {
+      try {
+        return await action();
+      } catch (e) {
+        if (!_isDatabaseLocked(e) || attempt >= delaysMs.length) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: delaysMs[attempt]));
+        attempt++;
+      }
+    }
+  }
+
   Future<void> upsertMessages(
     int threadId,
     List<Map<String, dynamic>> messages,
   ) async {
     if (messages.isEmpty) return;
-    await transaction(() async {
+    await _retryIfLocked(() => transaction(() async {
       for (final message in messages) {
         final copy = Map<String, dynamic>.from(message);
         copy['thread_id'] ??= threadId;
@@ -266,7 +286,7 @@ class ChatDatabase extends _$ChatDatabase {
           ),
         );
       }
-    });
+    }));
   }
 
   /// Keep pending; replace server rows for this window merge via upsert.

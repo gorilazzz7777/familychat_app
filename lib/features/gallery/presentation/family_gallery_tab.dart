@@ -25,7 +25,8 @@ class FamilyGalleryTab extends ConsumerStatefulWidget {
   ConsumerState<FamilyGalleryTab> createState() => FamilyGalleryTabState();
 }
 
-class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
+class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab>
+    with AutomaticKeepAliveClientMixin {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _albums = [];
@@ -94,7 +95,7 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
           _error = null;
         });
       }
-    } else if (!silent || _albums.isEmpty) {
+    } else if (!silent && _albums.isEmpty) {
       setState(() {
         _loading = true;
         _error = null;
@@ -146,7 +147,11 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
   }
 
   @override
+  bool get wantKeepAlive => true;
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
     if (_loading) {
       return const DeferredPlaceholder(
         child: Center(child: CircularProgressIndicator()),
@@ -171,7 +176,7 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab> {
           albums: _albums,
           userId: widget.currentUserId,
           isFamilyGallery: true,
-          onRefresh: _load,
+          onRefresh: () => _load(silent: _albums.isNotEmpty),
           faceHintMessage: _faceHintMessage,
           showFaceHint: _showFaceHint,
           excludeUploadedByUserId: widget.excludeUploadedByUserId,

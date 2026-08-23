@@ -225,25 +225,16 @@ class ChildGalleryTabState extends ConsumerState<ChildGalleryTab> {
       );
     }
 
-    return Scaffold(
-      body: SafeArea(
-        child: GalleryAlbumsGroupedView(
-          albums: _albums,
-          userId: 0,
-          onRefresh: _load,
-          onOpenAlbum: _openAlbum,
-          onAlbumLongPress: widget.isCustodian ? _showAlbumMenu : null,
-          customTabLabel: 'Альбомы',
-          alwaysShowCustomGroup: true,
-        ),
+    return SafeArea(
+      child: GalleryAlbumsGroupedView(
+        albums: _albums,
+        userId: 0,
+        onRefresh: _load,
+        onOpenAlbum: _openAlbum,
+        onAlbumLongPress: widget.isCustodian ? _showAlbumMenu : null,
+        customTabLabel: 'Альбомы',
+        alwaysShowCustomGroup: true,
       ),
-      floatingActionButton: widget.isCustodian
-          ? FloatingActionButton.extended(
-              onPressed: createAlbum,
-              icon: const Icon(Icons.create_new_folder_outlined),
-              label: const Text('Альбом'),
-            )
-          : null,
     );
   }
 }

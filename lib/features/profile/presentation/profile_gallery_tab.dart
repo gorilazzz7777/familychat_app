@@ -23,7 +23,8 @@ class ProfileGalleryTab extends ConsumerStatefulWidget {
   ConsumerState<ProfileGalleryTab> createState() => ProfileGalleryTabState();
 }
 
-class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
+class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab>
+    with AutomaticKeepAliveClientMixin {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _albums = [];
@@ -38,11 +39,11 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool silent = false}) async {
     if (_loadInFlight != null) {
       return _loadInFlight!;
     }
-    final future = _loadBody();
+    final future = _loadBody(silent: silent);
     _loadInFlight = future;
     try {
       await future;
@@ -53,7 +54,7 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
     }
   }
 
-  Future<void> _loadBody() async {
+  Future<void> _loadBody({bool silent = false}) async {
     final gen = ++_loadGen;
     final cached = await FamilyChatLocalCache.readMemberAlbums(widget.userId);
     if (gen != _loadGen || !mounted) return;
@@ -73,7 +74,7 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
           _error = null;
         });
       }
-    } else {
+    } else if (!silent && _albums.isEmpty) {
       setState(() {
         _loading = true;
         _error = null;
@@ -223,7 +224,11 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
   }
 
   @override
+  bool get wantKeepAlive => true;
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
     if (_loading) {
       return const DeferredPlaceholder(
         child: Center(child: CircularProgressIndicator()),
@@ -251,7 +256,7 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab> {
           albums: _albums,
           userId: widget.userId,
           isOwnGallery: widget.isOwnGallery,
-          onRefresh: _load,
+          onRefresh: () => _load(silent: _albums.isNotEmpty),
           faceHintMessage: _faceHintMessage,
           showFaceHint: _showFaceHint,
           onAlbumLongPress: widget.isOwnGallery ? _showAlbumMenu : null,
