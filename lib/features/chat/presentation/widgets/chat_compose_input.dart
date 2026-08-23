@@ -29,6 +29,8 @@ class ChatComposeInput extends StatefulWidget {
     this.voiceTranscriptionEnabled = false,
     this.showAiAssist = false,
     this.hintText = 'Сообщение...',
+    this.panelSlotMaxHeight,
+    this.panelBarsOverhead = 0,
   });
 
   final TextEditingController controller;
@@ -48,6 +50,12 @@ class ChatComposeInput extends StatefulWidget {
   final bool showAiAssist;
   final String hintText;
 
+  /// Высота нижнего слота от [LayoutBuilder] экрана чата.
+  final double? panelSlotMaxHeight;
+
+  /// Reply / edit / file chips над строкой ввода (вычитаются из слота).
+  final double panelBarsOverhead;
+
   @override
   State<ChatComposeInput> createState() => _ChatComposeInputState();
 }
@@ -55,6 +63,8 @@ class ChatComposeInput extends StatefulWidget {
 class _ChatComposeInputState extends State<ChatComposeInput> {
   final _recordingHost = ChatComposeRecordingHost();
   final _circleSession = ChatVideoCircleSession();
+  final _composeBarKey = GlobalKey();
+  double _measuredComposeBarHeight = chatComposeBarEstimate;
   ChatVoiceRecordingChange _recording = const ChatVoiceRecordingChange(
     isRecording: false,
     durationMs: 0,
@@ -157,100 +167,143 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final recording = _recording.isRecording;
+    final showPicker = _pickerOpen && !recording;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: EdgeInsets.fromLTRB(8, 8, 8, _pickerOpen ? 0 : 8),
-          child: Material(
-            type: MaterialType.transparency,
-            clipBehavior: Clip.none,
-            child: DecoratedBox(
-              decoration: FamilyInputStyles.composeShellDecoration(theme),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (!recording)
-                    ChatComposeCircleButton(
-                      tooltip: 'Вложение',
-                      icon: Icons.attach_file,
-                      iconColor: theme.colorScheme.onSurface,
-                      onTap: widget.onAttach,
-                    ),
-                  Expanded(
-                    child: recording
-                        ? ChatVoiceRecordingComposeSlot(
-                            durationMs: _recording.durationMs,
-                            willCancel: _recording.willCancel,
-                            locked: _recording.locked,
-                            kind: _recording.kind,
-                            onCancel: () =>
-                                _recordingHost.cancelLocked?.call(),
-                          )
-                        : TextField(
-                            controller: widget.controller,
-                            focusNode: widget.focusNode,
-                            keyboardType: TextInputType.multiline,
-                            minLines: 1,
-                            maxLines: 5,
-                            textInputAction: TextInputAction.newline,
-                            readOnly: _pickerOpen,
-                            showCursor: true,
-                            onTap: () {
-                              if (_pickerOpen) {
-                                setState(() => _pickerOpen = false);
-                              }
-                            },
-                            decoration: InputDecoration(
-                              hintText: widget.hintText,
-                              filled: true,
-                              fillColor: Colors.white,
-                              border: InputBorder.none,
-                              enabledBorder: InputBorder.none,
-                              focusedBorder: InputBorder.none,
-                              contentPadding:
-                                  const EdgeInsets.fromLTRB(0, 10, 0, 10),
-                              isDense: true,
-                            ),
-                          ),
-                  ),
-                  if (!recording)
-                    ChatComposeEmojiButton(
-                      open: _pickerOpen,
-                      onPressed: _togglePicker,
-                    ),
-                  ChatComposeActionButton(
-                    controller: widget.controller,
-                    onSend: widget.onSend,
-                    onVoiceComplete: widget.onVoiceComplete,
-                    onVideoCircleComplete: widget.onVideoCircleComplete,
-                    forceSendButton: widget.forceSendButton,
-                    voiceTranscriptionEnabled:
-                        widget.voiceTranscriptionEnabled,
-                    showAiAssist: widget.showAiAssist,
-                    onRecordingChanged: _onRecordingChanged,
-                    circleSession: _circleSession,
-                    recordingHost: _recordingHost,
-                  ),
-                ],
+    final composeBar = KeyedSubtree(
+      key: _composeBarKey,
+      child: Padding(
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+      child: Material(
+        type: MaterialType.transparency,
+        clipBehavior: Clip.none,
+        child: DecoratedBox(
+          decoration: FamilyInputStyles.composeShellDecoration(theme),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (!recording)
+                ChatComposeCircleButton(
+                  tooltip: 'Вложение',
+                  icon: Icons.attach_file,
+                  iconColor: theme.colorScheme.onSurface,
+                  onTap: widget.onAttach,
+                ),
+              Expanded(
+                child: recording
+                    ? ChatVoiceRecordingComposeSlot(
+                        durationMs: _recording.durationMs,
+                        willCancel: _recording.willCancel,
+                        locked: _recording.locked,
+                        kind: _recording.kind,
+                        onCancel: () => _recordingHost.cancelLocked?.call(),
+                      )
+                    : TextField(
+                        controller: widget.controller,
+                        focusNode: widget.focusNode,
+                        keyboardType: TextInputType.multiline,
+                        minLines: 1,
+                        maxLines: 5,
+                        textInputAction: TextInputAction.newline,
+                        readOnly: _pickerOpen,
+                        showCursor: true,
+                        onTap: () {
+                          if (_pickerOpen) {
+                            setState(() => _pickerOpen = false);
+                          }
+                        },
+                        decoration: InputDecoration(
+                          hintText: widget.hintText,
+                          filled: true,
+                          fillColor: Colors.white,
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          contentPadding:
+                              const EdgeInsets.fromLTRB(0, 10, 0, 10),
+                          isDense: true,
+                        ),
+                      ),
               ),
-            ),
+              if (!recording)
+                ChatComposeEmojiButton(
+                  open: _pickerOpen,
+                  onPressed: _togglePicker,
+                ),
+              ChatComposeActionButton(
+                controller: widget.controller,
+                onSend: widget.onSend,
+                onVoiceComplete: widget.onVoiceComplete,
+                onVideoCircleComplete: widget.onVideoCircleComplete,
+                forceSendButton: widget.forceSendButton,
+                voiceTranscriptionEnabled: widget.voiceTranscriptionEnabled,
+                showAiAssist: widget.showAiAssist,
+                onRecordingChanged: _onRecordingChanged,
+                circleSession: _circleSession,
+                recordingHost: _recordingHost,
+              ),
+            ],
           ),
         ),
-        if (_pickerOpen && !recording)
-          ChatComposePickerPanel(
-            tab: _pickerTab,
-            onTabChanged: (tab) => setState(() => _pickerTab = tab),
-            emojiController: widget.controller,
-            onGifSelected: (item) {
-              _collapsePicker();
-              widget.onGifSelected?.call(item);
-            },
-            onCollapse: _collapsePicker,
-          ),
-      ],
+      ),
+    ),
+    );
+
+    final pickerPanel = ChatComposePickerPanel(
+      tab: _pickerTab,
+      onTabChanged: (tab) => setState(() => _pickerTab = tab),
+      emojiController: widget.controller,
+      onKlipySelected: (item) {
+        _collapsePicker();
+        widget.onGifSelected?.call(item);
+      },
+      onCollapse: _collapsePicker,
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final measured = _composeBarKey.currentContext?.size?.height;
+          if (!mounted || measured == null) return;
+          if ((measured - _measuredComposeBarHeight).abs() > 0.5) {
+            setState(() => _measuredComposeBarHeight = measured);
+          }
+        });
+
+        final pickerHeight = showPicker
+            ? chatComposePickerHeight(
+                context,
+                constraints: constraints,
+                panelSlotMaxHeight: widget.panelSlotMaxHeight,
+                composeBarHeight: _measuredComposeBarHeight,
+                barsOverhead: widget.panelBarsOverhead,
+              )
+            : 0.0;
+
+        debugComposePickerLayout(
+          tag: 'ChatComposeInput',
+          context: context,
+          constraints: constraints,
+          pickerHeight: pickerHeight,
+          showPicker: showPicker,
+          composeBarHeight: _measuredComposeBarHeight,
+          panelSlotMaxHeight: widget.panelSlotMaxHeight,
+        );
+
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            composeBar,
+            if (showPicker && pickerHeight > 0) ...[
+              const SizedBox(height: 6),
+              SizedBox(
+                height: pickerHeight,
+                child: pickerPanel,
+              ),
+            ],
+          ],
+        );
+      },
     );
   }
 }

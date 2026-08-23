@@ -45,6 +45,8 @@ class ChatMentionComposeInput extends StatefulWidget {
     required this.participants,
     this.currentUserId,
     this.hintText = 'Сообщение...',
+    this.panelSlotMaxHeight,
+    this.panelBarsOverhead = 0,
   });
 
   final TextEditingController controller;
@@ -65,6 +67,8 @@ class ChatMentionComposeInput extends StatefulWidget {
   final List<ChatMentionParticipant> participants;
   final int? currentUserId;
   final String hintText;
+  final double? panelSlotMaxHeight;
+  final double panelBarsOverhead;
 
   @override
   State<ChatMentionComposeInput> createState() => _ChatMentionComposeInputState();
@@ -76,6 +80,8 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
   String _mentionQuery = '';
   final _recordingHost = ChatComposeRecordingHost();
   final _circleSession = ChatVideoCircleSession();
+  final _composeSectionKey = GlobalKey();
+  double _measuredComposeSectionHeight = chatComposeBarEstimate;
   ChatVoiceRecordingChange _recording = const ChatVoiceRecordingChange(
     isRecording: false,
     durationMs: 0,
@@ -269,144 +275,189 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
     final theme = Theme.of(context);
     final suggestions =
         _recording.isRecording ? const <ChatMentionParticipant>[] : _suggestions;
+    final showPicker = _pickerOpen && !_recording.isRecording;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: EdgeInsets.fromLTRB(8, 8, 8, _pickerOpen ? 0 : 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (suggestions.isNotEmpty)
-                Material(
-                  elevation: 2,
-                  borderRadius: BorderRadius.circular(12),
-                  color: theme.colorScheme.surface,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 220),
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      padding: EdgeInsets.zero,
-                      itemCount: suggestions.length,
-                      separatorBuilder: (_, __) => Divider(
-                        height: 1,
-                        color: theme.colorScheme.outlineVariant
-                            .withValues(alpha: 0.4),
-                      ),
-                      itemBuilder: (context, index) {
-                        final p = suggestions[index];
-                        return ListTile(
-                          dense: true,
-                          leading: ChatAvatar(
-                            name: p.displayName,
-                            avatarUrl:
-                                p.avatarUrl.isEmpty ? null : p.avatarUrl,
-                            radius: 16,
-                          ),
-                          title: Text(
-                            p.displayName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          onTap: () => _insertMention(p),
-                        );
-                      },
-                    ),
+    final composeSection = KeyedSubtree(
+      key: _composeSectionKey,
+      child: Padding(
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (suggestions.isNotEmpty)
+            Material(
+              elevation: 2,
+              borderRadius: BorderRadius.circular(12),
+              color: theme.colorScheme.surface,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 220),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: suggestions.length,
+                  separatorBuilder: (_, __) => Divider(
+                    height: 1,
+                    color: theme.colorScheme.outlineVariant
+                        .withValues(alpha: 0.4),
                   ),
-                ),
-              if (suggestions.isNotEmpty) const SizedBox(height: 6),
-              Material(
-                type: MaterialType.transparency,
-                clipBehavior: Clip.none,
-                child: DecoratedBox(
-                  decoration: FamilyInputStyles.composeShellDecoration(theme),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      if (!_recording.isRecording)
-                        ChatComposeCircleButton(
-                          tooltip: 'Вложение',
-                          icon: Icons.attach_file,
-                          iconColor: theme.colorScheme.onSurface,
-                          onTap: widget.onAttach,
-                        ),
-                      Expanded(
-                        child: _recording.isRecording
-                            ? ChatVoiceRecordingComposeSlot(
-                                durationMs: _recording.durationMs,
-                                willCancel: _recording.willCancel,
-                                locked: _recording.locked,
-                                kind: _recording.kind,
-                                onCancel: () =>
-                                    _recordingHost.cancelLocked?.call(),
-                              )
-                            : TextField(
-                                controller: widget.controller,
-                                focusNode: widget.focusNode,
-                                keyboardType: TextInputType.multiline,
-                                minLines: 1,
-                                maxLines: 5,
-                                textInputAction: TextInputAction.newline,
-                                readOnly: _pickerOpen,
-                                showCursor: true,
-                                onTap: () {
-                                  if (_pickerOpen) {
-                                    setState(() => _pickerOpen = false);
-                                  }
-                                },
-                                decoration: InputDecoration(
-                                  hintText: widget.hintText,
-                                  filled: true,
-                                  fillColor: Colors.white,
-                                  border: InputBorder.none,
-                                  enabledBorder: InputBorder.none,
-                                  focusedBorder: InputBorder.none,
-                                  contentPadding:
-                                      const EdgeInsets.fromLTRB(0, 10, 0, 10),
-                                  isDense: true,
-                                ),
-                              ),
+                  itemBuilder: (context, index) {
+                    final p = suggestions[index];
+                    return ListTile(
+                      dense: true,
+                      leading: ChatAvatar(
+                        name: p.displayName,
+                        avatarUrl:
+                            p.avatarUrl.isEmpty ? null : p.avatarUrl,
+                        radius: 16,
                       ),
-                      if (!_recording.isRecording)
-                        ChatComposeEmojiButton(
-                          open: _pickerOpen,
-                          onPressed: _togglePicker,
-                        ),
-                      ChatComposeActionButton(
-                        controller: widget.controller,
-                        onSend: (options) => _handleSend(options),
-                        onVoiceComplete: widget.onVoiceComplete,
-                        onVideoCircleComplete: widget.onVideoCircleComplete,
-                        forceSendButton: widget.forceSendButton,
-                        voiceTranscriptionEnabled:
-                            widget.voiceTranscriptionEnabled,
-                        showAiAssist: widget.showAiAssist,
-                        onRecordingChanged: _onRecordingChanged,
-                        circleSession: _circleSession,
-                        recordingHost: _recordingHost,
+                      title: Text(
+                        p.displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ],
-                  ),
+                      onTap: () => _insertMention(p),
+                    );
+                  },
                 ),
               ),
+            ),
+          if (suggestions.isNotEmpty) const SizedBox(height: 6),
+          Material(
+            type: MaterialType.transparency,
+            clipBehavior: Clip.none,
+            child: DecoratedBox(
+              decoration: FamilyInputStyles.composeShellDecoration(theme),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (!_recording.isRecording)
+                    ChatComposeCircleButton(
+                      tooltip: 'Вложение',
+                      icon: Icons.attach_file,
+                      iconColor: theme.colorScheme.onSurface,
+                      onTap: widget.onAttach,
+                    ),
+                  Expanded(
+                    child: _recording.isRecording
+                        ? ChatVoiceRecordingComposeSlot(
+                            durationMs: _recording.durationMs,
+                            willCancel: _recording.willCancel,
+                            locked: _recording.locked,
+                            kind: _recording.kind,
+                            onCancel: () =>
+                                _recordingHost.cancelLocked?.call(),
+                          )
+                        : TextField(
+                            controller: widget.controller,
+                            focusNode: widget.focusNode,
+                            keyboardType: TextInputType.multiline,
+                            minLines: 1,
+                            maxLines: 5,
+                            textInputAction: TextInputAction.newline,
+                            readOnly: _pickerOpen,
+                            showCursor: true,
+                            onTap: () {
+                              if (_pickerOpen) {
+                                setState(() => _pickerOpen = false);
+                              }
+                            },
+                            decoration: InputDecoration(
+                              hintText: widget.hintText,
+                              filled: true,
+                              fillColor: Colors.white,
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              contentPadding:
+                                  const EdgeInsets.fromLTRB(0, 10, 0, 10),
+                              isDense: true,
+                            ),
+                          ),
+                  ),
+                  if (!_recording.isRecording)
+                    ChatComposeEmojiButton(
+                      open: _pickerOpen,
+                      onPressed: _togglePicker,
+                    ),
+                  ChatComposeActionButton(
+                    controller: widget.controller,
+                    onSend: (options) => _handleSend(options),
+                    onVoiceComplete: widget.onVoiceComplete,
+                    onVideoCircleComplete: widget.onVideoCircleComplete,
+                    forceSendButton: widget.forceSendButton,
+                    voiceTranscriptionEnabled:
+                        widget.voiceTranscriptionEnabled,
+                    showAiAssist: widget.showAiAssist,
+                    onRecordingChanged: _onRecordingChanged,
+                    circleSession: _circleSession,
+                    recordingHost: _recordingHost,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+    );
+
+    final pickerPanel = ChatComposePickerPanel(
+      tab: _pickerTab,
+      onTabChanged: (tab) => setState(() => _pickerTab = tab),
+      emojiController: widget.controller,
+      onKlipySelected: (item) {
+        _collapsePicker();
+        widget.onGifSelected?.call(item);
+      },
+      onCollapse: _collapsePicker,
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final measured = _composeSectionKey.currentContext?.size?.height;
+          if (!mounted || measured == null) return;
+          if ((measured - _measuredComposeSectionHeight).abs() > 0.5) {
+            setState(() => _measuredComposeSectionHeight = measured);
+          }
+        });
+
+        final pickerHeight = showPicker
+            ? chatComposePickerHeight(
+                context,
+                constraints: constraints,
+                panelSlotMaxHeight: widget.panelSlotMaxHeight,
+                composeBarHeight: _measuredComposeSectionHeight,
+                barsOverhead: widget.panelBarsOverhead,
+              )
+            : 0.0;
+
+        debugComposePickerLayout(
+          tag: 'ChatMentionComposeInput',
+          context: context,
+          constraints: constraints,
+          pickerHeight: pickerHeight,
+          showPicker: showPicker,
+          composeBarHeight: _measuredComposeSectionHeight,
+          panelSlotMaxHeight: widget.panelSlotMaxHeight,
+        );
+
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            composeSection,
+            if (showPicker && pickerHeight > 0) ...[
+              const SizedBox(height: 6),
+              SizedBox(
+                height: pickerHeight,
+                child: pickerPanel,
+              ),
             ],
-          ),
-        ),
-        if (_pickerOpen && !_recording.isRecording)
-          ChatComposePickerPanel(
-            tab: _pickerTab,
-            onTabChanged: (tab) => setState(() => _pickerTab = tab),
-            emojiController: widget.controller,
-            onGifSelected: (item) {
-              _collapsePicker();
-              widget.onGifSelected?.call(item);
-            },
-            onCollapse: _collapsePicker,
-          ),
-      ],
+          ],
+        );
+      },
     );
   }
 }

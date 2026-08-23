@@ -54,6 +54,7 @@ import 'record_video_circle_screen.dart';
 import 'widgets/chat_attach_sheet/chat_attach_models.dart';
 import 'widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import 'widgets/chat_compose_input.dart';
+import 'widgets/chat_compose_picker_panel.dart';
 import 'widgets/chat_mention_compose_input.dart';
 import 'widgets/chat_image_viewer.dart';
 import 'widgets/chat_image_album.dart';
@@ -206,6 +207,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _speaking = false;
   bool _canSend = true;
   double _lastKeyboardInset = 0;
+  final _composeBlockKey = GlobalKey();
+  double _composeOverlayHeight = chatComposeBarEstimate;
   final Map<int, String> _typingNames = {};
   final Map<int, Timer> _typingExpiry = {};
   Timer? _typingEmitTimer;
@@ -2550,29 +2553,35 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
-  Future<void> _sendGifMessage(ChatGifItem gif) async {
-    if (gif.url.isEmpty) return;
+  Future<void> _sendGifMessage(ChatGifItem item) async {
+    if (item.url.isEmpty) return;
+    final isSticker = item.isSticker;
     final tempId = _nextTempId();
     final replySnapshot = _replyTo;
     final replyMessageId = chatAsInt(replySnapshot?['message_id']);
-    final preview = gif.previewUrl.isNotEmpty ? gif.previewUrl : gif.url;
+    final preview = item.previewUrl.isNotEmpty ? item.previewUrl : item.url;
+    final metaKey = isSticker ? 'sticker' : 'gif';
     _addOptimisticMessage(
       tempId,
       body: '',
       attachments: [
         {
           'kind': 'image',
-          'content_type': gif.contentType,
+          'content_type': item.contentType,
+          // ChatNetworkImage читает file_url; url — запасной ключ.
+          'file_url': preview,
           'url': preview,
-          'filename': 'gif.gif',
+          'filename': isSticker ? 'sticker.webp' : 'gif.gif',
+          if (item.width > 0) 'width': item.width,
+          if (item.height > 0) 'height': item.height,
         },
       ],
       replyTo: replySnapshot,
       metadata: {
-        'gif': {
+        metaKey: {
           'source': 'klipy',
-          if (gif.id.isNotEmpty) 'id': gif.id,
-          if (gif.slug.isNotEmpty) 'slug': gif.slug,
+          if (item.id.isNotEmpty) 'id': item.id,
+          if (item.slug.isNotEmpty) 'slug': item.slug,
         },
       },
     );
@@ -2586,22 +2595,35 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _markOptimisticFailed(tempId);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('GIF можно отправить только при наличии сети'),
+        SnackBar(
+          content: Text(
+            isSticker
+                ? 'Стикер можно отправить только при наличии сети'
+                : 'GIF можно отправить только при наличии сети',
+          ),
         ),
       );
       return;
     }
 
     try {
-      final msg = await repo.sendThreadGif(
-        widget.threadId,
-        url: gif.url,
-        id: gif.id,
-        slug: gif.slug,
-        title: gif.title,
-        replyToMessageId: replyMessageId,
-      );
+      final msg = isSticker
+          ? await repo.sendThreadSticker(
+              widget.threadId,
+              url: item.url,
+              id: item.id,
+              slug: item.slug,
+              title: item.title,
+              replyToMessageId: replyMessageId,
+            )
+          : await repo.sendThreadGif(
+              widget.threadId,
+              url: item.url,
+              id: item.id,
+              slug: item.slug,
+              title: item.title,
+              replyToMessageId: replyMessageId,
+            );
       if (!mounted) return;
       _replaceOptimisticMessage(tempId, msg);
       _scrollToBottom();
@@ -2610,7 +2632,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (!mounted) return;
       _markOptimisticFailed(tempId);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось отправить GIF')),
+        SnackBar(
+          content: Text(
+            isSticker ? 'Не удалось отправить стикер' : 'Не удалось отправить GIF',
+          ),
+        ),
       );
     }
   }
@@ -4119,6 +4145,146 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
   }
 
+  double _composeBarsOverhead() {
+    var overhead = 0.0;
+    if (_isFriendDm && !_canSend) overhead += 52;
+    if (_replyTo != null) overhead += 56;
+    if (_editingMessageId != null) overhead += 40;
+    if (_pendingFileDraft != null) overhead += 52;
+    if (_aiComposing) overhead += 16;
+    return overhead;
+  }
+
+  void _scheduleComposeOverlayHeightMeasure() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final measured = _composeBlockKey.currentContext?.size?.height;
+      if (measured == null) return;
+      if ((measured - _composeOverlayHeight).abs() > 0.5) {
+        setState(() => _composeOverlayHeight = measured);
+      }
+    });
+  }
+
+  Widget _buildComposeBlock(BuildContext context, double? panelSlotMaxHeight) {
+    _scheduleComposeOverlayHeightMeasure();
+    final barsOverhead = _composeBarsOverhead();
+
+    return KeyedSubtree(
+      key: _composeBlockKey,
+      child: SafeArea(
+        bottom: MediaQuery.viewInsetsOf(context).bottom <= 0,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_isFriendDm && !_canSend)
+              Material(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+                  child: Text(
+                    'Переписка недоступна: нужен Individual Premium '
+                    'у одного из участников. История сохранена.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ),
+            if (_replyTo != null)
+              ChatReplyComposeBar(
+                senderName: _replyTo!['sender_name']?.toString() ?? '',
+                body: _replyTo!['body']?.toString() ?? '',
+                onCancel: () => setState(() => _replyTo = null),
+              ),
+            if (_editingMessageId != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Редактирование сообщения',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => setState(() => _editingMessageId = null),
+                      child: const Text('Отмена'),
+                    ),
+                  ],
+                ),
+              ),
+            if (_pendingFileDraft != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                child: ChatPendingFileChip(
+                  filename: _pendingFileDraft!.filename,
+                  onRemove: () => setState(() => _pendingFileDraft = null),
+                ),
+              ),
+            if (_canSend) ...[
+              if (_aiComposing)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  child: LinearProgressIndicator(),
+                ),
+              IgnorePointer(
+                ignoring: _aiComposing,
+                child: Opacity(
+                  opacity: _aiComposing ? 0.55 : 1,
+                  child: _isGroupLike
+                      ? ChatMentionComposeInput(
+                          controller: _controller,
+                          focusNode: _inputFocus,
+                          onAttach: _pickAttachment,
+                          onSend: (options, mentionedUserIds) => unawaited(
+                            _handleComposeSend(
+                              mentionedUserIds: mentionedUserIds,
+                              options: options,
+                            ),
+                          ),
+                          onVoiceComplete: _sendVoiceMessage,
+                          onVideoCircleComplete: _sendVideoCircleMessage,
+                          onGifSelected: (gif) => unawaited(_sendGifMessage(gif)),
+                          forceSendButton: _pendingFileDraft != null ||
+                              _editingMessageId != null,
+                          voiceTranscriptionEnabled: _voiceTranscriptionEnabled,
+                          showAiAssist: _viewerIndividualPremium,
+                          participants: _mentionParticipants,
+                          currentUserId: _currentUserId,
+                          panelSlotMaxHeight: panelSlotMaxHeight,
+                          panelBarsOverhead: barsOverhead,
+                        )
+                      : ChatComposeInput(
+                          controller: _controller,
+                          focusNode: _inputFocus,
+                          onAttach: _pickAttachment,
+                          onSend: (options) => unawaited(
+                            _handleComposeSend(options: options),
+                          ),
+                          onVoiceComplete: _sendVoiceMessage,
+                          onVideoCircleComplete: _sendVideoCircleMessage,
+                          onGifSelected: (gif) => unawaited(_sendGifMessage(gif)),
+                          forceSendButton: _pendingFileDraft != null ||
+                              _editingMessageId != null,
+                          voiceTranscriptionEnabled: _voiceTranscriptionEnabled,
+                          showAiAssist: _viewerIndividualPremium,
+                          panelSlotMaxHeight: panelSlotMaxHeight,
+                          panelBarsOverhead: barsOverhead,
+                        ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final wallpaperId = ref.watch(chatWallpaperIdProvider);
@@ -4308,33 +4474,38 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                           },
                         ),
                       Expanded(
-                        child: _loading
-                            ? const DeferredPlaceholder(
-                                child: ChatMessagesSkeleton(),
-                              )
-                            : _loadError != null && _messages.isEmpty
-                                ? Center(
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(24),
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text(
-                                            _loadError!,
-                                            textAlign: TextAlign.center,
+                        child: Stack(
+                          alignment: Alignment.bottomCenter,
+                          clipBehavior: Clip.none,
+                          children: [
+                            Positioned.fill(
+                              child: _loading
+                                  ? const DeferredPlaceholder(
+                                      child: ChatMessagesSkeleton(),
+                                    )
+                                  : _loadError != null && _messages.isEmpty
+                                      ? Center(
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(24),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Text(
+                                                  _loadError!,
+                                                  textAlign: TextAlign.center,
+                                                ),
+                                                const SizedBox(height: 12),
+                                                FilledButton(
+                                                  onPressed: _load,
+                                                  child: const Text('Повторить'),
+                                                ),
+                                              ],
+                                            ),
                                           ),
-                                          const SizedBox(height: 12),
-                                          FilledButton(
-                                            onPressed: _load,
-                                            child: const Text('Повторить'),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  )
-                                : Stack(
-                                    children: [
-                                      RefreshIndicator(
+                                        )
+                                      : Stack(
+                                          children: [
+                                            RefreshIndicator(
                             onRefresh: _onPullRefresh,
                             // reverse-list: жест обновления у верхнего края истории.
                             edgeOffset: 12,
@@ -4346,7 +4517,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               physics: const AlwaysScrollableScrollPhysics(),
                               keyboardDismissBehavior:
                                   ScrollViewKeyboardDismissBehavior.onDrag,
-                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              padding: EdgeInsets.fromLTRB(
+                                0,
+                                8,
+                                0,
+                                8 +
+                                    (_selectionMode
+                                        ? 0
+                                        : _composeOverlayHeight),
+                              ),
                               itemCount:
                                   _messages.length + (_loadingOlder ? 1 : 0),
                               itemBuilder: (context, i) {
@@ -4577,7 +4756,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               ),
                               Positioned(
                                 right: 12,
-                                bottom: 12,
+                                bottom: 12 +
+                                    (_selectionMode
+                                        ? 0
+                                        : _composeOverlayHeight),
                                 child: IgnorePointer(
                                   ignoring: !_showScrollToBottom,
                                   child: AnimatedOpacity(
@@ -4602,6 +4784,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               ),
                             ],
                           ),
+                            ),
+                            if (!_selectionMode)
+                              LayoutBuilder(
+                                builder: (context, slot) {
+                                  final slotMax = slot.maxHeight.isFinite
+                                      ? slot.maxHeight
+                                      : null;
+                                  return _buildComposeBlock(context, slotMax);
+                                },
+                              ),
+                          ],
+                        ),
                       ),
                       if (_selectionMode)
                 SafeArea(
@@ -4656,142 +4850,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                         ),
                       ],
                     ),
-                  ),
-                )
-              else
-                SafeArea(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_isFriendDm && !_canSend)
-                        Material(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerHighest,
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-                            child: Text(
-                              'Переписка недоступна: нужен Individual Premium '
-                              'у одного из участников. История сохранена.',
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ),
-                        ),
-                      if (_replyTo != null)
-                        ChatReplyComposeBar(
-                          senderName:
-                              _replyTo!['sender_name']?.toString() ?? '',
-                          body: _replyTo!['body']?.toString() ?? '',
-                          onCancel: () => setState(() => _replyTo = null),
-                        ),
-                      if (_editingMessageId != null)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  'Редактирование сообщения',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodySmall
-                                      ?.copyWith(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onSurfaceVariant,
-                                      ),
-                                ),
-                              ),
-                              TextButton(
-                                onPressed: () => setState(
-                                  () => _editingMessageId = null,
-                                ),
-                                child: const Text('Отмена'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      if (_pendingFileDraft != null)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-                          child: ChatPendingFileChip(
-                            filename: _pendingFileDraft!.filename,
-                            onRemove: () =>
-                                setState(() => _pendingFileDraft = null),
-                          ),
-                        ),
-                      if (_canSend)
-                        Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            if (_aiComposing)
-                              const Padding(
-                                padding: EdgeInsets.fromLTRB(8, 0, 8, 8),
-                                child: LinearProgressIndicator(),
-                              ),
-                            IgnorePointer(
-                              ignoring: _aiComposing,
-                              child: Opacity(
-                                opacity: _aiComposing ? 0.55 : 1,
-                                child: _isGroupLike
-                                    ? ChatMentionComposeInput(
-                                        controller: _controller,
-                                        focusNode: _inputFocus,
-                                        onAttach: _pickAttachment,
-                                        onSend:
-                                            (options, mentionedUserIds) =>
-                                                unawaited(
-                                          _handleComposeSend(
-                                            mentionedUserIds:
-                                                mentionedUserIds,
-                                            options: options,
-                                          ),
-                                        ),
-                                          onVoiceComplete: _sendVoiceMessage,
-                                          onVideoCircleComplete:
-                                              _sendVideoCircleMessage,
-                                          onGifSelected: (gif) => unawaited(
-                                            _sendGifMessage(gif),
-                                          ),
-                                        forceSendButton:
-                                            _pendingFileDraft != null ||
-                                                _editingMessageId != null,
-                                        voiceTranscriptionEnabled:
-                                            _voiceTranscriptionEnabled,
-                                        showAiAssist:
-                                            _viewerIndividualPremium,
-                                        participants: _mentionParticipants,
-                                        currentUserId: _currentUserId,
-                                      )
-                                    : ChatComposeInput(
-                                        controller: _controller,
-                                        focusNode: _inputFocus,
-                                        onAttach: _pickAttachment,
-                                        onSend: (options) => unawaited(
-                                          _handleComposeSend(
-                                            options: options,
-                                          ),
-                                        ),
-                                          onVoiceComplete: _sendVoiceMessage,
-                                          onVideoCircleComplete:
-                                              _sendVideoCircleMessage,
-                                          onGifSelected: (gif) => unawaited(
-                                            _sendGifMessage(gif),
-                                          ),
-                                        forceSendButton:
-                                            _pendingFileDraft != null ||
-                                                _editingMessageId != null,
-                                        voiceTranscriptionEnabled:
-                                            _voiceTranscriptionEnabled,
-                                        showAiAssist:
-                                            _viewerIndividualPremium,
-                                      ),
-                              ),
-                            ),
-                          ],
-                        ),
-                    ],
                   ),
                 ),
                     ],

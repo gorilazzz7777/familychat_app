@@ -9,7 +9,17 @@ import 'chat_network_image.dart';
 bool chatAttachmentLooksLikeImage(Map<String, dynamic> attachment) {
   final kind = attachment['kind']?.toString();
   if (kind == 'image') return true;
-  if (kind == 'video' || kind == 'file') return false;
+  if (kind == 'video') return false;
+
+  final ct = attachment['content_type']?.toString().toLowerCase() ?? '';
+  if (ct.startsWith('image/')) return true;
+
+  final name = attachment['filename']?.toString().toLowerCase() ??
+      attachment['file_url']?.toString().toLowerCase() ??
+      '';
+  if (RegExp(r'\.(gif|webp|png|jpe?g)(\?|$)').hasMatch(name)) return true;
+
+  if (kind == 'file') return false;
   return isSafeUiPreviewBytes(attachment['local_bytes']);
 }
 

@@ -22,6 +22,12 @@ abstract final class MediaIncomingSync {
   ) async {
     await MediaLocalIndex.ensureLoaded();
     for (final message in messages) {
+      final rawMeta = message['metadata'];
+      final metadata = rawMeta is Map
+          ? Map<String, dynamic>.from(rawMeta)
+          : null;
+      if (messageHasKlipyMedia(metadata)) continue;
+
       final raw = message['attachments'];
       if (raw is! List) continue;
       for (final item in raw) {

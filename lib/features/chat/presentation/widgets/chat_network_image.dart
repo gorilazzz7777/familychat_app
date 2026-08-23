@@ -54,6 +54,9 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   bool _wantsNetworkLoad = false;
   bool _sizeReported = false;
   bool _sizeListenAttached = false;
+  int _networkRetryAttempt = 0;
+  bool _networkRetryScheduled = false;
+  static const _maxNetworkRetries = 3;
 
   int? get _attachmentId => chatAsInt(widget.attachment['id']);
 
@@ -139,12 +142,19 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     final newId = _attachmentId;
     final urlChanged =
         oldWidget.attachment['file_url'] != widget.attachment['file_url'];
-    if (oldId != newId || oldWidget.threadId != widget.threadId || urlChanged) {
+    final urlFieldChanged =
+        oldWidget.attachment['url'] != widget.attachment['url'];
+    if (oldId != newId ||
+        oldWidget.threadId != widget.threadId ||
+        urlChanged ||
+        urlFieldChanged) {
       _bytesFailed = false;
       _loadStarted = false;
       _wantsNetworkLoad = false;
       _sizeReported = false;
       _sizeListenAttached = false;
+      _networkRetryAttempt = 0;
+      _networkRetryScheduled = false;
       if (_useBytesPath) {
         final cached = _cachedBytes();
         if (cached != null) {
@@ -276,19 +286,49 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   String _imageUrl(FamilyChatRepository repo) {
-    return widget.attachment['file_url']?.toString() ?? '';
+    final fileUrl = widget.attachment['file_url']?.toString() ?? '';
+    if (fileUrl.isNotEmpty) return fileUrl;
+    // Optimistic GIF/стикер до ответа сервера кладёт CDN в `url`.
+    return widget.attachment['url']?.toString() ?? '';
+  }
+
+  /// JWT только для вложений с id (наш API). Публичные CDN (Klipy) —
+  /// без Authorization, иначе часто 403.
+  Map<String, String>? get _networkHeaders =>
+      _attachmentId != null ? _headers : null;
+
+  void _retryNetworkLoad() {
+    if (!mounted) return;
+    setState(() {
+      _bytesFailed = false;
+      _networkRetryAttempt = 0;
+      _networkRetryScheduled = false;
+      _loadStarted = false;
+      _wantsNetworkLoad = false;
+    });
+    if (_useBytesPath) {
+      _ensureBytesLoadStarted();
+    }
+  }
+
+  void _scheduleNetworkRetry() {
+    if (_networkRetryScheduled || _networkRetryAttempt >= _maxNetworkRetries) {
+      return;
+    }
+    _networkRetryScheduled = true;
+    final next = _networkRetryAttempt + 1;
+    Future<void>.delayed(Duration(milliseconds: 350 * next), () {
+      if (!mounted) return;
+      setState(() {
+        _networkRetryAttempt = next;
+        _networkRetryScheduled = false;
+      });
+    });
   }
 
   Widget _errorBox({bool retryable = true}) {
     return GestureDetector(
-      onTap: retryable && _useBytesPath
-          ? () {
-              setState(() => _bytesFailed = false);
-              _loadStarted = false;
-              _wantsNetworkLoad = false;
-              _ensureBytesLoadStarted();
-            }
-          : null,
+      onTap: retryable ? _retryNetworkLoad : null,
       child: SizedBox(
         height: widget.height,
         width: widget.width,
@@ -304,7 +344,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
                 Icons.image_outlined,
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
-              if (retryable && _useBytesPath) ...[
+              if (retryable) ...[
                 const SizedBox(height: 4),
                 Text(
                   'Повторить',
@@ -397,15 +437,22 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     if (url.isEmpty) return _errorBox(retryable: false);
 
     return CachedNetworkImage(
+      key: ValueKey('net:$url:$_networkRetryAttempt'),
       imageUrl: url,
-      httpHeaders: _headers,
+      httpHeaders: _networkHeaders,
       cacheManager: FamilyChatMediaCache.preview,
       useOldImageOnUrlChange: true,
       height: widget.height,
       width: widget.width,
       fit: widget.fit,
       placeholder: (_, __) => _framePlaceholder(),
-      errorWidget: (_, __, ___) => _errorBox(retryable: false),
+      errorWidget: (_, __, ___) {
+        if (_networkRetryAttempt < _maxNetworkRetries) {
+          _scheduleNetworkRetry();
+          return _framePlaceholder();
+        }
+        return _errorBox();
+      },
       imageBuilder: (context, imageProvider) {
         unawaited(FamilyChatMediaCache.trimIfNeeded());
         return _sizedImage(provider: imageProvider);

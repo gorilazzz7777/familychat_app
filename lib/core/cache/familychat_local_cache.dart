@@ -629,37 +629,51 @@ abstract final class FamilyChatLocalCache {
     return null;
   }
 
-  /// Локальный кэш каталога GIF (короткий TTL — сервер уже кэширует Klipy).
-  static const gifCatalogTtl = Duration(minutes: 12);
+  /// Локальный кэш каталога Klipy (GIF/стикеры). Сервер тоже кэширует.
+  static const klipyCatalogTtl = Duration(minutes: 12);
 
-  static String gifCatalogCacheKey({
+  static String klipyCatalogCacheKey({
+    required String kind,
     required String query,
     required int page,
     int perPage = 24,
   }) {
     final q = query.trim().toLowerCase();
-    return 'gifs/catalog_q${q.hashCode}_p${page}_n$perPage';
+    final safeKind = kind == 'sticker' ? 'sticker' : 'gif';
+    return 'klipy/$safeKind/catalog_q${q.hashCode}_p${page}_n$perPage';
   }
 
-  static Future<void> saveGifCatalog({
+  static Future<void> saveKlipyCatalog({
+    required String kind,
     required String query,
     required int page,
     required Map<String, dynamic> data,
     int perPage = 24,
   }) async {
     await writeJson(
-      gifCatalogCacheKey(query: query, page: page, perPage: perPage),
+      klipyCatalogCacheKey(
+        kind: kind,
+        query: query,
+        page: page,
+        perPage: perPage,
+      ),
       {'data': data},
     );
   }
 
-  static Future<Map<String, dynamic>?> readGifCatalog({
+  static Future<Map<String, dynamic>?> readKlipyCatalog({
+    required String kind,
     required String query,
     required int page,
     int perPage = 24,
-    Duration ttl = gifCatalogTtl,
+    Duration ttl = klipyCatalogTtl,
   }) async {
-    final key = gifCatalogCacheKey(query: query, page: page, perPage: perPage);
+    final key = klipyCatalogCacheKey(
+      kind: kind,
+      query: query,
+      page: page,
+      perPage: perPage,
+    );
     Map<String, dynamic>? raw;
     if (kIsWeb) {
       final prefs = await SharedPreferences.getInstance();

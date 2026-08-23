@@ -142,6 +142,23 @@ class ChatMessageBubble extends StatelessWidget {
     return true;
   }
 
+  /// Стикер без подписи — без цветного фона пузыря (как в Telegram).
+  bool _isStandaloneSticker() {
+    if (messageMetadata['sticker'] == null) return false;
+    if (_showBody(body, forward)) return false;
+    if (location != null) return false;
+    if (_linkPreviewUrl() != null) return false;
+    var hasImage = false;
+    for (final a in attachments) {
+      if (isVoiceAttachment(a, messageMetadata: messageMetadata)) return false;
+      if (_attachmentIsVideoNote(a)) return false;
+      if (a['kind'] == 'video' || isVideoAttachment(a)) return false;
+      if (a['kind'] == 'file' && !chatAttachmentLooksLikeImage(a)) return false;
+      if (chatAttachmentLooksLikeImage(a)) hasImage = true;
+    }
+    return hasImage;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -166,6 +183,7 @@ class ChatMessageBubble extends StatelessWidget {
     final hasCaption = _showBody(body, forward);
     final hasVisualMedia = _hasVisualMedia();
     final standaloneVideoNote = _isStandaloneVideoNote();
+    final standaloneSticker = _isStandaloneSticker();
     final framePad = hasVisualMedia ? 2.0 : 10.0;
     // Место под хвостик всегда — иначе пузыри без хвостика шире.
     final contentMaxWidth = maxBubbleWidth - framePad * 2 - tailWidth;
@@ -216,6 +234,81 @@ class ChatMessageBubble extends StatelessWidget {
                     ChatMessageReadStatusIcon(
                       status: readStatus!,
                       color: noteMetaColor,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    } else if (standaloneSticker) {
+      final stickerMetaColor = isMine
+          ? theme.colorScheme.primary.withValues(alpha: 0.9)
+          : theme.colorScheme.onSurfaceVariant;
+      final stickerMaxW = (screenWidth * 0.55).clamp(120.0, 220.0);
+      bubble = ChatMessageTapTarget(
+        onTap: onTap,
+        onLongPress: selectionMode ? null : onLongPress,
+        child: Column(
+          crossAxisAlignment:
+              isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (forward != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: _buildForwardQuote(
+                  forward!,
+                  quoteAccent,
+                  theme.colorScheme.onSurface,
+                ),
+              ),
+            if (replyTo != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: GestureDetector(
+                  onTap: onReplyTap,
+                  behavior: HitTestBehavior.opaque,
+                  child: _buildReplyQuote(
+                    replyTo!,
+                    quoteAccent,
+                    theme.colorScheme.onSurface,
+                  ),
+                ),
+              ),
+            ..._buildAttachmentBlocks(
+              textColor: theme.colorScheme.onSurface,
+              metaColor: stickerMetaColor,
+              maxWidth: stickerMaxW,
+              hasLeadingContent: false,
+              mediaRadius: BorderRadius.circular(8),
+            ),
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (scheduledAt != null) ...[
+                    Icon(Icons.schedule, size: 13, color: stickerMetaColor),
+                    const SizedBox(width: 4),
+                    Text(
+                      timeFmt.format(scheduledAt!.toLocal()),
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: stickerMetaColor),
+                    ),
+                  ] else if (createdAt != null)
+                    Text(
+                      timeFmt.format(createdAt!.toLocal()),
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: stickerMetaColor),
+                    ),
+                  if (isMine && readStatus != null) ...[
+                    const SizedBox(width: 4),
+                    ChatMessageReadStatusIcon(
+                      status: readStatus!,
+                      color: stickerMetaColor,
                     ),
                   ],
                 ],
@@ -479,6 +572,10 @@ class ChatMessageBubble extends StatelessWidget {
 
   bool _showBody(String body, Map<String, dynamic>? forward) {
     if (body.isEmpty) return false;
+    if (attachments.isNotEmpty &&
+        (messageMetadata['gif'] != null || messageMetadata['sticker'] != null)) {
+      return false;
+    }
     if (forward == null) return true;
     final original = forward['original_body']?.toString() ?? '';
     return body.trim() != original.trim();

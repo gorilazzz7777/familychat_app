@@ -1876,10 +1876,36 @@ class FamilyChatRepository {
     String query = '',
     int page = 1,
     int perPage = 24,
+  }) =>
+      _fetchKlipyCatalog(
+        endpoint: 'familychat/gifs/',
+        query: query,
+        page: page,
+        perPage: perPage,
+      );
+
+  /// Каталог стикеров (Klipy через бэкенд). [q] пустой → trending.
+  Future<Map<String, dynamic>> fetchStickerCatalog({
+    String query = '',
+    int page = 1,
+    int perPage = 24,
+  }) =>
+      _fetchKlipyCatalog(
+        endpoint: 'familychat/stickers/',
+        query: query,
+        page: page,
+        perPage: perPage,
+      );
+
+  Future<Map<String, dynamic>> _fetchKlipyCatalog({
+    required String endpoint,
+    required String query,
+    required int page,
+    required int perPage,
   }) async {
     final q = query.trim();
     final res = await _dio.get<Map<String, dynamic>>(
-      'familychat/gifs/',
+      endpoint,
       queryParameters: {
         if (q.isNotEmpty) 'q': q,
         'page': page,
@@ -1897,9 +1923,47 @@ class FamilyChatRepository {
     String slug = '',
     String title = '',
     int? replyToMessageId,
+  }) =>
+      _sendKlipyMedia(
+        threadId,
+        endpoint: 'familychat/chat/threads/$threadId/gifs/',
+        url: url,
+        id: id,
+        slug: slug,
+        title: title,
+        replyToMessageId: replyToMessageId,
+      );
+
+  /// Скачать выбранный стикер на сервере → S3 (dedup) → сообщение в чат.
+  Future<Map<String, dynamic>> sendThreadSticker(
+    int threadId, {
+    required String url,
+    String id = '',
+    String slug = '',
+    String title = '',
+    int? replyToMessageId,
+  }) =>
+      _sendKlipyMedia(
+        threadId,
+        endpoint: 'familychat/chat/threads/$threadId/stickers/',
+        url: url,
+        id: id,
+        slug: slug,
+        title: title,
+        replyToMessageId: replyToMessageId,
+      );
+
+  Future<Map<String, dynamic>> _sendKlipyMedia(
+    int threadId, {
+    required String endpoint,
+    required String url,
+    String id = '',
+    String slug = '',
+    String title = '',
+    int? replyToMessageId,
   }) async {
     final res = await _dio.post<Map<String, dynamic>>(
-      'familychat/chat/threads/$threadId/gifs/',
+      endpoint,
       data: {
         'url': url,
         if (id.isNotEmpty) 'id': id,

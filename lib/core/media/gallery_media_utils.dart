@@ -134,6 +134,12 @@ bool isGalleryMediaAttachment(Map<String, dynamic> attachment) {
   return isImageAttachment(attachment) || isVideoAttachment(attachment);
 }
 
+/// GIF/стикеры Klipy — только в чате, не в галерее и не в альбом телефона.
+bool messageHasKlipyMedia(Map<String, dynamic>? metadata) {
+  if (metadata == null || metadata.isEmpty) return false;
+  return metadata['gif'] != null || metadata['sticker'] != null;
+}
+
 String contentTypeForFilename(String name) {
   final lower = name.toLowerCase();
   if (lower.endsWith('.png')) return 'image/png';
