@@ -460,6 +460,141 @@ class ChatDatabase extends _$ChatDatabase {
     return rows.map(_decodeMessage).toList();
   }
 
+  /// Last [limit] messages (oldest → newest).
+  Future<List<Map<String, dynamic>>> readMessagesTail(
+    int threadId, {
+    int limit = 80,
+  }) async {
+    final rows = await (select(chatMessageRows)
+          ..where((t) => t.threadId.equals(threadId))
+          ..orderBy([
+            (t) => OrderingTerm.desc(t.createdAtMs),
+            (t) => OrderingTerm.desc(t.messageId),
+          ])
+          ..limit(limit))
+        .get();
+    return rows.reversed.map(_decodeMessage).toList();
+  }
+
+  /// Page of messages older than [beforeId] (oldest → newest).
+  Future<List<Map<String, dynamic>>> readMessagesBefore(
+    int threadId, {
+    required int beforeId,
+    int limit = 50,
+  }) async {
+    final rows = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) &
+                t.messageId.isSmallerThanValue(beforeId),
+          )
+          ..orderBy([
+            (t) => OrderingTerm.desc(t.createdAtMs),
+            (t) => OrderingTerm.desc(t.messageId),
+          ])
+          ..limit(limit))
+        .get();
+    return rows.reversed.map(_decodeMessage).toList();
+  }
+
+  /// Window around [messageId] for jump-to-message (oldest → newest).
+  Future<List<Map<String, dynamic>>> readMessagesAroundId(
+    int threadId,
+    int messageId, {
+    int limit = 80,
+  }) async {
+    final half = limit ~/ 2;
+    final olderRows = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) &
+                t.messageId.isSmallerThanValue(messageId),
+          )
+          ..orderBy([(t) => OrderingTerm.desc(t.messageId)])
+          ..limit(half))
+        .get();
+    final targetAndNewerRows = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) &
+                t.messageId.isBiggerOrEqualValue(messageId),
+          )
+          ..orderBy([(t) => OrderingTerm.asc(t.messageId)])
+          ..limit(half + 1))
+        .get();
+    final all = [...olderRows.reversed, ...targetAndNewerRows];
+    return all.map(_decodeMessage).toList();
+  }
+
+  Future<bool> hasMessage(int threadId, int messageId) async {
+    final row = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) & t.messageId.equals(messageId),
+          )
+          ..limit(1))
+        .getSingleOrNull();
+    return row != null;
+  }
+
+  Future<int> countMessages(int threadId) async {
+    final countExpr = chatMessageRows.messageId.count();
+    final row = await (selectOnly(chatMessageRows)
+          ..addColumns([countExpr])
+          ..where(chatMessageRows.threadId.equals(threadId)))
+        .getSingle();
+    return row.read(countExpr) ?? 0;
+  }
+
+  Future<List<Map<String, dynamic>>> searchMessages(
+    int threadId,
+    String query, {
+    int limit = 50,
+  }) async {
+    final q = query.trim();
+    if (q.isEmpty) return const [];
+    // Strip LIKE wildcards from user input; exact match is post-filtered.
+    final likeSafe = q.replaceAll('%', '').replaceAll('_', '');
+    if (likeSafe.isEmpty) return const [];
+    final pattern = '%$likeSafe%';
+    final rows = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) & t.payloadJson.like(pattern),
+          )
+          ..orderBy([
+            (t) => OrderingTerm.desc(t.createdAtMs),
+            (t) => OrderingTerm.desc(t.messageId),
+          ])
+          ..limit(limit * 3))
+        .get();
+    final lowerQ = q.toLowerCase();
+    final results = <Map<String, dynamic>>[];
+    for (final row in rows) {
+      if (results.length >= limit) break;
+      final msg = _decodeMessage(row);
+      if (_messageMatchesSearch(msg, lowerQ)) {
+        results.add(msg);
+      }
+    }
+    return results;
+  }
+
+  static bool _messageMatchesSearch(
+    Map<String, dynamic> message,
+    String lowerQuery,
+  ) {
+    final body = message['body']?.toString().toLowerCase() ?? '';
+    if (body.contains(lowerQuery)) return true;
+    final atts = (message['attachments'] as List?) ?? [];
+    for (final a in atts) {
+      if (a is! Map) continue;
+      final name = a['filename']?.toString().toLowerCase() ?? '';
+      if (name.contains(lowerQuery)) return true;
+    }
+    return false;
+  }
+
   Stream<List<Map<String, dynamic>>> watchMessages(int threadId) {
     return (select(chatMessageRows)
           ..where((t) => t.threadId.equals(threadId))

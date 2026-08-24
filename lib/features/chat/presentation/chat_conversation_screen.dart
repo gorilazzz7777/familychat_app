@@ -220,6 +220,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   AudioPlayer? _speakPlayer;
 
   static const _maxSpeakMessages = 30;
+  static const _uiMessageWindow = 80;
+  static const _uiMessageWindowMax = 300;
 
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
 
@@ -461,7 +463,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         unawaited(MediaIncomingSync.ensureMessages(hydrated));
         if (!mounted) return;
         setState(() {
-          _messages = sortChatMessages(hydrated);
+          _messages = _clipUiMessages(sortChatMessages(hydrated));
           _loading = false;
         });
         showedCache = true;
@@ -504,8 +506,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _bindLocalMessages() async {
-    // Instant paint from SQLite, then keep watching.
-    final initial = await ChatLocalStore.instance.readMessages(widget.threadId);
+    // Instant paint from SQLite tail, then keep watching.
+    final initial = await ChatLocalStore.instance.readMessagesTail(
+      widget.threadId,
+      limit: _uiMessageWindow,
+    );
     if (!mounted) return;
     if (initial.isNotEmpty) {
       final applied = await _buildMessagesFromSqliteRows(initial);
@@ -535,17 +540,62 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     });
   }
 
+  List<Map<String, dynamic>> _clipSqliteRowsForUi(
+    List<Map<String, dynamic>> rows,
+  ) {
+    if (rows.isEmpty) return rows;
+
+    if (_followLiveTail) {
+      if (rows.length <= _uiMessageWindow) return rows;
+      return rows.sublist(rows.length - _uiMessageWindow);
+    }
+
+    // Viewing history: keep from current UI oldest through newer messages.
+    // Cap by dropping the live tail (newest), not the history being viewed.
+    if (rows.length <= _uiMessageWindowMax) return rows;
+
+    if (_messages.isNotEmpty) {
+      final oldestId = chatAsInt(_messages.first['id']);
+      if (oldestId != null) {
+        var startIdx =
+            rows.indexWhere((m) => chatAsInt(m['id']) == oldestId);
+        if (startIdx < 0) startIdx = 0;
+        final endIdx =
+            (startIdx + _uiMessageWindowMax).clamp(0, rows.length);
+        return rows.sublist(startIdx, endIdx);
+      }
+    }
+
+    return rows.sublist(0, _uiMessageWindowMax);
+  }
+
+  List<Map<String, dynamic>> _clipUiMessages(
+    List<Map<String, dynamic>> messages,
+  ) {
+    if (messages.isEmpty) return messages;
+
+    if (_followLiveTail) {
+      if (messages.length <= _uiMessageWindow) return messages;
+      return messages.sublist(messages.length - _uiMessageWindow);
+    }
+
+    if (messages.length <= _uiMessageWindowMax) return messages;
+    // Keep oldest end while browsing history.
+    return messages.sublist(0, _uiMessageWindowMax);
+  }
+
   Future<void> _onLocalMessagesWatch(List<Map<String, dynamic>> rows) async {
     if (!mounted) return;
     final gen = ++_messagesWatchGen;
+    final clippedRows = _clipSqliteRowsForUi(rows);
 
-    final previewNext = _mergeSqliteWithMemoryPending(rows);
+    final previewNext = _mergeSqliteWithMemoryPending(clippedRows);
     if (chatMessageListsDisplayEqual(_messages, previewNext) && !_loading) {
       return;
     }
 
     final next = await _buildMessagesFromSqliteRows(
-      rows,
+      clippedRows,
       hydrateAttachments: false,
     );
     if (!mounted || gen != _messagesWatchGen) return;
@@ -559,7 +609,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
 
     if (_localFirst) {
-      _scheduleDropReconciledPending(rows, next);
+      _scheduleDropReconciledPending(clippedRows, next);
     }
 
     if (chatMessageListsDisplayEqual(_messages, next) && !_loading) {
@@ -819,20 +869,38 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_hasMessage(messageId)) return;
 
     if (_localFirst) {
-      final rows = await ChatLocalStore.instance.readMessages(widget.threadId);
-      if (rows.any((m) => chatAsInt(m['id']) == messageId)) {
-        await _onLocalMessagesWatch(rows);
-        if (_hasMessage(messageId)) return;
+      if (await ChatLocalStore.instance.hasMessage(widget.threadId, messageId)) {
+        final around = await ChatLocalStore.instance.readMessagesAroundId(
+          widget.threadId,
+          messageId,
+          limit: _uiMessageWindow,
+        );
+        if (around.isNotEmpty) {
+          await _applyHistoryWindow(
+            around,
+            replaceIfDisjoint: true,
+          );
+          if (_hasMessage(messageId)) return;
+        }
       }
 
       await ChatSyncService.instance.syncThreadOlder(
         widget.threadId,
         beforeId: messageId + 1,
       );
-      var afterSync = await ChatLocalStore.instance.readMessages(widget.threadId);
-      if (afterSync.any((m) => chatAsInt(m['id']) == messageId)) {
-        await _onLocalMessagesWatch(afterSync);
-        if (_hasMessage(messageId)) return;
+      if (await ChatLocalStore.instance.hasMessage(widget.threadId, messageId)) {
+        final around = await ChatLocalStore.instance.readMessagesAroundId(
+          widget.threadId,
+          messageId,
+          limit: _uiMessageWindow,
+        );
+        if (around.isNotEmpty) {
+          await _applyHistoryWindow(
+            around,
+            replaceIfDisjoint: true,
+          );
+          if (_hasMessage(messageId)) return;
+        }
       }
 
       var guard = 0;
@@ -844,10 +912,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           widget.threadId,
           beforeId: cursor,
         );
-        afterSync = await ChatLocalStore.instance.readMessages(widget.threadId);
-        if (afterSync.any((m) => chatAsInt(m['id']) == messageId)) {
-          await _onLocalMessagesWatch(afterSync);
-          if (_hasMessage(messageId)) return;
+        if (await ChatLocalStore.instance.hasMessage(widget.threadId, messageId)) {
+          final around = await ChatLocalStore.instance.readMessagesAroundId(
+            widget.threadId,
+            messageId,
+            limit: _uiMessageWindow,
+          );
+          if (around.isNotEmpty) {
+            await _applyHistoryWindow(
+              around,
+              replaceIfDisjoint: true,
+            );
+            if (_hasMessage(messageId)) return;
+          }
         }
         final nextCursor =
             await ChatLocalStore.instance.oldestServerMessageId(widget.threadId);
@@ -1000,7 +1077,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   Future<void> _scrollToLiveTail() async {
     _followLiveTail = true;
     if (_localFirst) {
-      final rows = await ChatLocalStore.instance.readMessages(widget.threadId);
+      final rows = await ChatLocalStore.instance.readMessagesTail(
+        widget.threadId,
+        limit: _uiMessageWindow,
+      );
       if (!mounted) return;
       final next = await _buildMessagesFromSqliteRows(rows);
       if (!mounted) return;
@@ -1026,8 +1106,24 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (!_localFirst) return;
     final complete =
         await ChatSyncService.instance.isThreadHistoryComplete(widget.threadId);
+    var localHasOlder = false;
+    final oldestUi = _messages.isEmpty
+        ? null
+        : chatAsInt(_messages.first['id']);
+    if (oldestUi != null && oldestUi > 0) {
+      final olderPage = await ChatLocalStore.instance.readMessagesBefore(
+        widget.threadId,
+        beforeId: oldestUi,
+        limit: 1,
+      );
+      localHasOlder = olderPage.isNotEmpty;
+    } else {
+      final localCount =
+          await ChatLocalStore.instance.countMessages(widget.threadId);
+      localHasOlder = localCount > _messages.length;
+    }
     if (!mounted) return;
-    final next = !complete;
+    final next = !complete || localHasOlder;
     if (next != _hasMoreOlder) {
       setState(() => _hasMoreOlder = next);
     }
@@ -1046,6 +1142,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   void _onScroll() {
     _updateScrollToBottomVisibility();
     _scheduleStickyDayUpdate();
+    if (_scrollController.hasClients) {
+      final atTail =
+          _scrollController.position.pixels <= _scrollToBottomAwayPx;
+      if (!atTail && _followLiveTail) {
+        _followLiveTail = false;
+      }
+    }
     if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder) {
       return;
     }
@@ -1723,7 +1826,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           _hasMoreOlder != nextHasMore) {
         setState(() {
           if (messagesChanged) {
-            _messages = nextMessages;
+            _messages = _clipUiMessages(nextMessages);
           }
           _hasMoreOlder = nextHasMore;
           _voiceTranscriptionEnabled = page.voiceTranscriptionEnabled;
@@ -1767,7 +1870,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _scrollToBottom(jump: true, settle: true);
       }
 
-      if (nextMessages.length < FamilyChatLocalCache.maxCachedMessagesPerThread) {
+      if (nextMessages.length < _uiMessageWindow) {
         unawaited(_backfillOlderMessages(generation));
       }
     } catch (e) {
@@ -1789,9 +1892,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
-  /// Догружает до [maxCachedMessagesPerThread] более старые сообщения в фоне.
+  /// Догружает до [_uiMessageWindow] более старые сообщения в фоне.
   Future<void> _backfillOlderMessages(int generation) async {
-    final target = FamilyChatLocalCache.maxCachedMessagesPerThread;
+    final target = _uiMessageWindow;
     final pageSize = FamilyChatLocalCache.backfillMessagesPageSize;
     if (!mounted || generation != _loadGeneration) return;
     if (_messages.length >= target) return;
@@ -1807,14 +1910,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         beforeId: oldestId,
       );
       if (!mounted || generation != _loadGeneration) return;
-      final rows = await ChatLocalStore.instance.readMessages(widget.threadId);
+      final rows = await ChatLocalStore.instance.readMessagesTail(
+        widget.threadId,
+        limit: target,
+      );
       final applied = await _buildMessagesFromSqliteRows(rows);
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _messages = sortChatMessages(applied);
-        if (_messages.length > target) {
-          _messages = _messages.sublist(_messages.length - target);
-        }
       });
       await _refreshHasMoreOlder();
       unawaited(_persistMessageCache());
@@ -1969,16 +2072,71 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_loadingOlder || !_hasMoreOlder || _messages.isEmpty) return;
     final firstId = chatAsInt(_messages.first['id']);
     if (firstId == null || firstId <= 0) return;
+    _followLiveTail = false;
 
     if (_localFirst) {
       setState(() => _loadingOlder = true);
       try {
         final beforeCount = _messages.length;
+        final localOlder = await ChatLocalStore.instance.readMessagesBefore(
+          widget.threadId,
+          beforeId: firstId,
+          limit: 50,
+        );
+        if (!mounted) return;
+        if (localOlder.isNotEmpty) {
+          final existingIds =
+              _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+          final older = localOlder.where((m) {
+            final id = chatAsInt(m['id']);
+            return id != null && !existingIds.contains(id);
+          }).toList();
+          if (older.isNotEmpty) {
+            final applied = await _buildMessagesFromSqliteRows(
+              sortChatMessages([...older, ..._messages]),
+              hydrateAttachments: false,
+            );
+            if (!mounted) return;
+            setState(() {
+              _messages = _clipUiMessages(applied);
+              _loadingOlder = false;
+            });
+            unawaited(_refreshHasMoreOlder());
+            return;
+          }
+        }
+
         await ChatSyncService.instance.syncThreadOlder(
           widget.threadId,
           beforeId: firstId,
         );
-        // watchMessages will merge; if nothing new arrived, stop paging.
+        if (!mounted) return;
+        final afterSync = await ChatLocalStore.instance.readMessagesBefore(
+          widget.threadId,
+          beforeId: firstId,
+          limit: 50,
+        );
+        if (afterSync.isNotEmpty) {
+          final existingIds =
+              _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+          final older = afterSync.where((m) {
+            final id = chatAsInt(m['id']);
+            return id != null && !existingIds.contains(id);
+          }).toList();
+          if (older.isNotEmpty) {
+            final applied = await _buildMessagesFromSqliteRows(
+              sortChatMessages([...older, ..._messages]),
+              hydrateAttachments: false,
+            );
+            if (!mounted) return;
+            setState(() {
+              _messages = _clipUiMessages(applied);
+              _loadingOlder = false;
+            });
+            unawaited(_refreshHasMoreOlder());
+            return;
+          }
+        }
         if (mounted) {
           setState(() {
             if (_messages.length <= beforeCount) {
@@ -1986,6 +2144,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             }
             _loadingOlder = false;
           });
+          unawaited(_refreshHasMoreOlder());
         }
       } catch (_) {
         if (mounted) setState(() => _loadingOlder = false);
@@ -4073,7 +4232,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         minChildSize: 0.35,
         maxChildSize: 0.92,
         builder: (_, __) => ChatMessageSearchSheet(
-          messages: _messages,
+          threadId: widget.threadId,
           onSelect: (id) {
             Navigator.pop(ctx);
             _scrollToMessage(id);

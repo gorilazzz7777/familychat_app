@@ -98,6 +98,61 @@ class ChatLocalStore {
     return db.readMessages(threadId);
   }
 
+  Future<List<Map<String, dynamic>>> readMessagesTail(
+    int threadId, {
+    int limit = 80,
+  }) async {
+    final db = await ensureOpen();
+    if (db == null) return const [];
+    return db.readMessagesTail(threadId, limit: limit);
+  }
+
+  Future<List<Map<String, dynamic>>> readMessagesBefore(
+    int threadId, {
+    required int beforeId,
+    int limit = 50,
+  }) async {
+    final db = await ensureOpen();
+    if (db == null) return const [];
+    return db.readMessagesBefore(
+      threadId,
+      beforeId: beforeId,
+      limit: limit,
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> readMessagesAroundId(
+    int threadId,
+    int messageId, {
+    int limit = 80,
+  }) async {
+    final db = await ensureOpen();
+    if (db == null) return const [];
+    return db.readMessagesAroundId(threadId, messageId, limit: limit);
+  }
+
+  Future<bool> hasMessage(int threadId, int messageId) async {
+    final db = await ensureOpen();
+    if (db == null) return false;
+    return db.hasMessage(threadId, messageId);
+  }
+
+  Future<int> countMessages(int threadId) async {
+    final db = await ensureOpen();
+    if (db == null) return 0;
+    return db.countMessages(threadId);
+  }
+
+  Future<List<Map<String, dynamic>>> searchMessages(
+    int threadId,
+    String query, {
+    int limit = 50,
+  }) async {
+    final db = await ensureOpen();
+    if (db == null) return const [];
+    return db.searchMessages(threadId, query, limit: limit);
+  }
+
   Stream<List<Map<String, dynamic>>> watchMessages(int threadId) async* {
     final db = await ensureOpen();
     if (db == null) {
