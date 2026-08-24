@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
+
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../familychat/data/familychat_repository.dart';
@@ -337,22 +339,35 @@ class ChatOfflineOutbox {
       try {
         final kind = item['kind']?.toString();
         ChatOutboxDelivery? result;
+        var removeFromQueue = true;
         if (kind == 'message') {
           result = await _deliverMessage(repo, item);
+          if (result == null) {
+            // Malformed — keep for visibility, skip rest of this pass.
+            removeFromQueue = false;
+            if (itemId.isNotEmpty) failedIds.add(itemId);
+            debugPrint('[ChatOutbox] skip message without delivery id=$itemId');
+          }
         } else if (kind == 'reaction') {
           result = await _deliverReaction(repo, item);
+          if (result == null) removeFromQueue = false;
         } else if (kind == 'mark_read') {
           await _deliverMarkRead(repo, item);
         } else if (kind == 'delete_messages') {
           result = await _deliverDeleteMessages(repo, item);
+          if (result == null) removeFromQueue = false;
         } else if (kind == 'hide_messages') {
           result = await _deliverHideMessages(repo, item);
+          if (result == null) removeFromQueue = false;
         } else if (kind == 'pin') {
           result = await _deliverPin(repo, item, pin: true);
+          if (result == null) removeFromQueue = false;
         } else if (kind == 'unpin') {
           result = await _deliverPin(repo, item, pin: false);
+          if (result == null) removeFromQueue = false;
         } else if (kind == 'edit_message') {
           result = await _deliverEditMessage(repo, item);
+          if (result == null) removeFromQueue = false;
         } else if (kind == 'mute') {
           await _deliverMute(repo, item);
         } else if (kind == 'quiet_hours') {
@@ -365,9 +380,12 @@ class ChatOfflineOutbox {
           continue;
         }
         if (result != null) delivered.add(result);
-        await _removeItemById(itemId);
-      } catch (error) {
+        if (removeFromQueue) {
+          await _removeItemById(itemId);
+        }
+      } catch (error, st) {
         if (itemId.isNotEmpty) failedIds.add(itemId);
+        debugPrint('[ChatOutbox] fail id=$itemId error=$error\n$st');
         if (ChatNetworkStatus.looksOffline(error)) break;
       }
     }
@@ -434,11 +452,20 @@ class ChatOfflineOutbox {
       videoNoteDurationMs: chatAsInt(item['video_note_duration_ms']),
     );
 
+    final serverId = chatAsInt(msg['id']);
+    if (serverId == null || serverId <= 0) {
+      throw StateError(
+        'sendThreadMessage returned no id (temp=$tempMessageId)',
+      );
+    }
+
     if (ChatLocalStore.isSupported) {
-      await ChatLocalStore.instance.deleteMessages(threadId, [tempMessageId]);
+      // Upsert server row first, then drop temp — otherwise a watch between
+      // delete and upsert briefly removes the bubble from the UI.
       final serverMsg = Map<String, dynamic>.from(msg);
       serverMsg['thread_id'] ??= threadId;
       await ChatLocalStore.instance.upsertMessage(serverMsg);
+      await ChatLocalStore.instance.deleteMessages(threadId, [tempMessageId]);
     } else {
       final messages =
           await FamilyChatLocalCache.readThreadMessages(threadId) ?? [];
@@ -448,6 +475,10 @@ class ChatOfflineOutbox {
       withoutTemp.add(msg);
       await FamilyChatLocalCache.saveThreadMessages(threadId, withoutTemp);
     }
+
+    debugPrint(
+      '[ChatOutbox] sent thread=$threadId temp=$tempMessageId -> $serverId',
+    );
 
     return ChatOutboxDelivery(
       threadId: threadId,

@@ -54,6 +54,8 @@ void debugComposePickerLayout({
   double? panelSlotMaxHeight,
 }) {
   if (!kDebugMode) return;
+  // Closed compose bar rebuilds on every keyboard/frame — don't drown send logs.
+  if (!showPicker) return;
   final mq = MediaQuery.of(context);
   debugPrint(
     '[ComposePicker/$tag] show=$showPicker '
