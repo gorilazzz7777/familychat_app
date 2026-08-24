@@ -4704,8 +4704,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 }
                                 final msgIndex = _messages.length - 1 - i;
                                 final m = _messages[msgIndex];
-                                final msgId = chatAsInt(m['id']) ?? 0;
-                                _messageKeys.putIfAbsent(msgId, GlobalKey.new);
+                                final msgId = chatAsInt(m['id']);
                                 final created = DateTime.tryParse(
                                     m['created_at']?.toString() ?? '');
                                 final atts = chatAttachmentsOf(m);
@@ -4824,20 +4823,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         _clusteredWithPrevious(msgIndex),
                                     compactWithNext:
                                         _clusteredWithNext(msgIndex),
-                                    highlighted: _highlightMessageId == msgId,
+                                    highlighted: msgId != null &&
+                                        _highlightMessageId == msgId,
                                     selectionMode: _selectionMode,
-                                    selected:
+                                    selected: msgId != null &&
                                         _selectedMessageIds.contains(msgId),
-                                    onTap: _selectionMode
-                                        ? () => _toggleSelection(msgId)
-                                        : m['_scheduled'] == true
-                                            ? null
-                                            : () => _openMessageMenu(m),
-                                    onLongPress: _selectionMode
-                                        ? () => _toggleSelection(msgId)
-                                        : m['_scheduled'] == true
-                                            ? null
-                                            : () => _openMessageMenu(m),
+                                    onTap: msgId == null
+                                        ? null
+                                        : _selectionMode
+                                            ? () => _toggleSelection(msgId)
+                                            : m['_scheduled'] == true
+                                                ? null
+                                                : () => _openMessageMenu(m),
+                                    onLongPress: msgId == null
+                                        ? null
+                                        : _selectionMode
+                                            ? () => _toggleSelection(msgId)
+                                            : m['_scheduled'] == true
+                                                ? null
+                                                : () => _openMessageMenu(m),
                                     onReplyTap: replyMessageId != null
                                         ? () =>
                                             _scrollToMessage(replyMessageId)
@@ -4847,16 +4851,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                             m['_scheduled'] == true
                                         ? null
                                         : () => _startReply(m),
-                                    onReactionTap: m['_pending'] == true
+                                    onReactionTap: msgId == null ||
+                                            m['_pending'] == true
                                         ? null
                                         : (emoji) =>
                                             _toggleReaction(msgId, emoji),
-                                    onImageTap: _selectionMode
-                                        ? (_) => _toggleSelection(msgId)
-                                        : (a) => _openImageFromAttachment(
-                                              a,
-                                              messageId: msgId,
-                                            ),
+                                    onImageTap: msgId == null
+                                        ? null
+                                        : _selectionMode
+                                            ? (_) => _toggleSelection(msgId)
+                                            : (a) => _openImageFromAttachment(
+                                                  a,
+                                                  messageId: msgId,
+                                                ),
                                   );
                                 }
                                 final day = chatMessageLocalDay(m);
@@ -4873,8 +4880,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         ],
                                       )
                                     : messageChild;
+                                final Key itemKey;
+                                if (msgId == null) {
+                                  itemKey = ValueKey(
+                                    'msg-anon-$msgIndex-${m['created_at']}',
+                                  );
+                                } else {
+                                  itemKey = _messageKeys.putIfAbsent(
+                                    msgId,
+                                    GlobalKey.new,
+                                  );
+                                }
                                 return KeyedSubtree(
-                                  key: _messageKeys[msgId],
+                                  key: itemKey,
                                   child: withDay,
                                 );
                               },

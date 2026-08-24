@@ -95,6 +95,45 @@ void main() {
     );
   });
 
+  test('chatMergeMessageLists dedupes pending with the same id', () {
+    final a = {
+      'id': -7,
+      '_pending': true,
+      'body': 'one',
+      'created_at': '2026-08-05T06:40:00.000Z',
+      'sender_user_id': 7,
+      'read_status': 'sending',
+      'attachments': const [],
+    };
+    final b = {
+      'id': -7,
+      '_pending': true,
+      'body': 'one',
+      'created_at': '2026-08-05T06:40:00.000Z',
+      'sender_user_id': 7,
+      'read_status': 'queued',
+      'attachments': const [],
+    };
+    final merged = chatMergeMessageLists([a], [b], currentUserId: 7);
+    expect(merged.length, 1);
+    expect(chatAsInt(merged.single['id']), -7);
+    expect(merged.single['read_status'], 'queued');
+  });
+
+  test('chatPendingToReinject skips ids already present in sqlite', () {
+    final pending = {
+      'id': -4,
+      '_pending': true,
+      'body': 'x',
+      'attachments': const [],
+    };
+    final reinjected = chatPendingToReinject(
+      memoryMessages: [pending],
+      sqliteRows: [pending],
+    );
+    expect(reinjected, isEmpty);
+  });
+
   test('chatMergeMessageLists keeps unrelated pending', () {
     final pending = {
       'id': -1,
@@ -279,7 +318,7 @@ void main() {
     expect(reinject, isEmpty);
   });
 
-  test('chatPendingToReinject keeps share temp still in sqlite', () {
+  test('chatPendingToReinject skips share temp still in sqlite', () {
     final pending = {
       'id': -15,
       '_pending': true,
@@ -293,8 +332,8 @@ void main() {
       memoryMessages: [pending],
       sqliteRows: [pending],
     );
-    expect(reinject.length, 1);
-    expect(chatAsInt(reinject.first['id']), -15);
+    // Already in the SQLite window — reinjecting would duplicate GlobalKeys.
+    expect(reinject, isEmpty);
   });
 
   test('chatReconcile does not drop text pending against older same body', () {

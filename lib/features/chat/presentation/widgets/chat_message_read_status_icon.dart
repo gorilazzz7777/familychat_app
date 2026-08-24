@@ -20,14 +20,7 @@ class ChatMessageReadStatusIcon extends StatelessWidget {
         label: 'Отправляется',
         child: Tooltip(
           message: 'Отправляется',
-          child: SizedBox(
-            width: size - 2,
-            height: size - 2,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.8,
-              color: color,
-            ),
-          ),
+          child: Icon(Icons.schedule, size: size, color: color),
         ),
       );
     }

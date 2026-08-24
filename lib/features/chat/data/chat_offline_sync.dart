@@ -18,6 +18,8 @@ class ChatOfflineSync extends ChangeNotifier {
 
   bool _online = true;
   bool _syncing = false;
+  bool _rerunRequested = false;
+  FamilyChatRepository? _pendingRepo;
   List<ChatOutboxDelivery> _recentDeliveries = const [];
 
   bool get isOnline => _online;
@@ -58,39 +60,63 @@ class ChatOfflineSync extends ChangeNotifier {
   }
 
   Future<void> run(FamilyChatRepository repo) async {
-    if (_syncing) return;
+    if (_syncing) {
+      // Messages enqueued while a pass is running must not be dropped.
+      _rerunRequested = true;
+      _pendingRepo = repo;
+      return;
+    }
     _syncing = true;
+    _pendingRepo = repo;
     notifyListeners();
     try {
-      final online = await refreshOnline(repo);
-      if (!online) return;
+      while (true) {
+        _rerunRequested = false;
+        final activeRepo = _pendingRepo ?? repo;
+        final online = await refreshOnline(activeRepo);
+        if (!online) break;
 
-      final deliveries = await ChatOfflineOutbox.sync(repo);
-      if (deliveries.isNotEmpty) {
-        _recentDeliveries = [..._recentDeliveries, ...deliveries];
-        notifyListeners();
+        final deliveries = await ChatOfflineOutbox.sync(activeRepo);
+        if (deliveries.isNotEmpty) {
+          _recentDeliveries = [..._recentDeliveries, ...deliveries];
+          notifyListeners();
+        }
+
+        await ChatScheduledSendService.instance.dispatchDue();
+        if (!_rerunRequested) break;
       }
 
-      await ChatOfflinePrefetch.run(repo);
-      if (ChatLocalStore.isSupported) {
-        final threads = await ChatLocalStore.instance.readThreads();
-        final unreadIds = <int>[];
-        for (final thread in threads) {
-          final id = chatAsInt(thread['id']);
-          if (id == null) continue;
-          if ((chatAsInt(thread['unread_count']) ?? 0) > 0) {
-            unreadIds.add(id);
+      // Prefetch after outbox is drained so it never blocks follow-up sends.
+      final activeRepo = _pendingRepo ?? repo;
+      if (_online) {
+        await ChatOfflinePrefetch.run(activeRepo);
+        if (ChatLocalStore.isSupported) {
+          final threads = await ChatLocalStore.instance.readThreads();
+          final unreadIds = <int>[];
+          for (final thread in threads) {
+            final id = chatAsInt(thread['id']);
+            if (id == null) continue;
+            if ((chatAsInt(thread['unread_count']) ?? 0) > 0) {
+              unreadIds.add(id);
+            }
+          }
+          if (unreadIds.isNotEmpty) {
+            unawaited(
+              ChatOfflinePrefetch.prefetchThreads(activeRepo, unreadIds),
+            );
           }
         }
-        if (unreadIds.isNotEmpty) {
-          unawaited(ChatOfflinePrefetch.prefetchThreads(repo, unreadIds));
-        }
       }
-      await ChatScheduledSendService.instance.dispatchDue();
       notifyListeners();
     } finally {
       _syncing = false;
+      final needsRerun = _rerunRequested;
+      final again = _pendingRepo;
+      _rerunRequested = false;
       notifyListeners();
+      if (needsRerun && again != null) {
+        unawaited(run(again));
+      }
     }
   }
 }

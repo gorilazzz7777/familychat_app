@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -12,10 +13,24 @@ class ChatOfflineOutbox {
   ChatOfflineOutbox._();
 
   static int _idCounter = 0;
+  static Future<void> _mutationChain = Future<void>.value();
 
   static String _nextId() {
     _idCounter += 1;
     return '${DateTime.now().microsecondsSinceEpoch}_$_idCounter';
+  }
+
+  /// Serialize read-modify-write so enqueue/cancel/sync cannot clobber each other.
+  static Future<T> _serialized<T>(Future<T> Function() action) {
+    final done = Completer<T>();
+    _mutationChain = _mutationChain.then((_) async {
+      try {
+        done.complete(await action());
+      } catch (e, st) {
+        done.completeError(e, st);
+      }
+    });
+    return done.future;
   }
 
   static Future<List<Map<String, dynamic>>> _readItems() async {
@@ -68,7 +83,6 @@ class ChatOfflineOutbox {
     String? voiceTranscript,
     int? videoNoteDurationMs,
   }) async {
-    final items = await _readItems();
     final attachmentMeta = <Map<String, dynamic>>[];
     for (var i = 0; i < attachments.length; i++) {
       final att = attachments[i];
@@ -80,24 +94,27 @@ class ChatOfflineOutbox {
         if (att.contentType != null) 'content_type': att.contentType,
       });
     }
-    items.add({
-      'id': _nextId(),
-      'kind': 'message',
-      'thread_id': threadId,
-      'temp_message_id': tempMessageId,
-      'created_at': DateTime.now().toUtc().toIso8601String(),
-      if (body != null && body.isNotEmpty) 'body': body,
-      if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
-      if (mentionedUserIds.isNotEmpty) 'mentioned_user_ids': mentionedUserIds,
-      if (attachmentMeta.isNotEmpty) 'attachments': attachmentMeta,
-      if (notifySilent) 'notify_silent': true,
-      if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
-      if (voiceTranscript != null && voiceTranscript.isNotEmpty)
-        'voice_transcript': voiceTranscript,
-      if (videoNoteDurationMs != null)
-        'video_note_duration_ms': videoNoteDurationMs,
+    await _serialized(() async {
+      final items = await _readItems();
+      items.add({
+        'id': _nextId(),
+        'kind': 'message',
+        'thread_id': threadId,
+        'temp_message_id': tempMessageId,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        if (body != null && body.isNotEmpty) 'body': body,
+        if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
+        if (mentionedUserIds.isNotEmpty) 'mentioned_user_ids': mentionedUserIds,
+        if (attachmentMeta.isNotEmpty) 'attachments': attachmentMeta,
+        if (notifySilent) 'notify_silent': true,
+        if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
+        if (voiceTranscript != null && voiceTranscript.isNotEmpty)
+          'voice_transcript': voiceTranscript,
+        if (videoNoteDurationMs != null)
+          'video_note_duration_ms': videoNoteDurationMs,
+      });
+      await _writeItems(items);
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueueMarkRead({
@@ -268,30 +285,32 @@ class ChatOfflineOutbox {
     required int threadId,
     required int tempMessageId,
   }) async {
-    final items = await _readItems();
-    final remaining = <Map<String, dynamic>>[];
-    for (final item in items) {
-      if (item['kind']?.toString() != 'message') {
-        remaining.add(item);
-        continue;
-      }
-      if (chatAsInt(item['thread_id']) == threadId &&
-          chatAsInt(item['temp_message_id']) == tempMessageId) {
-        final rawAttachments = item['attachments'];
-        if (rawAttachments is List) {
-          for (final raw in rawAttachments) {
-            if (raw is! Map) continue;
-            final storageKey = raw['storage_key']?.toString();
-            if (storageKey != null && storageKey.isNotEmpty) {
-              await _deleteBytes(storageKey);
+    await _serialized(() async {
+      final items = await _readItems();
+      final remaining = <Map<String, dynamic>>[];
+      for (final item in items) {
+        if (item['kind']?.toString() != 'message') {
+          remaining.add(item);
+          continue;
+        }
+        if (chatAsInt(item['thread_id']) == threadId &&
+            chatAsInt(item['temp_message_id']) == tempMessageId) {
+          final rawAttachments = item['attachments'];
+          if (rawAttachments is List) {
+            for (final raw in rawAttachments) {
+              if (raw is! Map) continue;
+              final storageKey = raw['storage_key']?.toString();
+              if (storageKey != null && storageKey.isNotEmpty) {
+                await _deleteBytes(storageKey);
+              }
             }
           }
+          continue;
         }
-        continue;
+        remaining.add(item);
       }
-      remaining.add(item);
-    }
-    await _writeItems(remaining);
+      await _writeItems(remaining);
+    });
   }
 
   static Future<int> pendingCount() async {
@@ -300,75 +319,72 @@ class ChatOfflineOutbox {
   }
 
   static Future<List<ChatOutboxDelivery>> sync(FamilyChatRepository repo) async {
-    final items = await _readItems();
-    if (items.isEmpty) return const [];
-
     final delivered = <ChatOutboxDelivery>[];
-    final remaining = <Map<String, dynamic>>[];
+    final failedIds = <String>{};
 
-    for (final item in items) {
+    while (true) {
+      final items = await _readItems();
+      Map<String, dynamic>? item;
+      for (final candidate in items) {
+        final id = candidate['id']?.toString() ?? '';
+        if (id.isEmpty || failedIds.contains(id)) continue;
+        item = candidate;
+        break;
+      }
+      if (item == null) break;
+
+      final itemId = item['id']?.toString() ?? '';
       try {
         final kind = item['kind']?.toString();
+        ChatOutboxDelivery? result;
         if (kind == 'message') {
-          final result = await _deliverMessage(repo, item);
-          if (result != null) delivered.add(result);
-          continue;
-        }
-        if (kind == 'reaction') {
-          final result = await _deliverReaction(repo, item);
-          if (result != null) delivered.add(result);
-          continue;
-        }
-        if (kind == 'mark_read') {
+          result = await _deliverMessage(repo, item);
+        } else if (kind == 'reaction') {
+          result = await _deliverReaction(repo, item);
+        } else if (kind == 'mark_read') {
           await _deliverMarkRead(repo, item);
-          continue;
-        }
-        if (kind == 'delete_messages') {
-          final result = await _deliverDeleteMessages(repo, item);
-          if (result != null) delivered.add(result);
-          continue;
-        }
-        if (kind == 'hide_messages') {
-          final result = await _deliverHideMessages(repo, item);
-          if (result != null) delivered.add(result);
-          continue;
-        }
-        if (kind == 'pin') {
-          final result = await _deliverPin(repo, item, pin: true);
-          if (result != null) delivered.add(result);
-          continue;
-        }
-        if (kind == 'unpin') {
-          final result = await _deliverPin(repo, item, pin: false);
-          if (result != null) delivered.add(result);
-          continue;
-        }
-        if (kind == 'edit_message') {
-          final result = await _deliverEditMessage(repo, item);
-          if (result != null) delivered.add(result);
-          continue;
-        }
-        if (kind == 'mute') {
+        } else if (kind == 'delete_messages') {
+          result = await _deliverDeleteMessages(repo, item);
+        } else if (kind == 'hide_messages') {
+          result = await _deliverHideMessages(repo, item);
+        } else if (kind == 'pin') {
+          result = await _deliverPin(repo, item, pin: true);
+        } else if (kind == 'unpin') {
+          result = await _deliverPin(repo, item, pin: false);
+        } else if (kind == 'edit_message') {
+          result = await _deliverEditMessage(repo, item);
+        } else if (kind == 'mute') {
           await _deliverMute(repo, item);
-          continue;
-        }
-        if (kind == 'quiet_hours') {
+        } else if (kind == 'quiet_hours') {
           await _deliverQuietHours(repo, item);
-          continue;
-        }
-        if (kind == 'clear_quiet_hours') {
+        } else if (kind == 'clear_quiet_hours') {
           await _deliverClearQuietHours(repo, item);
+        } else {
+          // Unknown kind — drop so it cannot block the queue forever.
+          await _removeItemById(itemId);
           continue;
         }
-        remaining.add(item);
+        if (result != null) delivered.add(result);
+        await _removeItemById(itemId);
       } catch (error) {
-        remaining.add(item);
+        if (itemId.isNotEmpty) failedIds.add(itemId);
         if (ChatNetworkStatus.looksOffline(error)) break;
       }
     }
 
-    await _writeItems(remaining);
     return delivered;
+  }
+
+  static Future<void> _removeItemById(String itemId) async {
+    if (itemId.isEmpty) return;
+    await _serialized(() async {
+      final items = await _readItems();
+      final remaining = items
+          .where((item) => item['id']?.toString() != itemId)
+          .toList(growable: false);
+      if (remaining.length == items.length) return;
+      await _writeItems(remaining);
+    });
   }
 
   static Future<ChatOutboxDelivery?> _deliverMessage(

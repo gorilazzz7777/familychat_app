@@ -190,8 +190,10 @@ List<Map<String, dynamic>> chatPendingToReinject({
 
 bool _shouldReinjectPending(Map<String, dynamic> pending, Set<int> sqliteIds) {
   final id = chatAsInt(pending['id']);
+  // Already in the SQLite snapshot — re-adding would duplicate the same id
+  // (and GlobalKey) in the ListView.
+  if (id != null && sqliteIds.contains(id)) return false;
   if (id == null) return true;
-  if (sqliteIds.contains(id)) return true;
   final uploading =
       chatAttachmentsOf(pending).any((a) => a['_pending'] == true);
   // Share media: seeded before UI; absence means deliver replaced it.
@@ -296,7 +298,8 @@ List<Map<String, dynamic>> chatMergeMessageLists(
   int? currentUserId,
 }) {
   final byId = <int, Map<String, dynamic>>{};
-  final pending = <Map<String, dynamic>>[];
+  final pendingById = <int, Map<String, dynamic>>{};
+  final pendingNoId = <Map<String, dynamic>>[];
 
   void absorb(Map<String, dynamic> message) {
     final id = chatAsInt(message['id']);
@@ -304,7 +307,12 @@ List<Map<String, dynamic>> chatMergeMessageLists(
       byId[id] = message;
       return;
     }
-    pending.add(message);
+    if (id != null) {
+      // Last write wins; never keep two rows with the same id.
+      pendingById[id] = message;
+      return;
+    }
+    pendingNoId.add(message);
   }
 
   for (final message in current) {
@@ -315,7 +323,7 @@ List<Map<String, dynamic>> chatMergeMessageLists(
   }
 
   return chatReconcilePendingDuplicates(
-    [...byId.values, ...pending],
+    [...byId.values, ...pendingById.values, ...pendingNoId],
     currentUserId: currentUserId,
   );
 }
