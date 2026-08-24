@@ -652,10 +652,6 @@ class ChatOfflineOutbox {
     }
     localMs = localSw.elapsedMilliseconds;
 
-    final queueWaitMs = enqueuedAt == null
-        ? null
-        : DateTime.now().toUtc().difference(enqueuedAt.toUtc()).inMilliseconds;
-
     debugPrint(
       '[chat_send_timing] scope=client_outbox '
       'thread_id=$threadId temp=$tempMessageId message_id=$serverId '
