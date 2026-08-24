@@ -2,7 +2,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/providers/app_providers.dart';
-import 'chat_realtime_utils.dart';
 
 int chatNotifiedUnreadFromThreads(Iterable<Map<String, dynamic>> threads) {
   var total = 0;
