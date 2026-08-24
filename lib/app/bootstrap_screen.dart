@@ -274,7 +274,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       unawaited(FamilyChatLocalCache.saveStatus(status));
     }
     unawaited(
-      ChatSyncService.instance.start(ref.read(familychatRepositoryProvider)),
+      ChatSyncService.instance.start(
+        ref.read(familychatRepositoryProvider),
+        currentUserId: status['user_id'] is int ? status['user_id'] as int : null,
+      ),
     );
     LinkPreviewService.instance.bindBackend(
       ref.read(familychatRepositoryProvider).fetchLinkPreview,
@@ -300,6 +303,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     });
     ChatOfflineSync.instance.setOnline(true);
     unawaited(FamilyChatLocalCache.saveStatus(status));
+    ChatSyncService.instance.setCurrentUserId(
+      status['user_id'] is int ? status['user_id'] as int : null,
+    );
     unawaited(ref.read(themeSeedProvider.notifier).syncFromStatus(status));
     _syncAppActions();
     if (ready && !wasReady) {

@@ -133,6 +133,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       );
     });
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
+    ChatUnreadRefresh.onInvalidate = _onUnreadInvalidate;
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
     ShellRefresh.instance.register(_refreshMainTabs);
     _startPresenceHeartbeat();
@@ -220,15 +221,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     await _refreshTab(_familyTabIndex, silent: silent);
   }
 
+  void _onUnreadInvalidate() {
+    if (!mounted) return;
+    ref.invalidate(chatUnreadTotalProvider);
+  }
+
   void _onChatRealtime(Map<String, dynamic> event) {
     final ev = event['event']?.toString();
-    if (ev == 'chat_message' ||
-        ev == 'chat_messages_read' ||
-        ev == 'chat_refresh' ||
-        ev == 'chat_messages_deleted' ||
-        ev == 'chat_message_reactions') {
-      invalidateChatUnreadTotal(ref);
-    }
+    // Unread badge: invalidate only after SQLite writes (ChatSyncService /
+    // hub watch). Premature invalidate races a stale FutureProvider read.
     if (ev == 'chat_call_incoming') {
       final callId = event['session_id'] is int
           ? event['session_id'] as int
@@ -277,6 +278,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     IncomingShareBus.instance.removeListener(_onIncomingShare);
     onOpenFeedFromPush = null;
     FamilyChatRealtime.instance.removeListener(_onChatRealtime);
+    if (identical(ChatUnreadRefresh.onInvalidate, _onUnreadInvalidate)) {
+      ChatUnreadRefresh.onInvalidate = null;
+    }
     ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
     ChatScheduledSendService.instance.stop();
     LocationShareCoordinator.instance.detach();

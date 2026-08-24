@@ -11,6 +11,7 @@ import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../data/chat_hub_tab_order_storage.dart';
 import '../data/chat_local_reads.dart';
+import '../data/chat_realtime_utils.dart';
 import '../data/chat_unread_providers.dart';
 import '../data/familychat_realtime.dart';
 import '../data/chat_sync_service.dart';
@@ -632,7 +633,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               itemBuilder: (context, i) {
                 final t = filtered[i];
                 final title = t['title']?.toString() ?? 'Чат';
-                final unread = t['unread_count'] as int? ?? 0;
+                final unread = chatAsInt(t['unread_count']) ?? 0;
                 final last = t['last_message'] as Map<String, dynamic>?;
                 final lastStatus = _lastMessageReadStatus(last);
                 final created = last != null

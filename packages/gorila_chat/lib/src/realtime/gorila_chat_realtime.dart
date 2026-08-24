@@ -85,7 +85,7 @@ class GorilaChatRealtime {
         _reconnectAttempt = 0;
         if (_refreshAfterConnect) {
           _refreshAfterConnect = false;
-          emitSyntheticEvent({'event': 'chat_refresh'});
+          emitSyntheticEvent({'event': 'chat_refresh', 'force': true});
         }
       } catch (e) {
         debugPrint('$debugName ws connect error: $e');
@@ -145,7 +145,7 @@ class GorilaChatRealtime {
     if (token != null && token.isNotEmpty) {
       await connect(token);
     }
-    emitSyntheticEvent({'event': 'chat_refresh'});
+    emitSyntheticEvent({'event': 'chat_refresh', 'force': true});
   }
 
   void sendJson(Map<String, dynamic> payload) {

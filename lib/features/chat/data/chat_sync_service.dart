@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -9,6 +10,7 @@ import 'active_chat_context.dart';
 import 'chat_bootstrap_coordinator.dart';
 import 'chat_local_mutations.dart';
 import 'chat_realtime_utils.dart';
+import 'chat_unread_providers.dart';
 import 'familychat_realtime.dart';
 
 /// Fills local SQLite from HTTP + WebSocket. UI must not call the network for display.
@@ -18,6 +20,7 @@ class ChatSyncService {
   static final ChatSyncService instance = ChatSyncService._();
 
   FamilyChatRepository? _repo;
+  int? _currentUserId;
   bool _listening = false;
   bool _syncingHub = false;
   bool _historySyncing = false;
@@ -30,9 +33,10 @@ class ChatSyncService {
   static bool get isSupported => ChatLocalStore.isSupported;
   static const _historyCompletePrefix = 'hist_done_v1_';
 
-  Future<void> start(FamilyChatRepository repo) async {
+  Future<void> start(FamilyChatRepository repo, {int? currentUserId}) async {
     if (!isSupported) return;
     _repo = repo;
+    _currentUserId = currentUserId;
     await ChatLocalStore.instance.ensureOpen();
     if (!_listening) {
       FamilyChatRealtime.instance.addListener(_onRealtime);
@@ -48,6 +52,10 @@ class ChatSyncService {
     }());
   }
 
+  void setCurrentUserId(int? userId) {
+    _currentUserId = userId;
+  }
+
   Future<void> stop() async {
     _historyTimer?.cancel();
     _historyTimer = null;
@@ -56,6 +64,11 @@ class ChatSyncService {
       _listening = false;
     }
     _repo = null;
+    _currentUserId = null;
+  }
+
+  void _notifyUnreadChanged() {
+    ChatUnreadRefresh.onInvalidate?.call();
   }
 
   void _onRealtime(Map<String, dynamic> event) {
@@ -104,12 +117,21 @@ class ChatSyncService {
 
     if (ev == 'chat_refresh') {
       final threadId = chatAsInt(event['thread_id']);
+      final force = event['force'] == true;
       if (threadId != null) {
-        unawaited(syncThread(threadId));
+        // Push / thread wake: messages alone do not bump hub unread.
+        unawaited(_syncThreadAndHubRow(threadId));
       } else {
-        unawaited(syncHub(prefetchMessages: true, force: false));
+        unawaited(syncHub(prefetchMessages: true, force: force));
       }
     }
+  }
+
+  bool _messageIsMine(Map<String, dynamic> message) {
+    if (message['is_mine'] == true) return true;
+    final uid = _currentUserId;
+    if (uid == null) return false;
+    return chatAsInt(message['sender_user_id']) == uid;
   }
 
   Future<void> _ingestIncomingMessage(Map<String, dynamic> message) async {
@@ -118,7 +140,11 @@ class ChatSyncService {
 
     await ChatLocalStore.instance.upsertMessage(message);
     unawaited(MediaIncomingSync.ensureMessages([message]));
-    await _dropMatchingPending(threadId, message);
+    await _dropMatchingPending(
+      threadId,
+      message,
+      currentUserId: _currentUserId,
+    );
 
     // Patch thread preview/unread in local hub without waiting for HTTP.
     final threads = await ChatLocalStore.instance.readThreads();
@@ -133,14 +159,15 @@ class ChatSyncService {
       thread['last_message'] = message;
       var unread = chatAsInt(thread['unread_count']) ?? 0;
       final viewing = ActiveChatContext.instance.isViewingThread(threadId);
-      final isMine = message['is_mine'] == true;
+      final isMine = _messageIsMine(message);
       if (!viewing && !isMine && !chatMessageIsPending(message)) {
         unread += 1;
       }
       thread['unread_count'] = unread;
       await ChatLocalStore.instance.upsertThread(thread);
+      _notifyUnreadChanged();
     } else {
-      unawaited(syncHub(force: false));
+      unawaited(syncHub(force: true));
     }
   }
 
@@ -256,10 +283,20 @@ class ChatSyncService {
         repo.chatThreads(),
         repo.members(),
       ]);
-      final threads = (results[0] as List).cast<Map<String, dynamic>>();
+      final remoteThreads = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
+      final localThreads = await ChatLocalStore.instance.readThreads();
+      final localById = <int, Map<String, dynamic>>{
+        for (final t in localThreads)
+          if (chatAsInt(t['id']) != null) chatAsInt(t['id'])!: t,
+      };
+      final threads = [
+        for (final server in remoteThreads)
+          _mergeHubThread(server, localById[chatAsInt(server['id'])]),
+      ];
       await ChatLocalStore.instance.replaceThreads(threads);
       await ChatLocalStore.instance.replaceMembers(members);
+      _notifyUnreadChanged();
 
       if (prefetchMessages) {
         for (final thread in threads) {
@@ -274,6 +311,68 @@ class ChatSyncService {
       debugPrint('[ChatSyncService] syncHub failed: $e\n$st');
     } finally {
       _syncingHub = false;
+    }
+  }
+
+  /// Keep optimistic WS unread/preview when HTTP hub snapshot is slightly stale.
+  Map<String, dynamic> _mergeHubThread(
+    Map<String, dynamic> server,
+    Map<String, dynamic>? local,
+  ) {
+    if (local == null) return server;
+    final serverUnread = chatAsInt(server['unread_count']) ?? 0;
+    final localUnread = chatAsInt(local['unread_count']) ?? 0;
+    final serverLast = server['last_message'];
+    final localLast = local['last_message'];
+    final serverLastId =
+        serverLast is Map ? chatAsInt(serverLast['id']) : null;
+    final localLastId = localLast is Map ? chatAsInt(localLast['id']) : null;
+
+    if (localLastId != null &&
+        (serverLastId == null || localLastId > serverLastId)) {
+      return {
+        ...server,
+        'last_message': localLast,
+        'unread_count': math.max(serverUnread, localUnread),
+      };
+    }
+    if (localLastId != null &&
+        localLastId == serverLastId &&
+        localUnread > serverUnread) {
+      return {
+        ...server,
+        'unread_count': localUnread,
+      };
+    }
+    return server;
+  }
+
+  Future<void> _syncThreadAndHubRow(int threadId) async {
+    await syncThread(threadId);
+    final repo = _repo;
+    if (repo == null) return;
+    try {
+      final threads = await repo.chatThreads();
+      Map<String, dynamic>? match;
+      for (final t in threads) {
+        if (chatAsInt(t['id']) == threadId) {
+          match = chatNormalizeMap(Map<dynamic, dynamic>.from(t));
+          break;
+        }
+      }
+      if (match == null) return;
+      final localThreads = await ChatLocalStore.instance.readThreads();
+      Map<String, dynamic>? local;
+      for (final t in localThreads) {
+        if (chatAsInt(t['id']) == threadId) {
+          local = t;
+          break;
+        }
+      }
+      await ChatLocalStore.instance.upsertThread(_mergeHubThread(match, local));
+      _notifyUnreadChanged();
+    } catch (e, st) {
+      debugPrint('[ChatSyncService] hub row refresh failed: $e\n$st');
     }
   }
 

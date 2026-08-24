@@ -40,10 +40,10 @@ final chatUnreadTotalProvider = FutureProvider<int>((ref) async {
 class ChatUnreadRefresh {
   ChatUnreadRefresh._();
 
+  /// Wired by shell to invalidate [chatUnreadTotalProvider] after SQLite writes.
   static void Function()? onInvalidate;
 }
 
 void invalidateChatUnreadTotal(WidgetRef ref) {
   ref.invalidate(chatUnreadTotalProvider);
-  ChatUnreadRefresh.onInvalidate?.call();
 }

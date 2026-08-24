@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../../../core/local_db/chat_local_store.dart';
 import 'chat_realtime_utils.dart';
+import 'chat_unread_providers.dart';
 
 /// Optimistic SQLite updates before outbox sync (native local-first).
 abstract final class ChatLocalMutations {
@@ -31,6 +32,7 @@ abstract final class ChatLocalMutations {
     if (ids.isNotEmpty) {
       await ChatLocalStore.instance.markMessagesRead(threadId, ids);
     }
+    ChatUnreadRefresh.onInvalidate?.call();
   }
 
   static Future<void> patchThreadNotificationsLocal(
