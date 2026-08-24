@@ -576,11 +576,12 @@ class ChatOfflineOutbox {
     var uploadMs = 0;
     var httpMs = 0;
     var localMs = 0;
-    DateTime? enqueuedAt;
     final createdRaw = item['created_at']?.toString();
-    if (createdRaw != null && createdRaw.isNotEmpty) {
-      enqueuedAt = DateTime.tryParse(createdRaw);
-    }
+    final enqueuedAt =
+        createdRaw == null || createdRaw.isEmpty ? null : DateTime.tryParse(createdRaw);
+    final queueWaitMs = enqueuedAt == null
+        ? null
+        : DateTime.now().toUtc().difference(enqueuedAt.toUtc()).inMilliseconds;
 
     final attachmentIds = <int>[];
     final rawAttachments = item['attachments'];
