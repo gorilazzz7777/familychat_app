@@ -1000,29 +1000,48 @@ class FamilyChatRepository {
     String? voiceTranscript,
     int? videoNoteDurationMs,
   }) async {
-    final res = await _dio.post<Map<String, dynamic>>(
-      'familychat/chat/threads/$threadId/messages/',
-      data: {
-        if (body != null && body.isNotEmpty) 'body': body,
-        if (attachmentIds != null && attachmentIds.isNotEmpty)
-          'attachment_ids': attachmentIds,
-        if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
-        if (mentionedUserIds != null && mentionedUserIds.isNotEmpty)
-          'mentioned_user_ids': mentionedUserIds,
-        if (notifySilent) 'notify_silent': true,
-        if (location != null) 'location': location,
-        if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
-        if (voiceTranscript != null && voiceTranscript.trim().isNotEmpty)
-          'voice_transcript': voiceTranscript.trim(),
-        if (videoNoteDurationMs != null)
-          'video_note_duration_ms': videoNoteDurationMs,
-      },
-      options: Options(
-        sendTimeout: const Duration(seconds: 20),
-        receiveTimeout: const Duration(seconds: 20),
-      ),
-    );
-    return res.data!;
+    final sw = Stopwatch()..start();
+    try {
+      final res = await _dio.post<Map<String, dynamic>>(
+        'familychat/chat/threads/$threadId/messages/',
+        data: {
+          if (body != null && body.isNotEmpty) 'body': body,
+          if (attachmentIds != null && attachmentIds.isNotEmpty)
+            'attachment_ids': attachmentIds,
+          if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
+          if (mentionedUserIds != null && mentionedUserIds.isNotEmpty)
+            'mentioned_user_ids': mentionedUserIds,
+          if (notifySilent) 'notify_silent': true,
+          if (location != null) 'location': location,
+          if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
+          if (voiceTranscript != null && voiceTranscript.trim().isNotEmpty)
+            'voice_transcript': voiceTranscript.trim(),
+          if (videoNoteDurationMs != null)
+            'video_note_duration_ms': videoNoteDurationMs,
+        },
+        options: Options(
+          sendTimeout: const Duration(seconds: 20),
+          receiveTimeout: const Duration(seconds: 20),
+        ),
+      );
+      final data = res.data!;
+      final serverId = data['id'];
+      debugPrint(
+        '[chat_send_timing] scope=client_http '
+        'thread_id=$threadId message_id=$serverId '
+        'body_len=${body?.length ?? 0} '
+        'attachments=${attachmentIds?.length ?? 0} '
+        'total=${sw.elapsedMilliseconds}ms '
+        '(client_wait=network+server_http)',
+      );
+      return data;
+    } catch (e) {
+      debugPrint(
+        '[chat_send_timing] scope=client_http '
+        'thread_id=$threadId failed after ${sw.elapsedMilliseconds}ms error=$e',
+      );
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> updateThreadMessage(

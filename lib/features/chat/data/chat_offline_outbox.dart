@@ -572,9 +572,20 @@ class ChatOfflineOutbox {
     final tempMessageId = chatAsInt(item['temp_message_id']);
     if (threadId == null || tempMessageId == null) return null;
 
+    final sw = Stopwatch()..start();
+    var uploadMs = 0;
+    var httpMs = 0;
+    var localMs = 0;
+    DateTime? enqueuedAt;
+    final createdRaw = item['created_at']?.toString();
+    if (createdRaw != null && createdRaw.isNotEmpty) {
+      enqueuedAt = DateTime.tryParse(createdRaw);
+    }
+
     final attachmentIds = <int>[];
     final rawAttachments = item['attachments'];
     if (rawAttachments is List) {
+      final uploadSw = Stopwatch()..start();
       for (final raw in rawAttachments) {
         if (raw is! Map) continue;
         final storageKey = raw['storage_key']?.toString();
@@ -593,12 +604,14 @@ class ChatOfflineOutbox {
         if (id != null) attachmentIds.add(id);
         await _deleteBytes(storageKey);
       }
+      uploadMs = uploadSw.elapsedMilliseconds;
     }
 
     final body = item['body']?.toString();
     final replyTo = chatAsInt(item['reply_to_message_id']);
     final mentioned = chatAsIntList(item['mentioned_user_ids']);
 
+    final httpSw = Stopwatch()..start();
     final msg = await repo.sendThreadMessage(
       threadId,
       body: body,
@@ -610,6 +623,7 @@ class ChatOfflineOutbox {
       voiceTranscript: item['voice_transcript']?.toString(),
       videoNoteDurationMs: chatAsInt(item['video_note_duration_ms']),
     );
+    httpMs = httpSw.elapsedMilliseconds;
 
     final serverId = chatAsInt(msg['id']);
     if (serverId == null || serverId <= 0) {
@@ -618,6 +632,7 @@ class ChatOfflineOutbox {
       );
     }
 
+    final localSw = Stopwatch()..start();
     if (ChatLocalStore.isSupported) {
       // Upsert server row first, then drop temp — otherwise a watch between
       // delete and upsert briefly removes the bubble from the UI.
@@ -634,6 +649,20 @@ class ChatOfflineOutbox {
       withoutTemp.add(msg);
       await FamilyChatLocalCache.saveThreadMessages(threadId, withoutTemp);
     }
+    localMs = localSw.elapsedMilliseconds;
+
+    final queueWaitMs = enqueuedAt == null
+        ? null
+        : DateTime.now().toUtc().difference(enqueuedAt.toUtc()).inMilliseconds;
+
+    debugPrint(
+      '[chat_send_timing] scope=client_outbox '
+      'thread_id=$threadId temp=$tempMessageId message_id=$serverId '
+      'attachments=${attachmentIds.length} '
+      'total=${sw.elapsedMilliseconds}ms '
+      'upload=${uploadMs}ms http=${httpMs}ms local=${localMs}ms '
+      'queue_wait_ms=${queueWaitMs ?? "n/a"}',
+    );
 
     debugPrint(
       '[ChatOutbox] sent thread=$threadId temp=$tempMessageId -> $serverId',
