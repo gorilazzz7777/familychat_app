@@ -19,9 +19,9 @@ class ChatOfflineSync extends ChangeNotifier {
   bool _online = true;
   bool _syncing = false;
   bool _rerunRequested = false;
-  int _stuckRetries = 0;
   FamilyChatRepository? _pendingRepo;
   List<ChatOutboxDelivery> _recentDeliveries = const [];
+  Timer? _retryTimer;
 
   bool get isOnline => _online;
   bool get isSyncing => _syncing;
@@ -69,8 +69,8 @@ class ChatOfflineSync extends ChangeNotifier {
     }
     _syncing = true;
     _pendingRepo = repo;
+    _retryTimer?.cancel();
     notifyListeners();
-    var hadFailuresOrRemaining = false;
     try {
       while (true) {
         _rerunRequested = false;
@@ -78,18 +78,13 @@ class ChatOfflineSync extends ChangeNotifier {
         final online = await refreshOnline(activeRepo);
         if (!online) break;
 
-        final deliveries = await ChatOfflineOutbox.sync(activeRepo);
-        final afterCount = await ChatOfflineOutbox.pendingCount();
-        if (afterCount == 0) {
-          _stuckRetries = 0;
-        } else if (_stuckRetries < 3) {
-          // Failed/skipped items stay in the queue; retry a few times.
-          hadFailuresOrRemaining = true;
-          _stuckRetries++;
-        }
-        if (deliveries.isNotEmpty) {
-          _recentDeliveries = [..._recentDeliveries, ...deliveries];
+        final result = await ChatOfflineOutbox.sync(activeRepo);
+        if (result.deliveries.isNotEmpty) {
+          _recentDeliveries = [..._recentDeliveries, ...result.deliveries];
           notifyListeners();
+        }
+        if (result.nextRetryAt != null) {
+          _scheduleRetry(activeRepo, result.nextRetryAt!);
         }
 
         await ChatScheduledSendService.instance.dispatchDue();
@@ -120,18 +115,22 @@ class ChatOfflineSync extends ChangeNotifier {
       notifyListeners();
     } finally {
       _syncing = false;
-      final needsRerun = _rerunRequested || hadFailuresOrRemaining;
+      final needsRerun = _rerunRequested;
       final again = _pendingRepo;
       _rerunRequested = false;
       notifyListeners();
       if (needsRerun && again != null) {
-        // Brief delay so a poison item does not tight-loop the CPU.
-        unawaited(
-          Future<void>.delayed(const Duration(milliseconds: 800), () {
-            unawaited(run(again));
-          }),
-        );
+        unawaited(run(again));
       }
     }
+  }
+
+  void _scheduleRetry(FamilyChatRepository repo, DateTime at) {
+    _retryTimer?.cancel();
+    var delay = at.difference(DateTime.now().toUtc());
+    if (delay.isNegative) delay = Duration.zero;
+    _retryTimer = Timer(delay, () {
+      unawaited(run(repo));
+    });
   }
 }

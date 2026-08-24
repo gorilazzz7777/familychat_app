@@ -326,6 +326,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         ChatOfflineSync.instance.takeDeliveriesForThread(widget.threadId);
     var changed = false;
     for (final delivery in deliveries) {
+      if (delivery.failed && delivery.tempMessageId != null) {
+        _markOptimisticFailed(delivery.tempMessageId!);
+        changed = true;
+        continue;
+      }
       if (delivery.tempMessageId != null && delivery.message != null) {
         _replaceOptimisticMessage(delivery.tempMessageId!, delivery.message!);
         changed = true;
@@ -2478,6 +2483,40 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     });
   }
 
+  void _markOptimisticSending(int tempId) {
+    setState(() {
+      _messages = _messages.map((m) {
+        if (m['id'] == tempId) {
+          return {...m, 'read_status': 'sending', '_pending': true};
+        }
+        return m;
+      }).toList();
+    });
+  }
+
+  Future<void> _retryFailedMessage(Map<String, dynamic> message) async {
+    final tempId = chatAsInt(message['id']);
+    if (tempId == null) return;
+    await ChatOfflineOutbox.resumeMessage(
+      threadId: widget.threadId,
+      tempMessageId: tempId,
+    );
+    if (!mounted) return;
+    _markOptimisticSending(tempId);
+    if (_localFirst) {
+      await ChatLocalStore.instance.patchMessageFields(
+        widget.threadId,
+        tempId,
+        {'read_status': 'sending'},
+      );
+    } else {
+      await _persistMessageCache();
+    }
+    ChatMutationCoordinator.scheduleSync(
+      ref.read(familychatRepositoryProvider),
+    );
+  }
+
   Future<bool> _uploadAndSend(
     int tempId, {
     required String caption,
@@ -3569,6 +3608,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _openPendingMessageMenu(Map<String, dynamic> message) async {
     final body = message['body']?.toString() ?? '';
+    final failed = message['read_status']?.toString() == 'failed';
     final result = await ChatMessageActionsSheet.show(
       context,
       showReactions: false,
@@ -3579,6 +3619,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       canSelect: false,
       canPin: false,
       canSpeak: false,
+      canRetrySend: failed,
       canCancelSend: true,
       canDeleteForEveryone: false,
       canDeleteForMe: false,
@@ -3587,6 +3628,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     switch (result.action) {
       case 'copy':
         await _copyMessages([message]);
+      case 'retry_send':
+        await _retryFailedMessage(message);
       case 'cancel_send':
         await _cancelPendingMessage(message);
     }
@@ -4802,6 +4845,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                                 : m['_pending'] == true
                                                     ? 'sending'
                                                     : 'sent')
+                                        : null,
+                                    onRetrySend: isMine &&
+                                            m['read_status']?.toString() ==
+                                                'failed'
+                                        ? () => unawaited(_retryFailedMessage(m))
                                         : null,
                                     scheduledAt: m['scheduled_at'] != null
                                         ? DateTime.tryParse(

@@ -103,6 +103,7 @@ class ChatOfflineOutbox {
         'kind': 'message',
         'thread_id': threadId,
         'temp_message_id': tempMessageId,
+        'attempts': 0,
         'created_at': DateTime.now().toUtc().toIso8601String(),
         if (body != null && body.isNotEmpty) 'body': body,
         if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
@@ -320,16 +321,87 @@ class ChatOfflineOutbox {
     return items.length;
   }
 
-  static Future<List<ChatOutboxDelivery>> sync(FamilyChatRepository repo) async {
+  static const maxAttempts = 5;
+
+  static Future<void> resumeMessage({
+    required int threadId,
+    required int tempMessageId,
+  }) async {
+    await _serialized(() async {
+      final items = await _readItems();
+      var changed = false;
+      for (final item in items) {
+        if (item['kind']?.toString() != 'message') continue;
+        if (chatAsInt(item['thread_id']) != threadId) continue;
+        if (chatAsInt(item['temp_message_id']) != tempMessageId) continue;
+        item['attempts'] = 0;
+        item.remove('next_retry_at');
+        item.remove('paused');
+        changed = true;
+      }
+      if (changed) await _writeItems(items);
+    });
+  }
+
+  static Future<void> _patchItem(String itemId, Map<String, dynamic> patch) async {
+    await _serialized(() async {
+      final items = await _readItems();
+      var changed = false;
+      for (final item in items) {
+        if (item['id']?.toString() != itemId) continue;
+        item.addAll(patch);
+        changed = true;
+      }
+      if (changed) await _writeItems(items);
+    });
+  }
+
+  static DateTime _nextRetryAt(int attempts) {
+    final shift = (attempts - 1).clamp(0, 4);
+    final seconds = 1 << shift; // 1, 2, 4, 8, 16
+    return DateTime.now().toUtc().add(Duration(seconds: seconds));
+  }
+
+  static Future<void> _markLocalMessageFailed(Map<String, dynamic> item) async {
+    final threadId = chatAsInt(item['thread_id']);
+    final tempId = chatAsInt(item['temp_message_id']);
+    if (threadId == null || tempId == null) return;
+    if (!ChatLocalStore.isSupported) return;
+    await ChatLocalStore.instance.patchMessageFields(
+      threadId,
+      tempId,
+      {'read_status': 'failed'},
+    );
+  }
+
+  static Future<ChatOutboxSyncResult> sync(FamilyChatRepository repo) async {
     final delivered = <ChatOutboxDelivery>[];
-    final failedIds = <String>{};
+    final skippedIds = <String>{};
+    DateTime? nextRetryAt;
 
     while (true) {
       final items = await _readItems();
       Map<String, dynamic>? item;
       for (final candidate in items) {
         final id = candidate['id']?.toString() ?? '';
-        if (id.isEmpty || failedIds.contains(id)) continue;
+        if (id.isEmpty || skippedIds.contains(id)) continue;
+        if (candidate['kind']?.toString() == 'message') {
+          final attempts = chatAsInt(candidate['attempts']) ?? 0;
+          if (attempts >= maxAttempts || candidate['paused'] == true) {
+            skippedIds.add(id);
+            continue;
+          }
+          final retryAt = DateTime.tryParse(
+            candidate['next_retry_at']?.toString() ?? '',
+          );
+          if (retryAt != null && retryAt.isAfter(DateTime.now().toUtc())) {
+            skippedIds.add(id);
+            if (nextRetryAt == null || retryAt.isBefore(nextRetryAt)) {
+              nextRetryAt = retryAt;
+            }
+            continue;
+          }
+        }
         item = candidate;
         break;
       }
@@ -343,9 +415,8 @@ class ChatOfflineOutbox {
         if (kind == 'message') {
           result = await _deliverMessage(repo, item);
           if (result == null) {
-            // Malformed — keep for visibility, skip rest of this pass.
             removeFromQueue = false;
-            if (itemId.isNotEmpty) failedIds.add(itemId);
+            if (itemId.isNotEmpty) skippedIds.add(itemId);
             debugPrint('[ChatOutbox] skip message without delivery id=$itemId');
           }
         } else if (kind == 'reaction') {
@@ -375,7 +446,6 @@ class ChatOfflineOutbox {
         } else if (kind == 'clear_quiet_hours') {
           await _deliverClearQuietHours(repo, item);
         } else {
-          // Unknown kind — drop so it cannot block the queue forever.
           await _removeItemById(itemId);
           continue;
         }
@@ -384,13 +454,54 @@ class ChatOfflineOutbox {
           await _removeItemById(itemId);
         }
       } catch (error, st) {
-        if (itemId.isNotEmpty) failedIds.add(itemId);
+        if (itemId.isNotEmpty) skippedIds.add(itemId);
         debugPrint('[ChatOutbox] fail id=$itemId error=$error\n$st');
+        if (item['kind']?.toString() == 'message') {
+          final attempts = (chatAsInt(item['attempts']) ?? 0) + 1;
+          final giveUp =
+              attempts >= maxAttempts || !ChatNetworkStatus.isRetryable(error);
+          if (giveUp) {
+            await _patchItem(itemId, {
+              'attempts': attempts,
+              'paused': true,
+            });
+            await _markLocalMessageFailed(item);
+            final threadId = chatAsInt(item['thread_id']);
+            final tempId = chatAsInt(item['temp_message_id']);
+            if (threadId != null) {
+              delivered.add(
+                ChatOutboxDelivery(
+                  threadId: threadId,
+                  tempMessageId: tempId,
+                  failed: true,
+                ),
+              );
+            }
+            debugPrint(
+              '[ChatOutbox] gave up temp=${item['temp_message_id']} after $attempts attempts',
+            );
+          } else {
+            final retryAt = _nextRetryAt(attempts);
+            await _patchItem(itemId, {
+              'attempts': attempts,
+              'next_retry_at': retryAt.toIso8601String(),
+            });
+            if (nextRetryAt == null || retryAt.isBefore(nextRetryAt)) {
+              nextRetryAt = retryAt;
+            }
+            debugPrint(
+              '[ChatOutbox] retry $attempts/$maxAttempts at $retryAt temp=${item['temp_message_id']}',
+            );
+          }
+        }
         if (ChatNetworkStatus.looksOffline(error)) break;
       }
     }
 
-    return delivered;
+    return ChatOutboxSyncResult(
+      deliveries: delivered,
+      nextRetryAt: nextRetryAt,
+    );
   }
 
   static Future<void> _removeItemById(String itemId) async {
@@ -655,6 +766,7 @@ class ChatOutboxDelivery {
     this.reactions,
     this.deletedMessageIds,
     this.pinnedMessages,
+    this.failed = false,
   });
 
   final int threadId;
@@ -664,4 +776,15 @@ class ChatOutboxDelivery {
   final List<Map<String, dynamic>>? reactions;
   final List<int>? deletedMessageIds;
   final List<Map<String, dynamic>>? pinnedMessages;
+  final bool failed;
+}
+
+class ChatOutboxSyncResult {
+  const ChatOutboxSyncResult({
+    required this.deliveries,
+    this.nextRetryAt,
+  });
+
+  final List<ChatOutboxDelivery> deliveries;
+  final DateTime? nextRetryAt;
 }

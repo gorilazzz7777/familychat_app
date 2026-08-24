@@ -44,6 +44,7 @@ bool chatMessageIsPending(Map<String, dynamic> message) {
   return message['_pending'] == true ||
       message['read_status'] == 'queued' ||
       message['read_status'] == 'sending' ||
+      message['read_status'] == 'failed' ||
       id == null ||
       id <= 0;
 }

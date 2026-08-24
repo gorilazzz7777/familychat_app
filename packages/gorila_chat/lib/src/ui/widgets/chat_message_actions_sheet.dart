@@ -33,6 +33,7 @@ class ChatMessageActionsSheet {
     bool canPin = false,
     bool isPinned = false,
     bool canSpeak = false,
+    bool canRetrySend = false,
     bool canCancelSend = false,
     bool canDeleteForEveryone = false,
     bool canDeleteForMe = false,
@@ -50,6 +51,7 @@ class ChatMessageActionsSheet {
         canPin: canPin,
         isPinned: isPinned,
         canSpeak: canSpeak,
+        canRetrySend: canRetrySend,
         canCancelSend: canCancelSend,
         canDeleteForEveryone: canDeleteForEveryone,
         canDeleteForMe: canDeleteForMe,
@@ -69,6 +71,7 @@ class _ChatMessageActionsSheetBody extends StatefulWidget {
     required this.canPin,
     required this.isPinned,
     required this.canSpeak,
+    required this.canRetrySend,
     required this.canCancelSend,
     required this.canDeleteForEveryone,
     required this.canDeleteForMe,
@@ -83,6 +86,7 @@ class _ChatMessageActionsSheetBody extends StatefulWidget {
   final bool canPin;
   final bool isPinned;
   final bool canSpeak;
+  final bool canRetrySend;
   final bool canCancelSend;
   final bool canDeleteForEveryone;
   final bool canDeleteForMe;
@@ -221,6 +225,15 @@ class _ChatMessageActionsSheetBodyState
                 onTap: () => Navigator.pop(
                   context,
                   const ChatMessageMenuResult.action('speak'),
+                ),
+              ),
+            if (widget.canRetrySend)
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: const Text('Повторить отправку'),
+                onTap: () => Navigator.pop(
+                  context,
+                  const ChatMessageMenuResult.action('retry_send'),
                 ),
               ),
             if (widget.canCancelSend)

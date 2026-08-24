@@ -1017,6 +1017,10 @@ class FamilyChatRepository {
         if (videoNoteDurationMs != null)
           'video_note_duration_ms': videoNoteDurationMs,
       },
+      options: Options(
+        sendTimeout: const Duration(seconds: 20),
+        receiveTimeout: const Duration(seconds: 20),
+      ),
     );
     return res.data!;
   }

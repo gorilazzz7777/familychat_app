@@ -37,11 +37,11 @@ class ChatMessageReadStatusIcon extends StatelessWidget {
 
     if (status == 'failed') {
       return Semantics(
-        label: 'Не отправлено',
+        label: 'Не отправлено. Нажмите, чтобы повторить',
         child: Tooltip(
-          message: 'Не отправлено',
+          message: 'Не отправлено. Нажмите, чтобы повторить',
           child: Icon(
-            Icons.error_outline,
+            Icons.refresh,
             size: size,
             color: color.withValues(alpha: 0.95),
           ),

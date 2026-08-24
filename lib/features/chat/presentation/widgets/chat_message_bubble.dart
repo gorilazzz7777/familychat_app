@@ -51,6 +51,7 @@ class ChatMessageBubble extends StatelessWidget {
     this.onReplyTap,
     this.onSwipeReply,
     this.onReactionTap,
+    this.onRetrySend,
     this.isGroupLike = false,
     this.mentions = const [],
     this.scheduledAt,
@@ -85,6 +86,7 @@ class ChatMessageBubble extends StatelessWidget {
   /// Свайп влево — то же, что «Ответить» в меню.
   final VoidCallback? onSwipeReply;
   final void Function(String emoji)? onReactionTap;
+  final VoidCallback? onRetrySend;
   final bool isGroupLike;
   final List<Map<String, dynamic>> mentions;
   final DateTime? scheduledAt;
@@ -93,6 +95,39 @@ class ChatMessageBubble extends StatelessWidget {
   final bool canToggleVoiceTranscript;
 
   static const double _avatarSize = 32;
+
+  Widget _buildMineStatus(ThemeData theme, Color color) {
+    final status = readStatus!;
+    if (status == 'failed') {
+      final failedColor = theme.colorScheme.error;
+      final icon = ChatMessageReadStatusIcon(
+        status: status,
+        color: failedColor,
+      );
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Не отправлено',
+            style: theme.textTheme.labelSmall?.copyWith(color: failedColor),
+          ),
+          const SizedBox(width: 4),
+          if (onRetrySend != null && !selectionMode)
+            GestureDetector(
+              onTap: onRetrySend,
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: icon,
+              ),
+            )
+          else
+            icon,
+        ],
+      );
+    }
+    return ChatMessageReadStatusIcon(status: status, color: color);
+  }
 
   bool _attachmentIsVideoNote(Map<String, dynamic> a) {
     if (a['kind'] != 'video' && !isVideoAttachment(a)) return false;
@@ -231,10 +266,7 @@ class ChatMessageBubble extends StatelessWidget {
                     ),
                   if (isMine && readStatus != null) ...[
                     const SizedBox(width: 4),
-                    ChatMessageReadStatusIcon(
-                      status: readStatus!,
-                      color: noteMetaColor,
-                    ),
+                    _buildMineStatus(theme, noteMetaColor),
                   ],
                 ],
               ),
@@ -306,10 +338,7 @@ class ChatMessageBubble extends StatelessWidget {
                     ),
                   if (isMine && readStatus != null) ...[
                     const SizedBox(width: 4),
-                    ChatMessageReadStatusIcon(
-                      status: readStatus!,
-                      color: stickerMetaColor,
-                    ),
+                    _buildMineStatus(theme, stickerMetaColor),
                   ],
                 ],
               ),
@@ -444,10 +473,7 @@ class ChatMessageBubble extends StatelessWidget {
                         ),
                       if (isMine && readStatus != null) ...[
                         const SizedBox(width: 4),
-                        ChatMessageReadStatusIcon(
-                          status: readStatus!,
-                          color: metaColor,
-                        ),
+                        _buildMineStatus(theme, metaColor),
                       ],
                     ],
                   ),
