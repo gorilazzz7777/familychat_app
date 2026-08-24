@@ -22,14 +22,22 @@ class ChatOfflineSync extends ChangeNotifier {
   FamilyChatRepository? _pendingRepo;
   List<ChatOutboxDelivery> _recentDeliveries = const [];
   Timer? _retryTimer;
+  DateTime? _lastOnlineCheckAt;
+
+  /// Skip /status ping when we recently confirmed online (send path latency).
+  static const _onlineCheckTtl = Duration(seconds: 10);
 
   bool get isOnline => _online;
   bool get isSyncing => _syncing;
 
   /// Явно выставить флаг (холодный старт из кэша при отсутствии сети).
   void setOnline(bool online) {
-    if (_online == online) return;
+    if (_online == online) {
+      if (!online) _lastOnlineCheckAt = null;
+      return;
+    }
     _online = online;
+    _lastOnlineCheckAt = online ? DateTime.now() : null;
     notifyListeners();
   }
 
@@ -49,12 +57,24 @@ class ChatOfflineSync extends ChangeNotifier {
     return forThread;
   }
 
-  Future<bool> refreshOnline(FamilyChatRepository repo) async {
+  Future<bool> refreshOnline(
+    FamilyChatRepository repo, {
+    bool force = false,
+  }) async {
+    final now = DateTime.now();
+    if (!force &&
+        _online &&
+        _lastOnlineCheckAt != null &&
+        now.difference(_lastOnlineCheckAt!) < _onlineCheckTtl) {
+      return true;
+    }
     final online = await ChatNetworkStatus.isOnline(() async {
       await repo.status();
     });
+    _lastOnlineCheckAt = now;
     if (_online != online) {
       _online = online;
+      if (!online) _lastOnlineCheckAt = null;
       notifyListeners();
     }
     return online;
@@ -76,7 +96,9 @@ class ChatOfflineSync extends ChangeNotifier {
       while (true) {
         _rerunRequested = false;
         final activeRepo = _pendingRepo ?? repo;
-        final online = await refreshOnline(activeRepo);
+        // Force ping only when we think we are offline; otherwise reuse TTL cache
+        // so outbox send is not blocked by an extra /status round-trip.
+        final online = await refreshOnline(activeRepo, force: !_online);
         if (!online) break;
 
         final result = await ChatOfflineOutbox.sync(activeRepo);
