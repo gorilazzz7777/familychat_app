@@ -71,6 +71,7 @@ class ChatOfflineSync extends ChangeNotifier {
     _pendingRepo = repo;
     _retryTimer?.cancel();
     notifyListeners();
+    var shouldPrefetch = false;
     try {
       while (true) {
         _rerunRequested = false;
@@ -90,29 +91,7 @@ class ChatOfflineSync extends ChangeNotifier {
         await ChatScheduledSendService.instance.dispatchDue();
         if (!_rerunRequested) break;
       }
-
-      // Prefetch after outbox is drained so it never blocks follow-up sends.
-      final activeRepo = _pendingRepo ?? repo;
-      if (_online) {
-        await ChatOfflinePrefetch.run(activeRepo);
-        if (ChatLocalStore.isSupported) {
-          final threads = await ChatLocalStore.instance.readThreads();
-          final unreadIds = <int>[];
-          for (final thread in threads) {
-            final id = chatAsInt(thread['id']);
-            if (id == null) continue;
-            if ((chatAsInt(thread['unread_count']) ?? 0) > 0) {
-              unreadIds.add(id);
-            }
-          }
-          if (unreadIds.isNotEmpty) {
-            unawaited(
-              ChatOfflinePrefetch.prefetchThreads(activeRepo, unreadIds),
-            );
-          }
-        }
-      }
-      notifyListeners();
+      shouldPrefetch = _online;
     } finally {
       _syncing = false;
       final needsRerun = _rerunRequested;
@@ -120,8 +99,33 @@ class ChatOfflineSync extends ChangeNotifier {
       _rerunRequested = false;
       notifyListeners();
       if (needsRerun && again != null) {
+        // Prefer draining outbox immediately; prefetch must not delay sends.
         unawaited(run(again));
+      } else if (shouldPrefetch && again != null) {
+        // Prefetch outside _syncing so a new send can start sync right away.
+        unawaited(_runPrefetch(again));
       }
+    }
+  }
+
+  Future<void> _runPrefetch(FamilyChatRepository repo) async {
+    try {
+      await ChatOfflinePrefetch.run(repo);
+      if (!ChatLocalStore.isSupported) return;
+      final threads = await ChatLocalStore.instance.readThreads();
+      final unreadIds = <int>[];
+      for (final thread in threads) {
+        final id = chatAsInt(thread['id']);
+        if (id == null) continue;
+        if ((chatAsInt(thread['unread_count']) ?? 0) > 0) {
+          unreadIds.add(id);
+        }
+      }
+      if (unreadIds.isNotEmpty) {
+        unawaited(ChatOfflinePrefetch.prefetchThreads(repo, unreadIds));
+      }
+    } catch (e, st) {
+      debugPrint('[ChatOfflineSync] prefetch failed: $e\n$st');
     }
   }
 
