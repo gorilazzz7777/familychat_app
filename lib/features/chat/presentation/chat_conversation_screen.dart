@@ -325,6 +325,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final deliveries =
         ChatOfflineSync.instance.takeDeliveriesForThread(widget.threadId);
     var changed = false;
+    var needsThreadResync = false;
     for (final delivery in deliveries) {
       if (delivery.failed && delivery.tempMessageId != null) {
         _markOptimisticFailed(delivery.tempMessageId!);
@@ -334,6 +335,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (delivery.tempMessageId != null && delivery.message != null) {
         _replaceOptimisticMessage(delivery.tempMessageId!, delivery.message!);
         changed = true;
+        needsThreadResync = true;
       }
       if (delivery.messageId != null &&
           delivery.message != null &&
@@ -347,6 +349,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           }).toList();
         });
         changed = true;
+        needsThreadResync = true;
       }
       if (delivery.messageId != null && delivery.reactions != null) {
         _applyMessageReactions(
@@ -357,6 +360,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           ),
         );
         changed = true;
+        needsThreadResync = true;
       }
       if (delivery.pinnedMessages != null) {
         _setPinnedMessages(delivery.pinnedMessages!);
@@ -370,8 +374,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
       if (delivery.deletedMessageIds != null &&
           delivery.deletedMessageIds!.isNotEmpty) {
+        ChatOfflineOutbox.clearMessagesPendingRemoval(
+          widget.threadId,
+          delivery.deletedMessageIds!,
+        );
         _removeMessagesLocally(delivery.deletedMessageIds!);
         changed = true;
+        // Do not syncThread after delete — HTTP can reinject until server
+        // snapshot catches up; tombstones already keep SQLite clean.
       }
     }
     if (changed) {
@@ -379,7 +389,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
     if (!mounted) return;
     if (_localFirst) {
-      unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      if (needsThreadResync) {
+        unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+      }
       return;
     }
     if (ChatOfflineSync.instance.isOnline) {
@@ -592,7 +604,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   Future<void> _onLocalMessagesWatch(List<Map<String, dynamic>> rows) async {
     if (!mounted) return;
     final gen = ++_messagesWatchGen;
-    final clippedRows = _clipSqliteRowsForUi(rows);
+    final blocked = await ChatOfflineOutbox.pendingRemovalMessageIds(
+      threadId: widget.threadId,
+    );
+    if (!mounted || gen != _messagesWatchGen) return;
+    final filteredRows = blocked.isEmpty
+        ? rows
+        : rows
+            .where((m) {
+              final id = chatAsInt(m['id']);
+              return id == null || !blocked.contains(id);
+            })
+            .toList(growable: false);
+    final clippedRows = _clipSqliteRowsForUi(filteredRows);
 
     final previewNext = _mergeSqliteWithMemoryPending(clippedRows);
     if (chatMessageListsDisplayEqual(_messages, previewNext) && !_loading) {
@@ -3830,6 +3854,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (ok != true || !mounted) return;
 
     if (_localFirst) {
+      ChatOfflineOutbox.markMessagesPendingRemoval(
+        widget.threadId,
+        messageIds,
+      );
       _removeMessagesLocally(messageIds);
       await ChatLocalMutations.removeMessagesLocal(
         widget.threadId,
@@ -4031,6 +4059,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (ok != true || !mounted) return;
 
     if (_localFirst) {
+      ChatOfflineOutbox.markMessagesPendingRemoval(
+        widget.threadId,
+        messageIds,
+      );
       _removeMessagesLocally(messageIds);
       await ChatLocalMutations.removeMessagesLocal(
         widget.threadId,

@@ -140,11 +140,58 @@ class ChatOfflineOutbox {
     await _writeItems(items);
   }
 
+  static final Map<int, Set<int>> _removalTombstones = {};
+
+  /// Block sync/WS from re-upserting messages the user already deleted locally.
+  static void markMessagesPendingRemoval(int threadId, Iterable<int> messageIds) {
+    if (messageIds.isEmpty) return;
+    _removalTombstones
+        .putIfAbsent(threadId, () => <int>{})
+        .addAll(messageIds.where((id) => id > 0));
+  }
+
+  static void clearMessagesPendingRemoval(
+    int threadId,
+    Iterable<int> messageIds,
+  ) {
+    final set = _removalTombstones[threadId];
+    if (set == null || messageIds.isEmpty) return;
+    set.removeAll(messageIds);
+    if (set.isEmpty) _removalTombstones.remove(threadId);
+  }
+
+  static bool isMessagePendingRemoval(int threadId, int messageId) {
+    return _removalTombstones[threadId]?.contains(messageId) ?? false;
+  }
+
+  /// In-memory tombstones + outbox delete/hide still waiting for the server.
+  static Future<Set<int>> pendingRemovalMessageIds({int? threadId}) async {
+    final ids = <int>{};
+    if (threadId != null) {
+      ids.addAll(_removalTombstones[threadId] ?? const {});
+    } else {
+      for (final set in _removalTombstones.values) {
+        ids.addAll(set);
+      }
+    }
+    final items = await _readItems();
+    for (final item in items) {
+      final kind = item['kind']?.toString();
+      if (kind != 'delete_messages' && kind != 'hide_messages') continue;
+      if (threadId != null && chatAsInt(item['thread_id']) != threadId) {
+        continue;
+      }
+      ids.addAll(chatAsIntList(item['message_ids']));
+    }
+    return ids;
+  }
+
   static Future<void> enqueueDeleteMessages({
     required int threadId,
     required List<int> messageIds,
   }) async {
     if (messageIds.isEmpty) return;
+    markMessagesPendingRemoval(threadId, messageIds);
     final items = await _readItems();
     items.add({
       'id': _nextId(),
@@ -161,6 +208,7 @@ class ChatOfflineOutbox {
     required List<int> messageIds,
   }) async {
     if (messageIds.isEmpty) return;
+    markMessagesPendingRemoval(threadId, messageIds);
     final items = await _readItems();
     items.add({
       'id': _nextId(),
@@ -639,6 +687,7 @@ class ChatOfflineOutbox {
     if (ChatLocalStore.isSupported) {
       await ChatLocalStore.instance.deleteMessages(threadId, deleted);
     }
+    clearMessagesPendingRemoval(threadId, deleted);
     return ChatOutboxDelivery(
       threadId: threadId,
       deletedMessageIds: deleted,
@@ -656,6 +705,7 @@ class ChatOfflineOutbox {
     if (ChatLocalStore.isSupported) {
       await ChatLocalStore.instance.deleteMessages(threadId, hidden);
     }
+    clearMessagesPendingRemoval(threadId, hidden);
     return ChatOutboxDelivery(
       threadId: threadId,
       deletedMessageIds: hidden,

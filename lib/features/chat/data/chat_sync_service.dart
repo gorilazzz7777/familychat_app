@@ -9,6 +9,7 @@ import '../../familychat/data/familychat_repository.dart';
 import 'active_chat_context.dart';
 import 'chat_bootstrap_coordinator.dart';
 import 'chat_local_mutations.dart';
+import 'chat_offline_outbox.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_unread_providers.dart';
 import 'familychat_realtime.dart';
@@ -137,6 +138,11 @@ class ChatSyncService {
   Future<void> _ingestIncomingMessage(Map<String, dynamic> message) async {
     final threadId = chatAsInt(message['thread_id']);
     if (threadId == null) return;
+    final messageId = chatAsInt(message['id']);
+    if (messageId != null &&
+        ChatOfflineOutbox.isMessagePendingRemoval(threadId, messageId)) {
+      return;
+    }
 
     await ChatLocalStore.instance.upsertMessage(message);
     unawaited(MediaIncomingSync.ensureMessages([message]));
@@ -397,17 +403,34 @@ class ChatSyncService {
     _syncingThreads.add(threadId);
     try {
       final page = await repo.threadMessages(threadId, limit: limit);
-      await ChatLocalStore.instance.upsertMessages(threadId, page.messages);
+      final blocked =
+          await ChatOfflineOutbox.pendingRemovalMessageIds(threadId: threadId);
+      final messages = blocked.isEmpty
+          ? page.messages
+          : page.messages
+              .where((m) {
+                final id = chatAsInt(m['id']);
+                return id == null || !blocked.contains(id);
+              })
+              .toList(growable: false);
+      await ChatLocalStore.instance.upsertMessages(threadId, messages);
       if (page.pinnedMessages.isNotEmpty) {
-        await ChatLocalMutations.savePinnedMessagesLocal(
-          threadId,
-          page.pinnedMessages,
-        );
+        final pins = blocked.isEmpty
+            ? page.pinnedMessages
+            : page.pinnedMessages
+                .where((m) {
+                  final id = chatAsInt(m['id']);
+                  return id == null || !blocked.contains(id);
+                })
+                .toList(growable: false);
+        await ChatLocalMutations.savePinnedMessagesLocal(threadId, pins);
       }
       final keepIds = <int>{
-        for (final m in page.messages)
+        for (final m in messages)
           if (chatAsInt(m['id']) != null && chatAsInt(m['id'])! > 0)
             chatAsInt(m['id'])!,
+        // Keep tombstoned ids out of deleteMissing? They're already deleted
+        // locally; excluding them from keepIds is correct so they stay gone.
       };
       if (keepIds.isNotEmpty) {
         await ChatLocalStore.instance.deleteMissingFromWindow(
@@ -417,7 +440,14 @@ class ChatSyncService {
           keepIds: keepIds,
         );
       }
-      unawaited(MediaIncomingSync.ensureMessages(page.messages));
+      // Ensure SQLite stays clear for in-flight deletions even if upsert raced.
+      if (blocked.isNotEmpty) {
+        await ChatLocalStore.instance.deleteMessages(
+          threadId,
+          blocked.toList(growable: false),
+        );
+      }
+      unawaited(MediaIncomingSync.ensureMessages(messages));
       await _reconcileThreadPending(threadId);
     } catch (e, st) {
       debugPrint('[ChatSyncService] syncThread($threadId) failed: $e\n$st');
@@ -435,7 +465,23 @@ class ChatSyncService {
         limit: 40,
         beforeId: beforeId,
       );
-      await ChatLocalStore.instance.upsertMessages(threadId, page.messages);
+      final blocked =
+          await ChatOfflineOutbox.pendingRemovalMessageIds(threadId: threadId);
+      final messages = blocked.isEmpty
+          ? page.messages
+          : page.messages
+              .where((m) {
+                final id = chatAsInt(m['id']);
+                return id == null || !blocked.contains(id);
+              })
+              .toList(growable: false);
+      await ChatLocalStore.instance.upsertMessages(threadId, messages);
+      if (blocked.isNotEmpty) {
+        await ChatLocalStore.instance.deleteMessages(
+          threadId,
+          blocked.toList(growable: false),
+        );
+      }
     } catch (e, st) {
       debugPrint('[ChatSyncService] syncThreadOlder failed: $e\n$st');
     }
@@ -511,7 +557,24 @@ class ChatSyncService {
           await _markHistoryComplete(threadId);
           return;
         }
-        await ChatLocalStore.instance.upsertMessages(threadId, page.messages);
+        final blocked = await ChatOfflineOutbox.pendingRemovalMessageIds(
+          threadId: threadId,
+        );
+        final messages = blocked.isEmpty
+            ? page.messages
+            : page.messages
+                .where((m) {
+                  final id = chatAsInt(m['id']);
+                  return id == null || !blocked.contains(id);
+                })
+                .toList(growable: false);
+        await ChatLocalStore.instance.upsertMessages(threadId, messages);
+        if (blocked.isNotEmpty) {
+          await ChatLocalStore.instance.deleteMessages(
+            threadId,
+            blocked.toList(growable: false),
+          );
+        }
         pages += 1;
         if (!page.hasMore) {
           await _markHistoryComplete(threadId);
