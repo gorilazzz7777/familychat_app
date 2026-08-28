@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/constants/api_error_messages.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
@@ -53,6 +54,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
   bool _iShareWithThem = false;
   bool _theyShareWithMe = false;
   bool _locationBusy = false;
+  bool _removing = false;
 
   @override
   void initState() {
@@ -251,11 +253,65 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
     );
   }
 
+  Future<void> _confirmRemove() async {
+    if (_removing) return;
+    final name = _profile?['display_name']?.toString() ?? 'участника';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить из семьи?'),
+        content: Text(
+          '$name больше не будет участником семьи — так же, как если бы вышел сам.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _removing = true);
+    try {
+      await ref
+          .read(familychatRepositoryProvider)
+          .removeFamilyMember(widget.userId);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _removing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(userFacingErrorMessage(e))),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final canRemove = _profile?['can_remove'] == true;
     return Scaffold(
       appBar: FamilyAppBar.build(
         title: 'Профиль участника',
+        actions: [
+          if (canRemove)
+            IconButton(
+              tooltip: 'Удалить',
+              onPressed: _removing ? null : () => unawaited(_confirmRemove()),
+              icon: _removing
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.delete_outline),
+            ),
+        ],
         bottom: _loading || _error != null || _profile == null
             ? null
             : FamilyTabBar.build(

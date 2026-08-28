@@ -10,6 +10,18 @@ class AuthRepository {
 
   Future<bool> hasSession() => _client.tokenStorage.hasRefreshCredential();
 
+  Future<void> exchangeImpersonation(String code) async {
+    final res = await _client.dio.post<Map<String, dynamic>>(
+      'auth/impersonation/exchange/',
+      data: {'code': code},
+    );
+    final data = res.data!;
+    await _client.tokenStorage.saveTokens(
+      access: data['access'] as String,
+      refresh: data['refresh'] as String,
+    );
+  }
+
   Future<void> consumeSession({
     required String provider,
     required String sessionCode,

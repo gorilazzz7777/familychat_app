@@ -49,6 +49,77 @@ bool chatMessageIsPending(Map<String, dynamic> message) {
       id <= 0;
 }
 
+/// True when the local viewer sent [message].
+///
+/// Prefer [is_mine] so ownership survives payloads that omit `sender_user_id`
+/// (partial HTTP/WS echoes). Fall back to comparing sender ids.
+bool chatMessageIsMine(Map<String, dynamic> message, int? currentUserId) {
+  if (message['is_mine'] == true) return true;
+  if (currentUserId == null) return false;
+  return chatAsInt(message['sender_user_id']) == currentUserId;
+}
+
+int? chatSenderUserIdOf(Map<String, dynamic> message) {
+  final direct = chatAsInt(message['sender_user_id']);
+  if (direct != null) return direct;
+  final sender = message['sender'];
+  if (sender is Map) {
+    return chatAsInt(sender['user_id']) ?? chatAsInt(sender['id']);
+  }
+  return chatAsInt(message['user_id']);
+}
+
+/// Keep / restore ownership fields across optimistic → server merges and
+/// incomplete upserts so a sent bubble cannot flip to the peer side.
+Map<String, dynamic> chatEnsureMessageOwnership(
+  Map<String, dynamic> message, {
+  int? currentUserId,
+  Map<String, dynamic>? previous,
+}) {
+  final next = Map<String, dynamic>.from(message);
+
+  final prevSender =
+      previous == null ? null : chatSenderUserIdOf(previous);
+  var sender = chatSenderUserIdOf(next);
+  if (sender == null && prevSender != null) {
+    sender = prevSender;
+    next['sender_user_id'] = prevSender;
+  } else if (sender != null && chatAsInt(next['sender_user_id']) == null) {
+    next['sender_user_id'] = sender;
+  }
+
+  final prevMine = previous?['is_mine'] == true;
+  final mineFlag = next['is_mine'] == true || prevMine;
+  if (mineFlag) {
+    next['is_mine'] = true;
+  }
+
+  if (currentUserId != null) {
+    if (mineFlag && chatAsInt(next['sender_user_id']) == null) {
+      next['sender_user_id'] = currentUserId;
+      sender = currentUserId;
+    }
+    if (sender == currentUserId) {
+      next['is_mine'] = true;
+    }
+  }
+
+  if (previous != null) {
+    for (final key in const [
+      'sender_name',
+      'sender_avatar_url',
+    ]) {
+      final incoming = next[key]?.toString().trim() ?? '';
+      final prior = previous[key]?.toString().trim() ?? '';
+      if (incoming.isEmpty && prior.isNotEmpty) {
+        next[key] = previous[key];
+      }
+    }
+  }
+
+  return next;
+}
+
 /// True when [pending] is an optimistic/outbox row that already landed as [server].
 ///
 /// Used to drop stuck "sending" duplicates after offline delivery or WS echo.
@@ -71,13 +142,13 @@ bool chatPendingMatchesServer(
   }
   if (pending['_scheduled'] == true) return false;
 
-  final serverSender = chatAsInt(server['sender_user_id']);
+  final serverSender = chatSenderUserIdOf(server);
   if (currentUserId != null &&
       serverSender != null &&
       serverSender != currentUserId) {
     return false;
   }
-  final pendingSender = chatAsInt(pending['sender_user_id']);
+  final pendingSender = chatSenderUserIdOf(pending);
   if (pendingSender != null &&
       serverSender != null &&
       pendingSender != serverSender) {
@@ -357,6 +428,7 @@ Object? _chatMessageDisplayFingerprint(Map<String, dynamic> message) {
     message['edited_at']?.toString() ?? '',
     message['read_status']?.toString() ?? '',
     message['sender_user_id'],
+    message['is_mine'] == true,
     message['sender_name']?.toString() ?? '',
     message['sender_avatar_url']?.toString() ?? '',
     _stableJsonFingerprint(message['metadata']),

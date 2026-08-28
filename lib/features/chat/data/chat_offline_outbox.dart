@@ -124,20 +124,22 @@ class ChatOfflineOutbox {
     required int threadId,
     required int lastMessageId,
   }) async {
-    final items = await _readItems();
-    items.removeWhere(
-      (item) =>
-          item['kind']?.toString() == 'mark_read' &&
-          chatAsInt(item['thread_id']) == threadId,
-    );
-    items.add({
-      'id': _nextId(),
-      'kind': 'mark_read',
-      'thread_id': threadId,
-      'last_message_id': lastMessageId,
-      'created_at': DateTime.now().toUtc().toIso8601String(),
+    await _serialized(() async {
+      final items = await _readItems();
+      items.removeWhere(
+        (item) =>
+            item['kind']?.toString() == 'mark_read' &&
+            chatAsInt(item['thread_id']) == threadId,
+      );
+      items.add({
+        'id': _nextId(),
+        'kind': 'mark_read',
+        'thread_id': threadId,
+        'last_message_id': lastMessageId,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      });
+      await _writeItems(items);
     });
-    await _writeItems(items);
   }
 
   static final Map<int, Set<int>> _removalTombstones = {};
@@ -186,21 +188,27 @@ class ChatOfflineOutbox {
     return ids;
   }
 
+  static Future<void> _enqueueRaw(Map<String, dynamic> item) async {
+    await _serialized(() async {
+      final items = await _readItems();
+      items.add(item);
+      await _writeItems(items);
+    });
+  }
+
   static Future<void> enqueueDeleteMessages({
     required int threadId,
     required List<int> messageIds,
   }) async {
     if (messageIds.isEmpty) return;
     markMessagesPendingRemoval(threadId, messageIds);
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'delete_messages',
       'thread_id': threadId,
       'message_ids': messageIds,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueueHideMessagesForMe({
@@ -209,45 +217,39 @@ class ChatOfflineOutbox {
   }) async {
     if (messageIds.isEmpty) return;
     markMessagesPendingRemoval(threadId, messageIds);
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'hide_messages',
       'thread_id': threadId,
       'message_ids': messageIds,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueuePin({
     required int threadId,
     required int messageId,
   }) async {
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'pin',
       'thread_id': threadId,
       'message_id': messageId,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueueUnpin({
     required int threadId,
     required int messageId,
   }) async {
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'unpin',
       'thread_id': threadId,
       'message_id': messageId,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueueEditMessage({
@@ -255,8 +257,7 @@ class ChatOfflineOutbox {
     required int messageId,
     required String body,
   }) async {
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'edit_message',
       'thread_id': threadId,
@@ -264,22 +265,19 @@ class ChatOfflineOutbox {
       'body': body,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueueMute({
     required int threadId,
     required String muteKey,
   }) async {
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'mute',
       'thread_id': threadId,
       'mute': muteKey,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueueQuietHours({
@@ -288,8 +286,7 @@ class ChatOfflineOutbox {
     required String end,
     required int utcOffsetMinutes,
   }) async {
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'quiet_hours',
       'thread_id': threadId,
@@ -298,20 +295,17 @@ class ChatOfflineOutbox {
       'utc_offset_minutes': utcOffsetMinutes,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueueClearQuietHours({
     required int threadId,
   }) async {
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'clear_quiet_hours',
       'thread_id': threadId,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   static Future<void> enqueueReaction({
@@ -319,8 +313,7 @@ class ChatOfflineOutbox {
     required int messageId,
     required String emoji,
   }) async {
-    final items = await _readItems();
-    items.add({
+    await _enqueueRaw({
       'id': _nextId(),
       'kind': 'reaction',
       'thread_id': threadId,
@@ -328,7 +321,6 @@ class ChatOfflineOutbox {
       'emoji': emoji,
       'created_at': DateTime.now().toUtc().toIso8601String(),
     });
-    await _writeItems(items);
   }
 
   /// Remove a queued outgoing message (user cancelled a stuck/pending bubble).
@@ -429,33 +421,25 @@ class ChatOfflineOutbox {
 
     while (true) {
       final items = await _readItems();
-      Map<String, dynamic>? item;
-      for (final candidate in items) {
-        final id = candidate['id']?.toString() ?? '';
-        if (id.isEmpty || skippedIds.contains(id)) continue;
-        if (candidate['kind']?.toString() == 'message') {
-          final attempts = chatAsInt(candidate['attempts']) ?? 0;
-          if (attempts >= maxAttempts || candidate['paused'] == true) {
-            skippedIds.add(id);
-            continue;
+      // Prefer outgoing messages over mark_read/mute/etc so typing isn't
+      // blocked behind lower-priority outbox work.
+      final item = _pickNextOutboxItem(
+        items,
+        skippedIds: skippedIds,
+        onMessageDeferred: (retryAt) {
+          final current = nextRetryAt;
+          if (current == null || retryAt.isBefore(current)) {
+            nextRetryAt = retryAt;
           }
-          final retryAt = DateTime.tryParse(
-            candidate['next_retry_at']?.toString() ?? '',
-          );
-          if (retryAt != null && retryAt.isAfter(DateTime.now().toUtc())) {
-            skippedIds.add(id);
-            if (nextRetryAt == null || retryAt.isBefore(nextRetryAt)) {
-              nextRetryAt = retryAt;
-            }
-            continue;
-          }
-        }
-        item = candidate;
-        break;
-      }
+        },
+      );
       if (item == null) break;
 
       final itemId = item['id']?.toString() ?? '';
+      if (itemId.isEmpty) {
+        debugPrint('[ChatOutbox] skip item without id kind=${item['kind']}');
+        break;
+      }
       try {
         final kind = item['kind']?.toString();
         ChatOutboxDelivery? result;
@@ -534,7 +518,8 @@ class ChatOfflineOutbox {
               'attempts': attempts,
               'next_retry_at': retryAt.toIso8601String(),
             });
-            if (nextRetryAt == null || retryAt.isBefore(nextRetryAt)) {
+            final current = nextRetryAt;
+            if (current == null || retryAt.isBefore(current)) {
               nextRetryAt = retryAt;
             }
             debugPrint(
@@ -550,6 +535,37 @@ class ChatOfflineOutbox {
       deliveries: delivered,
       nextRetryAt: nextRetryAt,
     );
+  }
+
+  /// Ready messages first (FIFO among messages), then other kinds in queue order.
+  static Map<String, dynamic>? _pickNextOutboxItem(
+    List<Map<String, dynamic>> items, {
+    required Set<String> skippedIds,
+    required void Function(DateTime retryAt) onMessageDeferred,
+  }) {
+    Map<String, dynamic>? firstOther;
+    for (final candidate in items) {
+      final id = candidate['id']?.toString() ?? '';
+      if (id.isEmpty || skippedIds.contains(id)) continue;
+      if (candidate['kind']?.toString() == 'message') {
+        final attempts = chatAsInt(candidate['attempts']) ?? 0;
+        if (attempts >= maxAttempts || candidate['paused'] == true) {
+          skippedIds.add(id);
+          continue;
+        }
+        final retryAt = DateTime.tryParse(
+          candidate['next_retry_at']?.toString() ?? '',
+        );
+        if (retryAt != null && retryAt.isAfter(DateTime.now().toUtc())) {
+          skippedIds.add(id);
+          onMessageDeferred(retryAt);
+          continue;
+        }
+        return candidate;
+      }
+      firstOther ??= candidate;
+    }
+    return firstOther;
   }
 
   static Future<void> _removeItemById(String itemId) async {
@@ -637,39 +653,83 @@ class ChatOfflineOutbox {
     if (ChatLocalStore.isSupported) {
       // Upsert server row first, then drop temp — otherwise a watch between
       // delete and upsert briefly removes the bubble from the UI.
-      final serverMsg = Map<String, dynamic>.from(msg);
-      serverMsg['thread_id'] ??= threadId;
+      Map<String, dynamic>? pendingRow;
+      final localRows = await ChatLocalStore.instance.readMessages(threadId);
+      for (final row in localRows) {
+        if (chatAsInt(row['id']) == tempMessageId) {
+          pendingRow = row;
+          break;
+        }
+      }
+      final serverMsg = chatEnsureMessageOwnership(
+        {...msg, 'thread_id': msg['thread_id'] ?? threadId},
+        previous: pendingRow,
+      );
+      // Outbox delivery is always our send — keep ownership even if API omits it.
+      serverMsg['is_mine'] = true;
       await ChatLocalStore.instance.upsertMessage(serverMsg);
       await ChatLocalStore.instance.deleteMessages(threadId, [tempMessageId]);
+      localMs = localSw.elapsedMilliseconds;
+
+      debugPrint(
+        '[chat_send_timing] scope=client_outbox '
+        'thread_id=$threadId temp=$tempMessageId message_id=$serverId '
+        'attachments=${attachmentIds.length} '
+        'total=${sw.elapsedMilliseconds}ms '
+        'upload=${uploadMs}ms http=${httpMs}ms local=${localMs}ms '
+        'queue_wait_ms=${queueWaitMs ?? "n/a"}',
+      );
+
+      debugPrint(
+        '[ChatOutbox] sent thread=$threadId temp=$tempMessageId -> $serverId',
+      );
+
+      return ChatOutboxDelivery(
+        threadId: threadId,
+        tempMessageId: tempMessageId,
+        message: serverMsg,
+      );
     } else {
       final messages =
           await FamilyChatLocalCache.readThreadMessages(threadId) ?? [];
+      Map<String, dynamic>? pendingRow;
+      for (final row in messages) {
+        if (chatAsInt(row['id']) == tempMessageId) {
+          pendingRow = row;
+          break;
+        }
+      }
+      final serverMsg = chatEnsureMessageOwnership(
+        {...msg, 'thread_id': msg['thread_id'] ?? threadId},
+        previous: pendingRow,
+      );
+      serverMsg['is_mine'] = true;
       final withoutTemp = messages
           .where((m) => chatAsInt(m['id']) != tempMessageId)
           .toList();
-      withoutTemp.add(msg);
+      withoutTemp.add(serverMsg);
       await FamilyChatLocalCache.saveThreadMessages(threadId, withoutTemp);
+      localMs = localSw.elapsedMilliseconds;
+
+      debugPrint(
+        '[chat_send_timing] scope=client_outbox '
+        'thread_id=$threadId temp=$tempMessageId message_id=$serverId '
+        'attachments=${attachmentIds.length} '
+        'total=${sw.elapsedMilliseconds}ms '
+        'upload=${uploadMs}ms http=${httpMs}ms local=${localMs}ms '
+        'queue_wait_ms=${queueWaitMs ?? "n/a"}',
+      );
+
+      debugPrint(
+        '[ChatOutbox] sent thread=$threadId temp=$tempMessageId -> $serverId',
+      );
+
+      return ChatOutboxDelivery(
+        threadId: threadId,
+        tempMessageId: tempMessageId,
+        message: serverMsg,
+      );
     }
-    localMs = localSw.elapsedMilliseconds;
-
-    debugPrint(
-      '[chat_send_timing] scope=client_outbox '
-      'thread_id=$threadId temp=$tempMessageId message_id=$serverId '
-      'attachments=${attachmentIds.length} '
-      'total=${sw.elapsedMilliseconds}ms '
-      'upload=${uploadMs}ms http=${httpMs}ms local=${localMs}ms '
-      'queue_wait_ms=${queueWaitMs ?? "n/a"}',
-    );
-
-    debugPrint(
-      '[ChatOutbox] sent thread=$threadId temp=$tempMessageId -> $serverId',
-    );
-
-    return ChatOutboxDelivery(
-      threadId: threadId,
-      tempMessageId: tempMessageId,
-      message: msg,
-    );
   }
 
   static Future<ChatOutboxDelivery?> _deliverReaction(

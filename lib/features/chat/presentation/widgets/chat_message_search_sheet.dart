@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../../../core/local_db/chat_local_store.dart';
+import '../../data/chat_message_preview.dart';
 
 /// Поиск по локальной SQLite-истории чата.
 class ChatMessageSearchSheet extends StatefulWidget {
@@ -135,12 +136,10 @@ class _ChatMessageSearchSheetState extends State<ChatMessageSearchSheet> {
                   itemBuilder: (_, i) {
                     final m = _results[i];
                     final id = m['id'] as int;
-                    final body = m['body']?.toString() ?? '';
                     final sender = m['sender_name']?.toString() ?? '';
                     final created =
                         DateTime.tryParse(m['created_at']?.toString() ?? '');
-                    final preview =
-                        body.isNotEmpty ? body : _attachmentPreview(m);
+                    final preview = chatMessagePreviewText(m);
                     return ListTile(
                       title: Text(
                         preview,
@@ -163,14 +162,5 @@ class _ChatMessageSearchSheetState extends State<ChatMessageSearchSheet> {
         ),
       ),
     );
-  }
-
-  String _attachmentPreview(Map<String, dynamic> m) {
-    final atts = (m['attachments'] as List?) ?? [];
-    if (atts.isEmpty) return 'Сообщение';
-    final first = atts.first;
-    if (first is! Map) return 'Вложение';
-    if (first['kind'] == 'image') return 'Фото';
-    return first['filename']?.toString() ?? 'Файл';
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -271,13 +272,21 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
       return;
     }
     if (person.userId <= 0) return;
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => MemberProfileScreen(
-          userId: person.userId,
-          onOpenOwnProfile: widget.onOpenOwnProfile,
+    unawaited(
+      Navigator.of(context)
+          .push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => MemberProfileScreen(
+            userId: person.userId,
+            onOpenOwnProfile: widget.onOpenOwnProfile,
+          ),
         ),
-      ),
+      )
+          .then((removed) {
+        if (removed == true && mounted) {
+          unawaited(_load());
+        }
+      }),
     );
   }
 

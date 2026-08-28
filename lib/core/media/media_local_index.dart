@@ -169,6 +169,23 @@ abstract final class MediaLocalIndex {
     return _mem[key];
   }
 
+  static MediaLocalRecord? peekByAssetId(String? assetId) {
+    final id = assetId?.trim() ?? '';
+    if (id.isEmpty) return null;
+    for (final rec in _mem.values) {
+      if (rec.assetId == id) return rec;
+    }
+    return null;
+  }
+
+  /// photo_manager asset id для файлов, которые уже есть локально (альбом / исходящая загрузка).
+  static Set<String> knownAssetIds() {
+    return {
+      for (final rec in _mem.values)
+        if ((rec.assetId ?? '').trim().isNotEmpty) rec.assetId!.trim(),
+    };
+  }
+
   static Future<void> upsert(MediaLocalRecord record) async {
     await ensureLoaded();
     _mem[record.key] = record;

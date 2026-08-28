@@ -9,6 +9,7 @@ import '../../familychat/data/familychat_repository.dart';
 import 'active_chat_context.dart';
 import 'chat_bootstrap_coordinator.dart';
 import 'chat_local_mutations.dart';
+import 'chat_message_preview.dart';
 import 'chat_offline_outbox.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_unread_providers.dart';
@@ -129,10 +130,7 @@ class ChatSyncService {
   }
 
   bool _messageIsMine(Map<String, dynamic> message) {
-    if (message['is_mine'] == true) return true;
-    final uid = _currentUserId;
-    if (uid == null) return false;
-    return chatAsInt(message['sender_user_id']) == uid;
+    return chatMessageIsMine(message, _currentUserId);
   }
 
   Future<void> _ingestIncomingMessage(Map<String, dynamic> message) async {
@@ -144,11 +142,15 @@ class ChatSyncService {
       return;
     }
 
-    await ChatLocalStore.instance.upsertMessage(message);
-    unawaited(MediaIncomingSync.ensureMessages([message]));
+    final owned = chatEnsureMessageOwnership(
+      message,
+      currentUserId: _currentUserId,
+    );
+    await ChatLocalStore.instance.upsertMessage(owned);
+    unawaited(MediaIncomingSync.ensureMessages([owned]));
     await _dropMatchingPending(
       threadId,
-      message,
+      owned,
       currentUserId: _currentUserId,
     );
 
@@ -162,11 +164,11 @@ class ChatSyncService {
       }
     }
     if (thread != null) {
-      thread['last_message'] = message;
+      thread['last_message'] = owned;
       var unread = chatAsInt(thread['unread_count']) ?? 0;
       final viewing = ActiveChatContext.instance.isViewingThread(threadId);
-      final isMine = _messageIsMine(message);
-      if (!viewing && !isMine && !chatMessageIsPending(message)) {
+      final isMine = _messageIsMine(owned);
+      if (!viewing && !isMine && !chatMessageIsPending(owned)) {
         unread += 1;
       }
       thread['unread_count'] = unread;
@@ -300,12 +302,13 @@ class ChatSyncService {
         for (final server in remoteThreads)
           _mergeHubThread(server, localById[chatAsInt(server['id'])]),
       ];
-      await ChatLocalStore.instance.replaceThreads(threads);
+      final enriched = await _enrichHubLastMessages(threads);
+      await ChatLocalStore.instance.replaceThreads(enriched);
       await ChatLocalStore.instance.replaceMembers(members);
       _notifyUnreadChanged();
 
       if (prefetchMessages) {
-        for (final thread in threads) {
+        for (final thread in enriched) {
           final id = chatAsInt(thread['id']);
           if (id == null) continue;
           final unread = chatAsInt(thread['unread_count']) ?? 0;
@@ -330,27 +333,109 @@ class ChatSyncService {
     final localUnread = chatAsInt(local['unread_count']) ?? 0;
     final serverLast = server['last_message'];
     final localLast = local['last_message'];
-    final serverLastId =
-        serverLast is Map ? chatAsInt(serverLast['id']) : null;
-    final localLastId = localLast is Map ? chatAsInt(localLast['id']) : null;
+    final serverLastMap = serverLast is Map
+        ? Map<String, dynamic>.from(serverLast)
+        : null;
+    final localLastMap =
+        localLast is Map ? Map<String, dynamic>.from(localLast) : null;
+    final serverLastId = serverLastMap == null
+        ? null
+        : chatAsInt(serverLastMap['id']);
+    final localLastId =
+        localLastMap == null ? null : chatAsInt(localLastMap['id']);
 
     if (localLastId != null &&
         (serverLastId == null || localLastId > serverLastId)) {
       return {
         ...server,
-        'last_message': localLast,
+        'last_message': localLastMap,
         'unread_count': math.max(serverUnread, localUnread),
       };
     }
-    if (localLastId != null &&
-        localLastId == serverLastId &&
-        localUnread > serverUnread) {
+    if (localLastId != null && localLastId == serverLastId) {
+      final richer = chatPreferRicherLastMessage(serverLastMap, localLastMap);
       return {
         ...server,
-        'unread_count': localUnread,
+        'last_message': richer,
+        if (localUnread > serverUnread) 'unread_count': localUnread,
       };
     }
     return server;
+  }
+
+  Future<List<Map<String, dynamic>>> _enrichHubLastMessages(
+    List<Map<String, dynamic>> threads,
+  ) async {
+    if (!isSupported || threads.isEmpty) return threads;
+    final out = <Map<String, dynamic>>[];
+    for (final thread in threads) {
+      final threadId = chatAsInt(thread['id']);
+      final last = thread['last_message'];
+      if (threadId == null || last is! Map) {
+        out.add(thread);
+        continue;
+      }
+      final lastMap = Map<String, dynamic>.from(last);
+      if (!chatLastMessageLacksPreviewPayload(lastMap)) {
+        out.add(thread);
+        continue;
+      }
+      final messageId = chatAsInt(lastMap['id']);
+      if (messageId == null || messageId <= 0) {
+        out.add(thread);
+        continue;
+      }
+      final local = await ChatLocalStore.instance.readMessage(
+        threadId,
+        messageId,
+      );
+      if (local == null || chatLastMessageLacksPreviewPayload(local)) {
+        out.add(thread);
+        continue;
+      }
+      out.add({
+        ...thread,
+        'last_message': chatPreferRicherLastMessage(lastMap, local),
+      });
+    }
+    return out;
+  }
+
+  Future<void> _patchHubLastMessageFromSynced(
+    int threadId,
+    List<Map<String, dynamic>> messages,
+  ) async {
+    if (messages.isEmpty) return;
+    Map<String, dynamic>? newest;
+    var newestId = -1;
+    for (final message in messages) {
+      final id = chatAsInt(message['id']);
+      if (id == null || id <= 0 || chatMessageIsPending(message)) continue;
+      if (id >= newestId) {
+        newestId = id;
+        newest = message;
+      }
+    }
+    if (newest == null) return;
+
+    final threads = await ChatLocalStore.instance.readThreads();
+    for (final thread in threads) {
+      if (chatAsInt(thread['id']) != threadId) continue;
+      final last = thread['last_message'];
+      final lastMap =
+          last is Map ? Map<String, dynamic>.from(last) : null;
+      final lastId = lastMap == null ? null : chatAsInt(lastMap['id']);
+      if (lastId != null && lastId > newestId) return;
+      final richer = lastId == newestId
+          ? chatPreferRicherLastMessage(lastMap, newest)
+          : newest;
+      await ChatLocalStore.instance.upsertThread({
+        ...thread,
+        'last_message': richer,
+      });
+      _notifyUnreadChanged();
+      return;
+    }
   }
 
   Future<void> _syncThreadAndHubRow(int threadId) async {
@@ -405,7 +490,7 @@ class ChatSyncService {
       final page = await repo.threadMessages(threadId, limit: limit);
       final blocked =
           await ChatOfflineOutbox.pendingRemovalMessageIds(threadId: threadId);
-      final messages = blocked.isEmpty
+      final rawMessages = blocked.isEmpty
           ? page.messages
           : page.messages
               .where((m) {
@@ -413,7 +498,12 @@ class ChatSyncService {
                 return id == null || !blocked.contains(id);
               })
               .toList(growable: false);
+      final messages = [
+        for (final m in rawMessages)
+          chatEnsureMessageOwnership(m, currentUserId: _currentUserId),
+      ];
       await ChatLocalStore.instance.upsertMessages(threadId, messages);
+      await _patchHubLastMessageFromSynced(threadId, messages);
       if (page.pinnedMessages.isNotEmpty) {
         final pins = blocked.isEmpty
             ? page.pinnedMessages
@@ -467,7 +557,7 @@ class ChatSyncService {
       );
       final blocked =
           await ChatOfflineOutbox.pendingRemovalMessageIds(threadId: threadId);
-      final messages = blocked.isEmpty
+      final rawMessages = blocked.isEmpty
           ? page.messages
           : page.messages
               .where((m) {
@@ -475,6 +565,10 @@ class ChatSyncService {
                 return id == null || !blocked.contains(id);
               })
               .toList(growable: false);
+      final messages = [
+        for (final m in rawMessages)
+          chatEnsureMessageOwnership(m, currentUserId: _currentUserId),
+      ];
       await ChatLocalStore.instance.upsertMessages(threadId, messages);
       if (blocked.isNotEmpty) {
         await ChatLocalStore.instance.deleteMessages(
@@ -560,7 +654,7 @@ class ChatSyncService {
         final blocked = await ChatOfflineOutbox.pendingRemovalMessageIds(
           threadId: threadId,
         );
-        final messages = blocked.isEmpty
+        final rawMessages = blocked.isEmpty
             ? page.messages
             : page.messages
                 .where((m) {
@@ -568,6 +662,10 @@ class ChatSyncService {
                   return id == null || !blocked.contains(id);
                 })
                 .toList(growable: false);
+        final messages = [
+          for (final m in rawMessages)
+            chatEnsureMessageOwnership(m, currentUserId: _currentUserId),
+        ];
         await ChatLocalStore.instance.upsertMessages(threadId, messages);
         if (blocked.isNotEmpty) {
           await ChatLocalStore.instance.deleteMessages(

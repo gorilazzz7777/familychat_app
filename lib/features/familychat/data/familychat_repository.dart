@@ -202,6 +202,10 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<void> removeFamilyMember(int userId) async {
+    await _dio.delete('familychat/members/$userId/');
+  }
+
   Future<Map<String, dynamic>> memberDmThread(int userId) async {
     final res = await _dio
         .post<Map<String, dynamic>>('familychat/members/$userId/dm-thread/');

@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../../core/media/media_local_index.dart';
 import '../../../../../core/providers/app_providers.dart';
 import '../../../../../core/widgets/app_skeletons.dart';
 import '../../../../gallery/presentation/gallery_media_thumbnail.dart';
+import 'already_in_album_badge.dart';
 
 /// Выбор уже загруженных фото семьи (для альбома).
 class AttachFamilyGalleryTab extends ConsumerStatefulWidget {
@@ -64,6 +66,9 @@ class _AttachFamilyGalleryTabState
       if (!mounted) return;
       final batch =
           (data['photos'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      await MediaLocalIndex.ensureLoaded();
+      MediaLocalIndex.hydrateAttachments(batch);
+      if (!mounted) return;
       setState(() {
         _total = data['total'] is int
             ? data['total'] as int
@@ -115,6 +120,11 @@ class _AttachFamilyGalleryTabState
     final next = Set<int>.from(widget.selected);
     if (!next.add(photoId)) next.remove(photoId);
     widget.onSelectedChanged(next);
+  }
+
+  bool _inCustomAlbums(Map<String, dynamic> photo) {
+    final value = photo['in_custom_albums'];
+    return value == true || value == 1 || value == 'true';
   }
 
   @override
@@ -186,22 +196,15 @@ class _AttachFamilyGalleryTabState
                                   color: Color(0x22000000),
                                 );
                               }
-                              if (widget.excludeAttachmentIds
-                                  .contains(photoId)) {
-                                return const ColoredBox(
-                                  color: Color(0x33000000),
-                                  child: Center(
-                                    child: Icon(
-                                      Icons.check,
-                                      color: Colors.white70,
-                                    ),
-                                  ),
-                                );
-                              }
+                              final alreadyHere =
+                                  widget.excludeAttachmentIds.contains(photoId);
+                              final inAlbums = _inCustomAlbums(photo);
                               final selected =
                                   widget.selected.contains(photoId);
                               return GestureDetector(
-                                onTap: () => _toggle(photoId),
+                                onTap: alreadyHere
+                                    ? null
+                                    : () => _toggle(photoId),
                                 child: Stack(
                                   fit: StackFit.expand,
                                   children: [
@@ -210,7 +213,23 @@ class _AttachFamilyGalleryTabState
                                       threadId: threadId,
                                       fit: BoxFit.cover,
                                     ),
-                                    if (selected)
+                                    if (alreadyHere)
+                                      const ColoredBox(
+                                        color: Color(0x66000000),
+                                        child: Center(
+                                          child: Icon(
+                                            Icons.check,
+                                            color: Colors.white70,
+                                          ),
+                                        ),
+                                      )
+                                    else if (inAlbums)
+                                      const Positioned(
+                                        left: 6,
+                                        top: 6,
+                                        child: AlreadyInAlbumBadge(),
+                                      ),
+                                    if (!alreadyHere && selected)
                                       Container(
                                         color: Colors.black38,
                                         child: const Icon(

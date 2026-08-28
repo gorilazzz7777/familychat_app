@@ -12,26 +12,40 @@ import '../record_video_circle_screen.dart';
 class ChatVideoCircleSession extends ChangeNotifier {
   static const maxMs = 30000;
 
+  List<CameraDescription> _cameras = const [];
+  int _cameraIndex = 0;
+  CameraLensDirection _lens = CameraLensDirection.front;
   CameraController? _camera;
   bool _ready = false;
   bool _recording = false;
+  bool _switching = false;
   int _elapsedMs = 0;
   Timer? _tick;
   Object? _error;
 
   bool get isReady => _ready;
   bool get isRecording => _recording;
+  bool get isSwitchingCamera => _switching;
   int get elapsedMs => _elapsedMs;
   Object? get error => _error;
   CameraController? get camera => _camera;
+  CameraLensDirection get lensDirection => _lens;
+  bool get canFlip => _cameras.length > 1 && !_switching;
 
-  Future<void> ensureReady() async {
+  Future<void> ensureReady({CameraLensDirection? prefer}) async {
     if (kIsWeb) {
       _error = StateError('web');
       notifyListeners();
       return;
     }
-    if (_ready && _camera != null) return;
+    final want = prefer ?? _lens;
+    if (_ready &&
+        _camera != null &&
+        _camera!.value.isInitialized &&
+        _lens == want &&
+        !_switching) {
+      return;
+    }
     Object? lastError;
     for (var attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) {
@@ -43,22 +57,30 @@ class ChatVideoCircleSession extends ChangeNotifier {
         if (!cam.isGranted || !mic.isGranted) {
           throw StateError('permission');
         }
-        final cameras = await availableCameras();
-        if (cameras.isEmpty) throw StateError('no_camera');
-        final front = cameras.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.front,
-          orElse: () => cameras.first,
-        );
+        _cameras = await availableCameras();
+        if (_cameras.isEmpty) throw StateError('no_camera');
+        var index = _cameras.indexWhere((c) => c.lensDirection == want);
+        if (index < 0) {
+          index = _cameras.indexWhere(
+            (c) => c.lensDirection == CameraLensDirection.front,
+          );
+        }
+        if (index < 0) index = 0;
+        final description = _cameras[index];
+        final previous = _camera;
         final controller = CameraController(
-          front,
+          description,
           ResolutionPreset.medium,
           enableAudio: true,
           imageFormatGroup: ImageFormatGroup.jpeg,
         );
         await controller.initialize();
-        await _camera?.dispose();
+        await previous?.dispose();
         _camera = controller;
+        _cameraIndex = index;
+        _lens = description.lensDirection;
         _ready = true;
+        _switching = false;
         _error = null;
         notifyListeners();
         return;
@@ -66,8 +88,40 @@ class ChatVideoCircleSession extends ChangeNotifier {
         lastError = e;
       }
     }
+    _switching = false;
     _error = lastError;
     notifyListeners();
+  }
+
+  Future<void> flipCamera() async {
+    if (!canFlip) return;
+    final current = _cameras.isEmpty
+        ? _lens
+        : _cameras[_cameraIndex].lensDirection;
+    final next = current == CameraLensDirection.back
+        ? CameraLensDirection.front
+        : CameraLensDirection.back;
+    final wasRecording = _recording;
+    if (wasRecording) {
+      _tick?.cancel();
+      _tick = null;
+      try {
+        final file = await _camera?.stopVideoRecording();
+        final path = file?.path;
+        if (path != null) {
+          unawaited(File(path).delete().then((_) {}, onError: (_) {}));
+        }
+      } catch (_) {}
+      _recording = false;
+      _elapsedMs = 0;
+    }
+    _switching = true;
+    _ready = false;
+    notifyListeners();
+    await ensureReady(prefer: next);
+    if (wasRecording && _ready) {
+      await start();
+    }
   }
 
   Future<void> start() async {

@@ -11,6 +11,7 @@ import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../data/chat_hub_tab_order_storage.dart';
 import '../data/chat_local_reads.dart';
+import '../data/chat_message_preview.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/chat_unread_providers.dart';
 import '../data/familychat_realtime.dart';
@@ -61,6 +62,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
   bool _loading = true;
   bool _hubBootstrapDone = false;
+  bool _lastKnownOnline = true;
   bool _searchVisible = false;
   String _searchQuery = '';
   final _searchController = TextEditingController();
@@ -128,6 +130,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     _tabController = TabController(length: _filters.length, vsync: this);
     FamilyChatRealtime.instance.addListener(_onRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineSync);
+    _lastKnownOnline = ChatOfflineSync.instance.isOnline;
     unawaited(_restoreTabOrder());
     if (_localFirst) {
       _bindLocalStore();
@@ -284,14 +287,18 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   void _onOfflineSync() {
     if (!mounted) return;
-    if (ChatOfflineSync.instance.isOnline) {
-      if (_localFirst) {
-        unawaited(ChatSyncService.instance.syncHub(prefetchMessages: false));
-        final repo = ref.read(familychatRepositoryProvider);
-        unawaited(ChatOfflineSync.instance.run(repo));
-      } else {
-        unawaited(_load(silent: true));
-      }
+    final online = ChatOfflineSync.instance.isOnline;
+    final becameOnline = online && !_lastKnownOnline;
+    _lastKnownOnline = online;
+    // Only react to offline→online. Calling run() on every notifyListeners
+    // (deliveries / sync boundaries) caused an infinite outbox loop.
+    if (!becameOnline) return;
+    if (_localFirst) {
+      unawaited(ChatSyncService.instance.syncHub(prefetchMessages: false));
+      final repo = ref.read(familychatRepositoryProvider);
+      unawaited(ChatOfflineSync.instance.run(repo));
+    } else {
+      unawaited(_load(silent: true));
     }
   }
 
@@ -490,12 +497,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   String _preview(Map<String, dynamic> thread) {
     final last = thread['last_message'] as Map<String, dynamic>?;
-    if (last == null) return 'Нет сообщений';
-    final body = last['body']?.toString() ?? '';
-    if (body.isNotEmpty) return body;
-    final atts = (last['attachments'] as List?) ?? [];
-    if (atts.isNotEmpty) return 'Вложение';
-    return 'Сообщение';
+    return chatMessagePreviewText(last);
   }
 
   /// Статус только для своих последних сообщений (сервер кладёт read_status).

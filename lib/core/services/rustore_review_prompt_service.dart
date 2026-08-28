@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer' as developer;
 import 'dart:io';
 
@@ -22,6 +23,10 @@ class RuStoreReviewPromptService {
       MethodChannel('com.familychat.familychat_app/rustore_review');
 
   static const int _sessionTriggerCount = 10;
+
+  static const Duration _minPlausibleReviewDuration =
+      Duration(milliseconds: 700);
+  static const Duration _sdkCallTimeout = Duration(minutes: 11);
 
   static const String _completedKey = 'familychat_rustore_review_done_v1';
   static const String _sessionCountKey = 'familychat_app_session_count_v1';
@@ -86,19 +91,39 @@ class RuStoreReviewPromptService {
     );
   }
 
-  static Future<bool> _tryRustoreInAppReview(
+  static Future<_SdkReviewOutcome> _tryRustoreInAppReview(
     FamilyChatRepository repository, {
     required String reason,
   }) async {
+    final sw = Stopwatch()..start();
     try {
-      final dynamic native =
-          await _androidReviewChannel.invokeMethod('launchRuStoreReview');
-      _log('RuStore SDK invokeMethod result: $native (${native.runtimeType})');
+      final dynamic native = await _androidReviewChannel
+          .invokeMethod('launchRuStoreReview')
+          .timeout(_sdkCallTimeout);
+      sw.stop();
+      _log(
+        'RuStore SDK invokeMethod result: $native (${native.runtimeType}) '
+        'elapsedMs=${sw.elapsedMilliseconds}',
+      );
 
-      if (native == true) return true;
+      if (native == true || (native is Map && native['ok'] == true)) {
+        final uiAppeared = native is Map && native['ui_appeared'] == true;
+        if (!uiAppeared && sw.elapsed < _minPlausibleReviewDuration) {
+          await _reportSdkFailure(
+            repository,
+            stage: 'launchReviewFlow',
+            errorCode: 'suspiciously_fast_success',
+            errorMessage:
+                'SDK returned ok in ${sw.elapsedMilliseconds}ms — UI likely skipped',
+            reason: reason,
+            details: '$native',
+          );
+          return _SdkReviewOutcome.silentOrFailed;
+        }
+        return _SdkReviewOutcome.completedWithUi;
+      }
+
       if (native is Map) {
-        final ok = native['ok'] == true;
-        if (ok) return true;
         await _reportSdkFailure(
           repository,
           stage: '${native['stage'] ?? 'unknown'}',
@@ -107,7 +132,10 @@ class RuStoreReviewPromptService {
           reason: reason,
           details: '$native',
         );
-        return false;
+        if (native['fallback_allowed'] == false) {
+          return _SdkReviewOutcome.abortedNoFallback;
+        }
+        return _SdkReviewOutcome.silentOrFailed;
       }
 
       await _reportSdkFailure(
@@ -117,7 +145,18 @@ class RuStoreReviewPromptService {
         errorMessage: '${native.runtimeType}: $native',
         reason: reason,
       );
-      return false;
+      return _SdkReviewOutcome.silentOrFailed;
+    } on TimeoutException catch (e) {
+      sw.stop();
+      await _reportSdkFailure(
+        repository,
+        stage: 'timeout',
+        errorCode: 'TimeoutException',
+        errorMessage:
+            'No SDK response within ${_sdkCallTimeout.inMinutes}min: $e',
+        reason: reason,
+      );
+      return _SdkReviewOutcome.abortedNoFallback;
     } on MissingPluginException catch (e) {
       await _reportSdkFailure(
         repository,
@@ -126,7 +165,7 @@ class RuStoreReviewPromptService {
         errorMessage: '$e',
         reason: reason,
       );
-      return false;
+      return _SdkReviewOutcome.silentOrFailed;
     } on PlatformException catch (e, st) {
       _log(
         'RuStore SDK PlatformException code=${e.code} message=${e.message}',
@@ -141,7 +180,16 @@ class RuStoreReviewPromptService {
         reason: reason,
         details: e.details?.toString(),
       );
-      return false;
+      return _SdkReviewOutcome.silentOrFailed;
+    } catch (e) {
+      await _reportSdkFailure(
+        repository,
+        stage: 'dart',
+        errorCode: e.runtimeType.toString(),
+        errorMessage: '$e',
+        reason: reason,
+      );
+      return _SdkReviewOutcome.silentOrFailed;
     }
   }
 
@@ -201,18 +249,27 @@ class RuStoreReviewPromptService {
       if (!context.mounted) return;
       _snack(context, 'Сейчас откроется оценка приложения в RuStore.');
 
-      final inAppOk = await _tryRustoreInAppReview(
+      final outcome = await _tryRustoreInAppReview(
         repository,
         reason: reason,
       );
-      if (inAppOk) {
+      if (outcome == _SdkReviewOutcome.completedWithUi) {
+        await repository.reportAppRatingPromptShown('rustore');
         await _markCompleted(prefs);
         _log('marked completed (RuStore In-App review) reason=$reason');
+        return;
+      }
+      if (outcome == _SdkReviewOutcome.abortedNoFallback) {
+        _log(
+          'RuStore In-App flow still in progress or UI was shown — '
+          'skip fallback reason=$reason',
+        );
         return;
       }
 
       _log('RuStore In-App SDK did not complete — showing stars dialog');
       if (!context.mounted) return;
+      await repository.reportAppRatingPromptShown('fallback');
       await showRustoreReviewFallbackDialog(
         context,
         onSubmit: (stars) => _submitRatingAndRedirect(
@@ -289,4 +346,10 @@ class RuStoreReviewPromptService {
       reason: 'first_feed_like',
     );
   }
+}
+
+enum _SdkReviewOutcome {
+  completedWithUi,
+  silentOrFailed,
+  abortedNoFallback,
 }

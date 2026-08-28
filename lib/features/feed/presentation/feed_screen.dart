@@ -81,6 +81,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   bool _loading = true;
   bool _loadingMore = false;
   String? _error;
+  bool _lastKnownOnline = true;
   int? _personUserId;
   String? _lastReadAt;
   bool _hasMore = false;
@@ -94,6 +95,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     super.initState();
     _scrollController.addListener(_onScroll);
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
+    _lastKnownOnline = ChatOfflineSync.instance.isOnline;
     _loadInitial();
   }
 
@@ -106,9 +108,12 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
 
   void _onOfflineStateChanged() {
     if (!mounted) return;
-    if (ChatOfflineSync.instance.isOnline) {
+    final online = ChatOfflineSync.instance.isOnline;
+    final becameOnline = online && !_lastKnownOnline;
+    _lastKnownOnline = online;
+    if (becameOnline) {
       unawaited(refresh(silent: true));
-    } else {
+    } else if (!online) {
       setState(() => _error = null);
     }
   }

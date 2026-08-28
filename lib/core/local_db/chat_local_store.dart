@@ -98,6 +98,15 @@ class ChatLocalStore {
     return db.readMessages(threadId);
   }
 
+  Future<Map<String, dynamic>?> readMessage(
+    int threadId,
+    int messageId,
+  ) async {
+    final db = await ensureOpen();
+    if (db == null) return null;
+    return db.readMessage(threadId, messageId);
+  }
+
   Future<List<Map<String, dynamic>>> readMessagesTail(
     int threadId, {
     int limit = 80,

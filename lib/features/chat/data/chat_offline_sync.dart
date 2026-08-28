@@ -23,6 +23,7 @@ class ChatOfflineSync extends ChangeNotifier {
   List<ChatOutboxDelivery> _recentDeliveries = const [];
   Timer? _retryTimer;
   DateTime? _lastOnlineCheckAt;
+  DateTime? _syncStartedAt;
 
   /// Skip /status ping when we recently confirmed online (send path latency).
   static const _onlineCheckTtl = Duration(seconds: 10);
@@ -68,9 +69,15 @@ class ChatOfflineSync extends ChangeNotifier {
         now.difference(_lastOnlineCheckAt!) < _onlineCheckTtl) {
       return true;
     }
+    final sw = Stopwatch()..start();
     final online = await ChatNetworkStatus.isOnline(() async {
-      await repo.status();
+      await repo.status(timeout: const Duration(seconds: 3));
     });
+    if (kDebugMode) {
+      debugPrint(
+        '[ChatOfflineSync] online_ping ${sw.elapsedMilliseconds}ms -> $online',
+      );
+    }
     _lastOnlineCheckAt = now;
     if (_online != online) {
       _online = online;
@@ -81,25 +88,28 @@ class ChatOfflineSync extends ChangeNotifier {
   }
 
   Future<void> run(FamilyChatRepository repo) async {
+    _pendingRepo = repo;
+    // Every caller marks work pending. The active loop drains until clear.
+    _rerunRequested = true;
     if (_syncing) {
-      // Messages enqueued while a pass is running must not be dropped.
-      _rerunRequested = true;
-      _pendingRepo = repo;
       return;
     }
     _syncing = true;
-    _pendingRepo = repo;
+    _syncStartedAt = DateTime.now();
     _retryTimer?.cancel();
-    notifyListeners();
     var shouldPrefetch = false;
+    var passes = 0;
     try {
-      while (true) {
+      while (_rerunRequested) {
         _rerunRequested = false;
+        passes++;
         final activeRepo = _pendingRepo ?? repo;
-        // Force ping only when we think we are offline; otherwise reuse TTL cache
-        // so outbox send is not blocked by an extra /status round-trip.
-        final online = await refreshOnline(activeRepo, force: !_online);
-        if (!online) break;
+        // Never block the outbox on /status: a slow ping (tens of seconds
+        // behind Dio traffic) was delaying sends by queue_wait≈10s+.
+        if (!_online) {
+          final online = await refreshOnline(activeRepo, force: true);
+          if (!online) break;
+        }
 
         final result = await ChatOfflineOutbox.sync(activeRepo);
         if (result.deliveries.isNotEmpty) {
@@ -109,23 +119,33 @@ class ChatOfflineSync extends ChangeNotifier {
         if (result.nextRetryAt != null) {
           _scheduleRetry(activeRepo, result.nextRetryAt!);
         }
-
-        await ChatScheduledSendService.instance.dispatchDue();
-        if (!_rerunRequested) break;
       }
       shouldPrefetch = _online;
     } finally {
-      _syncing = false;
-      final needsRerun = _rerunRequested;
       final again = _pendingRepo;
-      _rerunRequested = false;
-      notifyListeners();
-      if (needsRerun && again != null) {
-        // Prefer draining outbox immediately; prefetch must not delay sends.
+      // Drop the lock before reading the dirty flag so a concurrent run()
+      // either sets _rerunRequested or starts a new worker — never both lost.
+      _syncing = false;
+      _syncStartedAt = null;
+      if (_rerunRequested && again != null) {
+        if (kDebugMode) {
+          debugPrint(
+            '[ChatOfflineSync] run chain passes=$passes -> rerun',
+          );
+        }
         unawaited(run(again));
-      } else if (shouldPrefetch && again != null) {
-        // Prefetch outside _syncing so a new send can start sync right away.
-        unawaited(_runPrefetch(again));
+      } else {
+        if (kDebugMode) {
+          debugPrint('[ChatOfflineSync] run done passes=$passes');
+        }
+        if (again != null) {
+          if (_online) {
+            unawaited(ChatScheduledSendService.instance.dispatchDue());
+          }
+          if (shouldPrefetch) {
+            unawaited(_runPrefetch(again));
+          }
+        }
       }
     }
   }

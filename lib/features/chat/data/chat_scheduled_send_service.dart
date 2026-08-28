@@ -168,7 +168,7 @@ class ChatScheduledSendService extends ChangeNotifier {
     if (repo == null) return;
 
     final online = await ChatNetworkStatus.isOnline(() async {
-      await repo.status();
+      await repo.status(timeout: const Duration(seconds: 3));
     });
     if (!online) return;
 

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -177,7 +176,8 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
       if (startedAt == null || !mounted) return;
       var ms = DateTime.now().difference(startedAt).inMilliseconds;
       if (_circleMode) {
-        ms = math.max(ms, _circle.elapsedMs);
+        // Сессия кружка — источник правды (сброс при смене камеры).
+        ms = _circle.elapsedMs;
         if (ms >= ChatVideoCircleSession.maxMs && !_releasing) {
           unawaited(_finishLockedOrHold(send: true));
           return;
@@ -198,11 +198,10 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
   }
 
   int _holdDurationMs() {
+    if (_circleMode) return _circle.elapsedMs;
     final startedAt = _holdStartedAt;
     if (startedAt == null) return 0;
-    var ms = DateTime.now().difference(startedAt).inMilliseconds;
-    if (_circleMode) ms = math.max(ms, _circle.elapsedMs);
-    return ms;
+    return DateTime.now().difference(startedAt).inMilliseconds;
   }
 
   Future<void> _ensureRecordingStarted() async {

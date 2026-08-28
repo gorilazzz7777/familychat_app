@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/chat_voice_utils.dart';
@@ -37,12 +38,46 @@ class ChatCircleRecordingOverlay extends StatelessWidget {
         child: Column(
           children: [
             const Spacer(),
-            IgnorePointer(
-              child: ChatVideoCirclePreview(
-                session: session,
-                size: size,
-                progress: progress,
-              ),
+            Stack(
+              alignment: Alignment.center,
+              clipBehavior: Clip.none,
+              children: [
+                IgnorePointer(
+                  child: ChatVideoCirclePreview(
+                    session: session,
+                    size: size,
+                    progress: progress,
+                  ),
+                ),
+                if (locked && session.canFlip)
+                  Positioned(
+                    right: 0,
+                    bottom: 8,
+                    child: ListenableBuilder(
+                      listenable: session,
+                      builder: (context, _) {
+                        final front =
+                            session.lensDirection == CameraLensDirection.front;
+                        return Material(
+                          color: Colors.black54,
+                          shape: const CircleBorder(),
+                          child: IconButton(
+                            tooltip: front
+                                ? 'Основная камера'
+                                : 'Фронтальная камера',
+                            onPressed: session.isSwitchingCamera
+                                ? null
+                                : () => session.flipCamera(),
+                            icon: const Icon(
+                              Icons.cameraswitch,
+                              color: Colors.white,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 24),
             if (!locked)

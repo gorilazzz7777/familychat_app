@@ -176,7 +176,10 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
     final id = chatAsInt(msg['id']);
     if (id != null && _messages.any((m) => chatAsInt(m['id']) == id)) return;
     if (!mounted) return;
-    setState(() => _messages = chatUpsertMessage(_messages, msg));
+    setState(() {
+      final owned = chatEnsureMessageOwnership(msg, currentUserId: _myUserId);
+      _messages = chatUpsertMessage(_messages, owned);
+    });
     _scrollToBottom();
     final lastId = chatNewestServerMessageId(_messages) ?? id;
     if (lastId != null && lastId > 0) {
@@ -343,7 +346,7 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
   }
 
   bool _isMine(Map<String, dynamic> m) =>
-      chatAsInt(m['sender_user_id']) == _myUserId;
+      chatMessageIsMine(m, _myUserId);
 
   bool _isPinned(int? id) =>
       id != null && _pinnedMessages.any((m) => chatAsInt(m['id']) == id);

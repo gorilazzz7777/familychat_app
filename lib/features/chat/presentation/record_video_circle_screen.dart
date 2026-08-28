@@ -54,9 +54,13 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
 
   bool _recording = false;
   bool _submitting = false;
+  bool _switchingCamera = false;
   int _elapsedMs = 0;
   Timer? _tick;
 
+  List<CameraDescription> _cameras = const [];
+  int _cameraIndex = 0;
+  CameraLensDirection _lens = CameraLensDirection.front;
   CameraController? _camera;
   bool _cameraReady = false;
   String? _videoPath;
@@ -78,6 +82,12 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
   }
 
   bool get _hasPreview => _videoPath != null;
+  bool get _canFlip =>
+      !_recording &&
+      !_submitting &&
+      !_switchingCamera &&
+      !_hasPreview &&
+      _cameras.length > 1;
 
   Future<void> _ensureCameraPermission() async {
     final cam = await Permission.camera.request();
@@ -89,35 +99,44 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
 
   /// Как в Diary [RecordMilestoneWishScreen._initCamera], с retry —
   /// камера шторки вложений может ещё не отпустить сессию.
-  Future<void> _initCamera() async {
-    if (_cameraReady && _camera != null) return;
+  Future<void> _initCamera({CameraLensDirection? prefer}) async {
     Object? lastError;
+    final want = prefer ?? _lens;
     for (var attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) {
         await Future<void>.delayed(Duration(milliseconds: 250 * attempt));
       }
       try {
         await _ensureCameraPermission();
-        final cameras = await availableCameras();
-        if (cameras.isEmpty) throw Exception('Камера недоступна');
-        final front = cameras.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.front,
-          orElse: () => cameras.first,
-        );
+        _cameras = await availableCameras();
+        if (_cameras.isEmpty) throw Exception('Камера недоступна');
+        var index = _cameras.indexWhere((c) => c.lensDirection == want);
+        if (index < 0) {
+          index = _cameras.indexWhere(
+            (c) => c.lensDirection == CameraLensDirection.front,
+          );
+        }
+        if (index < 0) index = 0;
+        final description = _cameras[index];
+        final previous = _camera;
         final controller = CameraController(
-          front,
+          description,
           ResolutionPreset.medium,
           enableAudio: true,
           imageFormatGroup: ImageFormatGroup.jpeg,
         );
         await controller.initialize();
+        await previous?.dispose();
         if (!mounted) {
           await controller.dispose();
           return;
         }
         setState(() {
           _camera = controller;
+          _cameraIndex = index;
+          _lens = description.lensDirection;
           _cameraReady = true;
+          _switchingCamera = false;
         });
         return;
       } catch (e) {
@@ -125,9 +144,23 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
       }
     }
     if (!mounted) return;
+    setState(() => _switchingCamera = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('$lastError')),
     );
+  }
+
+  Future<void> _flipCamera() async {
+    if (!_canFlip) return;
+    final current = _cameras[_cameraIndex];
+    final next = current.lensDirection == CameraLensDirection.back
+        ? CameraLensDirection.front
+        : CameraLensDirection.back;
+    setState(() {
+      _cameraReady = false;
+      _switchingCamera = true;
+    });
+    await _initCamera(prefer: next);
   }
 
   void _startTick() {
@@ -143,9 +176,11 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
   }
 
   Future<void> _startRecording() async {
-    if (_recording || _submitting) return;
+    if (_recording || _submitting || _switchingCamera) return;
     try {
-      await _initCamera();
+      if (!_cameraReady || _camera == null) {
+        await _initCamera();
+      }
       final cam = _camera;
       if (cam == null || !cam.value.isInitialized) {
         throw Exception('Камера не готова');
@@ -243,6 +278,16 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Кружок'),
+        actions: [
+          if (_cameras.length > 1)
+            IconButton(
+              tooltip: _lens == CameraLensDirection.front
+                  ? 'Основная камера'
+                  : 'Фронтальная камера',
+              onPressed: _canFlip ? () => unawaited(_flipCamera()) : null,
+              icon: const Icon(Icons.cameraswitch),
+            ),
+        ],
       ),
       body: SafeArea(
         child: Column(
@@ -341,13 +386,33 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
             style: theme.textTheme.titleLarge,
           ),
         const SizedBox(height: 8),
-        FilledButton.tonalIcon(
-          onPressed: _recording ? _stopRecording : _startRecording,
-          icon: Icon(_recording ? Icons.stop : Icons.fiber_manual_record),
-          label: Text(_recording ? 'Стоп' : 'Запись'),
-          style: FilledButton.styleFrom(
-            minimumSize: const Size.fromHeight(48),
-          ),
+        Row(
+          children: [
+            if (_cameras.length > 1) ...[
+              IconButton.filledTonal(
+                tooltip: _lens == CameraLensDirection.front
+                    ? 'Основная камера'
+                    : 'Фронтальная камера',
+                onPressed: _canFlip ? () => unawaited(_flipCamera()) : null,
+                icon: const Icon(Icons.cameraswitch),
+              ),
+              const SizedBox(width: 12),
+            ],
+            Expanded(
+              child: FilledButton.tonalIcon(
+                onPressed: _recording
+                    ? _stopRecording
+                    : (_switchingCamera ? null : _startRecording),
+                icon: Icon(
+                  _recording ? Icons.stop : Icons.fiber_manual_record,
+                ),
+                label: Text(_recording ? 'Стоп' : 'Запись'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );

@@ -317,6 +317,23 @@ class ChatDatabase extends _$ChatDatabase {
     } catch (_) {
       return incoming;
     }
+    // Incomplete HTTP/WS payloads must not wipe known ownership.
+    final incomingSender = _asInt(incoming['sender_user_id']);
+    final existingSender = _asInt(existing['sender_user_id']);
+    if (incomingSender == null && existingSender != null) {
+      incoming['sender_user_id'] = existingSender;
+    }
+    if (incoming['is_mine'] != true && existing['is_mine'] == true) {
+      incoming['is_mine'] = true;
+    }
+    for (final key in const ['sender_name', 'sender_avatar_url']) {
+      final next = incoming[key]?.toString().trim() ?? '';
+      final prev = existing[key]?.toString().trim() ?? '';
+      if (next.isEmpty && prev.isNotEmpty) {
+        incoming[key] = existing[key];
+      }
+    }
+
     final incomingAtts = incoming['attachments'];
     final existingAtts = existing['attachments'];
     if (incomingAtts is! List || existingAtts is! List) return incoming;
@@ -535,6 +552,21 @@ class ChatDatabase extends _$ChatDatabase {
           ..limit(1))
         .getSingleOrNull();
     return row != null;
+  }
+
+  Future<Map<String, dynamic>?> readMessage(
+    int threadId,
+    int messageId,
+  ) async {
+    final row = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) & t.messageId.equals(messageId),
+          )
+          ..limit(1))
+        .getSingleOrNull();
+    if (row == null) return null;
+    return _decodeMessage(row);
   }
 
   Future<int> countMessages(int threadId) async {

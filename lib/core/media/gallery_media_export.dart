@@ -65,6 +65,52 @@ abstract final class GalleryMediaExport {
     _knownAppAlbumAssetIds[key] = assetId;
   }
 
+  /// Id ассетов в альбомах FamilyChat / LittleOne на телефоне (копии уже сохранённых фото).
+  static Future<Set<String>> appAlbumAssetIds({int maxAssets = 2000}) async {
+    if (kIsWeb) return {};
+    final ids = <String>{
+      for (final id in _knownAppAlbumAssetIds.values)
+        if (id.trim().isNotEmpty) id.trim(),
+    };
+    try {
+      final filter = FilterOptionGroup(
+        imageOption: const FilterOption(needTitle: true),
+        videoOption: const FilterOption(needTitle: true),
+      );
+      final paths = await PhotoManager.getAssetPathList(
+        type: RequestType.common,
+        filterOption: filter,
+      );
+      for (final albumName in localLookupAlbumNames) {
+        AssetPathEntity? album;
+        for (final path in paths) {
+          if (path.name == albumName) {
+            album = path;
+            break;
+          }
+        }
+        if (album == null) continue;
+        final count = await album.assetCountAsync;
+        final limit = count > maxAssets ? maxAssets : count;
+        const pageSize = 200;
+        for (var start = 0; start < limit; start += pageSize) {
+          final end = start + pageSize > limit ? limit : start + pageSize;
+          final assets = await album.getAssetListRange(start: start, end: end);
+          for (final asset in assets) {
+            ids.add(asset.id);
+            final title = asset.title?.trim() ?? '';
+            if (title.isNotEmpty) {
+              rememberAppAlbumAsset(title, asset.id);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[GalleryMediaExport] appAlbumAssetIds failed: $e');
+    }
+    return ids;
+  }
+
   /// Найти уже сохранённый файл в FamilyChat или LittleOne с тем же именем.
   static Future<AssetEntity?> findExistingInAppAlbum(String filename) async {
     final want = normalizeAlbumFilename(filename);

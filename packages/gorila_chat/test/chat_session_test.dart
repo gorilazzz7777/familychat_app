@@ -407,4 +407,57 @@ void main() {
       isFalse,
     );
   });
+
+  test('chatMessageIsMine trusts is_mine when sender_user_id is missing', () {
+    expect(
+      chatMessageIsMine({'is_mine': true, 'body': 'я заебалась'}, 42),
+      isTrue,
+    );
+    expect(
+      chatMessageIsMine({'body': 'peer'}, 42),
+      isFalse,
+    );
+    expect(
+      chatMessageIsMine({'sender_user_id': 42, 'body': 'ok'}, 42),
+      isTrue,
+    );
+  });
+
+  test('chatEnsureMessageOwnership keeps mine after incomplete server echo', () {
+    final pending = {
+      'id': -1,
+      '_pending': true,
+      'is_mine': true,
+      'sender_user_id': 42,
+      'body': 'я заебалась',
+      'created_at': '2026-08-26T11:02:00.000Z',
+    };
+    final serverEcho = {
+      'id': 501,
+      'body': 'я заебалась',
+      'created_at': '2026-08-26T11:02:01.000Z',
+      // Incomplete payload: no sender_user_id / is_mine.
+    };
+    final merged = chatEnsureMessageOwnership(
+      serverEcho,
+      currentUserId: 42,
+      previous: pending,
+    );
+    expect(merged['is_mine'], isTrue);
+    expect(chatAsInt(merged['sender_user_id']), 42);
+    expect(chatMessageIsMine(merged, 42), isTrue);
+  });
+
+  test('chatEnsureMessageOwnership fills sender from nested sender map', () {
+    final msg = chatEnsureMessageOwnership(
+      {
+        'id': 9,
+        'body': 'hi',
+        'sender': {'user_id': '17'},
+      },
+      currentUserId: 17,
+    );
+    expect(chatAsInt(msg['sender_user_id']), 17);
+    expect(msg['is_mine'], isTrue);
+  });
 }

@@ -11,9 +11,12 @@ import 'package:photo_manager/photo_manager.dart';
 
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
 import '../../../../profile/presentation/read_picked_image_bytes.dart';
+import '../../../../../core/media/gallery_media_export.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
 import '../../../../../core/media/image_upload_pipeline.dart';
+import '../../../../../core/media/media_local_index.dart';
 import '../../../../../core/widgets/app_skeletons.dart';
+import 'already_in_album_badge.dart';
 import 'attach_camera_capture_screen.dart';
 import 'attach_camera_tile.dart';
 import 'chat_attach_models.dart';
@@ -27,12 +30,15 @@ class AttachGalleryTab extends StatefulWidget {
     required this.onSelectedChanged,
     required this.scrollController,
     required this.expanded,
+    this.highlightKnownAssets = false,
   });
 
   final List<ChatAttachSelectionItem> selected;
   final AttachItemsChanged onSelectedChanged;
   final ScrollController scrollController;
   final bool expanded;
+  /// Пометить превью, которые уже есть в FamilyChat (локальный asset id / альбом на телефоне).
+  final bool highlightKnownAssets;
 
   @override
   State<AttachGalleryTab> createState() => _AttachGalleryTabState();
@@ -51,12 +57,26 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   static const _pageSize = 60;
 
   final Map<String, int> _selectionOrder = {};
+  Set<String> _knownAssetIds = {};
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _bootstrap();
+    unawaited(_loadKnownAssetIds());
+  }
+
+  Future<void> _loadKnownAssetIds() async {
+    if (!widget.highlightKnownAssets) return;
+    await MediaLocalIndex.ensureLoaded();
+    if (!mounted) return;
+    final ids = MediaLocalIndex.knownAssetIds();
+    setState(() => _knownAssetIds = ids);
+    if (kIsWeb) return;
+    final extra = await GalleryMediaExport.appAlbumAssetIds();
+    if (!mounted || extra.isEmpty) return;
+    setState(() => _knownAssetIds = {...ids, ...extra});
   }
 
   @override
@@ -736,6 +756,8 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                   asset: asset,
                   selected: selected,
                   order: order,
+                  alreadyInAlbum: widget.highlightKnownAssets &&
+                      _knownAssetIds.contains(asset.id),
                   onTap: () => _toggleAsset(asset),
                 );
               },
@@ -753,11 +775,13 @@ class _AssetThumb extends StatefulWidget {
     required this.selected,
     required this.onTap,
     this.order,
+    this.alreadyInAlbum = false,
   });
 
   final AssetEntity asset;
   final bool selected;
   final int? order;
+  final bool alreadyInAlbum;
   final VoidCallback onTap;
 
   @override
@@ -817,6 +841,12 @@ class _AssetThumbState extends State<_AssetThumb> {
               left: 6,
               bottom: 6,
               child: Icon(Icons.play_circle_fill, color: Colors.white, size: 20),
+            ),
+          if (widget.alreadyInAlbum)
+            const Positioned(
+              left: 6,
+              top: 6,
+              child: AlreadyInAlbumBadge(),
             ),
           Positioned(
             top: 6,

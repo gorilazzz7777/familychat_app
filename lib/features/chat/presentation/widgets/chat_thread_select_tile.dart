@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../../profile/presentation/widgets/chat_avatar.dart';
+import '../../data/chat_message_preview.dart';
 import '../../data/chat_realtime_utils.dart';
 import '../chat_thread_avatars.dart';
 import 'chat_message_read_status_icon.dart';
@@ -55,12 +56,7 @@ class ChatThreadSelectTile extends StatelessWidget {
 
   static String previewOf(Map<String, dynamic> thread) {
     final last = thread['last_message'] as Map<String, dynamic>?;
-    if (last == null) return 'Нет сообщений';
-    final body = last['body']?.toString() ?? '';
-    if (body.isNotEmpty) return body;
-    final atts = (last['attachments'] as List?) ?? [];
-    if (atts.isNotEmpty) return 'Вложение';
-    return 'Сообщение';
+    return chatMessagePreviewText(last);
   }
 
   static String? lastMessageReadStatus(Map<String, dynamic>? last) {

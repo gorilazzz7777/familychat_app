@@ -251,6 +251,7 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
                         onSelectedChanged: _setSelected,
                         scrollController: scrollController,
                         expanded: _expanded,
+                        highlightKnownAssets: _albumMode || _phoneOnly,
                       ),
                     ChatAttachMode.file => AttachFileTab(
                         selected: _selected,

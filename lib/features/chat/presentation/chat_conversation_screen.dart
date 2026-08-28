@@ -37,6 +37,7 @@ import '../data/chat_mutation_coordinator.dart';
 import '../data/chat_offline_outbox.dart';
 import '../data/chat_offline_prefetch.dart';
 import '../data/chat_offline_sync.dart';
+import '../data/chat_message_preview.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/chat_scheduled_send_service.dart';
 import '../data/chat_send_options.dart';
@@ -518,7 +519,24 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           uid != _currentUserId || premium != _viewerIndividualPremium;
       _currentUserId = uid;
       _viewerIndividualPremium = premium;
-      if (!fromCache && changed && mounted) setState(() {});
+      if (!changed || !mounted) return;
+      // Backfill owner on optimistic bubbles created before identity resolved.
+      if (uid != null && _messages.isNotEmpty) {
+        var patched = false;
+        final next = _messages.map((m) {
+          if (m['is_mine'] == true && chatAsInt(m['sender_user_id']) == null) {
+            patched = true;
+            return {...m, 'sender_user_id': uid};
+          }
+          return m;
+        }).toList();
+        if (patched) {
+          setState(() => _messages = next);
+          unawaited(_persistMessageCache(next));
+          return;
+        }
+      }
+      if (!fromCache) setState(() {});
     } catch (_) {}
   }
 
@@ -700,7 +718,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             currentUserId: _currentUserId,
           );
     return chatReconcilePendingDuplicates(
-      merged,
+      [
+        for (final m in merged)
+          chatEnsureMessageOwnership(m, currentUserId: _currentUserId),
+      ],
       currentUserId: _currentUserId,
     );
   }
@@ -728,7 +749,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             currentUserId: _currentUserId,
           );
     return chatReconcilePendingDuplicates(
-      merged,
+      [
+        for (final m in merged)
+          chatEnsureMessageOwnership(m, currentUserId: _currentUserId),
+      ],
       currentUserId: _currentUserId,
     );
   }
@@ -1622,7 +1646,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
       if (!mounted) return;
       setState(() {
-        final withIncoming = chatUpsertMessage(_messages, map);
+        final owned = chatEnsureMessageOwnership(
+          map,
+          currentUserId: _currentUserId,
+        );
+        final withIncoming = chatUpsertMessage(_messages, owned);
         _messages = chatReconcilePendingDuplicates(
           withIncoming,
           currentUserId: _currentUserId,
@@ -2307,6 +2335,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       'schedule_id': item['id']?.toString(),
       '_scheduled': true,
       '_pending': true,
+      'is_mine': true,
       'thread_id': widget.threadId,
       'body': item['body']?.toString() ?? '',
       'created_at': DateTime.now().toUtc().toIso8601String(),
@@ -2338,6 +2367,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         {
           'id': tempId,
           '_pending': true,
+          'is_mine': true,
           'thread_id': widget.threadId,
           'body': body,
           'created_at': DateTime.now().toUtc().toIso8601String(),
@@ -2363,10 +2393,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           break;
         }
       }
-      final merged = _mergeVoiceMessageFromOptimistic(
-        serverMessage: msg,
-        optimistic: optimistic,
+      final merged = chatEnsureMessageOwnership(
+        _mergeVoiceMessageFromOptimistic(
+          serverMessage: msg,
+          optimistic: optimistic,
+        ),
+        currentUserId: _currentUserId,
+        previous: optimistic,
       );
+      // Replacing our own optimistic send — never lose the owner.
+      merged['is_mine'] = true;
+      if (_currentUserId != null &&
+          chatAsInt(merged['sender_user_id']) == null) {
+        merged['sender_user_id'] = _currentUserId;
+      }
       final withoutTemp =
           _messages.where((m) => m['id'] != tempId).toList();
       final msgId = chatAsInt(merged['id']);
@@ -3466,17 +3506,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   String _messagePreviewText(Map<String, dynamic> message) {
-    final body = message['body']?.toString().trim() ?? '';
-    if (body.isNotEmpty) return body;
-    final metadata = (message['metadata'] as Map?)
-            ?.map((key, value) => MapEntry(key.toString(), value)) ??
-        const <String, dynamic>{};
-    if (metadata['voice'] is Map) return 'Голосовое сообщение';
-    if (metadata['location'] is Map) return 'Геолокация';
-    final atts = chatAttachmentsOf(message);
-    if (atts.any((a) => a['kind'] == 'image')) return 'Фото';
-    if (atts.isNotEmpty) return 'Файл';
-    return 'Сообщение';
+    return chatMessagePreviewText(message);
   }
 
   Map<String, dynamic>? _messageById(int id) {
@@ -4317,12 +4347,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
   }
 
-  bool _isMine(Map<String, dynamic> m) {
-    final senderId = chatAsInt(m['sender_user_id']);
-    return _currentUserId != null && senderId == _currentUserId;
-  }
+  bool _isMine(Map<String, dynamic> m) =>
+      chatMessageIsMine(m, _currentUserId);
 
-  int? _senderId(Map<String, dynamic> m) => chatAsInt(m['sender_user_id']);
+  int? _senderId(Map<String, dynamic> m) => chatSenderUserIdOf(m);
 
   bool _showSenderAvatar(int index) {
     if (_isDm || _isMine(_messages[index])) return false;

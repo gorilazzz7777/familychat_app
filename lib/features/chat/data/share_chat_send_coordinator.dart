@@ -91,6 +91,7 @@ class ShareChatSendCoordinator {
     return {
       'id': tempId,
       '_pending': true,
+      'is_mine': true,
       'thread_id': threadId,
       'body': caption,
       'created_at': DateTime.now().toUtc().toIso8601String(),
@@ -158,17 +159,48 @@ class ShareChatSendCoordinator {
     }
 
     if (ChatLocalStore.isSupported) {
+      Map<String, dynamic>? pendingRow;
+      final rows = await ChatLocalStore.instance.readMessages(threadId);
+      for (final row in rows) {
+        if (chatAsInt(row['id']) == tempId) {
+          pendingRow = row;
+          break;
+        }
+      }
+      final owned = chatEnsureMessageOwnership(
+        merged,
+        previous: pendingRow ??
+            (pendingAttachments == null
+                ? null
+                : {
+                    'is_mine': true,
+                    'attachments': pendingAttachments,
+                  }),
+      );
+      owned['is_mine'] = true;
       await ChatLocalStore.instance.deleteMessages(threadId, [tempId]);
-      await ChatLocalStore.instance.upsertMessage(merged);
+      await ChatLocalStore.instance.upsertMessage(owned);
       return;
     }
     final existing =
         await FamilyChatLocalCache.readThreadMessages(threadId) ?? [];
+    Map<String, dynamic>? pendingRow;
+    for (final row in existing) {
+      if (chatAsInt(row['id']) == tempId) {
+        pendingRow = row;
+        break;
+      }
+    }
+    final owned = chatEnsureMessageOwnership(
+      merged,
+      previous: pendingRow,
+    );
+    owned['is_mine'] = true;
     final withoutTemp =
         existing.where((m) => chatAsInt(m['id']) != tempId).toList();
     await FamilyChatLocalCache.saveThreadMessages(
       threadId,
-      chatUpsertMessage(withoutTemp, merged),
+      chatUpsertMessage(withoutTemp, owned),
     );
   }
 

@@ -445,13 +445,21 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
       widget.onOpenOwnProfile?.call();
       return;
     }
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => MemberProfileScreen(
-          userId: userId,
-          onOpenOwnProfile: widget.onOpenOwnProfile,
+    unawaited(
+      Navigator.of(context)
+          .push(
+        MaterialPageRoute<bool>(
+          builder: (_) => MemberProfileScreen(
+            userId: userId,
+            onOpenOwnProfile: widget.onOpenOwnProfile,
+          ),
         ),
-      ),
+      )
+          .then((removed) {
+        if (removed == true && mounted) {
+          unawaited(_load());
+        }
+      }),
     );
   }
 
