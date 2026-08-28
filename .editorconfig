@@ -1,0 +1,22 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{py,dart,md,json,yml,yaml,sh,toml,html,css,js,ts,tsx,jsx,vue,xml,sql,conf,ini,txt}]
+charset = utf-8
+end_of_line = lf
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.dart]
+indent_style = space
+indent_size = 2
+
+[Makefile]
+indent_style = tab
