@@ -1,11 +1,13 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../../core/config/env.dart';
 import '../../../core/constants/api_error_messages.dart';
+import '../../../core/invite/deferred_invite_recovery.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../members/family_invite_share.dart';
+import '../../members/presentation/family_join_code_dialog.dart';
 import '../../profile/presentation/birthday_format.dart';
 import '../../profile/presentation/birthday_picker.dart';
 import 'ios_safari_install_hint.dart';
@@ -302,13 +304,61 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _loading = true;
     });
     try {
-      final inv = await ref.read(familychatRepositoryProvider).createInvite(_selectedKinship!);
-      final url = inv['invite_url'] as String? ??
-          '${Env.inviteBaseUrl}${inv['invite_url_path']}';
-      await Share.share('Приглашение в Family Space: $url');
+      if (!mounted) return;
+      await FamilyInviteShare.openScreen(
+        context,
+        relationshipCode: _selectedKinship!,
+      );
       if (!mounted) return;
       setState(() => _loading = false);
-      widget.onComplete();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = userFacingErrorMessage(e);
+      });
+    }
+  }
+
+  Future<void> _joinWithInviteCode() async {
+    if (_loading) return;
+    final code = await showFamilyJoinCodeDialog(context);
+    if (code == null || !mounted) return;
+
+    setState(() {
+      _error = null;
+      _loading = true;
+    });
+    try {
+      final resolved =
+          await ref.read(familychatRepositoryProvider).resolveInviteCode(code);
+      if (!mounted) return;
+      if (resolved['valid'] != true) {
+        setState(() {
+          _loading = false;
+          _error = 'Код не найден или уже не действует';
+        });
+        return;
+      }
+      final token = (resolved['token']?.toString() ?? '').trim();
+      if (token.isEmpty) {
+        setState(() {
+          _loading = false;
+          _error = 'Не удалось принять приглашение';
+        });
+        return;
+      }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(DeferredInviteRecovery.pendingInviteKey, token);
+      if (!mounted) return;
+      setState(() {
+        _inviteToken = token;
+        _joinByInvite = true;
+        _loading = false;
+        _error = null;
+        _step = _OnboardingStep.profile;
+      });
+      _loadPrefill();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -393,10 +443,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
             const SizedBox(height: 8),
             OutlinedButton(
-              onPressed: () {
-                setState(() => _error =
-                    'Откройте приложение по ссылке-приглашению, затем войдите в аккаунт.');
-              },
+              onPressed: _loading ? null : _joinWithInviteCode,
               child: const Text('У меня есть приглашение'),
             ),
           ],
@@ -448,7 +495,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
           ],
           if (_step == _OnboardingStep.createFamily) ...[
-            const Text('Создайте семью и пригласите близких по ссылке.'),
+            const Text('Создайте семью и пригласите близких по QR-коду или цифровому коду.'),
             const SizedBox(height: 24),
             FilledButton(
               onPressed: _loading ? null : _createFamily,

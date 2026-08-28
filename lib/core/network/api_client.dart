@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import '../config/env.dart';
 import '../client/app_client.dart';
 import '../session/auth_session_bus.dart';
 import '../storage/token_storage.dart';
 import 'dio_jwt_error.dart';
+import 'native_http_adapter.dart';
 
 const String _kAuthRefreshPath = 'auth/refresh/';
 
@@ -17,29 +19,58 @@ bool _isAnonymousApiAuthPath(String path) {
       path.contains('auth/google/session/consume/');
 }
 
+BaseOptions _apiBaseOptions() {
+  return BaseOptions(
+    baseUrl: Env.apiBaseUrl,
+    connectTimeout: const Duration(seconds: 30),
+    receiveTimeout: const Duration(seconds: 90),
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      ...AppClient.extraHeaders,
+    },
+  );
+}
+
+Dio _newDio() => Dio(_apiBaseOptions());
+
 class ApiClient {
-  ApiClient({TokenStorage? tokenStorage, Dio? dio})
+  /// [dio] — общий клиент (sync/prefetch/UI).
+  /// [sendDio] — отдельный пул для исходящих сообщений outbox, чтобы тяжёлый
+  /// трафик на [dio] не ставил POST send в очередь.
+  ///
+  /// Если передан только [dio] (тесты) — [sendDio] совпадает с ним.
+  ApiClient({TokenStorage? tokenStorage, Dio? dio, Dio? sendDio})
       : tokenStorage = tokenStorage ?? TokenStorage(),
-        dio = dio ??
-            Dio(
-              BaseOptions(
-                baseUrl: Env.apiBaseUrl,
-                connectTimeout: const Duration(seconds: 30),
-                receiveTimeout: const Duration(seconds: 90),
-                headers: {
-                  'Accept': 'application/json',
-                  'Content-Type': 'application/json',
-                  ...AppClient.extraHeaders,
-                },
-              ),
-            ) {
-    final client = this.dio;
+        dio = dio ?? _newDio(),
+        sendDio = sendDio ?? dio ?? _newDio() {
     final storage = this.tokenStorage;
-    client.interceptors.add(_AuthInterceptor(storage, client, client));
+    configureNativeHttpAdapter(this.dio);
+    this.dio.interceptors.add(
+      _AuthInterceptor(storage, this.dio, this.dio),
+    );
+
+    if (!identical(this.dio, this.sendDio)) {
+      configureNativeHttpAdapter(this.sendDio);
+      this.sendDio.interceptors.add(
+        _AuthInterceptor(storage, this.sendDio, this.sendDio),
+      );
+    }
+
+    if (kDebugMode) {
+      debugPrint(
+        '[ApiClient] http adapter=${this.dio.httpClientAdapter.runtimeType} '
+        'sendAdapter=${this.sendDio.httpClientAdapter.runtimeType} '
+        'shared=${identical(this.dio, this.sendDio)}',
+      );
+    }
   }
 
   final TokenStorage tokenStorage;
   final Dio dio;
+
+  /// Dedicated connection pool for chat send / outbox mutations.
+  final Dio sendDio;
 }
 
 class _AuthInterceptor extends Interceptor {

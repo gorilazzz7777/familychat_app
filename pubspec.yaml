@@ -1,7 +1,7 @@
 name: familychat_app
 description: Family Space — семейный мессенджер с родством.
 publish_to: 'none'
-version: 1.3.0+8
+version: 1.3.1+9
 
 environment:
   sdk: ^3.5.0
@@ -41,6 +41,7 @@ dependencies:
   web_socket_channel: ^3.0.3
   image_picker: ^1.1.2
   photo_manager: ^3.6.4
+  qr_flutter: ^4.1.0
   exif: ^3.3.0
   cached_network_image: ^3.4.1
   file_picker: ^8.1.7
@@ -66,6 +67,7 @@ dependencies:
   google_fonts: ^6.2.1
   drift_flutter: ^0.3.1
   sqlite3: ^3.5.1
+  native_dio_adapter: ^1.8.0
 
 # sqlite3 3.x hooks download prebuilt .so from GitHub by default — that fails
 # when github.com is unreachable. Compile vendored amalgamation instead.

@@ -13,6 +13,7 @@ import '../core/services/rustore_review_prompt_service.dart';
 import '../core/updates/app_update_service.dart';
 import '../core/widgets/app_skeletons.dart';
 import '../core/widgets/family_app_bar.dart';
+import '../core/widgets/impersonation_banner.dart';
 import '../core/providers/app_providers.dart';
 import '../core/theme/theme_seed_controller.dart';
 import '../core/share/incoming_share_bus.dart';
@@ -51,11 +52,13 @@ class ShellScreen extends ConsumerStatefulWidget {
     required this.status,
     required this.onLogout,
     required this.onStatusChanged,
+    this.onImpersonationExit,
   });
 
   final Map<String, dynamic> status;
   final Future<void> Function() onLogout;
   final Future<void> Function() onStatusChanged;
+  final VoidCallback? onImpersonationExit;
 
   @override
   ConsumerState<ShellScreen> createState() => _ShellScreenState();
@@ -80,6 +83,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   final _visitedTabs = <int>{_chatTabIndex, _feedTabIndex};
   Timer? _webPollTimer;
   Timer? _presenceTimer;
+  bool _lastKnownOnline = true;
 
   @override
   void initState() {
@@ -135,6 +139,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     FamilyChatRealtime.instance.addListener(_onChatRealtime);
     ChatUnreadRefresh.onInvalidate = _onUnreadInvalidate;
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
+    _lastKnownOnline = ChatOfflineSync.instance.isOnline;
     ShellRefresh.instance.register(_refreshMainTabs);
     _startPresenceHeartbeat();
     AppActions.bindShell(selectSection: _selectSection);
@@ -265,7 +270,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   void _onOfflineStateChanged() {
     if (!mounted) return;
     setState(() {});
-    if (ChatOfflineSync.instance.isOnline) {
+    final online = ChatOfflineSync.instance.isOnline;
+    final becameOnline = online && !_lastKnownOnline;
+    _lastKnownOnline = online;
+    if (becameOnline) {
       unawaited(_refreshTab(_index, silent: true));
     }
   }
@@ -701,21 +709,23 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                       );
                     },
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.person_add_outlined),
-                    tooltip: 'Добавить в семью',
-                    onPressed: () => runFamilyInviteFlow(
-                      context,
-                      ref.read(familychatRepositoryProvider),
-                    ),
+                  FamilyAddMenuButton(
+                    repo: ref.read(familychatRepositoryProvider),
                   ),
                 ],
               ],
             ),
       floatingActionButton: null,
-      body: IndexedStack(
-        index: _index,
-        children: List<Widget>.generate(5, _buildTab),
+      body: Column(
+        children: [
+          ImpersonationBannerStrip(onSessionChanged: widget.onImpersonationExit),
+          Expanded(
+            child: IndexedStack(
+              index: _index,
+              children: List<Widget>.generate(5, _buildTab),
+            ),
+          ),
+        ],
       ),
       bottomNavigationBar: layout.showBar && layout.barSections.isNotEmpty
           ? _ShellNavBarWithUnread(

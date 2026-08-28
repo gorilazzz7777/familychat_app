@@ -46,6 +46,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
   StreamSubscription<List<Map<String, dynamic>>>? _membersSub;
   int _loadGen = 0;
   Future<void>? _networkRefreshInFlight;
+  bool _lastKnownOnline = true;
 
   bool get _useLocalWatch => ChatLocalStore.isSupported;
 
@@ -54,6 +55,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
     super.initState();
     _tabs = TabController(length: 2, vsync: this);
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
+    _lastKnownOnline = ChatOfflineSync.instance.isOnline;
     if (_useLocalWatch) {
       _bindLocalMembers();
       unawaited(_refreshFromNetwork());
@@ -88,7 +90,10 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
 
   void _onOfflineStateChanged() {
     if (!mounted) return;
-    if (ChatOfflineSync.instance.isOnline) {
+    final online = ChatOfflineSync.instance.isOnline;
+    final becameOnline = online && !_lastKnownOnline;
+    _lastKnownOnline = online;
+    if (becameOnline) {
       unawaited(_refreshFromNetwork());
     }
   }
@@ -639,13 +644,8 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                     );
                   },
                 ),
-                IconButton(
-                  icon: const Icon(Icons.person_add_outlined),
-                  tooltip: 'Добавить в семью',
-                  onPressed: () => runFamilyInviteFlow(
-                    context,
-                    ref.read(familychatRepositoryProvider),
-                  ),
+                FamilyAddMenuButton(
+                  repo: ref.read(familychatRepositoryProvider),
                 ),
               ],
               bottom: tabBar,

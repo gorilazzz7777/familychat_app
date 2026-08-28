@@ -10,12 +10,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/cache/familychat_local_cache.dart';
 import '../core/platform/app_foreground.dart';
 import '../core/providers/app_providers.dart';
+import '../core/impersonation/admin_enter.dart';
 import '../core/routing/app_uri_parser.dart';
 import '../core/push/push_navigation.dart';
 import '../core/session/auth_session_bus.dart';
 import '../features/auth/data/oauth_login_service.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/chat/data/chat_offline_sync.dart';
+import '../features/chat/data/chat_realtime_utils.dart';
 import '../features/chat/data/chat_sync_service.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
@@ -92,6 +94,16 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   }
 
   Future<void> _handleInviteUri(Uri uri) async {
+    if (isAdminEnterUri(uri)) {
+      try {
+        final ok = await handleAdminEnterUri(ref, uri);
+        if (ok && mounted) {
+          unawaited(_boot());
+        }
+      } catch (_) {}
+      return;
+    }
+
     final oauth = parseOAuthCallback(uri);
     if (oauth != null) {
       // LoginScreen / OAuthLoginService сами consume-ят session_code.
@@ -276,7 +288,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     unawaited(
       ChatSyncService.instance.start(
         ref.read(familychatRepositoryProvider),
-        currentUserId: status['user_id'] is int ? status['user_id'] as int : null,
+        currentUserId: chatAsInt(status['user_id']),
       ),
     );
     LinkPreviewService.instance.bindBackend(
@@ -304,7 +316,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     ChatOfflineSync.instance.setOnline(true);
     unawaited(FamilyChatLocalCache.saveStatus(status));
     ChatSyncService.instance.setCurrentUserId(
-      status['user_id'] is int ? status['user_id'] as int : null,
+      chatAsInt(status['user_id']),
     );
     unawaited(ref.read(themeSeedProvider.notifier).syncFromStatus(status));
     _syncAppActions();
@@ -651,6 +663,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
               status: _status!,
               onLogout: _logout,
               onStatusChanged: _refreshStatus,
+              onImpersonationExit: () {
+                unawaited(_boot());
+              },
             ),
     );
   }

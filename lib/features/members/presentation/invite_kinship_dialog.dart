@@ -39,7 +39,7 @@ Future<String?> showInviteKinshipDialog(
             ),
             const SizedBox(height: 8),
             Text(
-              'Ссылка действует 24 часа и может быть использована один раз.',
+              'Ссылка и код действуют 24 часа и рассчитаны на одного человека.',
               style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
                     color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                   ),
@@ -53,7 +53,7 @@ Future<String?> showInviteKinshipDialog(
           ),
           FilledButton(
             onPressed: selected == null ? null : () => Navigator.pop(ctx, selected),
-            child: const Text('Создать ссылку'),
+            child: const Text('Продолжить'),
           ),
         ],
       ),

@@ -36,6 +36,8 @@ abstract final class AppActions {
     _selectShellSection?.call(ShellSection.chat);
   }
 
+  static Future<void> refreshStatus() => _onStatusChanged();
+
   static String get displayName => _status['display_name']?.toString() ?? '';
   static String get avatarUrl => _status['avatar_url']?.toString() ?? '';
 

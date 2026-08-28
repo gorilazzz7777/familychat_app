@@ -36,6 +36,8 @@ class FamilyChatRepository {
 
   final ApiClient _client;
   Dio get _dio => _client.dio;
+  /// Outbox send / chat mutations — separate connection pool from sync/prefetch.
+  Dio get _sendDio => _client.sendDio;
   static final Map<String, Uint8List> _attachmentBytesCache =
       <String, Uint8List>{};
   static final Map<String, Future<Uint8List>> _attachmentBytesInFlight =
@@ -120,11 +122,20 @@ class FamilyChatRepository {
     next();
   }
 
-  Future<Map<String, dynamic>> status({bool? appForeground}) async {
+  Future<Map<String, dynamic>> status({
+    bool? appForeground,
+    Duration? timeout,
+  }) async {
     final fg = appForeground ?? FamilyChatForegroundBridge.isAppInForeground();
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/status/',
       queryParameters: {'app_foreground': fg ? '1' : '0'},
+      options: timeout == null
+          ? null
+          : Options(
+              sendTimeout: timeout,
+              receiveTimeout: timeout,
+            ),
     );
     return res.data!;
   }
@@ -241,12 +252,26 @@ class FamilyChatRepository {
     return res.data!;
   }
 
-  Future<Map<String, dynamic>> createInvite(String relationshipCode) async {
+  Future<Map<String, dynamic>> createInvite(
+    String relationshipCode, {
+    bool force = false,
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/invites/',
-      data: {'relationship_code': relationshipCode},
+      data: {
+        'relationship_code': relationshipCode,
+        if (force) 'force': true,
+      },
     );
     return res.data!;
+  }
+
+  Future<Map<String, dynamic>> resolveInviteCode(String code) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/invites/resolve-code/',
+      data: {'code': code},
+    );
+    return res.data ?? {'valid': false};
   }
 
   Future<Map<String, dynamic>> acceptInvite(
@@ -897,7 +922,7 @@ class FamilyChatRepository {
 
   Future<void> markThreadRead(int threadId,
       {required int lastMessageId}) async {
-    await _dio.post(
+    await _sendDio.post(
       'familychat/chat/threads/$threadId/read/',
       data: {'last_message_id': lastMessageId},
     );
@@ -1002,7 +1027,7 @@ class FamilyChatRepository {
   }) async {
     final sw = Stopwatch()..start();
     try {
-      final res = await _dio.post<Map<String, dynamic>>(
+      final res = await _sendDio.post<Map<String, dynamic>>(
         'familychat/chat/threads/$threadId/messages/',
         data: {
           if (body != null && body.isNotEmpty) 'body': body,
@@ -1049,7 +1074,7 @@ class FamilyChatRepository {
     int messageId, {
     required String body,
   }) async {
-    final res = await _dio.patch<Map<String, dynamic>>(
+    final res = await _sendDio.patch<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/$messageId/',
       data: {'body': body},
     );
@@ -1124,7 +1149,7 @@ class FamilyChatRepository {
   }
 
   Future<List<int>> deleteMessages(int threadId, List<int> messageIds) async {
-    final res = await _dio.post<Map<String, dynamic>>(
+    final res = await _sendDio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/delete/',
       data: {'message_ids': messageIds},
     );
@@ -1137,7 +1162,7 @@ class FamilyChatRepository {
   }
 
   Future<List<int>> hideMessagesForMe(int threadId, List<int> messageIds) async {
-    final res = await _dio.post<Map<String, dynamic>>(
+    final res = await _sendDio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/hide/',
       data: {'message_ids': messageIds},
     );
@@ -1187,7 +1212,7 @@ class FamilyChatRepository {
     int threadId,
     int messageId,
   ) async {
-    final res = await _dio.post<Map<String, dynamic>>(
+    final res = await _sendDio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/pins/',
       data: {'message_id': messageId},
     );
@@ -1200,7 +1225,7 @@ class FamilyChatRepository {
     int threadId,
     int messageId,
   ) async {
-    final res = await _dio.delete<Map<String, dynamic>>(
+    final res = await _sendDio.delete<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/pins/$messageId/',
     );
     final raw = res.data?['pinned_messages'];
@@ -1213,7 +1238,7 @@ class FamilyChatRepository {
     int messageId,
     String emoji,
   ) async {
-    final res = await _dio.post<Map<String, dynamic>>(
+    final res = await _sendDio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/$messageId/reactions/',
       data: {'emoji': emoji},
     );
@@ -1279,7 +1304,7 @@ class FamilyChatRepository {
     if (photoExif != null && photoExif.isNotEmpty) {
       prepareBody['photo_exif'] = jsonEncode(photoExif);
     }
-    final prepare = await _dio.post<Map<String, dynamic>>(
+    final prepare = await _sendDio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/attachments/prepare/',
       data: prepareBody,
     );
@@ -1333,7 +1358,7 @@ class FamilyChatRepository {
     if (photoExif != null && photoExif.isNotEmpty) {
       completeBody['photo_exif'] = jsonEncode(photoExif);
     }
-    final complete = await _dio.post<Map<String, dynamic>>(
+    final complete = await _sendDio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/attachments/complete/',
       data: completeBody,
     );
@@ -1360,7 +1385,7 @@ class FamilyChatRepository {
       formMap['photo_exif'] = jsonEncode(photoExif);
     }
     final form = FormData.fromMap(formMap);
-    final res = await _dio.post<Map<String, dynamic>>(
+    final res = await _sendDio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/attachments/',
       data: form,
       onSendProgress: onSendProgress,
@@ -1380,7 +1405,7 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> setThreadMute(int threadId, String mute) async {
-    final res = await _dio.patch<Map<String, dynamic>>(
+    final res = await _sendDio.patch<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/notifications/',
       data: {'mute': mute},
     );
@@ -1393,7 +1418,7 @@ class FamilyChatRepository {
     required String end,
     required int utcOffsetMinutes,
   }) async {
-    final res = await _dio.patch<Map<String, dynamic>>(
+    final res = await _sendDio.patch<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/notifications/',
       data: {
         'quiet_hours': {
@@ -1407,7 +1432,7 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> clearThreadQuietHours(int threadId) async {
-    final res = await _dio.patch<Map<String, dynamic>>(
+    final res = await _sendDio.patch<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/notifications/',
       data: {'quiet_hours': null},
     );
@@ -2127,6 +2152,18 @@ class FamilyChatRepository {
             'error_message': errorMessage,
           if (reason != null && reason.isNotEmpty) 'reason': reason,
           if (details != null && details.isNotEmpty) 'details': details,
+        },
+      );
+    } catch (_) {}
+  }
+
+  Future<void> reportAppRatingPromptShown(String channel) async {
+    try {
+      await _dio.post(
+        'familychat/app-rating/prompt-shown/',
+        data: {
+          'app_name': 'familychat',
+          'channel': channel,
         },
       );
     } catch (_) {}
