@@ -37,12 +37,28 @@ class _ImpersonationBannerStripState extends ConsumerState<ImpersonationBannerSt
   @override
   Widget build(BuildContext context) {
     if (!_active) return const SizedBox.shrink();
-    return MaterialBanner(
-      backgroundColor: Colors.orange.shade100,
-      content: const Text('Режим просмотра (platform admin)'),
-      actions: [
-        TextButton(onPressed: _exit, child: const Text('Выйти')),
-      ],
+    return Material(
+      color: Colors.orange.shade100,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Режим просмотра (platform admin)',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+              TextButton(
+                onPressed: _exit,
+                child: const Text('Выйти'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

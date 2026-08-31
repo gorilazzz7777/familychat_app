@@ -28,6 +28,22 @@ class ImpersonationStorage {
     await prefs.remove(_backupRefreshKey);
   }
 
+  Future<void> backupCurrentSessionIfNeeded({
+    required Future<String?> Function() readAccess,
+    required Future<String?> Function() readRefresh,
+  }) async {
+    if (await isActive()) return;
+    final access = await readAccess();
+    final refresh = await readRefresh();
+    if (access == null ||
+        refresh == null ||
+        access.isEmpty ||
+        refresh.isEmpty) {
+      return;
+    }
+    await backupTokens(access: access, refresh: refresh);
+  }
+
   Future<void> backupTokens({
     required String access,
     required String refresh,

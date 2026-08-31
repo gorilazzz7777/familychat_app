@@ -1,5 +1,20 @@
 # Family Chat — настройка iOS
 
+## Локальные настройки Xcode (Mac)
+
+На Mac после `git clone` / `git pull` один раз:
+
+```bash
+cd familychat_app
+bash ios/protect_mac_xcode_settings.sh
+```
+
+Скрипт помечает `project.pbxproj`, entitlements и `GoogleService-Info.plist` как **skip-worktree** — git не будет их перезаписывать при pull с Windows.
+
+Эти файлы также в `ios/.gitignore` и **не пушатся** из репозитория (настраиваются локально в Xcode / Firebase Console).
+
+---
+
 После правок в репозитории на Mac выполните:
 
 ```bash

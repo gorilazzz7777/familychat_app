@@ -98,6 +98,11 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       try {
         final ok = await handleAdminEnterUri(ref, uri);
         if (ok && mounted) {
+          await FamilyChatLocalCache.clearStatus();
+          setState(() {
+            _status = null;
+            _ready = false;
+          });
           unawaited(_boot());
         }
       } catch (_) {}

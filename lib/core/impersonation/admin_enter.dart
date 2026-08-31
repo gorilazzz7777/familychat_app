@@ -12,14 +12,14 @@ Future<bool> handleAdminEnterUri(WidgetRef ref, Uri uri) async {
   final client = ref.read(apiClientProvider);
   final auth = ref.read(authRepositoryProvider);
   final storage = ImpersonationStorage();
-  final access = await client.tokenStorage.readAccess();
-  final refresh = await client.tokenStorage.readRefresh();
-  if (access != null &&
-      refresh != null &&
-      access.isNotEmpty &&
-      refresh.isNotEmpty) {
-    await storage.backupTokens(access: access, refresh: refresh);
-  }
+
+  await storage.backupCurrentSessionIfNeeded(
+    readAccess: client.tokenStorage.readAccess,
+    readRefresh: client.tokenStorage.readRefresh,
+  );
+
+  await client.tokenStorage.clear();
+
   await auth.exchangeImpersonation(code);
   await storage.markActive();
   return true;
