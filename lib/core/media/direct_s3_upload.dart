@@ -9,6 +9,7 @@ Future<void> putBytesToPresignedUrl({
   required Uint8List bytes,
   required Map<String, dynamic> headers,
   void Function(int sent, int total)? onSendProgress,
+  CancelToken? cancelToken,
 }) async {
   final client = Dio(
     BaseOptions(
@@ -26,6 +27,7 @@ Future<void> putBytesToPresignedUrl({
     data: bytes,
     options: Options(headers: hdrs),
     onSendProgress: onSendProgress,
+    cancelToken: cancelToken,
   );
 }
 

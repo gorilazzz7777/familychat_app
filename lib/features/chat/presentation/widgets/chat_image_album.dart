@@ -32,6 +32,9 @@ class ChatImageAlbum extends StatelessWidget {
     required this.maxWidth,
     this.onImageTap,
     this.borderRadius,
+    this.uploadMessageId,
+    this.onCancelUpload,
+    this.messageMetadata = const {},
   });
 
   final int threadId;
@@ -39,6 +42,9 @@ class ChatImageAlbum extends StatelessWidget {
   final double maxWidth;
   final void Function(Map<String, dynamic> attachment)? onImageTap;
   final BorderRadius? borderRadius;
+  final int? uploadMessageId;
+  final VoidCallback? onCancelUpload;
+  final Map<String, dynamic> messageMetadata;
 
   static const double _gap = 2;
 
@@ -57,6 +63,9 @@ class ChatImageAlbum extends StatelessWidget {
         maxHeight: chatMediaMaxThumbHeight(width),
         borderRadius: radius,
         onImageTap: onImageTap,
+        uploadMessageId: uploadMessageId,
+        onCancelUpload: onCancelUpload,
+        messageMetadata: messageMetadata,
       );
     }
 
@@ -194,6 +203,10 @@ class ChatImageAlbum extends StatelessWidget {
         width: width,
         height: height,
         fit: BoxFit.cover,
+        uploadMessageId: uploadMessageId,
+        onCancelUpload: onCancelUpload,
+        messageMetadata: messageMetadata,
+        borderRadius: borderRadius,
       );
     }
 
@@ -247,6 +260,9 @@ class _ChatSingleAspectThumb extends StatefulWidget {
     required this.maxHeight,
     required this.borderRadius,
     this.onImageTap,
+    this.uploadMessageId,
+    this.onCancelUpload,
+    this.messageMetadata = const {},
   });
 
   final int threadId;
@@ -255,6 +271,9 @@ class _ChatSingleAspectThumb extends StatefulWidget {
   final double maxHeight;
   final BorderRadius borderRadius;
   final void Function(Map<String, dynamic> attachment)? onImageTap;
+  final int? uploadMessageId;
+  final VoidCallback? onCancelUpload;
+  final Map<String, dynamic> messageMetadata;
 
   @override
   State<_ChatSingleAspectThumb> createState() => _ChatSingleAspectThumbState();
@@ -322,6 +341,10 @@ class _ChatSingleAspectThumbState extends State<_ChatSingleAspectThumb> {
         width: size.width,
         height: size.height,
         fit: BoxFit.contain,
+        uploadMessageId: widget.uploadMessageId,
+        onCancelUpload: widget.onCancelUpload,
+        messageMetadata: widget.messageMetadata,
+        borderRadius: widget.borderRadius,
         onResolvedSize: (resolved) {
           if (resolved.height <= 0) return;
           _applyAspect(resolved.width / resolved.height);

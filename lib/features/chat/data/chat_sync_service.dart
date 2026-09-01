@@ -90,7 +90,7 @@ class ChatSyncService {
       final threadId = chatAsInt(event['thread_id']);
       final ids = chatAsIntList(event['message_ids']);
       if (threadId == null || ids.isEmpty) return;
-      unawaited(ChatLocalStore.instance.markMessagesRead(threadId, ids));
+      unawaited(_applyMessagesRead(threadId, ids));
       return;
     }
 
@@ -131,6 +131,30 @@ class ChatSyncService {
 
   bool _messageIsMine(Map<String, dynamic> message) {
     return chatMessageIsMine(message, _currentUserId);
+  }
+
+  Future<void> _applyMessagesRead(int threadId, List<int> messageIds) async {
+    await ChatLocalStore.instance.markMessagesRead(threadId, messageIds);
+    final idSet = messageIds.toSet();
+    final threads = await ChatLocalStore.instance.readThreads();
+    for (final thread in threads) {
+      if (chatAsInt(thread['id']) != threadId) continue;
+      final last = thread['last_message'];
+      if (last is! Map) break;
+      final lastId = chatAsInt(last['id']);
+      if (lastId == null || !idSet.contains(lastId)) break;
+      final lastMap = Map<String, dynamic>.from(last);
+      lastMap['read_status'] = chatMergeReadStatus(
+        lastMap['read_status']?.toString(),
+        'read',
+      );
+      await ChatLocalStore.instance.upsertThread({
+        ...thread,
+        'last_message': lastMap,
+      });
+      _notifyUnreadChanged();
+      break;
+    }
   }
 
   Future<void> _ingestIncomingMessage(Map<String, dynamic> message) async {
@@ -302,7 +326,7 @@ class ChatSyncService {
         for (final server in remoteThreads)
           _mergeHubThread(server, localById[chatAsInt(server['id'])]),
       ];
-      final enriched = await _enrichHubLastMessages(threads);
+      final enriched = await enrichChatThreadsLastMessages(threads);
       await ChatLocalStore.instance.replaceThreads(enriched);
       await ChatLocalStore.instance.replaceMembers(members);
       _notifyUnreadChanged();
@@ -361,44 +385,6 @@ class ChatSyncService {
       };
     }
     return server;
-  }
-
-  Future<List<Map<String, dynamic>>> _enrichHubLastMessages(
-    List<Map<String, dynamic>> threads,
-  ) async {
-    if (!isSupported || threads.isEmpty) return threads;
-    final out = <Map<String, dynamic>>[];
-    for (final thread in threads) {
-      final threadId = chatAsInt(thread['id']);
-      final last = thread['last_message'];
-      if (threadId == null || last is! Map) {
-        out.add(thread);
-        continue;
-      }
-      final lastMap = Map<String, dynamic>.from(last);
-      if (!chatLastMessageLacksPreviewPayload(lastMap)) {
-        out.add(thread);
-        continue;
-      }
-      final messageId = chatAsInt(lastMap['id']);
-      if (messageId == null || messageId <= 0) {
-        out.add(thread);
-        continue;
-      }
-      final local = await ChatLocalStore.instance.readMessage(
-        threadId,
-        messageId,
-      );
-      if (local == null || chatLastMessageLacksPreviewPayload(local)) {
-        out.add(thread);
-        continue;
-      }
-      out.add({
-        ...thread,
-        'last_message': chatPreferRicherLastMessage(lastMap, local),
-      });
-    }
-    return out;
   }
 
   Future<void> _patchHubLastMessageFromSynced(

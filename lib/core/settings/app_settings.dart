@@ -49,6 +49,14 @@ class FamilyChatAppSettings {
     this.autoSaveIncomingToGallery = false,
     this.mediaCacheStale = MediaCacheStaleOption.thirtyDays,
     this.mediaCacheSize = MediaCacheSizeOption.gb2,
+    this.chatAutoDownloadPhotosWifi = true,
+    this.chatAutoDownloadPhotosMobile = true,
+    this.chatAutoDownloadVideosWifi = true,
+    this.chatAutoDownloadVideosMobile = true,
+    this.chatAutoDownloadFilesWifi = true,
+    this.chatAutoDownloadFilesMobile = true,
+    this.chatAutoDownloadVoiceWifi = true,
+    this.chatAutoDownloadVoiceMobile = true,
   });
 
   static const defaultMenuOrder = [
@@ -76,6 +84,14 @@ class FamilyChatAppSettings {
   final bool autoSaveIncomingToGallery;
   final MediaCacheStaleOption mediaCacheStale;
   final MediaCacheSizeOption mediaCacheSize;
+  final bool chatAutoDownloadPhotosWifi;
+  final bool chatAutoDownloadPhotosMobile;
+  final bool chatAutoDownloadVideosWifi;
+  final bool chatAutoDownloadVideosMobile;
+  final bool chatAutoDownloadFilesWifi;
+  final bool chatAutoDownloadFilesMobile;
+  final bool chatAutoDownloadVoiceWifi;
+  final bool chatAutoDownloadVoiceMobile;
 
   FamilyChatAppSettings copyWith({
     bool? pushEnabled,
@@ -95,6 +111,14 @@ class FamilyChatAppSettings {
     bool? autoSaveIncomingToGallery,
     MediaCacheStaleOption? mediaCacheStale,
     MediaCacheSizeOption? mediaCacheSize,
+    bool? chatAutoDownloadPhotosWifi,
+    bool? chatAutoDownloadPhotosMobile,
+    bool? chatAutoDownloadVideosWifi,
+    bool? chatAutoDownloadVideosMobile,
+    bool? chatAutoDownloadFilesWifi,
+    bool? chatAutoDownloadFilesMobile,
+    bool? chatAutoDownloadVoiceWifi,
+    bool? chatAutoDownloadVoiceMobile,
   }) {
     return FamilyChatAppSettings(
       pushEnabled: pushEnabled ?? this.pushEnabled,
@@ -115,6 +139,22 @@ class FamilyChatAppSettings {
           autoSaveIncomingToGallery ?? this.autoSaveIncomingToGallery,
       mediaCacheStale: mediaCacheStale ?? this.mediaCacheStale,
       mediaCacheSize: mediaCacheSize ?? this.mediaCacheSize,
+      chatAutoDownloadPhotosWifi:
+          chatAutoDownloadPhotosWifi ?? this.chatAutoDownloadPhotosWifi,
+      chatAutoDownloadPhotosMobile:
+          chatAutoDownloadPhotosMobile ?? this.chatAutoDownloadPhotosMobile,
+      chatAutoDownloadVideosWifi:
+          chatAutoDownloadVideosWifi ?? this.chatAutoDownloadVideosWifi,
+      chatAutoDownloadVideosMobile:
+          chatAutoDownloadVideosMobile ?? this.chatAutoDownloadVideosMobile,
+      chatAutoDownloadFilesWifi:
+          chatAutoDownloadFilesWifi ?? this.chatAutoDownloadFilesWifi,
+      chatAutoDownloadFilesMobile:
+          chatAutoDownloadFilesMobile ?? this.chatAutoDownloadFilesMobile,
+      chatAutoDownloadVoiceWifi:
+          chatAutoDownloadVoiceWifi ?? this.chatAutoDownloadVoiceWifi,
+      chatAutoDownloadVoiceMobile:
+          chatAutoDownloadVoiceMobile ?? this.chatAutoDownloadVoiceMobile,
     );
   }
 
@@ -163,6 +203,54 @@ class FamilyChatAppSettings {
       mediaCacheSize: MediaCacheSizeOptionX.fromStorage(
         json['mediaCacheSize'] ?? json['media_cache_size'],
       ),
+      chatAutoDownloadPhotosWifi: _bool(
+        json,
+        'chatAutoDownloadPhotosWifi',
+        'chat_auto_download_photos_wifi',
+        true,
+      ),
+      chatAutoDownloadPhotosMobile: _bool(
+        json,
+        'chatAutoDownloadPhotosMobile',
+        'chat_auto_download_photos_mobile',
+        true,
+      ),
+      chatAutoDownloadVideosWifi: _bool(
+        json,
+        'chatAutoDownloadVideosWifi',
+        'chat_auto_download_videos_wifi',
+        true,
+      ),
+      chatAutoDownloadVideosMobile: _bool(
+        json,
+        'chatAutoDownloadVideosMobile',
+        'chat_auto_download_videos_mobile',
+        true,
+      ),
+      chatAutoDownloadFilesWifi: _bool(
+        json,
+        'chatAutoDownloadFilesWifi',
+        'chat_auto_download_files_wifi',
+        true,
+      ),
+      chatAutoDownloadFilesMobile: _bool(
+        json,
+        'chatAutoDownloadFilesMobile',
+        'chat_auto_download_files_mobile',
+        true,
+      ),
+      chatAutoDownloadVoiceWifi: _bool(
+        json,
+        'chatAutoDownloadVoiceWifi',
+        'chat_auto_download_voice_wifi',
+        true,
+      ),
+      chatAutoDownloadVoiceMobile: _bool(
+        json,
+        'chatAutoDownloadVoiceMobile',
+        'chat_auto_download_voice_mobile',
+        true,
+      ),
     );
   }
 
@@ -192,6 +280,14 @@ class FamilyChatAppSettings {
         'autoSaveIncomingToGallery': autoSaveIncomingToGallery,
         'mediaCacheStale': mediaCacheStale.storageKey,
         'mediaCacheSize': mediaCacheSize.storageKey,
+        'chatAutoDownloadPhotosWifi': chatAutoDownloadPhotosWifi,
+        'chatAutoDownloadPhotosMobile': chatAutoDownloadPhotosMobile,
+        'chatAutoDownloadVideosWifi': chatAutoDownloadVideosWifi,
+        'chatAutoDownloadVideosMobile': chatAutoDownloadVideosMobile,
+        'chatAutoDownloadFilesWifi': chatAutoDownloadFilesWifi,
+        'chatAutoDownloadFilesMobile': chatAutoDownloadFilesMobile,
+        'chatAutoDownloadVoiceWifi': chatAutoDownloadVoiceWifi,
+        'chatAutoDownloadVoiceMobile': chatAutoDownloadVoiceMobile,
       };
 
   static bool _bool(

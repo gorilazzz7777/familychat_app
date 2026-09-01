@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
+import 'package:gorila_chat/gorila_chat.dart';
 
 import 'chat_database_connection.dart';
 import 'chat_tables.dart';
@@ -332,6 +333,14 @@ class ChatDatabase extends _$ChatDatabase {
       if (next.isEmpty && prev.isNotEmpty) {
         incoming[key] = existing[key];
       }
+    }
+
+    final mergedStatus = chatMergeReadStatus(
+      existing['read_status']?.toString(),
+      incoming['read_status']?.toString(),
+    );
+    if (mergedStatus != null) {
+      incoming['read_status'] = mergedStatus;
     }
 
     final incomingAtts = incoming['attachments'];

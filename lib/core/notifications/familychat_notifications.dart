@@ -10,6 +10,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../push/push_navigation.dart';
+import 'chat_push_thread_preview.dart';
 import 'notification_inline_reply.dart';
 
 /// Локальные уведомления со звуком (Android/iOS) и каналы Android.
@@ -39,10 +40,22 @@ class FamilyChatNotifications {
     NotificationResponse response,
   ) async {
     try {
+      WidgetsFlutterBinding.ensureInitialized();
+      DartPluginRegistrant.ensureInitialized();
       await initialize();
       await handleNotificationResponse(response);
     } catch (e, st) {
       debugPrint('background notification action failed: $e\n$st');
+      if (response.actionId == NotificationInlineReply.actionId) {
+        final data = _parseNotificationPayload(response.payload);
+        final threadId = _threadIdFromNotificationResponse(data, response);
+        if (threadId != null) {
+          await _dismissChatNotificationForInlineReply(
+            threadId: threadId,
+            outgoingText: response.input ?? '',
+          );
+        }
+      }
     }
   }
 
@@ -124,77 +137,164 @@ class FamilyChatNotifications {
     _handleNotificationPayload(response.payload);
   }
 
-  static Future<void> _sendInlineReply(NotificationResponse response) async {
-    final text = response.input?.trim() ?? '';
-    if (text.isEmpty) return;
-    Map<String, dynamic> data = const {};
-    final payload = response.payload;
-    if (payload != null && payload.isNotEmpty) {
-      try {
-        data = Map<String, dynamic>.from(jsonDecode(payload) as Map);
-      } catch (e) {
-        debugPrint('inline reply payload error: $e');
-        return;
-      }
-    }
-    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
-    // Android держит спиннер RemoteInput, пока то же уведомление не
-    // обновят. Нельзя ждать HTTP — сначала снимаем загрузку.
-    if (threadId != null) {
-      await _stopInlineReplySpinner(
-        threadId: threadId,
-        text: text,
-        data: data,
-      );
-    }
-
-    final ok = await NotificationInlineReply.sendFromPayload(
-      data: data,
-      rawText: text,
-    );
-
-    if (ok && threadId != null) {
-      await clearChatNotifications(threadId: threadId);
-      return;
-    }
-    if (!ok) {
-      await showForegroundPush(
-        title: 'Family Space',
-        body: 'Не удалось отправить ответ. Откройте чат.',
-        data: data.isEmpty
-            ? <String, dynamic>{'type': 'familychat_chat'}
-            : data,
-      );
+  static Map<String, dynamic> _parseNotificationPayload(String? payload) {
+    if (payload == null || payload.isEmpty) return {};
+    try {
+      return Map<String, dynamic>.from(jsonDecode(payload) as Map);
+    } catch (e) {
+      debugPrint('inline reply payload error: $e');
+      return {};
     }
   }
 
-  /// Заменяет баннер с полем ответа — иначе Android крутит вечный прогресс.
-  static Future<void> _stopInlineReplySpinner({
+  static int? _threadIdFromNotificationResponse(
+    Map<String, dynamic> data,
+    NotificationResponse response,
+  ) {
+    final fromPayload = int.tryParse(data['thread_id']?.toString() ?? '');
+    if (fromPayload != null) return fromPayload;
+    final id = response.id;
+    if (id == null || id < 100000 || id >= 200000) return null;
+    return id - 100000;
+  }
+
+  static Map<String, dynamic> _ensureChatPayload(
+    Map<String, dynamic> data,
+    int threadId,
+  ) {
+    final out = Map<String, dynamic>.from(data);
+    out['type'] ??= 'familychat_chat';
+    out['deeplink'] ??= 'chat';
+    out['thread_id'] ??= '$threadId';
+    return out;
+  }
+
+  static Future<void> _sendInlineReply(NotificationResponse response) async {
+    final text = response.input?.trim() ?? '';
+    if (text.isEmpty) return;
+
+    var data = _parseNotificationPayload(response.payload);
+    final threadId = _threadIdFromNotificationResponse(data, response);
+    if (threadId == null) {
+      debugPrint('inline reply: missing thread_id (payload=${response.payload})');
+      return;
+    }
+    data = _ensureChatPayload(data, threadId);
+
+    // Снять RemoteInput-спиннер до HTTP: cancel надёжнее, чем notify() без
+    // полного MessagingStyle после ответа из шторки.
+    await _dismissChatNotificationForInlineReply(
+      threadId: threadId,
+      outgoingText: text,
+    );
+
+    var ok = false;
+    try {
+      ok = await NotificationInlineReply.sendFromPayload(
+        data: data,
+        rawText: text,
+      );
+    } catch (e, st) {
+      debugPrint('inline reply send failed: $e\n$st');
+      ok = false;
+    }
+
+    if (ok) return;
+
+    await showForegroundPush(
+      title: 'Family Space',
+      body: 'Не удалось отправить ответ. Откройте чат.',
+      data: data,
+    );
+  }
+
+  /// Мгновенно убирает баннер и RemoteInput-спиннер.
+  static Future<void> _dismissChatNotificationForInlineReply({
     required int threadId,
-    required String text,
-    required Map<String, dynamic> data,
+    required String outgoingText,
   }) async {
     await initialize();
-    final preview = text.length > 80 ? '${text.substring(0, 80)}…' : text;
-    final androidDetails = AndroidNotificationDetails(
-      messagesChannelId,
-      'Сообщения',
-      importance: Importance.low,
-      priority: Priority.low,
-      playSound: false,
-      enableVibration: false,
-      silent: true,
-      onlyAlertOnce: true,
-      autoCancel: true,
-      tag: chatNotificationTag(threadId),
-      category: AndroidNotificationCategory.message,
+    final tag = chatNotificationTag(threadId);
+    final id = chatNotificationId(threadId);
+    await _plugin.cancel(0, tag: tag);
+    await _plugin.cancel(id, tag: tag);
+    await _plugin.cancel(id);
+    await ChatPushThreadPreview.recordOutgoing(threadId, outgoingText);
+  }
+
+  static MessagingStyleInformation? _androidMessagingStyle(
+    ChatPushThreadPreview preview,
+  ) {
+    if (preview.lines.isEmpty) return null;
+    return MessagingStyleInformation(
+      const Person(name: ''),
+      conversationTitle: preview.isGroup ? preview.title : null,
+      groupConversation: preview.isGroup,
+      messages: preview.lines
+          .map(
+            (line) => Message(
+              line.text,
+              DateTime.fromMillisecondsSinceEpoch(
+                line.timestampMs ?? DateTime.now().millisecondsSinceEpoch,
+              ),
+              line.sender.isNotEmpty ? Person(name: line.sender) : null,
+            ),
+          )
+          .toList(),
     );
-    await _plugin.show(
-      chatNotificationId(threadId),
-      'Family Space',
-      preview,
-      NotificationDetails(android: androidDetails),
-      payload: jsonEncode(data),
+  }
+
+  static List<AndroidNotificationAction> _chatReplyActions() {
+    return [
+      AndroidNotificationAction(
+        NotificationInlineReply.actionId,
+        'Ответить',
+        inputs: const [
+          AndroidNotificationActionInput(
+            label: 'Сообщение',
+            allowFreeFormInput: true,
+          ),
+        ],
+        allowGeneratedReplies: true,
+        showsUserInterface: false,
+        // true: Android сразу снимает спиннер; dismiss выше — запасной путь.
+        cancelNotification: true,
+      ),
+    ];
+  }
+
+  static Future<({
+    String title,
+    String body,
+    MessagingStyleInformation? messagingStyle,
+  })> _resolveChatNotificationContent({
+    required int threadId,
+    required Map<String, dynamic> data,
+    required String pushTitle,
+    required String pushBody,
+    bool enrichFromDatabase = false,
+  }) async {
+    final preview = await ChatPushThreadPreview.build(
+      threadId: threadId,
+      data: data,
+      pushTitle: pushTitle,
+      pushBody: pushBody,
+      enrichFromDatabase: enrichFromDatabase,
+    );
+    var displayTitle = preview.title;
+    var displayBody = preview.collapsedBody;
+    MessagingStyleInformation? messagingStyle;
+    if (defaultTargetPlatform == TargetPlatform.android &&
+        preview.lines.isNotEmpty) {
+      messagingStyle = _androidMessagingStyle(preview);
+    } else if (defaultTargetPlatform == TargetPlatform.iOS &&
+        preview.lines.length > 1) {
+      displayBody = preview.expandedBody;
+    }
+    return (
+      title: displayTitle,
+      body: displayBody,
+      messagingStyle: messagingStyle,
     );
   }
 
@@ -274,6 +374,7 @@ class FamilyChatNotifications {
         title: title != null && title.isNotEmpty ? title : 'Family Space',
         body: body != null && body.isNotEmpty ? body : 'Новое сообщение',
         data: data,
+        enrichChatPreviewFromDatabase: true,
       );
       return;
     }
@@ -359,6 +460,7 @@ class FamilyChatNotifications {
     required String title,
     required String body,
     required Map<String, dynamic> data,
+    bool enrichChatPreviewFromDatabase = false,
   }) async {
     if (kIsWeb || !_initialized) return;
 
@@ -372,6 +474,23 @@ class FamilyChatNotifications {
     final isChat = type == 'familychat_chat' ||
         (data['deeplink']?.toString() == 'chat' && threadId != null);
     final canReply = isChat && threadId != null;
+
+    var displayTitle = title;
+    var displayBody = body;
+    MessagingStyleInformation? messagingStyle;
+    if (isChat && threadId != null) {
+      final content = await _resolveChatNotificationContent(
+        threadId: threadId,
+        data: data,
+        pushTitle: title,
+        pushBody: body,
+        enrichFromDatabase: enrichChatPreviewFromDatabase,
+      );
+      displayTitle = content.title;
+      displayBody = content.body;
+      messagingStyle = content.messagingStyle;
+    }
+
     final androidDetails = AndroidNotificationDetails(
       messagesChannelId,
       'Сообщения',
@@ -381,24 +500,8 @@ class FamilyChatNotifications {
       enableVibration: true,
       tag: tag,
       category: isChat ? AndroidNotificationCategory.message : null,
-      actions: canReply
-          ? [
-              AndroidNotificationAction(
-                NotificationInlineReply.actionId,
-                'Ответить',
-                inputs: const [
-                  AndroidNotificationActionInput(
-                    label: 'Сообщение',
-                    allowFreeFormInput: true,
-                  ),
-                ],
-                allowGeneratedReplies: true,
-                showsUserInterface: false,
-                // false: Android ждёт notify() с тем же id/tag, иначе спиннер.
-                cancelNotification: false,
-              ),
-            ]
-          : null,
+      styleInformation: messagingStyle,
+      actions: canReply ? _chatReplyActions() : null,
       // Один баннер на чат: повторный show с тем же id/tag заменяет старый.
       onlyAlertOnce: false,
     );
@@ -414,8 +517,8 @@ class FamilyChatNotifications {
 
     await _plugin.show(
       _notificationId(data),
-      title,
-      body,
+      displayTitle,
+      displayBody,
       NotificationDetails(android: androidDetails, iOS: iosDetails),
       payload: jsonEncode(data),
     );
@@ -433,6 +536,7 @@ class FamilyChatNotifications {
     if (threadId != null) {
       final tag = chatNotificationTag(threadId);
       final id = chatNotificationId(threadId);
+      await ChatPushThreadPreview.clear(threadId);
       // FCM с tag часто публикует с id=0; локальные — с нашим id.
       await _plugin.cancel(0, tag: tag);
       await _plugin.cancel(id, tag: tag);

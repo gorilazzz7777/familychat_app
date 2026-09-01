@@ -7,7 +7,10 @@ import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/cache/familychat_media_cache.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/media_incoming_sync.dart';
+import '../../../core/network/chat_network_link.dart';
+import '../../../core/settings/app_settings_storage.dart';
 import '../../familychat/data/familychat_repository.dart';
+import 'chat_media_auto_download.dart';
 import 'chat_realtime_utils.dart';
 
 /// Фоновая загрузка списка чатов и последних сообщений для офлайн-режима.
@@ -141,6 +144,8 @@ abstract final class ChatOfflinePrefetch {
     List<Map<String, dynamic>> messages, {
     required int maxImages,
   }) async {
+    final settings = await AppSettingsStorage.load();
+    final network = await ChatNetworkLink.current();
     var remaining = maxImages;
     // Свежие сообщения важнее — идём с конца.
     for (final message in messages.reversed) {
@@ -151,6 +156,13 @@ abstract final class ChatOfflinePrefetch {
         if (attachment['kind']?.toString() != 'image') continue;
         final attachmentId = chatAsInt(attachment['id']);
         if (attachmentId == null) continue;
+        if (!ChatMediaAutoDownloadPolicy.shouldAutoDownload(
+          settings: settings,
+          network: network,
+          attachment: attachment,
+        )) {
+          continue;
+        }
 
         try {
           final existing = await FamilyChatLocalCache.readAttachmentBytes(

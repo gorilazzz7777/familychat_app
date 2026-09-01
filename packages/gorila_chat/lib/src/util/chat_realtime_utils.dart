@@ -39,6 +39,26 @@ List<Map<String, dynamic>> chatAttachmentsOf(Map<String, dynamic> message) {
       .toList();
 }
 
+/// Receipt status for own messages — never downgrade `read` → `sent` on merge.
+String? chatMergeReadStatus(String? existing, String? incoming) {
+  final e = existing?.trim() ?? '';
+  final i = incoming?.trim() ?? '';
+  if (e.isEmpty) return i.isEmpty ? null : i;
+  if (i.isEmpty) return e;
+  if (e == 'read' || i == 'read') return 'read';
+  const order = {
+    'failed': 0,
+    'sending': 1,
+    'queued': 2,
+    'scheduled': 3,
+    'sent': 4,
+    'read': 5,
+  };
+  final er = order[e] ?? 3;
+  final ir = order[i] ?? 3;
+  return er >= ir ? e : i;
+}
+
 bool chatMessageIsPending(Map<String, dynamic> message) {
   final id = chatAsInt(message['id']);
   return message['_pending'] == true ||
@@ -105,6 +125,13 @@ Map<String, dynamic> chatEnsureMessageOwnership(
   }
 
   if (previous != null) {
+    final mergedStatus = chatMergeReadStatus(
+      previous['read_status']?.toString(),
+      next['read_status']?.toString(),
+    );
+    if (mergedStatus != null) {
+      next['read_status'] = mergedStatus;
+    }
     for (final key in const [
       'sender_name',
       'sender_avatar_url',
@@ -376,7 +403,20 @@ List<Map<String, dynamic>> chatMergeMessageLists(
   void absorb(Map<String, dynamic> message) {
     final id = chatAsInt(message['id']);
     if (id != null && id > 0 && !chatMessageIsPending(message)) {
-      byId[id] = message;
+      final prev = byId[id];
+      if (prev != null) {
+        final merged = Map<String, dynamic>.from(message);
+        final status = chatMergeReadStatus(
+          prev['read_status']?.toString(),
+          merged['read_status']?.toString(),
+        );
+        if (status != null) {
+          merged['read_status'] = status;
+        }
+        byId[id] = merged;
+      } else {
+        byId[id] = message;
+      }
       return;
     }
     if (id != null) {

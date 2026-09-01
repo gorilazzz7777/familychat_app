@@ -13,7 +13,6 @@ import '../data/chat_hub_tab_order_storage.dart';
 import '../data/chat_local_reads.dart';
 import '../data/chat_message_preview.dart';
 import '../data/chat_realtime_utils.dart';
-import '../data/chat_unread_providers.dart';
 import '../data/familychat_realtime.dart';
 import '../data/chat_sync_service.dart';
 import '../../../core/local_db/chat_local_store.dart';
@@ -68,6 +67,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   final _searchController = TextEditingController();
   StreamSubscription<List<Map<String, dynamic>>>? _threadsSub;
   StreamSubscription<List<Map<String, dynamic>>>? _membersSub;
+  int _threadsEnrichGen = 0;
   bool get _localFirst => ChatSyncService.isSupported;
 
   void toggleSearch() {
@@ -104,11 +104,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Future<void> _refreshFromLocalStore() async {
     if (!_localFirst) return;
     final threads = await ChatLocalReads.threads();
+    final enriched = await _enrichThreadsForDisplay(threads);
     final members = await ChatLocalReads.members();
     if (!mounted) return;
     setState(() {
       if (threads.isNotEmpty) {
-        _threads = _sortedThreads(threads);
+        _threads = _sortedThreads(enriched);
       }
       if (members.isNotEmpty) {
         _applyMembers(members);
@@ -117,7 +118,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         _loading = false;
       }
     });
-    invalidateChatUnreadTotal(ref);
   }
 
   @override
@@ -304,19 +304,27 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   void _bindLocalStore() {
     _threadsSub = ChatLocalStore.instance.watchThreads().listen((threads) {
-      if (!mounted) return;
-      setState(() {
-        _threads = _sortedThreads(threads);
-        // Empty emission before bootstrap must not flash "Нет чатов".
-        if (threads.isNotEmpty || _hubBootstrapDone) {
-          _loading = false;
-        }
-      });
-      invalidateChatUnreadTotal(ref);
+      unawaited(_onThreadsUpdated(threads));
     });
     _membersSub = ChatLocalStore.instance.watchMembers().listen((members) {
       if (!mounted) return;
       setState(() => _applyMembers(members));
+    });
+  }
+
+  Future<void> _onThreadsUpdated(List<Map<String, dynamic>> threads) async {
+    if (!mounted) return;
+    final gen = ++_threadsEnrichGen;
+    final enriched = _localFirst
+        ? await enrichChatThreadsLastMessages(threads)
+        : threads;
+    if (!mounted || gen != _threadsEnrichGen) return;
+    setState(() {
+      _threads = _sortedThreads(enriched);
+      // Empty emission before bootstrap must not flash "Нет чатов".
+      if (threads.isNotEmpty || _hubBootstrapDone) {
+        _loading = false;
+      }
     });
   }
 
@@ -348,15 +356,23 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Future<void> _hydrateFromLocalStore() async {
     final cachedThreads = await ChatLocalReads.threads();
     if (cachedThreads.isEmpty) return;
+    final enriched = await _enrichThreadsForDisplay(cachedThreads);
     final cachedMembers = await ChatLocalReads.members();
     if (!mounted) return;
     setState(() {
-      _threads = _sortedThreads(cachedThreads);
+      _threads = _sortedThreads(enriched);
       if (cachedMembers.isNotEmpty) {
         _applyMembers(cachedMembers);
       }
       _loading = false;
     });
+  }
+
+  Future<List<Map<String, dynamic>>> _enrichThreadsForDisplay(
+    List<Map<String, dynamic>> threads,
+  ) async {
+    if (!_localFirst || threads.isEmpty) return threads;
+    return enrichChatThreadsLastMessages(threads);
   }
 
   void _onRealtime(Map<String, dynamic> event) {
@@ -399,7 +415,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           _threadsFingerprint(sorted);
       if (sameThreads && !_loading) {
         setState(() => _applyMembers(members));
-        invalidateChatUnreadTotal(ref);
         unawaited(ChatOfflineSync.instance.refreshOnline(repo));
         return;
       }
@@ -408,7 +423,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         _applyMembers(members);
         _loading = false;
       });
-      invalidateChatUnreadTotal(ref);
       unawaited(ChatOfflineSync.instance.refreshOnline(repo));
     } catch (_) {
       if (!mounted) return;

@@ -765,7 +765,12 @@ class _ShellNavBarWithUnread extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final chatUnread = ref.watch(chatUnreadTotalProvider).value ?? 0;
+    final unreadAsync = ref.watch(chatUnreadTotalProvider);
+    final chatUnread = unreadAsync.when(
+      data: (value) => value,
+      loading: () => unreadAsync.valueOrNull ?? 0,
+      error: (_, __) => 0,
+    );
     final chatBadgeLabel = chatUnread > 99 ? '99+' : '$chatUnread';
     return ShellNavBar(
       layout: layout,

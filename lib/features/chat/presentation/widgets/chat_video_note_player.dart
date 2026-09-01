@@ -10,8 +10,13 @@ import 'package:video_player/video_player.dart';
 import '../../../../core/media/gallery_media_utils.dart';
 import '../../../../core/media/gallery_video_thumbnail.dart';
 import '../../../../core/media/local_device_file.dart';
+import '../../../../core/network/chat_network_link.dart';
 import '../../../../core/providers/app_providers.dart';
+import '../../../../core/settings/app_settings_controller.dart';
 import '../../../../core/widgets/family_public_image.dart';
+import '../../data/chat_media_providers.dart';
+import '../../data/chat_realtime_utils.dart';
+import 'chat_media_transfer_overlay.dart';
 import 'chat_network_image.dart';
 
 /// Видео-кружок в чате: превью в списке, проигрывание только по тапу.
@@ -24,6 +29,9 @@ class ChatVideoNotePlayer extends ConsumerStatefulWidget {
     this.idleSize = 196,
     this.expandedSize,
     this.interactive = true,
+    this.messageMetadata = const {},
+    this.uploadMessageId,
+    this.onCancelUpload,
   });
 
   final int threadId;
@@ -33,6 +41,9 @@ class ChatVideoNotePlayer extends ConsumerStatefulWidget {
   /// Если null — почти на всю ширину окна чата.
   final double? expandedSize;
   final bool interactive;
+  final Map<String, dynamic> messageMetadata;
+  final int? uploadMessageId;
+  final VoidCallback? onCancelUpload;
 
   static double defaultExpandedSize(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
@@ -69,6 +80,27 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
       _duration = Duration(milliseconds: ms);
     }
     unawaited(_loadIdleThumb());
+    _scheduleAutoDownload();
+  }
+
+  void _scheduleAutoDownload() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final attachmentId = chatAsInt(widget.attachment['id']);
+      if (attachmentId == null || attachmentId <= 0) return;
+      final settings = ref.read(appSettingsProvider);
+      final network = ref.read(chatNetworkLinkProvider).value ??
+          ChatNetworkLinkKind.unknown;
+      unawaited(
+        ref.read(chatAttachmentDownloadManagerProvider).maybeAutoDownload(
+              threadId: widget.threadId,
+              attachment: widget.attachment,
+              settings: settings,
+              network: network,
+              messageMetadata: widget.messageMetadata,
+            ),
+      );
+    });
   }
 
   @override
@@ -361,11 +393,17 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     final showPlayer =
         _expanded && !_initializing && c != null && c.value.isInitialized;
 
-    return RepaintBoundary(
-      child: GestureDetector(
-        onTap: _onTap,
-        behavior: HitTestBehavior.opaque,
-        child: AnimatedContainer(
+    return ChatMediaTransferOverlay(
+      threadId: widget.threadId,
+      attachment: widget.attachment,
+      uploadMessageId: widget.uploadMessageId,
+      onCancelUpload: widget.onCancelUpload,
+      onDownloadTap: _onTap,
+      child: RepaintBoundary(
+        child: GestureDetector(
+          onTap: _onTap,
+          behavior: HitTestBehavior.opaque,
+          child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
           curve: Curves.easeOutCubic,
           width: size,
@@ -457,6 +495,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
             ],
           ),
         ),
+      ),
       ),
     );
   }

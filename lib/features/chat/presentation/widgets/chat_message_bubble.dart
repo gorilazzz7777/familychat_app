@@ -1,9 +1,15 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import '../../../../core/network/chat_network_link.dart';
+import '../../../../core/settings/app_settings_controller.dart';
+import '../../data/chat_media_providers.dart';
+import '../../data/chat_realtime_utils.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
@@ -14,6 +20,8 @@ import 'chat_image_album.dart';
 import 'chat_link_preview_card.dart';
 import 'chat_location_preview.dart';
 import 'chat_media_layout.dart';
+import 'chat_media_transfer_overlay.dart';
+import 'chat_network_image.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
 import 'chat_message_read_status_icon.dart';
@@ -52,6 +60,8 @@ class ChatMessageBubble extends StatelessWidget {
     this.onSwipeReply,
     this.onReactionTap,
     this.onRetrySend,
+    this.onCancelUpload,
+    this.pendingMessageId,
     this.isGroupLike = false,
     this.mentions = const [],
     this.scheduledAt,
@@ -87,6 +97,8 @@ class ChatMessageBubble extends StatelessWidget {
   final VoidCallback? onSwipeReply;
   final void Function(String emoji)? onReactionTap;
   final VoidCallback? onRetrySend;
+  final VoidCallback? onCancelUpload;
+  final int? pendingMessageId;
   final bool isGroupLike;
   final List<Map<String, dynamic>> mentions;
   final DateTime? scheduledAt;
@@ -716,6 +728,9 @@ class ChatMessageBubble extends StatelessWidget {
           maxWidth: maxWidth,
           onImageTap: onImageTap,
           borderRadius: mediaRadius,
+          uploadMessageId: pendingMessageId,
+          onCancelUpload: onCancelUpload,
+          messageMetadata: messageMetadata,
         ),
       );
     }
@@ -744,6 +759,9 @@ class ChatMessageBubble extends StatelessWidget {
               canToggleTranscript: canToggleVoiceTranscript,
               textColor: textColor,
               metaColor: metaColor,
+              messageMetadata: messageMetadata,
+              uploadMessageId: pendingMessageId,
+              onCancelUpload: onCancelUpload,
             ),
           ),
         );
@@ -757,6 +775,9 @@ class ChatMessageBubble extends StatelessWidget {
               durationMs: _videoNoteDurationMs(),
               idleSize: (maxWidth * 0.72).clamp(160.0, 220.0),
               interactive: !selectionMode,
+              messageMetadata: messageMetadata,
+              uploadMessageId: pendingMessageId,
+              onCancelUpload: onCancelUpload,
             ),
           );
         } else {
@@ -768,29 +789,21 @@ class ChatMessageBubble extends StatelessWidget {
               circular: false,
               borderRadius: mediaRadius,
               onOpen: onImageTap != null ? () => onImageTap!(a) : null,
+              messageMetadata: messageMetadata,
+              uploadMessageId: pendingMessageId,
+              onCancelUpload: onCancelUpload,
             ),
           );
         }
       } else {
         out.add(
-          InkWell(
-            onTap: () {
-              final url = a['file_url']?.toString();
-              if (url != null) launchUrl(Uri.parse(url));
-            },
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.insert_drive_file_outlined, color: textColor),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    a['filename']?.toString() ?? 'Файл',
-                    style: TextStyle(color: textColor),
-                  ),
-                ),
-              ],
-            ),
+          _ChatFileAttachmentRow(
+            threadId: threadId,
+            attachment: a,
+            textColor: textColor,
+            messageMetadata: messageMetadata,
+            uploadMessageId: pendingMessageId,
+            onCancelUpload: onCancelUpload,
           ),
         );
       }
@@ -808,6 +821,9 @@ class _ChatVideoAttachmentPreview extends ConsumerStatefulWidget {
     this.circular = false,
     this.borderRadius,
     this.onOpen,
+    this.messageMetadata = const {},
+    this.uploadMessageId,
+    this.onCancelUpload,
   });
 
   final int threadId;
@@ -816,6 +832,9 @@ class _ChatVideoAttachmentPreview extends ConsumerStatefulWidget {
   final bool circular;
   final BorderRadius? borderRadius;
   final VoidCallback? onOpen;
+  final Map<String, dynamic> messageMetadata;
+  final int? uploadMessageId;
+  final VoidCallback? onCancelUpload;
 
   @override
   ConsumerState<_ChatVideoAttachmentPreview> createState() =>
@@ -875,12 +894,22 @@ class _ChatVideoAttachmentPreviewState
             maxWidth: size,
             maxHeight: chatMediaMaxThumbHeight(size),
           );
-    Widget? placeholder;
+    Widget background;
     if (isSafeUiPreviewBytes(localBytes)) {
-      placeholder = Image.memory(
+      background = Image.memory(
         localBytes as Uint8List,
-        fit: BoxFit.contain,
+        fit: BoxFit.cover,
         gaplessPlayback: true,
+      );
+    } else {
+      background = ChatNetworkImage(
+        threadId: widget.threadId,
+        attachment: attachment,
+        fit: BoxFit.cover,
+        uploadMessageId: widget.uploadMessageId,
+        onCancelUpload: widget.onCancelUpload,
+        messageMetadata: widget.messageMetadata,
+        borderRadius: widget.borderRadius,
       );
     }
 
@@ -891,15 +920,7 @@ class _ChatVideoAttachmentPreviewState
         fit: StackFit.expand,
         alignment: Alignment.center,
         children: [
-          if (placeholder != null)
-            placeholder
-          else
-            const ColoredBox(
-              color: Colors.black26,
-              child: Center(
-                child: Icon(Icons.videocam_outlined, color: Colors.white54),
-              ),
-            ),
+          background,
           Container(
             width: 44,
             height: 44,
@@ -926,6 +947,102 @@ class _ChatVideoAttachmentPreviewState
               borderRadius: widget.borderRadius ?? BorderRadius.circular(10),
               child: content,
             ),
+    );
+  }
+}
+
+class _ChatFileAttachmentRow extends ConsumerStatefulWidget {
+  const _ChatFileAttachmentRow({
+    required this.threadId,
+    required this.attachment,
+    required this.textColor,
+    this.messageMetadata = const {},
+    this.uploadMessageId,
+    this.onCancelUpload,
+  });
+
+  final int threadId;
+  final Map<String, dynamic> attachment;
+  final Color textColor;
+  final Map<String, dynamic> messageMetadata;
+  final int? uploadMessageId;
+  final VoidCallback? onCancelUpload;
+
+  @override
+  ConsumerState<_ChatFileAttachmentRow> createState() =>
+      _ChatFileAttachmentRowState();
+}
+
+class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> {
+  @override
+  void initState() {
+    super.initState();
+    _scheduleAutoDownload();
+  }
+
+  void _scheduleAutoDownload() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final attachmentId = chatAsInt(widget.attachment['id']);
+      if (attachmentId == null || attachmentId <= 0) return;
+      final settings = ref.read(appSettingsProvider);
+      final network = ref.read(chatNetworkLinkProvider).value ??
+          ChatNetworkLinkKind.unknown;
+      unawaited(
+        ref.read(chatAttachmentDownloadManagerProvider).maybeAutoDownload(
+              threadId: widget.threadId,
+              attachment: widget.attachment,
+              settings: settings,
+              network: network,
+              messageMetadata: widget.messageMetadata,
+            ),
+      );
+    });
+  }
+
+  Future<void> _openFile() async {
+    final url = widget.attachment['file_url']?.toString();
+    if (url != null && url.isNotEmpty) {
+      await launchUrl(Uri.parse(url));
+      return;
+    }
+    final attachmentId = chatAsInt(widget.attachment['id']);
+    if (attachmentId == null) return;
+    final bytes = await ref.read(chatAttachmentDownloadManagerProvider).startDownload(
+          threadId: widget.threadId,
+          attachmentId: attachmentId,
+          manual: true,
+        );
+    if (!mounted || bytes == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Файл загружен')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ChatMediaTransferOverlay(
+      threadId: widget.threadId,
+      attachment: widget.attachment,
+      uploadMessageId: widget.uploadMessageId,
+      onCancelUpload: widget.onCancelUpload,
+      onDownloadTap: _openFile,
+      child: InkWell(
+        onTap: _openFile,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.insert_drive_file_outlined, color: widget.textColor),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                widget.attachment['filename']?.toString() ?? 'Файл',
+                style: TextStyle(color: widget.textColor),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -31,6 +31,9 @@ class GorilaChatRealtime {
   /// True when the next successful [connect] should emit `chat_refresh`
   /// (after drop / backoff reconnect — open chats must HTTP-resync).
   bool _refreshAfterConnect = false;
+  final Map<int, _PendingWsTextSend> _pendingTextSends = {};
+
+  static const _defaultSendAckTimeout = Duration(seconds: 2);
 
   bool get isConnected => _connected && _channel != null;
 
@@ -62,7 +65,9 @@ class GorilaChatRealtime {
           try {
             final decoded = jsonDecode(data as String);
             if (decoded is! Map) return;
-            _dispatch(chatNormalizeMap(Map<dynamic, dynamic>.from(decoded)));
+            final event = chatNormalizeMap(Map<dynamic, dynamic>.from(decoded));
+            if (_handleSendControlEvent(event)) return;
+            _dispatch(event);
           } catch (e) {
             debugPrint('$debugName ws decode error: $e');
           }
@@ -70,11 +75,13 @@ class GorilaChatRealtime {
         onError: (Object error) {
           debugPrint('$debugName ws error: $error');
           _connected = false;
+          _failPendingTextSends();
           _scheduleReconnect();
         },
         onDone: () {
           debugPrint('$debugName ws closed');
           _connected = false;
+          _failPendingTextSends();
           _scheduleReconnect();
         },
         cancelOnError: false,
@@ -124,6 +131,7 @@ class GorilaChatRealtime {
     _accessToken = null;
     _reconnectAttempt = 0;
     _connected = false;
+    _failPendingTextSends();
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     await _closeChannel();
@@ -165,4 +173,88 @@ class GorilaChatRealtime {
       'is_typing': isTyping,
     });
   }
+
+  /// Text-only send via WS. Returns server message dict or null on timeout/disconnect.
+  Future<Map<String, dynamic>?> sendTextMessage({
+    required int threadId,
+    required int clientMsgId,
+    String? body,
+    int? replyToMessageId,
+    List<int>? mentionedUserIds,
+    bool notifySilent = false,
+    Duration timeout = _defaultSendAckTimeout,
+  }) async {
+    if (!isConnected) return null;
+    final trimmed = body?.trim() ?? '';
+    if (trimmed.isEmpty) return null;
+
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingTextSends[clientMsgId] = _PendingWsTextSend(completer: completer);
+
+    sendJson({
+      'event': 'chat_send_message',
+      'thread_id': threadId,
+      'client_msg_id': clientMsgId,
+      'body': trimmed,
+      if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
+      if (mentionedUserIds != null && mentionedUserIds.isNotEmpty)
+        'mentioned_user_ids': mentionedUserIds,
+      if (notifySilent) 'notify_silent': true,
+    });
+
+    try {
+      return await completer.future.timeout(timeout);
+    } catch (_) {
+      _pendingTextSends.remove(clientMsgId);
+      return null;
+    }
+  }
+
+  bool _handleSendControlEvent(Map<String, dynamic> event) {
+    final ev = event['event']?.toString();
+    if (ev == 'chat_send_ack') {
+      final clientMsgId = chatAsInt(event['client_msg_id']);
+      final message = event['message'];
+      final pending =
+          clientMsgId == null ? null : _pendingTextSends.remove(clientMsgId);
+      if (pending != null &&
+          !pending.completer.isCompleted &&
+          message is Map) {
+        pending.completer.complete(
+          Map<String, dynamic>.from(message),
+        );
+      }
+      return true;
+    }
+    if (ev == 'chat_send_error') {
+      final clientMsgId = chatAsInt(event['client_msg_id']);
+      final pending =
+          clientMsgId == null ? null : _pendingTextSends.remove(clientMsgId);
+      if (pending != null && !pending.completer.isCompleted) {
+        final detail = event['detail'];
+        pending.completer.completeError(
+          StateError(detail?.toString() ?? 'chat_send_error'),
+        );
+      }
+      return true;
+    }
+    return false;
+  }
+
+  void _failPendingTextSends() {
+    for (final entry in _pendingTextSends.entries) {
+      if (!entry.value.completer.isCompleted) {
+        entry.value.completer.completeError(
+          StateError('websocket disconnected'),
+        );
+      }
+    }
+    _pendingTextSends.clear();
+  }
+}
+
+class _PendingWsTextSend {
+  _PendingWsTextSend({required this.completer});
+
+  final Completer<Map<String, dynamic>> completer;
 }

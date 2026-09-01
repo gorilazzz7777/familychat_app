@@ -18,6 +18,7 @@ export 'package:gorila_chat/gorila_chat.dart'
         sortChatMessages,
         chatUpsertMessage,
         chatMergeMessageLists,
+        chatMergeReadStatus,
         chatMessageDisplayEquals,
         chatMessageListsDisplayEqual,
         chatNewestServerMessageId,

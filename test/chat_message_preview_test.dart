@@ -53,6 +53,30 @@ void main() {
     );
   });
 
+  test('hub slim preview without attachments becomes Медиа', () {
+    expect(
+      chatMessagePreviewText({
+        'id': 5,
+        'body': '',
+        'has_attachments': true,
+        'attachment_count': 1,
+      }),
+      'Медиа',
+    );
+  });
+
+  test('stub image url without kind becomes Фото', () {
+    expect(
+      chatMessagePreviewText({
+        'body': '',
+        'attachments': [
+          {'server_url': 'https://cdn.example.com/photo.jpg'},
+        ],
+      }),
+      'Фото',
+    );
+  });
+
   test('prefer richer last_message keeps local attachments', () {
     final richer = chatPreferRicherLastMessage(
       {'id': 10, 'body': '', 'attachments': const []},

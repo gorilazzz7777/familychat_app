@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -36,13 +38,22 @@ abstract final class NotificationInlineReply {
         receiveTimeout: sendTimeout,
         sendTimeout: sendTimeout,
       );
+      client.sendDio.options = client.sendDio.options.copyWith(
+        connectTimeout: const Duration(seconds: 12),
+        receiveTimeout: sendTimeout,
+        sendTimeout: sendTimeout,
+      );
       final repo = FamilyChatRepository(client);
       final msg = await repo
-          .sendThreadMessage(threadId, body: text)
+          .sendThreadMessage(
+            threadId,
+            body: text,
+            clientMsgId: DateTime.now().microsecondsSinceEpoch,
+          )
           .timeout(sendTimeout);
       final payload = Map<String, dynamic>.from(msg);
       payload['thread_id'] ??= threadId;
-      await _persistInBackground(threadId, payload);
+      unawaited(_persistInBackground(threadId, payload));
       return true;
     } catch (e, st) {
       debugPrint('[NotificationInlineReply] send failed: $e\n$st');

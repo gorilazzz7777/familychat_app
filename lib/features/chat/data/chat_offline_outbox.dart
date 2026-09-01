@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../familychat/data/familychat_repository.dart';
+import 'chat_media_upload_tracker.dart';
 import 'chat_network_status.dart';
 import 'chat_realtime_utils.dart';
 
@@ -84,6 +86,7 @@ class ChatOfflineOutbox {
     int? voiceDurationMs,
     String? voiceTranscript,
     int? videoNoteDurationMs,
+    int? clientMsgId,
   }) async {
     final attachmentMeta = <Map<String, dynamic>>[];
     for (var i = 0; i < attachments.length; i++) {
@@ -105,6 +108,7 @@ class ChatOfflineOutbox {
         'temp_message_id': tempMessageId,
         'attempts': 0,
         'created_at': DateTime.now().toUtc().toIso8601String(),
+        if (clientMsgId != null) 'client_msg_id': clientMsgId,
         if (body != null && body.isNotEmpty) 'body': body,
         if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
         if (mentionedUserIds.isNotEmpty) 'mentioned_user_ids': mentionedUserIds,
@@ -489,6 +493,20 @@ class ChatOfflineOutbox {
         if (itemId.isNotEmpty) skippedIds.add(itemId);
         debugPrint('[ChatOutbox] fail id=$itemId error=$error\n$st');
         if (item['kind']?.toString() == 'message') {
+          final tempId = chatAsInt(item['temp_message_id']);
+          final threadId = chatAsInt(item['thread_id']);
+          final cancelled = (error is DioException && CancelToken.isCancel(error)) ||
+              (tempId != null &&
+                  ChatMediaUploadTracker.shared?.isCancelled(tempId) == true);
+          if (cancelled && threadId != null && tempId != null) {
+            await cancelMessage(threadId: threadId, tempMessageId: tempId);
+            if (ChatLocalStore.isSupported) {
+              await ChatLocalStore.instance.deleteMessages(threadId, [tempId]);
+            }
+            await _removeItemById(itemId);
+            ChatMediaUploadTracker.shared?.complete(tempId);
+            continue;
+          }
           final attempts = (chatAsInt(item['attempts']) ?? 0) + 1;
           final giveUp =
               attempts >= maxAttempts || !ChatNetworkStatus.isRetryable(error);
@@ -588,6 +606,14 @@ class ChatOfflineOutbox {
     final tempMessageId = chatAsInt(item['temp_message_id']);
     if (threadId == null || tempMessageId == null) return null;
 
+    final tracker = ChatMediaUploadTracker.shared;
+    CancelToken? cancelToken;
+    if (tracker != null) {
+      tracker.resetCancellation(tempMessageId);
+      cancelToken = tracker.begin(tempMessageId);
+    }
+
+    try {
     final sw = Stopwatch()..start();
     var uploadMs = 0;
     var httpMs = 0;
@@ -603,6 +629,8 @@ class ChatOfflineOutbox {
     final rawAttachments = item['attachments'];
     if (rawAttachments is List) {
       final uploadSw = Stopwatch()..start();
+      var totalBytes = 0;
+      final payloads = <({Uint8List bytes, String filename, String? contentType, String storageKey})>[];
       for (final raw in rawAttachments) {
         if (raw is! Map) continue;
         final storageKey = raw['storage_key']?.toString();
@@ -611,15 +639,45 @@ class ChatOfflineOutbox {
         if (storageKey == null || storageKey.isEmpty) continue;
         final bytes = await _readBytes(storageKey);
         if (bytes == null || bytes.isEmpty) continue;
-        final uploaded = await repo.uploadChatAttachmentBytes(
-          threadId,
+        totalBytes += bytes.length;
+        payloads.add((
           bytes: bytes,
           filename: filename,
           contentType: contentType,
+          storageKey: storageKey,
+        ));
+      }
+      var sentSoFar = 0;
+      for (final payload in payloads) {
+        if (tracker?.isCancelled(tempMessageId) == true) {
+          throw DioException(
+            requestOptions: RequestOptions(),
+            type: DioExceptionType.cancel,
+          );
+        }
+        final uploaded = await repo.uploadChatAttachmentBytes(
+          threadId,
+          bytes: payload.bytes,
+          filename: payload.filename,
+          contentType: payload.contentType,
+          cancelToken: cancelToken,
+          onSendProgress: (sent, total) {
+            final current = sentSoFar + sent;
+            final denom = totalBytes > 0 ? totalBytes : total;
+            tracker?.update(
+              tempMessageId,
+              denom > 0 ? current / denom : 0,
+            );
+          },
+        );
+        sentSoFar += payload.bytes.length;
+        tracker?.update(
+          tempMessageId,
+          totalBytes > 0 ? sentSoFar / totalBytes : 1,
         );
         final id = chatAsInt(uploaded['id']);
         if (id != null) attachmentIds.add(id);
-        await _deleteBytes(storageKey);
+        await _deleteBytes(payload.storageKey);
       }
       uploadMs = uploadSw.elapsedMilliseconds;
     }
@@ -636,6 +694,7 @@ class ChatOfflineOutbox {
       replyToMessageId: replyTo,
       mentionedUserIds: mentioned.isEmpty ? null : mentioned,
       notifySilent: item['notify_silent'] == true,
+      clientMsgId: chatAsInt(item['client_msg_id']) ?? tempMessageId,
       voiceDurationMs: chatAsInt(item['voice_duration_ms']),
       voiceTranscript: item['voice_transcript']?.toString(),
       videoNoteDurationMs: chatAsInt(item['video_note_duration_ms']),
@@ -729,6 +788,9 @@ class ChatOfflineOutbox {
         tempMessageId: tempMessageId,
         message: serverMsg,
       );
+    }
+    } finally {
+      tracker?.complete(tempMessageId);
     }
   }
 

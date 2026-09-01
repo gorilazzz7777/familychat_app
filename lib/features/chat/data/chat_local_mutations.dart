@@ -21,17 +21,6 @@ abstract final class ChatLocalMutations {
       await ChatLocalStore.instance.upsertThread(next);
       break;
     }
-    final messages = await ChatLocalStore.instance.readMessages(threadId);
-    final ids = <int>[];
-    for (final m in messages) {
-      final id = chatAsInt(m['id']);
-      if (id != null && id > 0 && id <= lastMessageId) {
-        ids.add(id);
-      }
-    }
-    if (ids.isNotEmpty) {
-      await ChatLocalStore.instance.markMessagesRead(threadId, ids);
-    }
     ChatUnreadRefresh.onInvalidate?.call();
   }
 

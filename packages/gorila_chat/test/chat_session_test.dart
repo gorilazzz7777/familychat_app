@@ -460,4 +460,22 @@ void main() {
     expect(chatAsInt(msg['sender_user_id']), 17);
     expect(msg['is_mine'], isTrue);
   });
+
+  test('chatMergeReadStatus never downgrades read to sent', () {
+    expect(chatMergeReadStatus('read', 'sent'), 'read');
+    expect(chatMergeReadStatus('sent', 'read'), 'read');
+    expect(chatMergeReadStatus('sending', 'sent'), 'sent');
+  });
+
+  test('chatMergeMessageLists keeps read over stale sent', () {
+    final merged = chatMergeMessageLists(
+      [
+        {'id': 5, 'body': 'hi', 'read_status': 'read'},
+      ],
+      [
+        {'id': 5, 'body': 'hi', 'read_status': 'sent'},
+      ],
+    );
+    expect(merged.single['read_status'], 'read');
+  });
 }

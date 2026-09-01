@@ -122,12 +122,21 @@ bool isImageAttachment(Map<String, dynamic> attachment) {
   final ct = attachment['content_type']?.toString().toLowerCase() ?? '';
   if (ct.startsWith('image/')) return true;
   final name = attachment['filename']?.toString().toLowerCase() ?? '';
-  return name.endsWith('.jpg') ||
+  if (name.endsWith('.jpg') ||
       name.endsWith('.jpeg') ||
       name.endsWith('.png') ||
       name.endsWith('.webp') ||
       name.endsWith('.heic') ||
-      name.endsWith('.gif');
+      name.endsWith('.gif')) {
+    return true;
+  }
+  final url = galleryAttachmentUrl(attachment).toLowerCase();
+  return url.endsWith('.jpg') ||
+      url.endsWith('.jpeg') ||
+      url.endsWith('.png') ||
+      url.endsWith('.webp') ||
+      url.endsWith('.heic') ||
+      url.endsWith('.gif');
 }
 
 bool isGalleryMediaAttachment(Map<String, dynamic> attachment) {

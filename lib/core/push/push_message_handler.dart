@@ -53,6 +53,9 @@ void handleFamilyChatRemoteMessage(
     }
 
     if (isForeground) return;
+
+    unawaited(_showChatPushNotification(message, payload));
+    return;
   }
 
   if (type == 'familychat_calendar_reminder') {
@@ -112,5 +115,31 @@ void handleFamilyChatRemoteMessage(
       body: body != null && body.isNotEmpty ? body : 'Новое уведомление',
       data: pushData,
     ),
+  );
+}
+
+Future<void> _showChatPushNotification(
+  RemoteMessage message,
+  Map<String, dynamic> payload,
+) async {
+  final threadId = int.tryParse(payload['thread_id']?.toString() ?? '');
+  if (threadId != null && ChatSyncService.isSupported) {
+    try {
+      await ChatSyncService.instance.syncThreadFromPush(threadId);
+    } catch (e, st) {
+      debugPrint('chat push sync before notify failed: $e\n$st');
+    }
+  }
+
+  final notification = message.notification;
+  final title = notification?.title?.trim() ??
+      payload['title']?.toString().trim();
+  final body = notification?.body?.trim() ?? payload['body']?.toString().trim();
+
+  await FamilyChatNotifications.showForegroundPush(
+    title: title != null && title.isNotEmpty ? title : 'Family Space',
+    body: body != null && body.isNotEmpty ? body : 'Новое сообщение',
+    data: payload,
+    enrichChatPreviewFromDatabase: true,
   );
 }

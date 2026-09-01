@@ -47,6 +47,77 @@ class MediaStorageSettingsScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 20),
           _SectionHeader(
+            title: 'Автозагрузка в чате',
+            help:
+                'Когда выключено — в чате показывается превью и кнопка «Загрузить». '
+                'По умолчанию всё загружается автоматически.',
+          ),
+          const SizedBox(height: 8),
+          _AutoDownloadGroup(
+            title: 'Фото',
+            wifiValue: settings.chatAutoDownloadPhotosWifi,
+            mobileValue: settings.chatAutoDownloadPhotosMobile,
+            onWifiChanged: (value) {
+              ref.read(appSettingsProvider.notifier).setChatAutoDownload(
+                    photosWifi: value,
+                  );
+            },
+            onMobileChanged: (value) {
+              ref.read(appSettingsProvider.notifier).setChatAutoDownload(
+                    photosMobile: value,
+                  );
+            },
+          ),
+          const SizedBox(height: 8),
+          _AutoDownloadGroup(
+            title: 'Видео',
+            wifiValue: settings.chatAutoDownloadVideosWifi,
+            mobileValue: settings.chatAutoDownloadVideosMobile,
+            onWifiChanged: (value) {
+              ref.read(appSettingsProvider.notifier).setChatAutoDownload(
+                    videosWifi: value,
+                  );
+            },
+            onMobileChanged: (value) {
+              ref.read(appSettingsProvider.notifier).setChatAutoDownload(
+                    videosMobile: value,
+                  );
+            },
+          ),
+          const SizedBox(height: 8),
+          _AutoDownloadGroup(
+            title: 'Файлы',
+            wifiValue: settings.chatAutoDownloadFilesWifi,
+            mobileValue: settings.chatAutoDownloadFilesMobile,
+            onWifiChanged: (value) {
+              ref.read(appSettingsProvider.notifier).setChatAutoDownload(
+                    filesWifi: value,
+                  );
+            },
+            onMobileChanged: (value) {
+              ref.read(appSettingsProvider.notifier).setChatAutoDownload(
+                    filesMobile: value,
+                  );
+            },
+          ),
+          const SizedBox(height: 8),
+          _AutoDownloadGroup(
+            title: 'Голосовые',
+            wifiValue: settings.chatAutoDownloadVoiceWifi,
+            mobileValue: settings.chatAutoDownloadVoiceMobile,
+            onWifiChanged: (value) {
+              ref.read(appSettingsProvider.notifier).setChatAutoDownload(
+                    voiceWifi: value,
+                  );
+            },
+            onMobileChanged: (value) {
+              ref.read(appSettingsProvider.notifier).setChatAutoDownload(
+                    voiceMobile: value,
+                  );
+            },
+          ),
+          const SizedBox(height: 20),
+          _SectionHeader(
             title: 'Срок кэша',
             help:
                 'Превью в чате и альбомах. После срока файл удаляется, '
@@ -80,6 +151,76 @@ class MediaStorageSettingsScreen extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AutoDownloadGroup extends StatelessWidget {
+  const _AutoDownloadGroup({
+    required this.title,
+    required this.wifiValue,
+    required this.mobileValue,
+    required this.onWifiChanged,
+    required this.onMobileChanged,
+  });
+
+  final String title;
+  final bool wifiValue;
+  final bool mobileValue;
+  final ValueChanged<bool> onWifiChanged;
+  final ValueChanged<bool> onMobileChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Material(
+      color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              title,
+              style: theme.textTheme.titleMedium,
+            ),
+            _AutoDownloadToggle(
+              label: 'Wi‑Fi',
+              value: wifiValue,
+              onChanged: onWifiChanged,
+            ),
+            _AutoDownloadToggle(
+              label: 'Мобильная сеть',
+              value: mobileValue,
+              onChanged: onMobileChanged,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AutoDownloadToggle extends StatelessWidget {
+  const _AutoDownloadToggle({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: Text(label)),
+        Switch.adaptive(value: value, onChanged: onChanged),
+      ],
     );
   }
 }

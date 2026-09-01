@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -34,6 +35,8 @@ import '../data/chat_network_status.dart';
 import '../data/chat_local_mutations.dart';
 import '../data/chat_local_reads.dart';
 import '../data/chat_mutation_coordinator.dart';
+import '../data/chat_media_providers.dart';
+import '../data/chat_media_upload_tracker.dart';
 import '../data/chat_offline_outbox.dart';
 import '../data/chat_offline_prefetch.dart';
 import '../data/chat_offline_sync.dart';
@@ -45,6 +48,7 @@ import '../data/chat_gif_item.dart';
 import '../data/chat_typing_utils.dart';
 import '../data/chat_voice_transcription.dart';
 import '../data/chat_voice_utils.dart';
+import '../data/chat_ws_text_send.dart';
 import '../data/ogg_container_duration.dart';
 import '../data/familychat_realtime.dart';
 import 'chat_thread_avatars.dart';
@@ -71,6 +75,7 @@ import 'widgets/chat_call_history_banner.dart';
 import 'widgets/chat_birthday_welcome_banner.dart';
 import 'widgets/chat_day_separator.dart';
 import 'widgets/chat_system_message_banner.dart';
+import 'widgets/chat_undo_action_snackbar.dart';
 
 class _PendingFileDraft {
   const _PendingFileDraft({
@@ -102,6 +107,24 @@ class _OutgoingAttachment {
   final String kind;
   final String? localPath;
   final Uint8List? thumbnailBytes;
+}
+
+class _MessageDeleteUndoSession {
+  _MessageDeleteUndoSession({
+    required this.snapshots,
+    required this.pinnedSnapshots,
+    required this.forEveryone,
+  });
+
+  final List<Map<String, dynamic>> snapshots;
+  final List<Map<String, dynamic>> pinnedSnapshots;
+  final bool forEveryone;
+  Timer? timer;
+
+  Set<int> get messageIds => snapshots
+      .map(chatAsInt)
+      .whereType<int>()
+      .toSet();
 }
 
 String? _imageContentTypeForFilename(String filename) {
@@ -219,6 +242,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _typingEmitted = false;
   DateTime? _lastTypingEmitAt;
   AudioPlayer? _speakPlayer;
+  _MessageDeleteUndoSession? _pendingDeleteUndo;
 
   static const _maxSpeakMessages = 30;
   static const _uiMessageWindow = 80;
@@ -288,6 +312,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       });
     }
     ChatScheduledSendService.instance.addListener(_onScheduledSend);
+    unawaited(ChatWsTextSend.ensureConnection());
   }
 
   void _onScheduledSend() {
@@ -626,7 +651,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       threadId: widget.threadId,
     );
     if (!mounted || gen != _messagesWatchGen) return;
-    final filteredRows = blocked.isEmpty
+    final undoHidden = _pendingDeleteUndo?.messageIds ?? const <int>{};
+    var filteredRows = blocked.isEmpty
         ? rows
         : rows
             .where((m) {
@@ -634,6 +660,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               return id == null || !blocked.contains(id);
             })
             .toList(growable: false);
+    if (undoHidden.isNotEmpty) {
+      filteredRows = filteredRows
+          .where((m) {
+            final id = chatAsInt(m['id']);
+            return id == null || !undoHidden.contains(id);
+          })
+          .toList(growable: false);
+    }
     final clippedRows = _clipSqliteRowsForUi(filteredRows);
 
     final previewNext = _mergeSqliteWithMemoryPending(clippedRows);
@@ -1295,6 +1329,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   @override
   void dispose() {
+    _pendingDeleteUndo?.timer?.cancel();
+    unawaited(_commitPendingDeleteUndo(silent: true));
     _stopTypingLocal();
     _clearRemoteTyping();
     _peerStatusTimer?.cancel();
@@ -2360,6 +2396,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     required List<Map<String, dynamic>> attachments,
     Map<String, dynamic>? replyTo,
     Map<String, dynamic>? metadata,
+    String readStatus = 'sending',
   }) {
     setState(() {
       _messages = sortChatMessages([
@@ -2375,7 +2412,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           'sender_name': '',
           'sender_avatar_url': '',
           'attachments': attachments,
-          'read_status': 'sending',
+          'read_status': readStatus,
           if (replyTo != null) 'reply_to': replyTo,
           if (metadata != null) 'metadata': metadata,
         },
@@ -2502,6 +2539,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     int? voiceDurationMs,
     String? voiceTranscript,
     int? videoNoteDurationMs,
+    int? clientMsgId,
+    bool markQueued = true,
   }) async {
     await ChatOfflineOutbox.enqueueMessage(
       threadId: widget.threadId,
@@ -2513,6 +2552,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       voiceDurationMs: voiceDurationMs,
       voiceTranscript: voiceTranscript,
       videoNoteDurationMs: videoNoteDurationMs,
+      clientMsgId: clientMsgId ?? tempId,
       attachments: attachments
           .map(
             (att) => ChatOutboxAttachment(
@@ -2523,7 +2563,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           )
           .toList(),
     );
-    _markOptimisticQueued(tempId);
+    if (markQueued) {
+      _markOptimisticQueued(tempId);
+    }
     await _persistMessageCache();
     if (!mounted) return true;
     if (!_localFirst) {
@@ -2556,6 +2598,62 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         return m;
       }).toList();
     });
+  }
+
+  void _markOptimisticSent(int tempId) {
+    setState(() {
+      _messages = _messages.map((m) {
+        if (m['id'] == tempId) {
+          return {...m, 'read_status': 'sent', '_pending': true};
+        }
+        return m;
+      }).toList();
+    });
+  }
+
+  Future<bool> _trySendTextViaWs({
+    required int tempId,
+    required String body,
+    int? replyToMessageId,
+    List<int> mentionedUserIds = const [],
+    bool notifySilent = false,
+  }) async {
+    await ChatWsTextSend.ensureConnection();
+    if (!FamilyChatRealtime.instance.isConnected) return false;
+
+    _markOptimisticSent(tempId);
+    await _persistMessageCache();
+
+    final ack = await ChatWsTextSend.trySend(
+      threadId: widget.threadId,
+      clientMsgId: tempId,
+      body: body,
+      replyToMessageId: replyToMessageId,
+      mentionedUserIds: mentionedUserIds,
+      notifySilent: notifySilent,
+    );
+    if (!mounted) return true;
+    if (ack != null) {
+      _replaceOptimisticMessage(tempId, ack);
+      _scrollToBottom();
+      await _persistMessageCache();
+      return true;
+    }
+
+    await _enqueueOfflineMessage(
+      tempId: tempId,
+      caption: body,
+      attachments: const [],
+      replyToMessageId: replyToMessageId,
+      mentionedUserIds: mentionedUserIds,
+      notifySilent: notifySilent,
+      clientMsgId: tempId,
+      markQueued: false,
+    );
+    ChatMutationCoordinator.scheduleSync(
+      ref.read(familychatRepositoryProvider),
+    );
+    return true;
   }
 
   Future<void> _retryFailedMessage(Map<String, dynamic> message) async {
@@ -2592,6 +2690,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     String? voiceTranscript,
     int? videoNoteDurationMs,
   }) async {
+    final wsEligible = ChatWsTextSend.isEligible(
+      attachments: attachments,
+      voiceDurationMs: voiceDurationMs,
+      voiceTranscript: voiceTranscript,
+      videoNoteDurationMs: videoNoteDurationMs,
+    );
+    if (wsEligible && caption.trim().isNotEmpty) {
+      final sentViaWs = await _trySendTextViaWs(
+        tempId: tempId,
+        body: caption.trim(),
+        replyToMessageId: replyToMessageId,
+        mentionedUserIds: mentionedUserIds,
+        notifySilent: notifySilent,
+      );
+      if (sentViaWs) return true;
+    }
+
     if (_localFirst) {
       await _enqueueOfflineMessage(
         tempId: tempId,
@@ -2623,8 +2738,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       return true;
     }
     try {
+      final tracker = ref.read(chatMediaUploadTrackerProvider);
+      tracker.resetCancellation(tempId);
+      final cancelToken = tracker.begin(tempId);
       final ids = <int>[];
+      var uploadedBytes = 0;
+      var totalBytes = 0;
       for (final att in attachments) {
+        totalBytes += att.bytes.length;
+      }
+      var sentSoFar = 0;
+      for (final att in attachments) {
+        if (tracker.isCancelled(tempId)) {
+          throw DioException(
+            requestOptions: RequestOptions(),
+            type: DioExceptionType.cancel,
+          );
+        }
         final uploaded = await repo.uploadChatAttachmentBytes(
           widget.threadId,
           bytes: att.bytes,
@@ -2632,6 +2762,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           contentType: att.contentType,
           photoExif: att.photoExif,
           thumbnailBytes: att.thumbnailBytes,
+          cancelToken: cancelToken,
+          onSendProgress: (sent, total) {
+            final current = sentSoFar + sent;
+            final denom = totalBytes > 0 ? totalBytes : total;
+            tracker.update(
+              tempId,
+              denom > 0 ? current / denom : 0,
+            );
+          },
+        );
+        sentSoFar += att.bytes.length;
+        tracker.update(
+          tempId,
+          totalBytes > 0 ? sentSoFar / totalBytes : 1,
         );
         final id = chatAsInt(uploaded['id']);
         if (id != null) ids.add(id);
@@ -2683,9 +2827,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           );
         }
       }
+      tracker.complete(tempId);
       return true;
     } catch (error) {
+      final tracker = ref.read(chatMediaUploadTrackerProvider);
+      final cancelled = tracker.isCancelled(tempId) ||
+          (error is DioException && CancelToken.isCancel(error));
+      tracker.complete(tempId);
       if (!mounted) return false;
+      if (cancelled) {
+        await _cancelPendingMessage({'id': tempId});
+        return false;
+      }
       if (ChatNetworkStatus.looksOffline(error)) {
         await _enqueueOfflineMessage(
           tempId: tempId,
@@ -3470,11 +3623,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             },
           ];
 
+    final wsTextEligible = fileDraft == null &&
+        ChatWsTextSend.isEligible(attachments: attachments);
+    final optimisticStatus =
+        wsTextEligible && FamilyChatRealtime.instance.isConnected
+            ? 'sent'
+            : 'sending';
+
     _addOptimisticMessage(
       tempId,
       body: body,
       attachments: attachments,
       replyTo: replyTo,
+      readStatus: optimisticStatus,
     );
 
     if (fileDraft == null) {
@@ -3692,6 +3853,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   Future<void> _cancelPendingMessage(Map<String, dynamic> message) async {
     final tempId = chatAsInt(message['id']);
     if (tempId == null) return;
+    ref.read(chatMediaUploadTrackerProvider).cancel(tempId);
     await ChatOfflineOutbox.cancelMessage(
       threadId: widget.threadId,
       tempMessageId: tempId,
@@ -3883,47 +4045,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
     if (ok != true || !mounted) return;
 
-    if (_localFirst) {
-      ChatOfflineOutbox.markMessagesPendingRemoval(
-        widget.threadId,
-        messageIds,
-      );
-      _removeMessagesLocally(messageIds);
-      await ChatLocalMutations.removeMessagesLocal(
-        widget.threadId,
-        messageIds,
-      );
-      await ChatOfflineOutbox.enqueueHideMessagesForMe(
-        threadId: widget.threadId,
-        messageIds: messageIds,
-      );
-      ChatMutationCoordinator.scheduleSync(
-        ref.read(familychatRepositoryProvider),
-      );
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сообщение удалено')),
-      );
-      return;
-    }
-
-    try {
-      final hidden =
-          await ref.read(familychatRepositoryProvider).hideMessagesForMe(
-                widget.threadId,
-                messageIds,
-              );
-      if (!mounted) return;
-      _removeMessagesLocally(hidden);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сообщение удалено')),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось удалить')),
-      );
-    }
+    final snapshots = _snapshotMessages(messageIds);
+    if (snapshots.isEmpty) return;
+    await _startMessageRemovalUndo(
+      snapshots: snapshots,
+      forEveryone: false,
+    );
   }
 
   void _startEdit(Map<String, dynamic> message) {
@@ -4062,6 +4189,210 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
   }
 
+  List<Map<String, dynamic>> _snapshotMessages(List<int> messageIds) {
+    final ids = messageIds.toSet();
+    return _messages
+        .where((m) {
+          final id = chatAsInt(m['id']);
+          return id != null && ids.contains(id);
+        })
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList(growable: false);
+  }
+
+  void _hideMessagesFromUi(List<int> ids) {
+    if (ids.isEmpty) return;
+    final idSet = ids.toSet();
+    setState(() {
+      _messages = _messages.where((m) {
+        final id = chatAsInt(m['id']);
+        return id == null || !idSet.contains(id);
+      }).toList();
+      _selectedMessageIds.removeWhere(idSet.contains);
+      if (_selectedMessageIds.isEmpty) _selectionMode = false;
+      _pinnedMessages = _pinnedMessages.where((m) {
+        final id = chatAsInt(m['id']);
+        return id == null || !idSet.contains(id);
+      }).toList();
+      if (_pinnedIndex >= _pinnedMessages.length) {
+        _pinnedIndex = _pinnedMessages.isEmpty ? 0 : _pinnedMessages.length - 1;
+      }
+    });
+    unawaited(_persistMessageCache());
+  }
+
+  Future<void> _commitPendingDeleteUndo({bool silent = false}) async {
+    final pending = _pendingDeleteUndo;
+    if (pending == null) return;
+    pending.timer?.cancel();
+    _pendingDeleteUndo = null;
+    if (!mounted) return;
+
+    final messageIds = pending.messageIds.toList();
+    if (messageIds.isEmpty) return;
+
+    if (pending.forEveryone) {
+      await _commitDeleteForEveryone(
+        messageIds,
+        restoreOnFailure: pending,
+        silent: silent,
+      );
+    } else {
+      await _commitHideForMe(
+        messageIds,
+        restoreOnFailure: pending,
+        silent: silent,
+      );
+    }
+  }
+
+  Future<void> _commitDeleteForEveryone(
+    List<int> messageIds, {
+    _MessageDeleteUndoSession? restoreOnFailure,
+    bool silent = false,
+  }) async {
+    if (_localFirst) {
+      ChatOfflineOutbox.markMessagesPendingRemoval(
+        widget.threadId,
+        messageIds,
+      );
+      await ChatLocalMutations.removeMessagesLocal(
+        widget.threadId,
+        messageIds,
+      );
+      await ChatOfflineOutbox.enqueueDeleteMessages(
+        threadId: widget.threadId,
+        messageIds: messageIds,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      return;
+    }
+
+    try {
+      await ref.read(familychatRepositoryProvider).deleteMessages(
+            widget.threadId,
+            messageIds,
+          );
+    } catch (_) {
+      if (!mounted || silent) return;
+      await _restoreDeletedMessages(restoreOnFailure);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось удалить')),
+      );
+    }
+  }
+
+  Future<void> _commitHideForMe(
+    List<int> messageIds, {
+    _MessageDeleteUndoSession? restoreOnFailure,
+    bool silent = false,
+  }) async {
+    if (_localFirst) {
+      ChatOfflineOutbox.markMessagesPendingRemoval(
+        widget.threadId,
+        messageIds,
+      );
+      await ChatLocalMutations.removeMessagesLocal(
+        widget.threadId,
+        messageIds,
+      );
+      await ChatOfflineOutbox.enqueueHideMessagesForMe(
+        threadId: widget.threadId,
+        messageIds: messageIds,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      return;
+    }
+
+    try {
+      await ref.read(familychatRepositoryProvider).hideMessagesForMe(
+            widget.threadId,
+            messageIds,
+          );
+    } catch (_) {
+      if (!mounted || silent) return;
+      await _restoreDeletedMessages(restoreOnFailure);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось удалить')),
+      );
+    }
+  }
+
+  Future<void> _restoreDeletedMessages(_MessageDeleteUndoSession? session) async {
+    if (session == null || !mounted) return;
+    setState(() {
+      for (final msg in session.snapshots) {
+        _messages = chatUpsertMessage(_messages, msg);
+      }
+      _messages = sortChatMessages(_messages);
+      for (final pin in session.pinnedSnapshots) {
+        final id = chatAsInt(pin['id']);
+        if (id == null) continue;
+        if (_pinnedMessages.any((m) => chatAsInt(m['id']) == id)) continue;
+        _pinnedMessages = [..._pinnedMessages, pin];
+      }
+      if (_pinnedIndex >= _pinnedMessages.length) {
+        _pinnedIndex = _pinnedMessages.isEmpty ? 0 : _pinnedMessages.length - 1;
+      }
+    });
+    await _persistMessageCache();
+  }
+
+  Future<void> _undoPendingMessageRemoval() async {
+    final pending = _pendingDeleteUndo;
+    if (pending == null) return;
+    pending.timer?.cancel();
+    _pendingDeleteUndo = null;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    await _restoreDeletedMessages(pending);
+  }
+
+  Future<void> _startMessageRemovalUndo({
+    required List<Map<String, dynamic>> snapshots,
+    required bool forEveryone,
+  }) async {
+    if (snapshots.isEmpty) return;
+    await _commitPendingDeleteUndo(silent: true);
+
+    final messageIds = snapshots.map(chatAsInt).whereType<int>().toList();
+    final pinnedSnapshots = _pinnedMessages
+        .where((m) {
+          final id = chatAsInt(m['id']);
+          return id != null && messageIds.contains(id);
+        })
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList(growable: false);
+
+    _hideMessagesFromUi(messageIds);
+    _exitSelection();
+
+    final session = _MessageDeleteUndoSession(
+      snapshots: snapshots,
+      pinnedSnapshots: pinnedSnapshots,
+      forEveryone: forEveryone,
+    );
+    session.timer = Timer(ChatUndoActionSnackbar.defaultDuration, () {
+      if (!mounted) return;
+      unawaited(_commitPendingDeleteUndo());
+    });
+    _pendingDeleteUndo = session;
+
+    if (!mounted) return;
+    final count = messageIds.length;
+    ChatUndoActionSnackbar.show(
+      context,
+      message: count == 1
+          ? 'Сообщение удалено'
+          : 'Удалено сообщений: $count',
+      onUndo: () => unawaited(_undoPendingMessageRemoval()),
+    );
+  }
+
   Future<void> _deleteMessages(List<int> messageIds) async {
     if (messageIds.isEmpty) return;
     final count = messageIds.length;
@@ -4088,47 +4419,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     );
     if (ok != true || !mounted) return;
 
-    if (_localFirst) {
-      ChatOfflineOutbox.markMessagesPendingRemoval(
-        widget.threadId,
-        messageIds,
-      );
-      _removeMessagesLocally(messageIds);
-      await ChatLocalMutations.removeMessagesLocal(
-        widget.threadId,
-        messageIds,
-      );
-      await ChatOfflineOutbox.enqueueDeleteMessages(
-        threadId: widget.threadId,
-        messageIds: messageIds,
-      );
-      ChatMutationCoordinator.scheduleSync(
-        ref.read(familychatRepositoryProvider),
-      );
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сообщение удалено')),
-      );
-      return;
-    }
-
-    try {
-      final deleted =
-          await ref.read(familychatRepositoryProvider).deleteMessages(
-                widget.threadId,
-                messageIds,
-              );
-      if (!mounted) return;
-      _removeMessagesLocally(deleted);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сообщение удалено')),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось удалить')),
-      );
-    }
+    final snapshots = _snapshotMessages(messageIds);
+    if (snapshots.isEmpty) return;
+    await _startMessageRemovalUndo(
+      snapshots: snapshots,
+      forEveryone: true,
+    );
   }
 
   Future<void> _copySelected() async {
@@ -4972,6 +5268,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                                   a,
                                                   messageId: msgId,
                                                 ),
+                                    pendingMessageId: m['_pending'] == true
+                                        ? msgId
+                                        : null,
+                                    onCancelUpload: m['_pending'] == true
+                                        ? () => unawaited(
+                                              _cancelPendingMessage(m),
+                                            )
+                                        : null,
                                   );
                                 }
                                 final day = chatMessageLocalDay(m);

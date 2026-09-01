@@ -1,6 +1,18 @@
+import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_voice_utils.dart';
+
+int? _attachmentCountHint(Map<String, dynamic> message) {
+  final count = chatAsInt(message['attachment_count']);
+  if (count != null && count > 0) return count;
+  if (message['has_attachments'] == true) return 1;
+  return null;
+}
+
+String _genericMediaPreviewLabel(int count) {
+  return count > 1 ? 'Медиа ($count)' : 'Медиа';
+}
 
 /// Текст превью сообщения для списка чатов / поиска / цитат.
 ///
@@ -28,7 +40,11 @@ String chatMessagePreviewText(Map<String, dynamic>? message) {
   if (meta['gif'] != null) return 'GIF';
 
   final atts = chatAttachmentsOf(message);
-  if (atts.isEmpty) return 'Сообщение';
+  if (atts.isEmpty) {
+    final hint = _attachmentCountHint(message);
+    if (hint != null) return _genericMediaPreviewLabel(hint);
+    return 'Сообщение';
+  }
 
   var images = 0;
   var videos = 0;
@@ -76,7 +92,7 @@ String chatMessagePreviewText(Map<String, dynamic>? message) {
     return name.isNotEmpty ? name : 'Файл';
   }
   if (files > 1) return 'Файлы ($files)';
-  return 'Вложение';
+  return _genericMediaPreviewLabel(atts.length);
 }
 
 /// Hub `last_message` often omits attachments; keep the richer local copy.
@@ -101,6 +117,16 @@ Map<String, dynamic> chatPreferRicherLastMessage(
   if (!serverHasAtts && localHasAtts) {
     merged['attachments'] = localAtts;
   }
+  if (!serverHasAtts) {
+    if (local['has_attachments'] == true) {
+      merged['has_attachments'] = true;
+    }
+    final localCount = chatAsInt(local['attachment_count']);
+    final serverCount = chatAsInt(server['attachment_count']);
+    if (localCount != null && (serverCount == null || localCount > serverCount)) {
+      merged['attachment_count'] = localCount;
+    }
+  }
 
   final serverMeta = server['metadata'];
   final localMeta = local['metadata'];
@@ -116,7 +142,51 @@ Map<String, dynamic> chatPreferRicherLastMessage(
     merged['body'] = local['body'];
   }
 
+  final mergedStatus = chatMergeReadStatus(
+    server['read_status']?.toString(),
+    local['read_status']?.toString(),
+  );
+  if (mergedStatus != null) {
+    merged['read_status'] = mergedStatus;
+  }
+
   return merged;
+}
+
+/// Hub `last_message` may be slim; pull full payload from local messages when possible.
+Future<List<Map<String, dynamic>>> enrichChatThreadsLastMessages(
+  List<Map<String, dynamic>> threads,
+) async {
+  if (!ChatLocalStore.isSupported || threads.isEmpty) return threads;
+  final out = <Map<String, dynamic>>[];
+  for (final thread in threads) {
+    final threadId = chatAsInt(thread['id']);
+    final last = thread['last_message'];
+    if (threadId == null || last is! Map) {
+      out.add(thread);
+      continue;
+    }
+    final lastMap = Map<String, dynamic>.from(last);
+    if (!chatLastMessageLacksPreviewPayload(lastMap)) {
+      out.add(thread);
+      continue;
+    }
+    final messageId = chatAsInt(lastMap['id']);
+    if (messageId == null || messageId <= 0) {
+      out.add(thread);
+      continue;
+    }
+    final local = await ChatLocalStore.instance.readMessage(threadId, messageId);
+    if (local == null || chatLastMessageLacksPreviewPayload(local)) {
+      out.add(thread);
+      continue;
+    }
+    out.add({
+      ...thread,
+      'last_message': chatPreferRicherLastMessage(lastMap, local),
+    });
+  }
+  return out;
 }
 
 bool chatLastMessageLacksPreviewPayload(Map<String, dynamic> message) {

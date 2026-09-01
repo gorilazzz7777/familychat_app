@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -6,9 +8,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
 import '../../../../core/media/local_device_file.dart';
+import '../../../../core/network/chat_network_link.dart';
 import '../../../../core/providers/app_providers.dart';
+import '../../../../core/settings/app_settings_controller.dart';
+import '../../data/chat_media_providers.dart';
+import '../../data/chat_realtime_utils.dart';
 import '../../data/chat_voice_transcription_prefs.dart';
 import '../../data/chat_voice_utils.dart';
+import 'chat_media_transfer_overlay.dart';
 import 'chat_network_image.dart';
 
 class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
@@ -22,6 +29,9 @@ class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
     this.canToggleTranscript = false,
     this.textColor,
     this.metaColor,
+    this.messageMetadata = const {},
+    this.uploadMessageId,
+    this.onCancelUpload,
   });
 
   final int threadId;
@@ -32,6 +42,9 @@ class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
   final bool canToggleTranscript;
   final Color? textColor;
   final Color? metaColor;
+  final Map<String, dynamic> messageMetadata;
+  final int? uploadMessageId;
+  final VoidCallback? onCancelUpload;
 
   @override
   ConsumerState<ChatVoiceMessagePlayer> createState() =>
@@ -51,6 +64,7 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     if (durationMs != null && durationMs > 0) {
       _total = Duration(milliseconds: durationMs);
     }
+    _scheduleAutoDownload();
     _player.onPlayerStateChanged.listen((state) {
       if (!mounted) return;
       setState(() => _playing = state == PlayerState.playing);
@@ -76,6 +90,26 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
   void dispose() {
     _player.dispose();
     super.dispose();
+  }
+
+  void _scheduleAutoDownload() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final attachmentId = chatAsInt(widget.attachment['id']);
+      if (attachmentId == null || attachmentId <= 0) return;
+      final settings = ref.read(appSettingsProvider);
+      final network = ref.read(chatNetworkLinkProvider).value ??
+          ChatNetworkLinkKind.unknown;
+      unawaited(
+        ref.read(chatAttachmentDownloadManagerProvider).maybeAutoDownload(
+              threadId: widget.threadId,
+              attachment: widget.attachment,
+              settings: settings,
+              network: network,
+              messageMetadata: widget.messageMetadata,
+            ),
+      );
+    });
   }
 
   Future<void> _togglePlayback() async {
@@ -106,8 +140,20 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
       threadId: widget.threadId,
       attachment: widget.attachment,
     );
-    if (url.isEmpty) return;
-    await _player.play(UrlSource(url, mimeType: mime));
+    if (url.isNotEmpty) {
+      await _player.play(UrlSource(url, mimeType: mime));
+      return;
+    }
+
+    final attachmentId = chatAsInt(widget.attachment['id']);
+    if (attachmentId == null) return;
+    final bytes = await ref.read(chatAttachmentDownloadManagerProvider).startDownload(
+          threadId: widget.threadId,
+          attachmentId: attachmentId,
+          manual: true,
+        );
+    if (bytes == null || bytes.isEmpty) return;
+    await _player.play(BytesSource(bytes, mimeType: mime));
   }
 
   @override
@@ -162,7 +208,7 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
       );
     }
 
-    return Row(
+    final row = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         IconButton(
@@ -203,6 +249,15 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
           toggle,
         ],
       ],
+    );
+
+    return ChatMediaTransferOverlay(
+      threadId: widget.threadId,
+      attachment: widget.attachment,
+      uploadMessageId: widget.uploadMessageId,
+      onCancelUpload: widget.onCancelUpload,
+      onDownloadTap: _togglePlayback,
+      child: row,
     );
   }
 }

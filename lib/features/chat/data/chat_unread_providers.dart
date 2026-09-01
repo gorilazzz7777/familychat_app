@@ -19,20 +19,21 @@ int chatNotifiedUnreadFromThreads(Iterable<Map<String, dynamic>> threads) {
 }
 
 /// Сумма непрочитанных в чатах с включёнными уведомлениями.
-final chatUnreadTotalProvider = FutureProvider<int>((ref) async {
+///
+/// Native: следит SQLite ([watchThreads]) — без гонки invalidate → 0 на FutureProvider.
+/// Web: одноразовый HTTP; обновление через [invalidateChatUnreadTotal].
+final chatUnreadTotalProvider = StreamProvider<int>((ref) async* {
   if (ChatLocalStore.isSupported) {
-    try {
-      final threads = await ChatLocalStore.instance.readThreads();
-      if (threads.isNotEmpty) {
-        return chatNotifiedUnreadFromThreads(threads);
-      }
-    } catch (_) {}
+    await for (final threads in ChatLocalStore.instance.watchThreads()) {
+      yield chatNotifiedUnreadFromThreads(threads);
+    }
+    return;
   }
   try {
     final threads = await ref.read(familychatRepositoryProvider).chatThreads();
-    return chatNotifiedUnreadFromThreads(threads);
+    yield chatNotifiedUnreadFromThreads(threads);
   } catch (_) {
-    return 0;
+    yield 0;
   }
 });
 

@@ -34,6 +34,14 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
       autoSaveIncomingToGallery: local.autoSaveIncomingToGallery,
       mediaCacheStale: local.mediaCacheStale,
       mediaCacheSize: local.mediaCacheSize,
+      chatAutoDownloadPhotosWifi: local.chatAutoDownloadPhotosWifi,
+      chatAutoDownloadPhotosMobile: local.chatAutoDownloadPhotosMobile,
+      chatAutoDownloadVideosWifi: local.chatAutoDownloadVideosWifi,
+      chatAutoDownloadVideosMobile: local.chatAutoDownloadVideosMobile,
+      chatAutoDownloadFilesWifi: local.chatAutoDownloadFilesWifi,
+      chatAutoDownloadFilesMobile: local.chatAutoDownloadFilesMobile,
+      chatAutoDownloadVoiceWifi: local.chatAutoDownloadVoiceWifi,
+      chatAutoDownloadVoiceMobile: local.chatAutoDownloadVoiceMobile,
     );
   }
 
@@ -112,6 +120,29 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
     unawaited(FamilyChatMediaCache.trimIfNeeded(force: true));
   }
 
+  Future<void> setChatAutoDownload({
+    bool? photosWifi,
+    bool? photosMobile,
+    bool? videosWifi,
+    bool? videosMobile,
+    bool? filesWifi,
+    bool? filesMobile,
+    bool? voiceWifi,
+    bool? voiceMobile,
+  }) async {
+    state = state.copyWith(
+      chatAutoDownloadPhotosWifi: photosWifi,
+      chatAutoDownloadPhotosMobile: photosMobile,
+      chatAutoDownloadVideosWifi: videosWifi,
+      chatAutoDownloadVideosMobile: videosMobile,
+      chatAutoDownloadFilesWifi: filesWifi,
+      chatAutoDownloadFilesMobile: filesMobile,
+      chatAutoDownloadVoiceWifi: voiceWifi,
+      chatAutoDownloadVoiceMobile: voiceMobile,
+    );
+    await AppSettingsStorage.save(state);
+  }
+
   Future<void> setMenuOrder(List<String> value) async {
     if (listEquals(state.menuOrder, value)) return;
     state = state.copyWith(menuOrder: List<String>.from(value));
@@ -124,12 +155,28 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
     final autoSave = state.autoSaveIncomingToGallery;
     final stale = state.mediaCacheStale;
     final size = state.mediaCacheSize;
+    final photosWifi = state.chatAutoDownloadPhotosWifi;
+    final photosMobile = state.chatAutoDownloadPhotosMobile;
+    final videosWifi = state.chatAutoDownloadVideosWifi;
+    final videosMobile = state.chatAutoDownloadVideosMobile;
+    final filesWifi = state.chatAutoDownloadFilesWifi;
+    final filesMobile = state.chatAutoDownloadFilesMobile;
+    final voiceWifi = state.chatAutoDownloadVoiceWifi;
+    final voiceMobile = state.chatAutoDownloadVoiceMobile;
     state = FamilyChatAppSettings(
       screenTimeout: timeout,
       menuOrder: order,
       autoSaveIncomingToGallery: autoSave,
       mediaCacheStale: stale,
       mediaCacheSize: size,
+      chatAutoDownloadPhotosWifi: photosWifi,
+      chatAutoDownloadPhotosMobile: photosMobile,
+      chatAutoDownloadVideosWifi: videosWifi,
+      chatAutoDownloadVideosMobile: videosMobile,
+      chatAutoDownloadFilesWifi: filesWifi,
+      chatAutoDownloadFilesMobile: filesMobile,
+      chatAutoDownloadVoiceWifi: voiceWifi,
+      chatAutoDownloadVoiceMobile: voiceMobile,
     );
     await AppSettingsStorage.save(state);
   }

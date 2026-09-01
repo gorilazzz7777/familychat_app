@@ -10,6 +10,9 @@ firebase.initializeApp({
 });
 
 const CALL_TAG_PREFIX = 'familychat-call-';
+const CHAT_PREVIEW_CACHE = 'familychat-chat-preview-v1';
+const CHAT_PREVIEW_MAX_LINES = 7;
+const CHAT_PREVIEW_MAX_CHARS = 900;
 const CALL_RING_MS = 3000;
 const PENDING_CACHE = 'familychat-pending-native';
 const PENDING_URL = '/app/__pending_native_open';
@@ -253,6 +256,133 @@ function serializeChatData(data) {
   };
 }
 
+function isGroupThread(data) {
+  var kind = String(data.thread_kind || '').toLowerCase();
+  if (kind === 'direct' || kind === 'dm' || kind === 'private') return false;
+  if (
+    kind === 'family' ||
+    kind === 'group' ||
+    kind === 'channel' ||
+    kind === 'family_chat'
+  ) {
+    return true;
+  }
+  return !String(data.peer_user_id || '').trim();
+}
+
+function splitSenderPrefix(body) {
+  var colon = body.indexOf(': ');
+  if (colon <= 0 || colon > 40) return null;
+  var prefix = body.slice(0, colon).trim();
+  if (!prefix || prefix.indexOf('\n') >= 0) return null;
+  var rest = body.slice(colon + 2).trim();
+  if (!rest) return null;
+  return { sender: prefix, text: rest };
+}
+
+function previewLineFromPush(data, title, body) {
+  var previewBody = String(body || data.body || '').trim();
+  if (!previewBody) return null;
+  var isGroup = isGroupThread(data);
+  var threadTitle = String(data.thread_title || '').trim();
+  var pushTitle = String(title || data.title || '').trim();
+  var sender = String(data.sender_name || '').trim();
+  if (!sender && isGroup) {
+    if (pushTitle && pushTitle !== threadTitle) {
+      sender = pushTitle;
+    } else {
+      var split = splitSenderPrefix(previewBody);
+      if (split) {
+        sender = split.sender;
+        previewBody = split.text;
+      }
+    }
+  }
+  return {
+    message_id: String(data.message_id || ''),
+    sender: sender,
+    text: previewBody,
+    timestamp_ms: Date.now(),
+  };
+}
+
+function trimPreviewLines(lines) {
+  var out = lines.slice();
+  if (out.length > CHAT_PREVIEW_MAX_LINES) {
+    out = out.slice(out.length - CHAT_PREVIEW_MAX_LINES);
+  }
+  while (out.length > 0) {
+    var total = 0;
+    for (var i = 0; i < out.length; i++) {
+      total += String(out[i].text || '').length;
+      if (out[i].sender) total += String(out[i].sender).length + 2;
+      total += 1;
+    }
+    if (total <= CHAT_PREVIEW_MAX_CHARS) break;
+    out = out.slice(1);
+  }
+  return out;
+}
+
+function appendPreviewLine(lines, incoming) {
+  var out = lines.slice();
+  if (incoming.message_id) {
+    for (var i = 0; i < out.length; i++) {
+      if (String(out[i].message_id) === String(incoming.message_id)) {
+        out[i] = incoming;
+        return out;
+      }
+    }
+  }
+  out.push(incoming);
+  return trimPreviewLines(out);
+}
+
+function previewExpandedBody(lines, isGroup) {
+  if (!lines.length) return 'Новое сообщение';
+  return lines
+    .map(function (line) {
+      if (isGroup && line.sender) return line.sender + ': ' + line.text;
+      return line.text;
+    })
+    .join('\n');
+}
+
+function previewCollapsedBody(lines, isGroup) {
+  if (!lines.length) return 'Новое сообщение';
+  var last = lines[lines.length - 1];
+  if (isGroup && last.sender) return last.sender + ': ' + last.text;
+  return last.text;
+}
+
+function loadChatPreview(threadId) {
+  return caches.open(CHAT_PREVIEW_CACHE).then(function (cache) {
+    return cache.match('preview-' + threadId).then(function (res) {
+      if (!res) return [];
+      return res.json().then(function (parsed) {
+        return Array.isArray(parsed) ? parsed : [];
+      });
+    });
+  });
+}
+
+function saveChatPreview(threadId, lines) {
+  return caches.open(CHAT_PREVIEW_CACHE).then(function (cache) {
+    return cache.put(
+      'preview-' + threadId,
+      new Response(JSON.stringify(lines), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  });
+}
+
+function clearChatPreview(threadId) {
+  return caches.open(CHAT_PREVIEW_CACHE).then(function (cache) {
+    return cache.delete('preview-' + threadId);
+  });
+}
+
 function buildChatLaunchUrl(data) {
   var d = serializeChatData(data);
   var q = new URLSearchParams();
@@ -267,19 +397,39 @@ function buildChatLaunchUrl(data) {
 
 function showChatNotification(data, notification) {
   var d = serializeChatData(data);
-  var title =
+  var pushTitle =
     (notification && notification.title) || d.title || 'Family Space';
-  var body =
+  var pushBody =
     (notification && notification.body) || d.body || 'Новое сообщение';
   if (!d.thread_id) return Promise.resolve();
-  return self.registration.showNotification(title, {
-    body: body,
-    icon: '/app/icons/Icon-192.png',
-    badge: '/app/icons/Icon-192.png',
-    tag: 'familychat-chat-' + d.thread_id,
-    renotify: true,
-    data: d,
-  });
+  var isGroup = isGroupThread(d);
+  var threadTitle = String(d.thread_title || '').trim();
+  var title = isGroup
+    ? threadTitle || pushTitle || 'Family Space'
+    : threadTitle || pushTitle || 'Family Space';
+  var incoming = previewLineFromPush(d, pushTitle, pushBody);
+  return loadChatPreview(d.thread_id)
+    .then(function (lines) {
+      if (incoming) lines = appendPreviewLine(lines, incoming);
+      lines = trimPreviewLines(lines);
+      return saveChatPreview(d.thread_id, lines).then(function () {
+        return lines;
+      });
+    })
+    .then(function (lines) {
+      var body =
+        lines.length > 1
+          ? previewExpandedBody(lines, isGroup)
+          : previewCollapsedBody(lines, isGroup);
+      return self.registration.showNotification(title, {
+        body: body,
+        icon: '/app/icons/Icon-192.png',
+        badge: '/app/icons/Icon-192.png',
+        tag: 'familychat-chat-' + d.thread_id,
+        renotify: true,
+        data: d,
+      });
+    });
 }
 
 function focusClientWithChatData(data) {
@@ -339,7 +489,11 @@ self.addEventListener('notificationclick', function (event) {
     return;
   }
   if (isChatPush(data)) {
-    event.waitUntil(focusClientWithChatData(data));
+    event.waitUntil(
+      clearChatPreview(String(data.thread_id || '')).then(function () {
+        return focusClientWithChatData(data);
+      }),
+    );
     return;
   }
   var tag = event.notification && event.notification.tag;

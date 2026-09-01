@@ -976,7 +976,11 @@ class FamilyChatRepository {
   }
 
   Future<Uint8List> fetchChatAttachmentBytes(
-      int threadId, int attachmentId) async {
+    int threadId,
+    int attachmentId, {
+    void Function(int received, int total)? onReceiveProgress,
+    CancelToken? cancelToken,
+  }) async {
     final cacheKey = '$threadId:$attachmentId';
     final cached = _attachmentBytesCache[cacheKey];
     if (cached != null && cached.isNotEmpty) {
@@ -987,8 +991,12 @@ class FamilyChatRepository {
     final inFlight = _attachmentBytesInFlight[cacheKey];
     if (inFlight != null) return inFlight;
 
-    final future = _fetchChatAttachmentBytesUncached(threadId, attachmentId)
-        .then((bytes) {
+    final future = _fetchChatAttachmentBytesUncached(
+      threadId,
+      attachmentId,
+      onReceiveProgress: onReceiveProgress,
+      cancelToken: cancelToken,
+    ).then((bytes) {
       _putAttachmentCache(cacheKey, bytes);
       return bytes;
     }).whenComplete(() => _attachmentBytesInFlight.remove(cacheKey));
@@ -999,13 +1007,17 @@ class FamilyChatRepository {
 
   Future<Uint8List> _fetchChatAttachmentBytesUncached(
     int threadId,
-    int attachmentId,
-  ) async {
+    int attachmentId, {
+    void Function(int received, int total)? onReceiveProgress,
+    CancelToken? cancelToken,
+  }) async {
     await _acquireAttachmentDownloadSlot();
     try {
       final res = await _dio.get<List<int>>(
         'familychat/chat/threads/$threadId/attachments/$attachmentId/content/',
         options: Options(responseType: ResponseType.bytes),
+        onReceiveProgress: onReceiveProgress,
+        cancelToken: cancelToken,
       );
       final data = res.data;
       if (data == null || data.isEmpty) {
@@ -1024,6 +1036,7 @@ class FamilyChatRepository {
     int? replyToMessageId,
     List<int>? mentionedUserIds,
     bool notifySilent = false,
+    int? clientMsgId,
     Map<String, dynamic>? location,
     int? voiceDurationMs,
     String? voiceTranscript,
@@ -1040,6 +1053,7 @@ class FamilyChatRepository {
           if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
           if (mentionedUserIds != null && mentionedUserIds.isNotEmpty)
             'mentioned_user_ids': mentionedUserIds,
+          if (clientMsgId != null) 'client_msg_id': clientMsgId,
           if (notifySilent) 'notify_silent': true,
           if (location != null) 'location': location,
           if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
@@ -1259,6 +1273,7 @@ class FamilyChatRepository {
     Map<String, dynamic>? photoExif,
     Uint8List? thumbnailBytes,
     void Function(int sent, int total)? onSendProgress,
+    CancelToken? cancelToken,
   }) async {
     await logUploadImageExifDiagnostics(
       bytes: bytes,
@@ -1274,6 +1289,7 @@ class FamilyChatRepository {
         photoExif: photoExif,
         thumbnailBytes: thumbnailBytes,
         onSendProgress: onSendProgress,
+        cancelToken: cancelToken,
       );
     } catch (e, st) {
       debugPrint(
@@ -1286,6 +1302,7 @@ class FamilyChatRepository {
         contentType: contentType,
         photoExif: photoExif,
         onSendProgress: onSendProgress,
+        cancelToken: cancelToken,
       );
     }
   }
@@ -1298,6 +1315,7 @@ class FamilyChatRepository {
     Map<String, dynamic>? photoExif,
     Uint8List? thumbnailBytes,
     void Function(int sent, int total)? onSendProgress,
+    CancelToken? cancelToken,
   }) async {
     final hash = sha256Hex(bytes);
     final prepareBody = <String, dynamic>{
@@ -1329,6 +1347,7 @@ class FamilyChatRepository {
       bytes: bytes,
       headers: headers is Map ? Map<String, dynamic>.from(headers) : const {},
       onSendProgress: onSendProgress,
+      cancelToken: cancelToken,
     );
     final thumbUploadUrl = data['thumbnail_upload_url']?.toString() ?? '';
     final thumbStorageKey = data['thumbnail_storage_key']?.toString() ?? '';
@@ -1376,6 +1395,7 @@ class FamilyChatRepository {
     String? contentType,
     Map<String, dynamic>? photoExif,
     void Function(int sent, int total)? onSendProgress,
+    CancelToken? cancelToken,
   }) async {
     final formMap = <String, dynamic>{
       'file': MultipartFile.fromBytes(
@@ -1393,6 +1413,7 @@ class FamilyChatRepository {
       'familychat/chat/threads/$threadId/attachments/',
       data: form,
       onSendProgress: onSendProgress,
+      cancelToken: cancelToken,
       options: Options(
         sendTimeout: const Duration(minutes: 10),
         receiveTimeout: const Duration(minutes: 10),
