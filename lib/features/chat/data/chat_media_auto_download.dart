@@ -1,10 +1,12 @@
-import '../../../core/settings/app_settings.dart';
+import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/local_device_file.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/network/chat_network_link.dart';
+import '../../../core/settings/app_settings.dart';
 import '../../familychat/data/familychat_repository.dart';
+import '../presentation/widgets/chat_image_album.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_voice_utils.dart';
-import '../presentation/widgets/chat_image_album.dart';
-import '../../../core/media/gallery_media_utils.dart';
 
 enum ChatMediaDownloadCategory {
   photo,
@@ -66,8 +68,10 @@ abstract final class ChatMediaAutoDownloadPolicy {
     required int threadId,
     required Map<String, dynamic> attachment,
   }) {
+    MediaLocalIndex.hydrateAttachment(attachment);
+
     final localPath = galleryLocalDevicePath(attachment);
-    if (localPath.isNotEmpty) return true;
+    if (localPath.isNotEmpty && localDeviceFileExists(localPath)) return true;
     if (isSafeUiPreviewBytes(attachment['local_bytes'])) return true;
 
     final attachmentId = chatAsInt(attachment['id']);
@@ -80,5 +84,17 @@ abstract final class ChatMediaAutoDownloadPolicy {
     }
 
     return false;
+  }
+
+  /// Можно воспроизвести/открыть по URL без полной загрузки в байты.
+  static bool hasRemoteContentUrl({
+    required Map<String, dynamic> attachment,
+  }) {
+    final attachmentId = chatAsInt(attachment['id']);
+    if (attachmentId != null && attachmentId > 0) return true;
+    final fileUrl = attachment['file_url']?.toString().trim() ?? '';
+    if (fileUrl.isNotEmpty) return true;
+    final url = attachment['url']?.toString().trim() ?? '';
+    return url.isNotEmpty;
   }
 }

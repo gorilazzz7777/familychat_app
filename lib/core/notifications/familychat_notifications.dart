@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../push/push_navigation.dart';
@@ -21,6 +22,8 @@ class FamilyChatNotifications {
       FlutterLocalNotificationsPlugin();
 
   static bool _initialized = false;
+
+  static const _pushDedupeWindowMs = 30000;
 
   static const messagesChannelId = 'familychat_messages';
   static const callsChannelId = 'familychat_calls';
@@ -103,7 +106,7 @@ class FamilyChatNotifications {
           messagesChannelId,
           'Сообщения',
           description: 'Новые сообщения в чатах',
-          importance: Importance.defaultImportance,
+          importance: Importance.high,
           playSound: true,
           enableVibration: true,
         ),
@@ -456,19 +459,74 @@ class FamilyChatNotifications {
     );
   }
 
+  static Future<bool> _markChatPushShown(Map<String, dynamic> data) async {
+    final messageId = int.tryParse(data['message_id']?.toString() ?? '');
+    if (messageId == null || messageId <= 0) return true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'familychat_push_dedupe_$messageId';
+      final seenAt = prefs.getInt(key);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (seenAt != null && now - seenAt < _pushDedupeWindowMs) {
+        debugPrint(
+          '[FamilyChatNotifications] skip duplicate push message_id=$messageId',
+        );
+        return false;
+      }
+      await prefs.setInt(key, now);
+      return true;
+    } catch (e) {
+      debugPrint('[FamilyChatNotifications] dedupe check failed: $e');
+      return true;
+    }
+  }
+
   static Future<void> showForegroundPush({
     required String title,
     required String body,
     required Map<String, dynamic> data,
     bool enrichChatPreviewFromDatabase = false,
   }) async {
-    if (kIsWeb || !_initialized) return;
+    if (kIsWeb) return;
+    await initialize();
+    if (!_initialized) return;
 
     final type = data['type']?.toString() ?? '';
     if (type == 'familychat_call') {
       return;
     }
 
+    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+    final isChat = type == 'familychat_chat' ||
+        (data['deeplink']?.toString() == 'chat' && threadId != null);
+    if (isChat && !await _markChatPushShown(data)) {
+      return;
+    }
+
+    try {
+      await _showForegroundPushImpl(
+        title: title,
+        body: body,
+        data: data,
+        enrichChatPreviewFromDatabase: enrichChatPreviewFromDatabase,
+      );
+    } catch (e, st) {
+      debugPrint('showForegroundPush failed: $e\n$st');
+      await _showSimpleFallbackPush(
+        title: title,
+        body: body,
+        data: data,
+      );
+    }
+  }
+
+  static Future<void> _showForegroundPushImpl({
+    required String title,
+    required String body,
+    required Map<String, dynamic> data,
+    required bool enrichChatPreviewFromDatabase,
+  }) async {
+    final type = data['type']?.toString() ?? '';
     final tag = _androidTag(data);
     final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
     final isChat = type == 'familychat_chat' ||
@@ -494,8 +552,8 @@ class FamilyChatNotifications {
     final androidDetails = AndroidNotificationDetails(
       messagesChannelId,
       'Сообщения',
-      importance: Importance.defaultImportance,
-      priority: Priority.defaultPriority,
+      importance: Importance.high,
+      priority: Priority.high,
       playSound: true,
       enableVibration: true,
       tag: tag,
@@ -519,6 +577,41 @@ class FamilyChatNotifications {
       _notificationId(data),
       displayTitle,
       displayBody,
+      NotificationDetails(android: androidDetails, iOS: iosDetails),
+      payload: jsonEncode(data),
+    );
+  }
+
+  static Future<void> _showSimpleFallbackPush({
+    required String title,
+    required String body,
+    required Map<String, dynamic> data,
+  }) async {
+    final type = data['type']?.toString() ?? '';
+    final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+    final isChat = type == 'familychat_chat' ||
+        (data['deeplink']?.toString() == 'chat' && threadId != null);
+    final tag = _androidTag(data);
+    final androidDetails = AndroidNotificationDetails(
+      messagesChannelId,
+      'Сообщения',
+      importance: Importance.high,
+      priority: Priority.high,
+      playSound: true,
+      enableVibration: true,
+      tag: tag,
+      category: isChat ? AndroidNotificationCategory.message : null,
+      actions: isChat && threadId != null ? _chatReplyActions() : null,
+    );
+    const iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    );
+    await _plugin.show(
+      _notificationId(data),
+      title.isNotEmpty ? title : 'Family Space',
+      body.isNotEmpty ? body : 'Новое сообщение',
       NotificationDetails(android: androidDetails, iOS: iosDetails),
       payload: jsonEncode(data),
     );

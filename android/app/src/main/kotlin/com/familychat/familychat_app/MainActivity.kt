@@ -23,6 +23,10 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val TAG = "FamilyChatShare"
         private var pendingShareUris: List<Uri> = emptyList()
+
+        /** Used by FCM service: strip system notification only while app is visible. */
+        @JvmField
+        var isAppInForeground: Boolean = false
     }
 
     private var proximityWakeLock: PowerManager.WakeLock? = null
@@ -227,7 +231,7 @@ class MainActivity : FlutterActivity() {
         val messages = NotificationChannel(
             "familychat_messages",
             "Сообщения",
-            NotificationManager.IMPORTANCE_DEFAULT,
+            NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = "Новые сообщения в чатах"
             enableVibration(true)
@@ -261,7 +265,13 @@ class MainActivity : FlutterActivity() {
         manager.createNotificationChannel(calls)
     }
 
+    override fun onResume() {
+        super.onResume()
+        isAppInForeground = true
+    }
+
     override fun onPause() {
+        isAppInForeground = false
         disableCallProximity()
         super.onPause()
     }

@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/chat_attachment_download_manager.dart';
+import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_media_providers.dart';
 import '../../data/chat_media_upload_tracker.dart';
 import '../../data/chat_realtime_utils.dart';
+import '../../../../core/media/media_local_index.dart';
 
 /// Оверлей прогресса / отмены / ручной загрузки поверх превью медиа.
 class ChatMediaTransferOverlay extends ConsumerWidget {
@@ -54,8 +56,11 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
 
     final tid = threadId;
     final att = attachment;
-    final attachmentId = att == null ? null : chatAsInt(att['id']);
-    if (tid == null || attachmentId == null || attachmentId <= 0) {
+    if (tid == null || att == null) {
+      return child;
+    }
+    final attachmentId = chatAsInt(att['id']);
+    if (attachmentId == null || attachmentId <= 0) {
       return child;
     }
 
@@ -63,8 +68,18 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
       listenable: ref.watch(chatAttachmentDownloadManagerProvider),
       builder: (context, _) {
         final manager = ref.read(chatAttachmentDownloadManagerProvider);
+        MediaLocalIndex.hydrateAttachment(att);
+        final locallyAvailable = ChatMediaAutoDownloadPolicy.isLocallyAvailable(
+          threadId: tid,
+          attachment: att,
+        );
+
         final state = manager.stateFor(tid, attachmentId);
-        if (state.phase == ChatAttachmentDownloadPhase.completed) {
+        final hideManualPrompt = !showManualDownload || locallyAvailable;
+        if (state.phase != ChatAttachmentDownloadPhase.downloading &&
+            (hideManualPrompt ||
+                locallyAvailable ||
+                state.phase == ChatAttachmentDownloadPhase.completed)) {
           return child;
         }
         if (state.phase == ChatAttachmentDownloadPhase.downloading &&
@@ -76,7 +91,7 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
             onCancel: () => manager.cancelDownload(tid, attachmentId),
           );
         }
-        if (showManualDownload && state.needsManualTap) {
+        if (!hideManualPrompt && state.needsManualTap) {
           return Stack(
             fit: StackFit.passthrough,
             children: [

@@ -12,8 +12,10 @@ import '../../data/chat_media_providers.dart';
 import '../../data/chat_realtime_utils.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/media/media_local_index.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import '../../data/chat_location_utils.dart';
+import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_voice_utils.dart';
 import 'chat_bubble_clipper.dart';
 import 'chat_image_album.dart';
@@ -1019,6 +1021,17 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
     );
   }
 
+  bool _skipDownloadOverlay() {
+    MediaLocalIndex.hydrateAttachment(widget.attachment);
+    return ChatMediaAutoDownloadPolicy.isLocallyAvailable(
+          threadId: widget.threadId,
+          attachment: widget.attachment,
+        ) ||
+        ChatMediaAutoDownloadPolicy.hasRemoteContentUrl(
+          attachment: widget.attachment,
+        );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ChatMediaTransferOverlay(
@@ -1027,6 +1040,7 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
       uploadMessageId: widget.uploadMessageId,
       onCancelUpload: widget.onCancelUpload,
       onDownloadTap: _openFile,
+      showManualDownload: !_skipDownloadOverlay(),
       child: InkWell(
         onTap: _openFile,
         child: Row(

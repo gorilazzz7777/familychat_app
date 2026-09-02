@@ -44,6 +44,7 @@ class ChatNetworkImage extends ConsumerStatefulWidget {
     this.onCancelUpload,
     this.messageMetadata = const {},
     this.borderRadius,
+    this.showTransferOverlay = true,
   });
 
   final int threadId;
@@ -56,6 +57,7 @@ class ChatNetworkImage extends ConsumerStatefulWidget {
   final VoidCallback? onCancelUpload;
   final Map<String, dynamic> messageMetadata;
   final BorderRadius? borderRadius;
+  final bool showTransferOverlay;
 
   @override
   ConsumerState<ChatNetworkImage> createState() => _ChatNetworkImageState();
@@ -184,7 +186,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       height: widget.height,
       fit: widget.fit,
       gaplessPlayback: true,
-      errorBuilder: errorBuilder,
+      errorBuilder: errorBuilder ?? (_, __, ___) => _thumbPlaceholder(),
     );
   }
 
@@ -196,6 +198,16 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
 
   bool get _useBytesPath {
     return _imageUrl(ref.read(familychatRepositoryProvider)).isEmpty;
+  }
+
+  bool _isFullMediaDisplayed() {
+    MediaLocalIndex.hydrateAttachment(widget.attachment);
+    final localPath = galleryLocalDevicePath(widget.attachment);
+    if (localDeviceFileExists(localPath)) return true;
+    if (isSafeUiPreviewBytes(widget.attachment['local_bytes'])) return true;
+    if (_cachedBytes() != null) return true;
+    if (!_useBytesPath && _urlLoadAllowed) return true;
+    return false;
   }
 
   Uint8List? _cachedBytes() {
@@ -217,7 +229,9 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     final attachmentId = _attachmentId;
     if (attachmentId == null) return;
     if (!_useBytesPath) {
-      setState(() => _urlLoadAllowed = true);
+      if (!_urlLoadAllowed) {
+        setState(() => _urlLoadAllowed = true);
+      }
       return;
     }
     final bytes = await ref.read(chatAttachmentDownloadManagerProvider).startDownload(
@@ -234,13 +248,25 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   String _imageUrl(FamilyChatRepository repo) {
-    final fileUrl = widget.attachment['file_url']?.toString() ?? '';
-    if (fileUrl.isNotEmpty) return fileUrl;
-    return widget.attachment['url']?.toString() ?? '';
+    return chatAttachmentImageUrl(
+      repo: repo,
+      threadId: widget.threadId,
+      attachment: widget.attachment,
+    );
   }
 
-  Map<String, String>? get _networkHeaders =>
-      _attachmentId != null ? _headers : null;
+  Map<String, String>? get _networkHeaders {
+    if (_attachmentId == null) return null;
+    final url = _imageUrl(ref.read(familychatRepositoryProvider));
+    if (url.isEmpty) return _headers;
+    // CDN-превью (Klipy GIF до сохранения на сервере) — без Bearer.
+    if (!_looksLikeAuthenticatedAttachmentUrl(url)) return null;
+    return _headers;
+  }
+
+  bool _looksLikeAuthenticatedAttachmentUrl(String url) {
+    return url.contains('/attachments/') && url.contains('/content');
+  }
 
   Widget _thumbPlaceholder() {
     return ChatAttachmentThumb(
@@ -253,6 +279,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   Widget _wrapOverlay(Widget child) {
+    if (!widget.showTransferOverlay) return child;
     return ChatMediaTransferOverlay(
       threadId: widget.threadId,
       attachment: widget.attachment,
@@ -260,6 +287,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       onCancelUpload: widget.onCancelUpload,
       onDownloadTap: _manualDownload,
       borderRadius: widget.borderRadius,
+      showManualDownload: !_isFullMediaDisplayed(),
       child: child,
     );
   }
@@ -289,6 +317,12 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       return _wrapOverlay(_thumbPlaceholder());
     }
 
+    if (_looksLikeAuthenticatedAttachmentUrl(url) &&
+        (_headers == null || _headers!.isEmpty)) {
+      unawaited(_loadHeaders());
+      return _wrapOverlay(_thumbPlaceholder());
+    }
+
     return _wrapOverlay(
       CachedNetworkImage(
         key: ValueKey('net:$url'),
@@ -299,32 +333,33 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         height: widget.height,
         width: widget.width,
         fit: widget.fit,
-        placeholder: (_, __) => _thumbPlaceholder(),
         progressIndicatorBuilder: (context, _, progress) {
           final total = progress.totalSize;
           final downloaded = progress.downloaded;
           final value = total != null && total > 0 ? downloaded / total : null;
+          if (value == null) {
+            return _wrapOverlay(_thumbPlaceholder());
+          }
           return _wrapOverlay(
             Stack(
               fit: StackFit.expand,
               children: [
                 _thumbPlaceholder(),
-                if (value != null)
-                  ColoredBox(
-                    color: Colors.black.withValues(alpha: 0.35),
-                    child: Center(
-                      child: SizedBox(
-                        width: 56,
-                        height: 56,
-                        child: CircularProgressIndicator(
-                          value: value,
-                          strokeWidth: 3,
-                          color: Colors.white,
-                          backgroundColor: Colors.white24,
-                        ),
+                ColoredBox(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  child: Center(
+                    child: SizedBox(
+                      width: 56,
+                      height: 56,
+                      child: CircularProgressIndicator(
+                        value: value,
+                        strokeWidth: 3,
+                        color: Colors.white,
+                        backgroundColor: Colors.white24,
                       ),
                     ),
                   ),
+                ),
               ],
             ),
           );
@@ -345,6 +380,13 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     });
     ref.listen(chatNetworkLinkProvider, (_, __) {
       if (mounted) _scheduleAutoDownload();
+    });
+    ref.listen(appSettingsProvider, (_, __) {
+      if (!mounted) return;
+      final allowed = _shouldAutoLoadUrl();
+      if (allowed != _urlLoadAllowed) {
+        setState(() => _urlLoadAllowed = allowed);
+      }
     });
 
     MediaLocalIndex.hydrateAttachment(widget.attachment);
@@ -389,10 +431,16 @@ String chatAttachmentImageUrl({
   required Map<String, dynamic> attachment,
 }) {
   final attachmentId = chatAsInt(attachment['id']);
-  if (kIsWeb && attachmentId != null) {
+  final fileUrl = attachment['file_url']?.toString().trim() ?? '';
+  final altUrl = attachment['url']?.toString().trim() ?? '';
+
+  // Как на web: сохранённые вложения — через API content/ + Bearer.
+  if (attachmentId != null && attachmentId > 0) {
     return repo.chatAttachmentContentUrl(threadId, attachmentId);
   }
-  return attachment['file_url']?.toString() ?? '';
+
+  if (fileUrl.isNotEmpty) return fileUrl;
+  return altUrl;
 }
 
 Future<Map<String, String>?> chatImageAuthHeaders(WidgetRef ref) async {

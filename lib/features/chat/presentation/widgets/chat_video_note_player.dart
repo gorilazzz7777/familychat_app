@@ -10,10 +10,12 @@ import 'package:video_player/video_player.dart';
 import '../../../../core/media/gallery_media_utils.dart';
 import '../../../../core/media/gallery_video_thumbnail.dart';
 import '../../../../core/media/local_device_file.dart';
+import '../../../../core/media/media_local_index.dart';
 import '../../../../core/network/chat_network_link.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../../core/settings/app_settings_controller.dart';
 import '../../../../core/widgets/family_public_image.dart';
+import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_media_providers.dart';
 import '../../data/chat_realtime_utils.dart';
 import 'chat_media_transfer_overlay.dart';
@@ -101,6 +103,17 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
             ),
       );
     });
+  }
+
+  bool _skipDownloadOverlay() {
+    MediaLocalIndex.hydrateAttachment(widget.attachment);
+    return ChatMediaAutoDownloadPolicy.isLocallyAvailable(
+          threadId: widget.threadId,
+          attachment: widget.attachment,
+        ) ||
+        ChatMediaAutoDownloadPolicy.hasRemoteContentUrl(
+          attachment: widget.attachment,
+        );
   }
 
   @override
@@ -399,6 +412,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
       uploadMessageId: widget.uploadMessageId,
       onCancelUpload: widget.onCancelUpload,
       onDownloadTap: _onTap,
+      showManualDownload: !_skipDownloadOverlay(),
       child: RepaintBoundary(
         child: GestureDetector(
           onTap: _onTap,

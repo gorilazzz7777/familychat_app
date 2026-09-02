@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/media/media_incoming_sync.dart';
+import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'active_chat_context.dart';
 import 'chat_bootstrap_coordinator.dart';
@@ -12,6 +13,7 @@ import 'chat_local_mutations.dart';
 import 'chat_message_preview.dart';
 import 'chat_offline_outbox.dart';
 import 'chat_realtime_utils.dart';
+import 'chat_send_trace.dart';
 import 'chat_unread_providers.dart';
 import 'familychat_realtime.dart';
 
@@ -170,6 +172,12 @@ class ChatSyncService {
       message,
       currentUserId: _currentUserId,
     );
+    ChatSendTrace.log(
+      'realtime_ingest',
+      threadId: threadId,
+      serverId: messageId,
+      source: 'sync',
+    );
     await ChatLocalStore.instance.upsertMessage(owned);
     unawaited(MediaIncomingSync.ensureMessages([owned]));
     await _dropMatchingPending(
@@ -190,7 +198,8 @@ class ChatSyncService {
     if (thread != null) {
       thread['last_message'] = owned;
       var unread = chatAsInt(thread['unread_count']) ?? 0;
-      final viewing = ActiveChatContext.instance.isViewingThread(threadId);
+      final viewing =
+          FamilyChatForegroundBridge.isActivelyViewingThread(threadId);
       final isMine = _messageIsMine(owned);
       if (!viewing && !isMine && !chatMessageIsPending(owned)) {
         unread += 1;
@@ -250,6 +259,14 @@ class ChatSyncService {
     }
     if (candidates.isEmpty) return;
     candidates.sort((a, b) => a.delta.compareTo(b.delta));
+    ChatSendTrace.log(
+      'sync_drop_matching_pending',
+      threadId: threadId,
+      tempId: candidates.first.id,
+      serverId: chatAsInt(serverMessage['id']),
+      source: 'sync',
+      extra: {'deltaMs': candidates.first.delta},
+    );
     await ChatLocalStore.instance.deleteMessages(threadId, [candidates.first.id]);
   }
 
@@ -270,12 +287,23 @@ class ChatSyncService {
           row['_scheduled'] != true &&
           !keptIds.contains(id)) {
         final status = row['read_status']?.toString();
-        // Активный outbox не трогаем по слабому матчу — только после deliver.
-        if (status == 'sending' || status == 'queued') continue;
+        // Активный outbox / незавершённая отправка — не удаляем по слабому матчу.
+        if (status == 'sending' ||
+            status == 'queued' ||
+            status == 'sent' ||
+            status == 'failed') {
+          continue;
+        }
         toDelete.add(id);
       }
     }
     if (toDelete.isNotEmpty) {
+      ChatSendTrace.log(
+        'sync_reconcile_delete',
+        threadId: threadId,
+        source: 'sync',
+        extra: {'ids': toDelete.join(',')},
+      );
       await ChatLocalStore.instance.deleteMessages(threadId, toDelete);
     }
   }
@@ -473,7 +501,13 @@ class ChatSyncService {
     if (_syncingThreads.contains(threadId)) return;
     _syncingThreads.add(threadId);
     try {
-      final page = await repo.threadMessages(threadId, limit: limit);
+      final markRead =
+          FamilyChatForegroundBridge.isActivelyViewingThread(threadId);
+      final page = await repo.threadMessages(
+        threadId,
+        limit: limit,
+        markRead: markRead,
+      );
       final blocked =
           await ChatOfflineOutbox.pendingRemovalMessageIds(threadId: threadId);
       final rawMessages = blocked.isEmpty
@@ -509,10 +543,23 @@ class ChatSyncService {
         // locally; excluding them from keepIds is correct so they stay gone.
       };
       if (keepIds.isNotEmpty) {
+        final minId = keepIds.reduce((a, b) => a < b ? a : b);
+        final maxId = keepIds.reduce((a, b) => a > b ? a : b);
+        ChatSendTrace.log(
+          'sync_thread_window',
+          threadId: threadId,
+          source: 'sync',
+          extra: {
+            'messages': messages.length,
+            'keepMin': minId,
+            'keepMax': maxId,
+            'keepCount': keepIds.length,
+          },
+        );
         await ChatLocalStore.instance.deleteMissingFromWindow(
           threadId: threadId,
-          minId: keepIds.reduce((a, b) => a < b ? a : b),
-          maxId: keepIds.reduce((a, b) => a > b ? a : b),
+          minId: minId,
+          maxId: maxId,
           keepIds: keepIds,
         );
       }

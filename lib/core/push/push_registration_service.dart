@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -21,9 +22,18 @@ import '../../features/chat/data/chat_background_sync.dart';
 @pragma('vm:entry-point')
 Future<void> familychatFirebaseBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
+  DartPluginRegistrant.ensureInitialized();
   await PushRegistrationService.ensureFirebaseInitialized();
-  await ChatBackgroundSync.handleRemoteMessage(message);
-  await FamilyChatNotifications.handleBackgroundRemoteMessage(message);
+  try {
+    await ChatBackgroundSync.handleRemoteMessage(message);
+  } catch (e, st) {
+    debugPrint('[FCM background] sync failed: $e\n$st');
+  }
+  try {
+    await FamilyChatNotifications.handleBackgroundRemoteMessage(message);
+  } catch (e, st) {
+    debugPrint('[FCM background] notify failed: $e\n$st');
+  }
 }
 
 enum WebPushRegistrationResult {

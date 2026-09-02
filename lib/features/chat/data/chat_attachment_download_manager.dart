@@ -78,6 +78,7 @@ class ChatAttachmentDownloadManager extends ChangeNotifier {
       threadId: threadId,
       attachment: attachment,
     )) {
+      markLocallyAvailable(threadId, attachmentId);
       return;
     }
 
@@ -216,6 +217,21 @@ class ChatAttachmentDownloadManager extends ChangeNotifier {
       );
       return null;
     }
+  }
+
+  void markLocallyAvailable(int threadId, int attachmentId) {
+    final cacheKey = keyFor(threadId, attachmentId);
+    if (stateFor(threadId, attachmentId).phase ==
+        ChatAttachmentDownloadPhase.completed) {
+      return;
+    }
+    _setState(
+      cacheKey,
+      const ChatAttachmentDownloadState(
+        phase: ChatAttachmentDownloadPhase.completed,
+        progress: 1,
+      ),
+    );
   }
 
   void cancelDownload(int threadId, int attachmentId) {

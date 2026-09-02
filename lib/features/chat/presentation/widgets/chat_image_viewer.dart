@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/widgets/family_app_bar.dart';
+import '../../../../core/widgets/zoom_aware_page_view.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/media/gallery_media_export.dart';
@@ -89,6 +90,8 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
   final List<_ChatViewerPhoto> _photos = [];
   int _index = 0;
   PageController? _pageController;
+  final GlobalKey<ZoomAwarePageViewState> _zoomPageKey =
+      GlobalKey<ZoomAwarePageViewState>();
 
   @override
   void initState() {
@@ -344,15 +347,22 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
   }
 
   Widget _imageBody(_ChatViewerPhoto photo) {
-    if (kIsWeb) {
-      if (photo.threadId != null && photo.attachmentId != null) {
-        return ChatNetworkImage(
-          threadId: photo.threadId!,
-          attachment: photo.attachment ??
-              {'id': photo.attachmentId, 'file_url': photo.imageUrl},
-          fit: BoxFit.contain,
-        );
-      }
+    final attachment = photo.attachment ??
+        {
+          if (photo.attachmentId != null) 'id': photo.attachmentId,
+          'file_url': photo.imageUrl,
+          if (photo.filename != null) 'filename': photo.filename,
+        };
+
+    if (photo.threadId != null) {
+      return ChatNetworkImage(
+        threadId: photo.threadId!,
+        attachment: attachment,
+        fit: BoxFit.contain,
+        width: double.infinity,
+        height: double.infinity,
+        showTransferOverlay: false,
+      );
     }
 
     return CachedNetworkImage(
@@ -361,12 +371,52 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       cacheManager: FamilyChatMediaCache.fullscreen,
       useOldImageOnUrlChange: true,
       fit: BoxFit.contain,
+      width: double.infinity,
+      height: double.infinity,
       imageBuilder: (context, imageProvider) {
         unawaited(FamilyChatMediaCache.trimIfNeeded());
         return Image(
           image: imageProvider,
           fit: BoxFit.contain,
+          width: double.infinity,
+          height: double.infinity,
           gaplessPlayback: true,
+          filterQuality: FilterQuality.medium,
+        );
+      },
+    );
+  }
+
+  Widget _zoomableMediaPage(_ChatViewerPhoto photo, {required bool autoplay}) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final media = SizedBox(
+          width: constraints.maxWidth,
+          height: constraints.maxHeight,
+          child: _mediaBody(photo, autoplay: autoplay),
+        );
+        if (photo.isVideo) {
+          return Center(child: media);
+        }
+        return Center(
+          child: SizedBox(
+            width: constraints.maxWidth,
+            height: constraints.maxHeight,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ScaleReportingInteractiveViewer(
+                  minScale: 0.85,
+                  maxScale: 5,
+                  constrained: false,
+                  clipBehavior: Clip.none,
+                  onScaleChanged: (scale) =>
+                      _zoomPageKey.currentState?.reportScale(scale),
+                  child: media,
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
@@ -413,6 +463,7 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
 
     return GalleryFullscreenViewerCore(
       pageController: _pageController!,
+      zoomPageKey: _zoomPageKey,
       itemCount: _photos.length,
       title: isVideo ? 'Видео' : 'Фото',
       onPageChanged: (i) => setState(() => _index = i),
@@ -488,24 +539,7 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       ],
       pageBuilder: (_, i) {
         final item = _photos[i];
-        if (item.isVideo) {
-          return _mediaBody(item, autoplay: i == _index);
-        }
-        return LayoutBuilder(
-          builder: (context, constraints) => Center(
-            child: InteractiveViewer(
-              minScale: 0.2,
-              maxScale: 5,
-              constrained: false,
-              clipBehavior: Clip.none,
-              child: SizedBox(
-                width: constraints.maxWidth,
-                height: constraints.maxHeight,
-                child: _mediaBody(item, autoplay: i == _index),
-              ),
-            ),
-          ),
-        );
+        return _zoomableMediaPage(item, autoplay: i == _index);
       },
       bottomSlots: [
         if (_currentPhoto.attachmentId != null && !_currentPhoto.isVideo)

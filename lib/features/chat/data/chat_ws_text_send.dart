@@ -1,3 +1,5 @@
+import 'chat_realtime_utils.dart';
+import 'chat_send_trace.dart';
 import 'familychat_realtime.dart';
 
 /// Plain-text send eligibility and WS transport helpers.
@@ -30,9 +32,17 @@ abstract final class ChatWsTextSend {
     final trimmed = body.trim();
     if (trimmed.isEmpty) return null;
     final realtime = FamilyChatRealtime.instance;
-    if (!realtime.isConnected) return null;
+    if (!realtime.isConnected) {
+      ChatSendTrace.log(
+        'ws_not_connected',
+        threadId: threadId,
+        tempId: clientMsgId,
+        source: 'ws',
+      );
+      return null;
+    }
     try {
-      return await realtime.sendTextMessage(
+      final ack = await realtime.sendTextMessage(
         threadId: threadId,
         clientMsgId: clientMsgId,
         body: trimmed,
@@ -41,7 +51,22 @@ abstract final class ChatWsTextSend {
         notifySilent: notifySilent,
         timeout: ackTimeout,
       );
-    } catch (_) {
+      ChatSendTrace.log(
+        ack == null ? 'ws_ack_timeout' : 'ws_ack_ok',
+        threadId: threadId,
+        tempId: clientMsgId,
+        serverId: ack == null ? null : chatAsInt(ack['id']),
+        source: 'ws',
+      );
+      return ack;
+    } catch (e) {
+      ChatSendTrace.log(
+        'ws_ack_error',
+        threadId: threadId,
+        tempId: clientMsgId,
+        source: 'ws',
+        detail: '$e',
+      );
       return null;
     }
   }

@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
 import '../core/notifications/familychat_notifications.dart';
+import '../core/platform/web_visibility_presence.dart';
+import '../core/presence/user_presence_cache.dart';
 import '../core/push/push_navigation.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
@@ -27,6 +29,7 @@ import '../features/calendar/presentation/calendar_staging_review_screen.dart';
 import '../features/calendar/presentation/calendar_screen.dart';
 import '../features/chat/data/active_chat_context.dart';
 import '../features/chat/data/chat_unread_providers.dart';
+import '../features/chat/data/familychat_presence_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/chat/data/chat_offline_prefetch.dart';
@@ -142,6 +145,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     _lastKnownOnline = ChatOfflineSync.instance.isOnline;
     ShellRefresh.instance.register(_refreshMainTabs);
     _startPresenceHeartbeat();
+    installWebVisibilityPresenceListener();
     AppActions.bindShell(selectSection: _selectSection);
   }
 
@@ -233,6 +237,14 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   void _onChatRealtime(Map<String, dynamic> event) {
     final ev = event['event']?.toString();
+    if (ev == 'ws_connected') {
+      FamilyChatPresenceService.onRealtimeConnected();
+      return;
+    }
+    if (ev == 'user_presence') {
+      UserPresenceCache.instance.applyEvent(event);
+      return;
+    }
     // Unread badge: invalidate only after SQLite writes (ChatSyncService /
     // hub watch). Premature invalidate races a stale FutureProvider read.
     if (ev == 'chat_call_incoming') {
@@ -299,6 +311,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    FamilyChatPresenceService.onLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       IncomingCallCoordinator.instance.flushPendingIfAny();
       unawaited(FamilyChatNotifications.consumeLaunchNotification());
@@ -338,6 +351,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   }
 
   Future<void> _reportAppBackground() async {
+    FamilyChatPresenceService.syncNow();
     try {
       await ref
           .read(familychatRepositoryProvider)

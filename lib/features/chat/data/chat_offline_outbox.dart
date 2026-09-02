@@ -9,8 +9,10 @@ import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_media_upload_tracker.dart';
-import 'chat_network_status.dart';
 import 'chat_realtime_utils.dart';
+import 'chat_send_trace.dart';
+import 'chat_ws_mark_read.dart';
+import 'chat_network_status.dart';
 
 /// Очередь исходящих сообщений и реакций для офлайн-режима (Drift).
 class ChatOfflineOutbox {
@@ -73,6 +75,18 @@ class ChatOfflineOutbox {
       return;
     }
     await FamilyChatLocalCache.deleteOutboxBytes(storageKey);
+  }
+
+  /// Temp ids with an active outbox row (message not yet delivered).
+  static Future<Set<int>> activeTempMessageIds({int? threadId}) async {
+    final items = await _readItems();
+    return {
+      for (final item in items)
+        if (item['kind']?.toString() == 'message')
+          if (threadId == null || chatAsInt(item['thread_id']) == threadId)
+            if (chatAsInt(item['temp_message_id']) != null)
+              chatAsInt(item['temp_message_id'])!,
+    };
   }
 
   static Future<void> enqueueMessage({
@@ -726,7 +740,22 @@ class ChatOfflineOutbox {
       );
       // Outbox delivery is always our send — keep ownership even if API omits it.
       serverMsg['is_mine'] = true;
+      ChatSendTrace.log(
+        'outbox_sqlite_upsert_server',
+        threadId: threadId,
+        tempId: tempMessageId,
+        serverId: serverId,
+        source: 'outbox',
+      );
       await ChatLocalStore.instance.upsertMessage(serverMsg);
+      ChatSendTrace.log(
+        'outbox_sqlite_delete_temp',
+        threadId: threadId,
+        tempId: tempMessageId,
+        serverId: serverId,
+        source: 'outbox',
+        detail: 'after_upsert_server',
+      );
       await ChatLocalStore.instance.deleteMessages(threadId, [tempMessageId]);
       localMs = localSw.elapsedMilliseconds;
 
@@ -821,7 +850,17 @@ class ChatOfflineOutbox {
     final threadId = chatAsInt(item['thread_id']);
     final lastId = chatAsInt(item['last_message_id']);
     if (threadId == null || lastId == null) return;
-    await repo.markThreadRead(threadId, lastMessageId: lastId);
+    final wsOk = await ChatWsMarkRead.tryMarkRead(
+      threadId: threadId,
+      lastMessageId: lastId,
+    );
+    if (wsOk) return;
+    try {
+      await repo.markThreadRead(threadId, lastMessageId: lastId);
+    } catch (e, st) {
+      debugPrint('[ChatOfflineOutbox] mark_read HTTP fallback failed: $e\n$st');
+      rethrow;
+    }
   }
 
   static Future<ChatOutboxDelivery?> _deliverDeleteMessages(

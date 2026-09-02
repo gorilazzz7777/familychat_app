@@ -851,12 +851,14 @@ class FamilyChatRepository {
     int threadId, {
     int limit = 20,
     int? beforeId,
+    bool markRead = false,
   }) async {
     final res = await _dio.get<dynamic>(
       'familychat/chat/threads/$threadId/messages/',
       queryParameters: {
         'limit': limit,
         if (beforeId != null) 'before_id': beforeId,
+        if (markRead && beforeId == null) 'mark_read': 1,
       },
     );
     final data = res.data;

@@ -5,9 +5,8 @@ import android.os.Bundle
 import io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService
 
 /**
- * FCM в фоне сам рисует баннер без кнопки «Ответить».
- * Для чатов снимаем notification-ключи, чтобы сообщение ушло в Dart
- * и мы показали локальный пуш с полем ответа.
+ * Снимаем notification-ключи у чатов, чтобы Android не рисовал свой баннер
+ * без «Ответить», а Dart показал локальный пуш с MessagingStyle и историей.
  */
 class FamilyChatFirebaseMessagingService : FlutterFirebaseMessagingService() {
     override fun handleIntent(intent: Intent) {

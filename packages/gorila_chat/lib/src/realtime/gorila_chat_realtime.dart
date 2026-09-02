@@ -32,8 +32,10 @@ class GorilaChatRealtime {
   /// (after drop / backoff reconnect — open chats must HTTP-resync).
   bool _refreshAfterConnect = false;
   final Map<int, _PendingWsTextSend> _pendingTextSends = {};
+  final Map<int, Completer<bool>> _pendingMarkReads = {};
 
   static const _defaultSendAckTimeout = Duration(seconds: 2);
+  static const _defaultMarkReadAckTimeout = Duration(seconds: 3);
 
   bool get isConnected => _connected && _channel != null;
 
@@ -67,6 +69,7 @@ class GorilaChatRealtime {
             if (decoded is! Map) return;
             final event = chatNormalizeMap(Map<dynamic, dynamic>.from(decoded));
             if (_handleSendControlEvent(event)) return;
+            if (_handleMarkReadAckEvent(event)) return;
             _dispatch(event);
           } catch (e) {
             debugPrint('$debugName ws decode error: $e');
@@ -76,12 +79,14 @@ class GorilaChatRealtime {
           debugPrint('$debugName ws error: $error');
           _connected = false;
           _failPendingTextSends();
+          _failPendingMarkReads();
           _scheduleReconnect();
         },
         onDone: () {
           debugPrint('$debugName ws closed');
           _connected = false;
           _failPendingTextSends();
+          _failPendingMarkReads();
           _scheduleReconnect();
         },
         cancelOnError: false,
@@ -90,6 +95,7 @@ class GorilaChatRealtime {
         await _channel!.ready.timeout(const Duration(seconds: 20));
         _connected = true;
         _reconnectAttempt = 0;
+        emitSyntheticEvent({'event': 'ws_connected'});
         if (_refreshAfterConnect) {
           _refreshAfterConnect = false;
           emitSyntheticEvent({'event': 'chat_refresh', 'force': true});
@@ -132,6 +138,7 @@ class GorilaChatRealtime {
     _reconnectAttempt = 0;
     _connected = false;
     _failPendingTextSends();
+    _failPendingMarkReads();
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     await _closeChannel();
@@ -172,6 +179,46 @@ class GorilaChatRealtime {
       'thread_id': threadId,
       'is_typing': isTyping,
     });
+  }
+
+  void sendPresenceUpdate({required bool appInForeground}) {
+    sendJson({
+      'event': 'presence_update',
+      'app_foreground': appInForeground,
+    });
+  }
+
+  /// Mark thread read via WS. Returns false on timeout/disconnect.
+  Future<bool> sendMarkRead({
+    required int threadId,
+    required int lastMessageId,
+    Duration timeout = _defaultMarkReadAckTimeout,
+  }) async {
+    if (!isConnected || threadId <= 0 || lastMessageId <= 0) return false;
+
+    final previous = _pendingMarkReads.remove(threadId);
+    if (previous != null && !previous.isCompleted) {
+      previous.complete(false);
+    }
+
+    final completer = Completer<bool>();
+    _pendingMarkReads[threadId] = completer;
+
+    sendJson({
+      'event': 'chat_mark_read',
+      'thread_id': threadId,
+      'last_message_id': lastMessageId,
+    });
+
+    try {
+      return await completer.future.timeout(timeout);
+    } catch (_) {
+      final pending = _pendingMarkReads.remove(threadId);
+      if (pending != null && !pending.isCompleted) {
+        pending.complete(false);
+      }
+      return false;
+    }
   }
 
   /// Text-only send via WS. Returns server message dict or null on timeout/disconnect.
@@ -239,6 +286,27 @@ class GorilaChatRealtime {
       return true;
     }
     return false;
+  }
+
+  bool _handleMarkReadAckEvent(Map<String, dynamic> event) {
+    final ev = event['event']?.toString();
+    if (ev != 'chat_mark_read_ack') return false;
+    final threadId = chatAsInt(event['thread_id']);
+    final pending =
+        threadId == null ? null : _pendingMarkReads.remove(threadId);
+    if (pending != null && !pending.isCompleted) {
+      pending.complete(event['ok'] == true);
+    }
+    return true;
+  }
+
+  void _failPendingMarkReads() {
+    for (final entry in _pendingMarkReads.entries) {
+      if (!entry.value.isCompleted) {
+        entry.value.complete(false);
+      }
+    }
+    _pendingMarkReads.clear();
   }
 
   void _failPendingTextSends() {

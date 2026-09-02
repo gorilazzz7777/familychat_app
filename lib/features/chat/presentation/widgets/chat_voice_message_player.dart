@@ -8,9 +8,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
 import '../../../../core/media/local_device_file.dart';
+import '../../../../core/media/media_local_index.dart';
 import '../../../../core/network/chat_network_link.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../../core/settings/app_settings_controller.dart';
+import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_media_providers.dart';
 import '../../data/chat_realtime_utils.dart';
 import '../../data/chat_voice_transcription_prefs.dart';
@@ -110,6 +112,17 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
             ),
       );
     });
+  }
+
+  bool _skipDownloadOverlay() {
+    MediaLocalIndex.hydrateAttachment(widget.attachment);
+    return ChatMediaAutoDownloadPolicy.isLocallyAvailable(
+          threadId: widget.threadId,
+          attachment: widget.attachment,
+        ) ||
+        ChatMediaAutoDownloadPolicy.hasRemoteContentUrl(
+          attachment: widget.attachment,
+        );
   }
 
   Future<void> _togglePlayback() async {
@@ -257,6 +270,7 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
       uploadMessageId: widget.uploadMessageId,
       onCancelUpload: widget.onCancelUpload,
       onDownloadTap: _togglePlayback,
+      showManualDownload: !_skipDownloadOverlay(),
       child: row,
     );
   }

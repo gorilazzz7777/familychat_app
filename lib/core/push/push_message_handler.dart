@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 
 import '../notifications/familychat_notifications.dart';
 import '../notifications/familychat_foreground_bridge.dart';
-import '../../features/chat/data/active_chat_context.dart';
 import '../../features/chat/data/familychat_realtime.dart';
 import '../../features/chat/data/chat_sync_service.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
@@ -48,11 +47,9 @@ void handleFamilyChatRemoteMessage(
     }
 
     if (threadId != null &&
-        ActiveChatContext.instance.isViewingThread(threadId)) {
+        FamilyChatForegroundBridge.isActivelyViewingThread(threadId)) {
       return;
     }
-
-    if (isForeground) return;
 
     unawaited(_showChatPushNotification(message, payload));
     return;
