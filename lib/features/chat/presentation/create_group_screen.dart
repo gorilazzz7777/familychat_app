@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 
@@ -31,15 +30,25 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
     super.dispose();
   }
 
+  int? _memberUserId(Map<String, dynamic> member) {
+    final raw = member['user_id'];
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
+  }
+
   Future<void> _load() async {
     try {
       final repo = ref.read(familychatRepositoryProvider);
       final status = await repo.status();
-      final myId = status['user_id'] as int?;
+      final myId = _memberUserId(status);
       final list = await repo.members();
       if (!mounted) return;
       setState(() {
-        _members = list.where((m) => m['user_id'] != myId).toList();
+        _members = [
+          for (final member in list)
+            if (_memberUserId(member) != null && _memberUserId(member) != myId)
+              member,
+        ];
         _loading = false;
       });
     } catch (_) {
@@ -73,7 +82,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   }
 
   List<int> get _selectableMemberIds =>
-      _members.map((m) => m['user_id'] as int).toList();
+      _members.map(_memberUserId).whereType<int>().toList();
 
   bool get _allMembersSelected {
     final ids = _selectableMemberIds;
@@ -105,9 +114,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
         ],
       ),
       body: _loading
-          ? const DeferredPlaceholder(
-              child: Center(child: CircularProgressIndicator()),
-            )
+          ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
                 Padding(
@@ -131,7 +138,8 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                     itemCount: _members.length,
                     itemBuilder: (context, i) {
                       final m = _members[i];
-                      final uid = m['user_id'] as int;
+                      final uid = _memberUserId(m);
+                      if (uid == null) return const SizedBox.shrink();
                       final name = m['display_name']?.toString() ?? '';
                       return CheckboxListTile(
                         value: _selected.contains(uid),

@@ -565,7 +565,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   Future<void> createGroup() async {
-    final created = await Navigator.of(context).push<Map<String, dynamic>>(
+    final created = await Navigator.of(context, rootNavigator: true)
+        .push<Map<String, dynamic>>(
       MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
     );
     if (created != null && mounted) {
@@ -576,13 +577,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   Future<void> openCreateMenu({required bool hasIndividualPremium}) async {
-    // Без Premium сразу создаём группу — меню с «Контакт» не показываем.
-    if (!hasIndividualPremium) {
-      await createGroup();
-      return;
-    }
+    final scheme = Theme.of(context).colorScheme;
     final action = await showModalBottomSheet<String>(
       context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: scheme.surface,
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -592,12 +592,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               title: const Text('Группа'),
               onTap: () => Navigator.pop(ctx, 'group'),
             ),
-            ListTile(
-              leading: const Icon(Icons.person_add_alt_1_outlined),
-              title: const Text('Контакт'),
-              subtitle: const Text('Личный чат вне семьи'),
-              onTap: () => Navigator.pop(ctx, 'contact'),
-            ),
+            if (hasIndividualPremium)
+              ListTile(
+                leading: const Icon(Icons.person_add_alt_1_outlined),
+                title: const Text('Контакт'),
+                subtitle: const Text('Личный чат вне семьи'),
+                onTap: () => Navigator.pop(ctx, 'contact'),
+              ),
           ],
         ),
       ),
@@ -745,11 +746,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   void _onCreatePressed() {
-    if (widget.hasIndividualPremium) {
-      unawaited(openCreateMenu(hasIndividualPremium: true));
-    } else {
-      unawaited(createGroup());
-    }
+    unawaited(openCreateMenu(hasIndividualPremium: widget.hasIndividualPremium));
   }
 
   @override
