@@ -8,7 +8,7 @@ String genderVerb(
 
 String actorGender(Map<String, dynamic>? actor) {
   final gender = actor?['gender']?.toString();
-  if (gender == 'female') return 'female';
+  if (gender == 'female' || gender == 'girl') return 'female';
   return 'male';
 }
 

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../core/call/callkit_incoming_service.dart';
 import '../core/notifications/familychat_notifications.dart';
 import '../core/platform/web_visibility_presence.dart';
 import '../core/presence/user_presence_cache.dart';
@@ -19,6 +20,7 @@ import '../core/widgets/impersonation_banner.dart';
 import '../core/providers/app_providers.dart';
 import '../core/theme/theme_seed_controller.dart';
 import '../core/share/incoming_share_bus.dart';
+import '../core/share/share_direct_target_service.dart';
 import '../core/settings/app_settings_controller.dart';
 import '../core/settings/shell_nav_layout.dart';
 import 'app_actions_scope.dart';
@@ -40,6 +42,7 @@ import '../features/chat/data/incoming_call_coordinator.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../core/media/gallery_media_utils.dart';
 import '../features/chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
+import '../features/feed/data/feed_post_target.dart';
 import '../features/feed/data/feed_post_uploader.dart';
 import '../features/feed/presentation/feed_screen.dart';
 import '../features/feed/presentation/feed_post_compose_screen.dart';
@@ -103,8 +106,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       flushPendingChatPush();
       IncomingCallCoordinator.instance.flushPendingIfAny();
+      unawaited(CallKitIncomingService.reconcileActiveCalls());
       unawaited(FamilyChatNotifications.consumeLaunchNotification());
       unawaited(FamilyChatNotifications.clearMessageNotificationsOnAppOpen());
+      unawaited(ShareDirectTargetService.syncFromStore());
       _openPendingShareIfAny();
       final userId = _currentUserId;
       if (userId != null) {
@@ -314,6 +319,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     FamilyChatPresenceService.onLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       IncomingCallCoordinator.instance.flushPendingIfAny();
+      unawaited(CallKitIncomingService.reconcileActiveCalls());
       unawaited(FamilyChatNotifications.consumeLaunchNotification());
       unawaited(FamilyChatNotifications.clearMessageNotificationsOnAppOpen());
       unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
@@ -377,9 +383,14 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   }
 
   Future<void> _openShareScreenAndRefresh(SharedMedia media) async {
+    final directThreadId =
+        await ShareDirectTargetService.takePendingDirectShareThreadId();
     final sent = await familyChatNavigatorKey.currentState?.push<bool>(
       MaterialPageRoute<bool>(
-        builder: (_) => ChatShareTargetScreen(media: media),
+        builder: (_) => ChatShareTargetScreen(
+          media: media,
+          directShareThreadId: directThreadId,
+        ),
       ),
     );
     if (!mounted) return;
@@ -568,11 +579,29 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     final userId = _currentUserId;
     if (userId == null) return;
 
+    FeedPostTarget target = const FeedPostTargetSelf();
+    final childTargets =
+        await loadFeedPostChildTargets(ref.read(familychatRepositoryProvider));
+    if (childTargets.isNotEmpty && mounted) {
+      final picked = await showFeedPostTargetPicker(
+        context,
+        children: childTargets,
+      );
+      if (picked == null || !mounted) return;
+      target = picked;
+    }
+
+    final childTarget = target is FeedPostTargetChild ? target : null;
+    if (!mounted) return;
+
     Future<void> openCompose(List<FeedPostPhoto> photos) async {
       if (photos.isEmpty || !mounted) return;
       final posted = await Navigator.of(context).push<Object?>(
         MaterialPageRoute<Object?>(
-          builder: (_) => FeedPostComposeScreen(initialPhotos: photos),
+          builder: (_) => FeedPostComposeScreen(
+            initialPhotos: photos,
+            target: target,
+          ),
         ),
       );
       if (!mounted) return;
@@ -589,6 +618,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       context,
       style: ChatAttachSheetStyle.albumMedia,
       familyGalleryUserId: userId,
+      familyGalleryChildId: childTarget?.childId,
+      familyGalleryChildName: childTarget?.displayName,
       onSendMedia: (_, items) async {
         if (items.isEmpty || !mounted) return;
         final raw = <FeedPostPhoto>[];

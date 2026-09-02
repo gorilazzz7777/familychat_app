@@ -5,13 +5,16 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/maps/epsg3395.dart';
 import '../../../core/maps/yandex_tile_layer.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/data/chat_location_utils.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../data/map_display_override_store.dart';
 import 'location_sharing_settings_screen.dart';
+import 'map_display_override_screen.dart';
 
 class FamilyMapScreen extends ConsumerStatefulWidget {
   const FamilyMapScreen({super.key, this.focusUserId});
@@ -28,17 +31,56 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
   String? _error;
   List<Map<String, dynamic>> _members = [];
   int? _selectedUserId;
+  bool _hasIndividualPremium = false;
+  MapDisplayOverride? _mapOverride;
+  Timer? _overrideTimer;
 
   @override
   void initState() {
     super.initState();
     _selectedUserId = widget.focusUserId;
+    unawaited(_loadPremiumFlag());
+    unawaited(_refreshMapOverride());
+    _overrideTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      unawaited(_refreshMapOverride(silent: true));
+    });
     _load();
   }
 
   @override
   void dispose() {
+    _overrideTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _loadPremiumFlag() async {
+    try {
+      final status = await FamilyChatLocalCache.readStatus();
+      if (!mounted) return;
+      final entitlements = status?['entitlements'];
+      setState(() {
+        _hasIndividualPremium =
+            entitlements is Map && entitlements['individual_premium'] == true;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _refreshMapOverride({bool silent = false}) async {
+    final override = await MapDisplayOverrideStore.read();
+    if (!mounted) return;
+    if (override == null && _mapOverride == null) return;
+    setState(() => _mapOverride = override);
+  }
+
+  Future<void> _openMapDisplaySettings() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const MapDisplayOverrideScreen(),
+      ),
+    );
+    if (!mounted) return;
+    await _refreshMapOverride();
+    await _load();
   }
 
   Future<void> _load() async {
@@ -183,6 +225,15 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
       appBar: FamilyAppBar.build(
         title: 'На карте',
         actions: [
+          if (_hasIndividualPremium)
+            IconButton(
+              tooltip: 'Где меня показывать',
+              onPressed: _openMapDisplaySettings,
+              icon: Badge(
+                isLabelVisible: _mapOverride != null,
+                child: const Icon(Icons.tune),
+              ),
+            ),
           IconButton(
             tooltip: 'Обновить',
             onPressed: _loading ? null : _load,
@@ -220,6 +271,42 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
                 )
               : Column(
                   children: [
+                    if (_mapOverride != null)
+                      Material(
+                        color: theme.colorScheme.secondaryContainer,
+                        child: InkWell(
+                          onTap: _openMapDisplaySettings,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.pin_drop_outlined,
+                                  color: theme.colorScheme.onSecondaryContainer,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    'Семья видит выбранную точку ещё '
+                                    '${formatMapDisplayRemaining(_mapOverride!.remaining!)}',
+                                    style: theme.textTheme.bodyMedium?.copyWith(
+                                      color:
+                                          theme.colorScheme.onSecondaryContainer,
+                                    ),
+                                  ),
+                                ),
+                                Icon(
+                                  Icons.chevron_right,
+                                  color: theme.colorScheme.onSecondaryContainer,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                     Expanded(
                       child: withPoints.isEmpty
                           ? _emptyState(theme)

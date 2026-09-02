@@ -8,6 +8,7 @@ import '../client/app_client.dart';
 import '../session/auth_session_bus.dart';
 import '../storage/token_storage.dart';
 import 'dio_jwt_error.dart';
+import 'jwt_access_token.dart';
 import 'native_http_adapter.dart';
 
 const String _kAuthRefreshPath = 'auth/refresh/';
@@ -81,7 +82,7 @@ class _AuthInterceptor extends Interceptor {
   final Dio _retryDio;
 
   static const _kJwtRefreshRetried = '__jwt_refresh_retried';
-  static Completer<String?>? _refreshCompleter;
+  static Future<String?>? _refreshFuture;
 
   Future<void> _invalidateSession() async {
     await _tokenStorage.clear();
@@ -102,39 +103,75 @@ class _AuthInterceptor extends Interceptor {
     return access;
   }
 
-  Future<String?> _coordinatedRefresh(String refreshToken) async {
-    final existing = _refreshCompleter;
-    if (existing != null) {
-      return existing.future;
-    }
-    final c = Completer<String?>();
-    _refreshCompleter = c;
+  Future<String?> _performRefresh(String refreshToken) async {
     try {
       final response = await _refreshDio.post<Map<String, dynamic>>(
         _kAuthRefreshPath,
         data: {'refresh': refreshToken},
       );
-      final access = await _applyRefreshResponse(response.data);
-      c.complete(access);
+      return _applyRefreshResponse(response.data);
     } on DioException catch (e) {
       final code = e.response?.statusCode;
       if (code == 401 || code == 403) {
-        c.completeError(e);
-      } else {
-        c.complete(null);
+        throw e;
       }
+      return null;
     } catch (_) {
-      c.complete(null);
-    } finally {
-      _refreshCompleter = null;
+      return null;
     }
-    return c.future;
+  }
+
+  /// Single in-flight refresh shared by all Dio instances / parallel requests.
+  Future<String?> _coordinatedRefresh(String refreshToken) {
+    final existing = _refreshFuture;
+    if (existing != null) return existing;
+
+    late final Future<String?> future;
+    future = _performRefresh(refreshToken).whenComplete(() {
+      if (identical(_refreshFuture, future)) {
+        _refreshFuture = null;
+      }
+    });
+    _refreshFuture = future;
+    return future;
+  }
+
+  Future<String?> _accessTokenForRequest() async {
+    final inFlight = _refreshFuture;
+    if (inFlight != null) {
+      try {
+        await inFlight;
+      } catch (_) {}
+    }
+
+    var token = await _tokenStorage.readAccess();
+    if (token == null || token.isEmpty) return null;
+    if (!jwtAccessTokenIsExpired(token)) return token;
+
+    final refresh = await _tokenStorage.readRefresh();
+    if (refresh == null || refresh.isEmpty) {
+      await _invalidateSession();
+      return token;
+    }
+
+    try {
+      final refreshed = await _coordinatedRefresh(refresh);
+      if (refreshed != null && refreshed.isNotEmpty) {
+        return refreshed;
+      }
+    } on DioException catch (e) {
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        await _invalidateSession();
+      }
+    }
+    return await _tokenStorage.readAccess();
   }
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
     if (!_isAnonymousApiAuthPath(options.path)) {
-      final token = await _tokenStorage.readAccess();
+      final token = await _accessTokenForRequest();
       if (token != null && token.isNotEmpty) {
         options.headers['Authorization'] = 'Bearer $token';
       }

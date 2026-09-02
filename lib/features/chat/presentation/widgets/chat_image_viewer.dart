@@ -17,6 +17,7 @@ import '../../../../core/media/media_local_index.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
 import '../../../profile/presentation/widgets/photo_people_on_photo_bar.dart';
+import '../../../gallery/presentation/widgets/gallery_carousel_thumbnail_strip.dart';
 import '../../../gallery/presentation/widgets/gallery_fullscreen_viewer_core.dart';
 import '../../data/chat_realtime_utils.dart';
 import '../chat_forward_screen.dart';
@@ -92,6 +93,9 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
   PageController? _pageController;
   final GlobalKey<ZoomAwarePageViewState> _zoomPageKey =
       GlobalKey<ZoomAwarePageViewState>();
+  int? _highlightUserId;
+  String? _highlightSubjectKey;
+  List<PhotoFaceBox> _highlightBoxes = const [];
 
   @override
   void initState() {
@@ -104,6 +108,26 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     _pageController?.dispose();
     super.dispose();
   }
+
+  void _goToPhoto(int index) {
+    if (index == _index || index < 0 || index >= _photos.length) return;
+    final controller = _pageController;
+    if (controller == null || !controller.hasClients) return;
+    if ((index - _index).abs() <= 1) {
+      unawaited(
+        controller.animateToPage(
+          index,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    } else {
+      controller.jumpToPage(index);
+    }
+  }
+
+  List<Map<String, dynamic>> get _photoAttachments =>
+      _photos.map(_attachmentMap).toList(growable: false);
 
   _ChatViewerPhoto _photoFromAttachment(
     Map<String, dynamic> att, {
@@ -387,7 +411,17 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     );
   }
 
-  Widget _zoomableMediaPage(_ChatViewerPhoto photo, {required bool autoplay}) {
+  Widget _zoomableMediaPage(
+    _ChatViewerPhoto photo, {
+    required bool autoplay,
+    required bool isCurrent,
+  }) {
+    final attachmentId = photo.attachmentId;
+    final showPeopleOverlay = isCurrent &&
+        !photo.isVideo &&
+        attachmentId != null &&
+        photo.threadId != null;
+    final showHighlight = isCurrent && _highlightBoxes.isNotEmpty;
     return LayoutBuilder(
       builder: (context, constraints) {
         final media = SizedBox(
@@ -404,6 +438,7 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
             height: constraints.maxHeight,
             child: Stack(
               fit: StackFit.expand,
+              clipBehavior: Clip.none,
               children: [
                 ScaleReportingInteractiveViewer(
                   minScale: 0.85,
@@ -414,6 +449,29 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
                       _zoomPageKey.currentState?.reportScale(scale),
                   child: media,
                 ),
+                if (showHighlight)
+                  PhotoFaceHighlightOverlay(boxes: _highlightBoxes),
+                if (showPeopleOverlay)
+                  PhotoPeopleOnPhotoOverlay(
+                    key: ValueKey<int>(attachmentId),
+                    attachmentId: attachmentId,
+                    threadId: photo.threadId,
+                    selectedSubjectKey: _highlightSubjectKey,
+                    selectedUserId: _highlightUserId,
+                    onHighlightChanged: (highlight) {
+                      setState(() {
+                        if (highlight == null) {
+                          _highlightUserId = null;
+                          _highlightSubjectKey = null;
+                          _highlightBoxes = const [];
+                        } else {
+                          _highlightUserId = highlight.userId;
+                          _highlightSubjectKey = highlight.subjectKey;
+                          _highlightBoxes = highlight.boxes;
+                        }
+                      });
+                    },
+                  ),
               ],
             ),
           ),
@@ -466,7 +524,20 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       zoomPageKey: _zoomPageKey,
       itemCount: _photos.length,
       title: isVideo ? 'Видео' : 'Фото',
-      onPageChanged: (i) => setState(() => _index = i),
+      onPageChanged: (i) => setState(() {
+        _index = i;
+        _highlightUserId = null;
+        _highlightSubjectKey = null;
+        _highlightBoxes = const [];
+      }),
+      thumbnailStrip: _photos.length > 1
+          ? GalleryCarouselThumbnailStrip(
+              photos: _photoAttachments,
+              index: _index,
+              onSelect: _goToPhoto,
+              padding: const EdgeInsets.fromLTRB(8, 16, 8, 4),
+            )
+          : null,
       actions: [
         IconButton(
           tooltip: 'Поделиться',
@@ -539,16 +610,12 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       ],
       pageBuilder: (_, i) {
         final item = _photos[i];
-        return _zoomableMediaPage(item, autoplay: i == _index);
+        return _zoomableMediaPage(
+          item,
+          autoplay: i == _index,
+          isCurrent: i == _index,
+        );
       },
-      bottomSlots: [
-        if (_currentPhoto.attachmentId != null && !_currentPhoto.isVideo)
-          PhotoPeopleOnPhotoBar(
-            key: ValueKey<int>(_currentPhoto.attachmentId!),
-            attachmentId: _currentPhoto.attachmentId!,
-            threadId: _currentPhoto.threadId,
-          ),
-      ],
     );
   }
 }

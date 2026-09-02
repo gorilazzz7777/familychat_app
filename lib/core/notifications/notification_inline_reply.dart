@@ -4,11 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/familychat/data/familychat_repository.dart';
-import '../../features/chat/data/chat_local_mutations.dart';
-import '../../features/chat/data/chat_offline_outbox.dart';
-import '../../features/chat/data/chat_ws_mark_read.dart';
 import '../local_db/chat_local_store.dart';
 import '../network/api_client.dart';
+import 'notification_mark_read.dart';
 import 'push_reply_trace.dart';
 
 /// Ответ из шторки уведомлений (как в Telegram).
@@ -138,7 +136,7 @@ abstract final class NotificationInlineReply {
       );
       unawaited(_persistInBackground(threadId, payload, source: source));
       unawaited(
-        _markThreadReadAfterInlineReply(
+        NotificationMarkRead.markThreadReadFromPush(
           threadId: threadId,
           data: data,
           sentMessageId: messageId,
@@ -155,7 +153,7 @@ abstract final class NotificationInlineReply {
       );
       debugPrint('[NotificationInlineReply] send failed: $e\n$st');
       unawaited(
-        _markThreadReadAfterInlineReply(
+        NotificationMarkRead.markThreadReadFromPush(
           threadId: threadId,
           data: data,
           source: source,
@@ -199,99 +197,4 @@ abstract final class NotificationInlineReply {
     }
   }
 
-  /// Пользователь ответил из шторки — считаем переписку просмотренной.
-  static Future<void> _markThreadReadAfterInlineReply({
-    required int threadId,
-    required Map<String, dynamic> data,
-    int? sentMessageId,
-    required String source,
-  }) async {
-    var lastId = sentMessageId ?? 0;
-    final fromPayload = int.tryParse(data['message_id']?.toString() ?? '');
-    if (fromPayload != null && fromPayload > lastId) {
-      lastId = fromPayload;
-    }
-
-    if (ChatLocalStore.isSupported) {
-      try {
-        final newest = await ChatLocalStore.instance
-            .newestServerMessageId(threadId)
-            .timeout(const Duration(seconds: 2));
-        if (newest != null && newest > lastId) {
-          lastId = newest;
-        }
-      } catch (e) {
-        PushReplyTrace.log(
-          'mark_read_local_id_fail',
-          threadId: threadId,
-          source: source,
-          detail: '$e',
-        );
-      }
-    }
-
-    if (lastId <= 0) {
-      PushReplyTrace.log(
-        'mark_read_skip',
-        threadId: threadId,
-        source: source,
-        detail: 'no last_message_id',
-      );
-      return;
-    }
-
-    try {
-      await ChatLocalMutations.markThreadReadLocal(
-        threadId,
-        lastMessageId: lastId,
-      );
-    } catch (e) {
-      PushReplyTrace.log(
-        'mark_read_local_fail',
-        threadId: threadId,
-        source: source,
-        detail: '$e',
-      );
-    }
-
-    final wsOk = await ChatWsMarkRead.tryMarkRead(
-      threadId: threadId,
-      lastMessageId: lastId,
-    );
-    if (wsOk) {
-      PushReplyTrace.log(
-        'mark_read_ws_ok',
-        threadId: threadId,
-        messageId: lastId,
-        source: source,
-      );
-      return;
-    }
-
-    try {
-      final client = ApiClient();
-      await FamilyChatRepository(client)
-          .markThreadRead(threadId, lastMessageId: lastId)
-          .timeout(const Duration(seconds: 12));
-      PushReplyTrace.log(
-        'mark_read_http_ok',
-        threadId: threadId,
-        messageId: lastId,
-        source: source,
-      );
-    } catch (e) {
-      PushReplyTrace.log(
-        'mark_read_http_fail',
-        threadId: threadId,
-        source: source,
-        detail: '$e',
-      );
-      try {
-        await ChatOfflineOutbox.enqueueMarkRead(
-          threadId: threadId,
-          lastMessageId: lastId,
-        );
-      } catch (_) {}
-    }
-  }
 }

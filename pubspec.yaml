@@ -69,6 +69,7 @@ dependencies:
   sqlite3: ^3.5.1
   native_dio_adapter: ^1.8.0
   connectivity_plus: ^6.1.4
+  flutter_callkit_incoming: ^2.5.8
 
 # sqlite3 3.x hooks download prebuilt .so from GitHub by default — that fails
 # when github.com is unreachable. Compile vendored amalgamation instead.

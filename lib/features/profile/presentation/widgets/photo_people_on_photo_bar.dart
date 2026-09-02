@@ -52,11 +52,81 @@ class _PhotoPerson {
   final int? childId;
 }
 
-/// Блок «Кто на фото» внизу полноэкранного просмотра.
-/// Высота всегда фиксирована (loading / пусто / люди), чтобы фото не прыгало.
-/// Тап по человеку — подсветка лица на фото (не переход в профиль).
-class PhotoPeopleOnPhotoBar extends ConsumerStatefulWidget {
-  const PhotoPeopleOnPhotoBar({
+PhotoFaceBox? photoFaceBoxFromMap(Map<String, dynamic> face) {
+  final bbox = face['bbox'];
+  if (bbox is! Map) return null;
+  final x = (bbox['x'] as num?)?.toDouble() ?? 0;
+  final y = (bbox['y'] as num?)?.toDouble() ?? 0;
+  final w = (bbox['w'] as num?)?.toDouble() ?? 0;
+  final h = (bbox['h'] as num?)?.toDouble() ?? 0;
+  if (w <= 0 || h <= 0) return null;
+  return PhotoFaceBox(x: x, y: y, w: w, h: h);
+}
+
+Future<List<_PhotoPerson>> loadRecognizedPeopleOnPhoto(
+  WidgetRef ref, {
+  required int attachmentId,
+  int? profileUserId,
+  int? threadId,
+}) async {
+  final repo = ref.read(familychatRepositoryProvider);
+  late final Map<String, dynamic> data;
+  if (profileUserId != null) {
+    data = await repo.galleryPhotoFaces(profileUserId, attachmentId);
+  } else if (threadId != null) {
+    data = await repo.chatAttachmentFaces(threadId, attachmentId);
+  } else {
+    return const [];
+  }
+
+  final faces =
+      (data['faces'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+  final byKey = <String, _PhotoPerson>{};
+  for (final face in faces) {
+    final childRaw = face['assigned_child_id'];
+    final childId = childRaw is int ? childRaw : int.tryParse('$childRaw');
+    final userRaw = face['assigned_user_id'];
+    final userId = userRaw is int ? userRaw : int.tryParse('$userRaw');
+    final String subjectKey;
+    if (childId != null) {
+      subjectKey = 'child:$childId';
+    } else if (userId != null) {
+      subjectKey = 'user:$userId';
+    } else {
+      continue;
+    }
+    final name = (face['assigned_display_name']?.toString() ?? '').trim();
+    if (name.isEmpty) continue;
+    final box = photoFaceBoxFromMap(face);
+    final existing = byKey[subjectKey];
+    if (existing == null) {
+      byKey[subjectKey] = _PhotoPerson(
+        subjectKey: subjectKey,
+        userId: userId,
+        childId: childId,
+        name: name,
+        avatarUrl: face['assigned_avatar_url']?.toString() ?? '',
+        boxes: box == null ? const [] : [box],
+      );
+    } else if (box != null) {
+      byKey[subjectKey] = _PhotoPerson(
+        subjectKey: existing.subjectKey,
+        userId: existing.userId,
+        childId: existing.childId,
+        name: existing.name,
+        avatarUrl: existing.avatarUrl,
+        boxes: [...existing.boxes, box],
+      );
+    }
+  }
+  final people = byKey.values.toList()
+    ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  return people;
+}
+
+/// Кнопка «?» в углу фото + раскрывающийся список узнанных людей.
+class PhotoPeopleOnPhotoOverlay extends ConsumerStatefulWidget {
+  const PhotoPeopleOnPhotoOverlay({
     super.key,
     required this.attachmentId,
     this.profileUserId,
@@ -73,16 +143,15 @@ class PhotoPeopleOnPhotoBar extends ConsumerStatefulWidget {
   final int? selectedUserId;
   final ValueChanged<PhotoPersonHighlight?>? onHighlightChanged;
 
-  /// Заголовок + отступ + ряд аватаров (без внешних паддингов).
-  static const double contentHeight = 74;
-
   @override
-  ConsumerState<PhotoPeopleOnPhotoBar> createState() =>
-      _PhotoPeopleOnPhotoBarState();
+  ConsumerState<PhotoPeopleOnPhotoOverlay> createState() =>
+      _PhotoPeopleOnPhotoOverlayState();
 }
 
-class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
+class _PhotoPeopleOnPhotoOverlayState
+    extends ConsumerState<PhotoPeopleOnPhotoOverlay> {
   bool _loading = true;
+  bool _expanded = false;
   List<_PhotoPerson> _people = const [];
 
   String? get _selectedKey {
@@ -99,89 +168,31 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
   }
 
   @override
-  void didUpdateWidget(covariant PhotoPeopleOnPhotoBar oldWidget) {
+  void didUpdateWidget(covariant PhotoPeopleOnPhotoOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.attachmentId != widget.attachmentId ||
         oldWidget.profileUserId != widget.profileUserId ||
         oldWidget.threadId != widget.threadId) {
+      _expanded = false;
       widget.onHighlightChanged?.call(null);
       _load();
     }
-  }
-
-  PhotoFaceBox? _boxFromFace(Map<String, dynamic> face) {
-    final bbox = face['bbox'];
-    if (bbox is! Map) return null;
-    final x = (bbox['x'] as num?)?.toDouble() ?? 0;
-    final y = (bbox['y'] as num?)?.toDouble() ?? 0;
-    final w = (bbox['w'] as num?)?.toDouble() ?? 0;
-    final h = (bbox['h'] as num?)?.toDouble() ?? 0;
-    if (w <= 0 || h <= 0) return null;
-    return PhotoFaceBox(x: x, y: y, w: w, h: h);
   }
 
   Future<void> _load() async {
     setState(() {
       _loading = true;
       _people = const [];
+      _expanded = false;
     });
     try {
-      final repo = ref.read(familychatRepositoryProvider);
-      late final Map<String, dynamic> data;
-      if (widget.profileUserId != null) {
-        data = await repo.galleryPhotoFaces(
-            widget.profileUserId!, widget.attachmentId);
-      } else if (widget.threadId != null) {
-        data = await repo.chatAttachmentFaces(
-            widget.threadId!, widget.attachmentId);
-      } else {
-        if (mounted) setState(() => _loading = false);
-        return;
-      }
+      final people = await loadRecognizedPeopleOnPhoto(
+        ref,
+        attachmentId: widget.attachmentId,
+        profileUserId: widget.profileUserId,
+        threadId: widget.threadId,
+      );
       if (!mounted) return;
-      final faces =
-          (data['faces'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
-      final byKey = <String, _PhotoPerson>{};
-      for (final face in faces) {
-        final childRaw = face['assigned_child_id'];
-        final childId =
-            childRaw is int ? childRaw : int.tryParse('$childRaw');
-        final userRaw = face['assigned_user_id'];
-        final userId = userRaw is int ? userRaw : int.tryParse('$userRaw');
-        final String subjectKey;
-        if (childId != null) {
-          subjectKey = 'child:$childId';
-        } else if (userId != null) {
-          subjectKey = 'user:$userId';
-        } else {
-          continue;
-        }
-        final name = (face['assigned_display_name']?.toString() ?? '').trim();
-        if (name.isEmpty) continue;
-        final box = _boxFromFace(face);
-        final existing = byKey[subjectKey];
-        if (existing == null) {
-          byKey[subjectKey] = _PhotoPerson(
-            subjectKey: subjectKey,
-            userId: userId,
-            childId: childId,
-            name: name,
-            avatarUrl: face['assigned_avatar_url']?.toString() ?? '',
-            boxes: box == null ? const [] : [box],
-          );
-        } else if (box != null) {
-          byKey[subjectKey] = _PhotoPerson(
-            subjectKey: existing.subjectKey,
-            userId: existing.userId,
-            childId: existing.childId,
-            name: existing.name,
-            avatarUrl: existing.avatarUrl,
-            boxes: [...existing.boxes, box],
-          );
-        }
-      }
-      final people = byKey.values.toList()
-        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
       setState(() {
         _people = people;
         _loading = false;
@@ -213,54 +224,70 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.black.withValues(alpha: 0.72),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-        child: SizedBox(
-          height: PhotoPeopleOnPhotoBar.contentHeight,
-          width: double.infinity,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(
-                height: 20,
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: (!_loading && _people.isNotEmpty)
-                      ? Text(
-                          'Кто на фото',
-                          style:
-                              Theme.of(context).textTheme.titleSmall?.copyWith(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w600,
-                                    height: 1.1,
-                                  ),
-                        )
-                      : null,
+    if (_loading || _people.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Positioned(
+      top: 8,
+      right: 8,
+      child: Material(
+        color: Colors.transparent,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Material(
+              color: Colors.black.withValues(alpha: 0.55),
+              shape: const CircleBorder(),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: () => setState(() => _expanded = !_expanded),
+                child: const SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: Center(
+                    child: Text(
+                      '?',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        height: 1,
+                      ),
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(height: 10),
-              SizedBox(
-                height: 44,
-                child: _loading
-                    ? const Center(
-                        child: SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white54,
+            ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              child: _expanded
+                  ? Padding(
+                      key: const ValueKey('people-panel'),
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Material(
+                        color: Colors.black.withValues(alpha: 0.88),
+                        elevation: 6,
+                        borderRadius: BorderRadius.circular(12),
+                        clipBehavior: Clip.antiAlias,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            maxWidth: 280,
+                            maxHeight: 240,
                           ),
-                        ),
-                      )
-                    : _people.isEmpty
-                        ? const SizedBox.expand()
-                        : ListView.separated(
-                            scrollDirection: Axis.horizontal,
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 8,
+                            ),
                             itemCount: _people.length,
                             separatorBuilder: (_, __) =>
-                                const SizedBox(width: 10),
+                                const SizedBox(height: 6),
                             itemBuilder: (_, i) {
                               final person = _people[i];
                               final selected =
@@ -269,7 +296,7 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
                                 color: selected
                                     ? const Color(0xFF2E7D32)
                                         .withValues(alpha: 0.35)
-                                    : Colors.white.withValues(alpha: 0.12),
+                                    : Colors.white.withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(24),
                                 clipBehavior: Clip.antiAlias,
                                 child: InkWell(
@@ -286,7 +313,9 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
                                     ),
                                     child: Padding(
                                       padding: const EdgeInsets.symmetric(
-                                          horizontal: 10, vertical: 6),
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
                                       child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
@@ -298,11 +327,15 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
                                             radius: 16,
                                           ),
                                           const SizedBox(width: 8),
-                                          Text(
-                                            person.name,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 14,
+                                          Flexible(
+                                            child: Text(
+                                              person.name,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 14,
+                                              ),
                                             ),
                                           ),
                                         ],
@@ -313,9 +346,12 @@ class _PhotoPeopleOnPhotoBarState extends ConsumerState<PhotoPeopleOnPhotoBar> {
                               );
                             },
                           ),
-              ),
-            ],
-          ),
+                        ),
+                      ),
+                    )
+                  : const SizedBox.shrink(key: ValueKey('people-panel-hidden')),
+            ),
+          ],
         ),
       ),
     );

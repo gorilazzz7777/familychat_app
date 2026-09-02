@@ -38,6 +38,7 @@ class MilestoneScrapbookScreen extends ConsumerStatefulWidget {
     this.birthDate,
     this.babyAvatarUrl,
     this.readOnly = false,
+    this.childId,
   }) : publicToken = null;
 
   /// Публичный веб/диплинк-просмотр по токену шаринга.
@@ -48,13 +49,15 @@ class MilestoneScrapbookScreen extends ConsumerStatefulWidget {
         milestones = const [],
         birthDate = null,
         babyAvatarUrl = null,
-        readOnly = true;
+        readOnly = true,
+        childId = null;
 
   final String babyName;
   final List<Map<String, dynamic>> milestones;
   final DateTime? birthDate;
   final String? babyAvatarUrl;
   final bool readOnly;
+  final int? childId;
   final String? publicToken;
 
   @override
@@ -434,6 +437,8 @@ class _MilestoneScrapbookScreenState
           code: code,
           initial: milestone,
           canEdit: true,
+          childId: widget.childId,
+          childName: widget.babyName,
         ),
       ),
     );
@@ -828,6 +833,7 @@ Future<void> openMilestoneScrapbook(
   required List<Map<String, dynamic>> milestones,
   DateTime? birthDate,
   String? babyAvatarUrl,
+  int? childId,
 }) {
   return Navigator.of(context).push<void>(
     MaterialPageRoute<void>(
@@ -837,6 +843,7 @@ Future<void> openMilestoneScrapbook(
         milestones: milestones,
         birthDate: birthDate,
         babyAvatarUrl: babyAvatarUrl,
+        childId: childId,
       ),
     ),
   );

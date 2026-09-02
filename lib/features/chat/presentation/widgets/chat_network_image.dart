@@ -288,6 +288,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       onDownloadTap: _manualDownload,
       borderRadius: widget.borderRadius,
       showManualDownload: !_isFullMediaDisplayed(),
+      showWhenDownloading: _useBytesPath,
       child: child,
     );
   }

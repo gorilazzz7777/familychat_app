@@ -3,12 +3,14 @@ import 'dart:async';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 
+import '../call/callkit_incoming_service.dart';
 import '../notifications/familychat_notifications.dart';
 import '../notifications/familychat_foreground_bridge.dart';
 import '../../features/chat/data/familychat_realtime.dart';
 import '../../features/chat/data/chat_sync_service.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import 'push_navigation.dart';
+import 'web_push_bridge.dart';
 
 /// Показать push в UI, когда приложение на переднем плане (Android не показывает системный баннер).
 final familyChatScaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
@@ -70,6 +72,17 @@ void handleFamilyChatRemoteMessage(
       return;
     }
     if (isForeground) return;
+  }
+
+  if (type == 'familychat_call_stop') {
+    final callId = int.tryParse(data['session_id']?.toString() ?? '');
+    if (callId != null) {
+      unawaited(FamilyChatNotifications.cancelCallNotification(callId));
+      unawaited(CallKitIncomingService.endCall(callId));
+      unawaited(stopServiceWorkerCallRing(callId));
+      IncomingCallCoordinator.instance.markHandled(callId);
+    }
+    return;
   }
 
   if (type == 'familychat_call') {

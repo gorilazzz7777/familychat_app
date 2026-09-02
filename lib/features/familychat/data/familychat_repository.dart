@@ -607,6 +607,60 @@ class FamilyChatRepository {
     return res.data ?? {};
   }
 
+  Future<Map<String, dynamic>> uploadMilestonePhoto(
+    String code, {
+    required Uint8List bytes,
+    required String filename,
+    String? contentType,
+    bool finalize = true,
+    int addedCount = 1,
+    void Function(int sent, int total)? onSendProgress,
+  }) async {
+    final form = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        bytes,
+        filename: filename,
+        contentType:
+            contentType != null ? DioMediaType.parse(contentType) : null,
+      ),
+    });
+    final res = await _dio.post<Map<String, dynamic>>(
+      'littleone-diary/milestones/$code/photos/',
+      data: form,
+      queryParameters: {
+        'finalize': finalize ? '1' : '0',
+        'added_count': addedCount,
+      },
+      onSendProgress: onSendProgress,
+      options: Options(
+        sendTimeout: const Duration(minutes: 10),
+        receiveTimeout: const Duration(minutes: 10),
+      ),
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> linkMilestonePhotos(
+    String code,
+    List<int> attachmentIds,
+  ) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'littleone-diary/milestones/$code/photos/',
+      data: {'attachment_ids': attachmentIds},
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> deleteMilestonePhoto(
+    String code,
+    int photoId,
+  ) async {
+    final res = await _dio.delete<Map<String, dynamic>>(
+      'littleone-diary/milestones/$code/photos/$photoId/',
+    );
+    return res.data ?? {};
+  }
+
   Future<List<Map<String, dynamic>>> childGalleryAlbums(int childId) async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/children/$childId/gallery/albums/',

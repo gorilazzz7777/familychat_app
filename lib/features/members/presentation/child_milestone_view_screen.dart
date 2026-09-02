@@ -21,11 +21,15 @@ class ChildMilestoneViewScreen extends ConsumerStatefulWidget {
     required this.code,
     this.initialTitle,
     this.canEdit = false,
+    this.childId,
+    this.childName,
   });
 
   final String code;
   final String? initialTitle;
   final bool canEdit;
+  final int? childId;
+  final String? childName;
 
   @override
   ConsumerState<ChildMilestoneViewScreen> createState() =>
@@ -210,6 +214,8 @@ class _ChildMilestoneViewScreenState
           code: widget.code,
           initial: _milestone,
           canEdit: true,
+          childId: widget.childId,
+          childName: widget.childName,
         ),
       ),
     );

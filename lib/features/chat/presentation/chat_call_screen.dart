@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/call/call_lock_screen.dart';
 import '../../../core/call/call_proximity_controller.dart';
+import '../../../core/call/callkit_incoming_service.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../data/familychat_realtime.dart';
@@ -808,6 +809,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
       try {
         await ref.read(familychatRepositoryProvider).callAction(cid, 'end');
       } catch (_) {}
+      unawaited(CallKitIncomingService.endCall(cid));
     }
     await _cleanup();
     if (!mounted) return;

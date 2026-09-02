@@ -213,6 +213,8 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
             code: code,
             initialTitle: m['title']?.toString(),
             canEdit: canEdit,
+            childId: widget.childId,
+            childName: _displayName,
           ),
         ),
       );
@@ -223,6 +225,8 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
             code: code,
             initial: m,
             canEdit: canEdit,
+            childId: widget.childId,
+            childName: _displayName,
           ),
         ),
       );
@@ -282,6 +286,7 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
             milestones: _milestones,
             birthDate: scrapbookBirthDateFromBaby(_baby),
             babyAvatarUrl: _avatarUrl.isEmpty ? null : _avatarUrl,
+            childId: widget.childId,
           );
           if (mounted) await _load(silent: true);
         },

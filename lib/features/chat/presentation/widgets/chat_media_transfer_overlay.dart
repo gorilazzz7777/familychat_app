@@ -75,6 +75,18 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
         );
 
         final state = manager.stateFor(tid, attachmentId);
+        if (locallyAvailable) {
+          if (state.phase == ChatAttachmentDownloadPhase.downloading) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!context.mounted) return;
+              ref
+                  .read(chatAttachmentDownloadManagerProvider)
+                  .markLocallyAvailable(tid, attachmentId);
+            });
+          }
+          return child;
+        }
+
         final hideManualPrompt = !showManualDownload || locallyAvailable;
         if (state.phase != ChatAttachmentDownloadPhase.downloading &&
             (hideManualPrompt ||
@@ -134,7 +146,9 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
     required double progress,
     VoidCallback? onCancel,
   }) {
-    final percent = (progress * 100).clamp(0, 100).round();
+    const ringSize = 56.0;
+    const strokeWidth = 3.0;
+    final innerSize = ringSize - strokeWidth * 2;
     return Stack(
       fit: StackFit.passthrough,
       children: [
@@ -146,34 +160,34 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
               color: Colors.black.withValues(alpha: 0.35),
               child: Center(
                 child: SizedBox(
-                  width: 72,
-                  height: 72,
+                  width: ringSize,
+                  height: ringSize,
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
                       SizedBox(
-                        width: 56,
-                        height: 56,
+                        width: ringSize,
+                        height: ringSize,
                         child: CircularProgressIndicator(
                           value: progress > 0 ? progress : null,
-                          strokeWidth: 3,
+                          strokeWidth: strokeWidth,
                           color: Colors.white,
                           backgroundColor: Colors.white24,
                         ),
                       ),
-                      Text(
-                        '$percent%',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                        ),
-                      ),
                       if (onCancel != null)
-                        Positioned(
-                          top: 0,
-                          right: 0,
-                          child: _CancelButton(onTap: onCancel),
+                        _CancelButton(
+                          onTap: onCancel,
+                          size: innerSize,
+                        )
+                      else
+                        Text(
+                          '${(progress * 100).clamp(0, 100).round()}%',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
                         ),
                     ],
                   ),
@@ -188,9 +202,13 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
 }
 
 class _CancelButton extends StatelessWidget {
-  const _CancelButton({required this.onTap});
+  const _CancelButton({
+    required this.onTap,
+    this.size = 44,
+  });
 
   final VoidCallback onTap;
+  final double size;
 
   @override
   Widget build(BuildContext context) {
@@ -200,9 +218,14 @@ class _CancelButton extends StatelessWidget {
       child: InkWell(
         customBorder: const CircleBorder(),
         onTap: onTap,
-        child: const Padding(
-          padding: EdgeInsets.all(4),
-          child: Icon(Icons.close_rounded, color: Colors.white, size: 16),
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: Icon(
+            Icons.close_rounded,
+            color: Colors.white,
+            size: size * 0.48,
+          ),
         ),
       ),
     );

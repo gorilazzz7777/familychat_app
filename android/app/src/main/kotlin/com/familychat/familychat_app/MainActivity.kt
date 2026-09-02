@@ -39,6 +39,7 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         createNotificationChannels()
         captureShareUris(intent)
+        captureDirectShareTarget(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -46,6 +47,7 @@ class MainActivity : FlutterActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         captureShareUris(intent)
+        captureDirectShareTarget(intent)
         if (wasNotificationLaunch) {
             clearNotificationLaunchIntent()
         }
@@ -139,6 +141,48 @@ class MainActivity : FlutterActivity() {
         }
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
+            "com.familychat/share_targets",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "syncShareShortcuts" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val raw = call.argument<List<Map<String, Any>>>("chats") ?: emptyList()
+                    val chats = raw.mapNotNull { map ->
+                        val threadId = (map["thread_id"] as? Number)?.toInt()
+                            ?: (map["thread_id"]?.toString()?.toIntOrNull())
+                        val title = map["title"]?.toString() ?: "Чат"
+                        if (threadId == null || threadId <= 0) null
+                        else ShareShortcutPublisher.ChatShortcut(threadId, title)
+                    }
+                    ShareShortcutPublisher.sync(this, chats)
+                    result.success(null)
+                }
+
+                "takePendingDirectShare" -> {
+                    val prefs = getSharedPreferences("familychat_share_targets", MODE_PRIVATE)
+                    val threadId = prefs.getInt("pending_thread_id", 0)
+                    val title = prefs.getString("pending_thread_title", null)
+                    prefs.edit()
+                        .remove("pending_thread_id")
+                        .remove("pending_thread_title")
+                        .apply()
+                    if (threadId > 0) {
+                        result.success(
+                            mapOf(
+                                "thread_id" to threadId,
+                                "thread_title" to title,
+                            ),
+                        )
+                    } else {
+                        result.success(null)
+                    }
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
             "com.familychat/share_intent",
         ).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -187,6 +231,37 @@ class MainActivity : FlutterActivity() {
             },
         )
         Log.i(PUSH_REPLY_TAG, "cleared notification launch intent")
+    }
+
+    private fun captureDirectShareTarget(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action ?: return
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+
+        var threadId = intent.getIntExtra(ShareShortcutPublisher.EXTRA_THREAD_ID, 0)
+            .takeIf { it > 0 }
+            ?: intent.getStringExtra(ShareShortcutPublisher.EXTRA_THREAD_ID)?.toIntOrNull()
+            ?: 0
+        if (threadId <= 0) {
+            val shortcutId = intent.getStringExtra("android.intent.extra.shortcut.ID")
+                ?: intent.getStringExtra(android.content.pm.ShortcutManager.EXTRA_SHORTCUT_ID)
+            if (shortcutId != null && shortcutId.startsWith("share_chat_")) {
+                threadId = shortcutId.removePrefix("share_chat_").toIntOrNull() ?: 0
+            }
+        }
+        if (threadId <= 0) return
+        val title = intent.getStringExtra(ShareShortcutPublisher.EXTRA_THREAD_TITLE)
+
+        getSharedPreferences("familychat_share_targets", MODE_PRIVATE)
+            .edit()
+            .putInt("pending_thread_id", threadId)
+            .apply {
+                if (!title.isNullOrBlank()) {
+                    putString("pending_thread_title", title)
+                }
+            }
+            .apply()
+        Log.i(TAG, "direct share target thread_id=$threadId title=$title")
     }
 
     private fun captureShareUris(intent: Intent?) {
@@ -282,9 +357,9 @@ class MainActivity : FlutterActivity() {
 
         val ringtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
         val calls = NotificationChannel(
-            "familychat_calls",
+            "familychat_calls_v2",
             "Звонки",
-            NotificationManager.IMPORTANCE_HIGH,
+            NotificationManager.IMPORTANCE_MAX,
         ).apply {
             description = "Входящие звонки"
             enableVibration(true)

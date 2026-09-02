@@ -11,15 +11,18 @@ import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dar
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../../../core/share/share_to_diary_prefs.dart';
 import '../../../core/widgets/share_to_diary_checkbox.dart';
+import '../data/feed_post_target.dart';
 import '../data/feed_post_uploader.dart';
 
 class FeedPostComposeScreen extends ConsumerStatefulWidget {
   const FeedPostComposeScreen({
     super.key,
     this.initialPhotos = const [],
+    this.target = const FeedPostTargetSelf(),
   });
 
   final List<FeedPostPhoto> initialPhotos;
+  final FeedPostTarget target;
 
   @override
   ConsumerState<FeedPostComposeScreen> createState() =>
@@ -73,6 +76,11 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
     super.dispose();
   }
 
+  FeedPostTargetChild? get _childTarget {
+    final t = widget.target;
+    return t is FeedPostTargetChild ? t : null;
+  }
+
   Future<void> _pickMedia() async {
     if (_publishing) return;
     var userId = _userId;
@@ -86,6 +94,8 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       context,
       style: ChatAttachSheetStyle.albumMedia,
       familyGalleryUserId: userId,
+      familyGalleryChildId: _childTarget?.childId,
+      familyGalleryChildName: _childTarget?.displayName,
       onSendMedia: (caption, items) async {
         await _appendAttachItems(items);
       },
@@ -224,23 +234,33 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
     });
 
     Map<String, dynamic> actor = {'name': 'Вы'};
-    try {
-      final status = await ref.read(familychatRepositoryProvider).status();
-      final profile = status['profile'];
-      if (profile is Map) {
-        actor = {
-          'user_id': status['user_id'],
-          'name': profile['display_name']?.toString() ?? 'Вы',
-          'avatar_url': profile['avatar_url']?.toString(),
-          'gender': profile['gender']?.toString(),
-        };
-      } else {
-        actor = {
-          'user_id': status['user_id'],
-          'name': 'Вы',
-        };
-      }
-    } catch (_) {}
+    final child = _childTarget;
+    if (child != null) {
+      actor = {
+        'name': child.displayName,
+        if (child.avatarUrl != null && child.avatarUrl!.isNotEmpty)
+          'avatar_url': child.avatarUrl,
+        'gender': child.gender,
+      };
+    } else {
+      try {
+        final status = await ref.read(familychatRepositoryProvider).status();
+        final profile = status['profile'];
+        if (profile is Map) {
+          actor = {
+            'user_id': status['user_id'],
+            'name': profile['display_name']?.toString() ?? 'Вы',
+            'avatar_url': profile['avatar_url']?.toString(),
+            'gender': profile['gender']?.toString(),
+          };
+        } else {
+          actor = {
+            'user_id': status['user_id'],
+            'name': 'Вы',
+          };
+        }
+      } catch (_) {}
+    }
 
     // Дожимаем превью/сжатие до pop — иначе лента может декодировать
     // полноразмерные байты и убить процесс (bootstrap с лого).
@@ -256,13 +276,18 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       photos: snapshot,
       caption: caption,
       actor: actor,
+      childId: child?.childId,
+      childName: child?.displayName,
+      childAvatarUrl: child?.avatarUrl,
+      childGender: child?.gender,
     );
 
     FeedPostUploader.publishInBackground(
       repo: ref.read(familychatRepositoryProvider),
       photos: snapshot,
       caption: caption,
-      shareToDiary: ref.read(shareToDiaryPrefsProvider),
+      shareToDiary: child == null ? ref.read(shareToDiaryPrefsProvider) : false,
+      childId: child?.childId,
     );
 
     if (!mounted) return;
@@ -273,9 +298,12 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
   Widget build(BuildContext context) {
     final captionLength = _captionController.text.length;
 
+    final child = _childTarget;
+    final title = child == null ? 'В ленту' : 'В ленту · ${child.displayName}';
+
     return Scaffold(
       appBar: FamilyAppBar.build(
-        title: 'В ленту',
+        title: title,
         actions: [
           TextButton(
             onPressed: _photos.isEmpty || _publishing ? null : _publish,
@@ -394,8 +422,17 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                const ShareToDiaryCheckbox(dense: true),
-                const SizedBox(height: 8),
+                if (_childTarget == null) ...[
+                  const ShareToDiaryCheckbox(dense: true),
+                  const SizedBox(height: 8),
+                ] else
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      'Фото попадут в галерею ${_childTarget!.displayName} и в Dairy',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
                 TextField(
                   controller: _captionController,
                   minLines: 2,

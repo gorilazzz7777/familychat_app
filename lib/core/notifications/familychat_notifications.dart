@@ -9,11 +9,14 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../call/callkit_incoming_service.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../push/push_navigation.dart';
 import 'chat_push_notification_style.dart';
 import 'chat_push_thread_preview.dart';
+import 'notification_call_actions.dart';
 import 'notification_inline_reply.dart';
+import 'notification_mark_read.dart';
 import 'push_reply_trace.dart';
 
 /// Локальные уведомления со звуком (Android/iOS) и каналы Android.
@@ -27,10 +30,12 @@ class FamilyChatNotifications {
 
   static const _pushDedupeWindowMs = 30000;
   static const _handledInlineReplyPrefix = 'inline_reply_handled_';
+  static const _handledMarkReadPrefix = 'inline_mark_read_handled_';
   static final Set<String> _inlineReplyInFlight = {};
+  static final Set<String> _markReadInFlight = {};
 
   static const messagesChannelId = 'familychat_messages';
-  static const callsChannelId = 'familychat_calls';
+  static const callsChannelId = 'familychat_calls_v2';
 
   static String chatNotificationTag(int threadId) => 'familychat_chat_$threadId';
 
@@ -78,6 +83,16 @@ class FamilyChatNotifications {
             outgoingText: response.input ?? '',
           );
         }
+      } else if (response.actionId == NotificationMarkRead.actionId) {
+        final data = _parseNotificationPayload(response.payload);
+        final threadId = _threadIdFromNotificationResponse(data, response);
+        if (threadId != null) {
+          await NotificationMarkRead.markFromPayload(
+            data: _ensureChatPayload(data, threadId),
+            source: 'background_fallback',
+          );
+          await clearChatNotifications(threadId: threadId);
+        }
       }
     }
   }
@@ -101,10 +116,30 @@ class FamilyChatNotifications {
               buttonTitle: 'Отправить',
               placeholder: 'Сообщение',
             ),
+            DarwinNotificationAction.plain(
+              NotificationMarkRead.actionId,
+              'Прочитано',
+              options: {DarwinNotificationActionOption.foreground},
+            ),
           ],
           options: {
             DarwinNotificationCategoryOption.hiddenPreviewShowTitle,
           },
+        ),
+        DarwinNotificationCategory(
+          NotificationCallActions.iosCategoryId,
+          actions: [
+            DarwinNotificationAction.plain(
+              NotificationCallActions.acceptActionId,
+              'Принять',
+              options: {DarwinNotificationActionOption.foreground},
+            ),
+            DarwinNotificationAction.plain(
+              NotificationCallActions.declineActionId,
+              'Отклонить',
+              options: {DarwinNotificationActionOption.destructive},
+            ),
+          ],
         ),
       ],
     );
@@ -132,16 +167,7 @@ class FamilyChatNotifications {
           enableVibration: true,
         ),
       );
-      await android?.createNotificationChannel(
-        const AndroidNotificationChannel(
-          callsChannelId,
-          'Звонки',
-          description: 'Входящие звонки',
-          importance: Importance.max,
-          playSound: true,
-          enableVibration: true,
-        ),
-      );
+      // Канал звонков создаётся в MainActivity с рингтоном (IMPORTANCE_MAX).
     }
 
     _initialized = true;
@@ -155,6 +181,45 @@ class FamilyChatNotifications {
   static Future<void> handleNotificationResponse(
     NotificationResponse response,
   ) async {
+    if (response.actionId == NotificationCallActions.declineActionId) {
+      final data = _parseNotificationPayload(response.payload);
+      await NotificationCallActions.declineFromPayload(data: data, source: 'ui');
+      await clearAndroidLaunchNotificationIntent();
+      return;
+    }
+    if (response.actionId == NotificationCallActions.acceptActionId) {
+      _handleNotificationPayload(response.payload);
+      await clearAndroidLaunchNotificationIntent();
+      return;
+    }
+    if (response.actionId == NotificationMarkRead.actionId) {
+      final fingerprint = _markReadFingerprint(response);
+      if (!await _tryClaimMarkRead(fingerprint)) {
+        PushReplyTrace.log(
+          'mark_read_dedupe_handled',
+          source: 'foreground',
+          extra: {'fingerprint': fingerprint},
+        );
+        await clearAndroidLaunchNotificationIntent();
+        return;
+      }
+      PushReplyTrace.log(
+        'mark_read_action_received',
+        source: 'foreground',
+        extra: {
+          'actionId': response.actionId ?? '',
+          'payloadLen': response.payload?.length ?? 0,
+          'notificationId': response.id ?? -1,
+        },
+      );
+      try {
+        await _handleMarkReadAction(response);
+      } finally {
+        _markReadInFlight.remove(fingerprint);
+        await clearAndroidLaunchNotificationIntent();
+      }
+      return;
+    }
     if (response.actionId == NotificationInlineReply.actionId) {
       final fingerprint = _inlineReplyFingerprint(response);
       if (!await _tryClaimInlineReply(fingerprint)) {
@@ -185,6 +250,52 @@ class FamilyChatNotifications {
       return;
     }
     _handleNotificationPayload(response.payload);
+  }
+
+  static String _markReadFingerprint(NotificationResponse response) {
+    final data = _parseNotificationPayload(response.payload);
+    final threadId = _threadIdFromNotificationResponse(data, response);
+    return 'mark_read_${threadId ?? response.id ?? 0}';
+  }
+
+  static Future<bool> _tryClaimMarkRead(String fingerprint) async {
+    if (fingerprint.isEmpty) return false;
+    if (_markReadInFlight.contains(fingerprint)) return false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = '$_handledMarkReadPrefix$fingerprint';
+      final handledAt = prefs.getInt(key);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (handledAt != null && now - handledAt < 5000) {
+        return false;
+      }
+      await prefs.setInt(key, now);
+    } catch (_) {
+      if (_markReadInFlight.contains(fingerprint)) return false;
+    }
+    _markReadInFlight.add(fingerprint);
+    return true;
+  }
+
+  static Future<void> _handleMarkReadAction(NotificationResponse response) async {
+    var data = _parseNotificationPayload(response.payload);
+    final threadId = _threadIdFromNotificationResponse(data, response);
+    if (threadId == null) {
+      PushReplyTrace.log(
+        'mark_read_skip_no_thread',
+        source: 'ui',
+        detail: 'payload=${response.payload}',
+      );
+      return;
+    }
+    data = _ensureChatPayload(data, threadId);
+
+    await NotificationMarkRead.markFromPayload(
+      data: data,
+      source: 'ui',
+    );
+    await clearChatNotifications(threadId: threadId);
+    PushReplyTrace.log('mark_read_done', threadId: threadId, source: 'ui');
   }
 
   static String _inlineReplyFingerprint(NotificationResponse response) {
@@ -332,7 +443,7 @@ class FamilyChatNotifications {
   ) =>
       ChatPushNotificationStyle.androidMessagingStyle(preview);
 
-  static List<AndroidNotificationAction> _chatReplyActions() {
+  static List<AndroidNotificationAction> _chatMessageActions() {
     return [
       AndroidNotificationAction(
         NotificationInlineReply.actionId,
@@ -347,6 +458,14 @@ class FamilyChatNotifications {
         // true → PendingIntent в MainActivity (основной Flutter engine).
         // false → ActionBroadcastReceiver; ломается с «Engine is already initialised»
         // после FCM background handler в том же процессе.
+        showsUserInterface: true,
+        cancelNotification: true,
+      ),
+      AndroidNotificationAction(
+        NotificationMarkRead.actionId,
+        'Прочитано',
+        // true → MainActivity + основной engine (как у «Ответить»).
+        // false → ActionBroadcastReceiver ломается после FCM background handler.
         showsUserInterface: true,
         cancelNotification: true,
       ),
@@ -500,17 +619,20 @@ class FamilyChatNotifications {
       return;
     }
 
-    if (type != 'familychat_call') return;
+    if (type == 'familychat_call_stop') {
+      final callId = int.tryParse(data['session_id']?.toString() ?? '');
+      if (callId != null) {
+        await cancelCallNotification(callId);
+        await CallKitIncomingService.endCall(callId);
+      }
+      return;
+    }
 
-    final title = data['title']?.toString().trim() ??
-        message.notification?.title?.trim();
-    final body = data['body']?.toString().trim() ??
-        message.notification?.body?.trim();
-    await showIncomingCallWakeUp(
-      title: title != null && title.isNotEmpty ? title : 'Входящий звонок',
-      body: body != null && body.isNotEmpty ? body : 'Family Space',
-      data: data,
-    );
+    if (type == 'familychat_call') {
+      await CallKitIncomingService.initialize();
+      await CallKitIncomingService.showIncomingFromPushData(data);
+      return;
+    }
   }
 
   static int _notificationId(Map<String, dynamic> data) {
@@ -540,6 +662,23 @@ class FamilyChatNotifications {
     return null;
   }
 
+  static List<AndroidNotificationAction> _callActions() {
+    return [
+      AndroidNotificationAction(
+        NotificationCallActions.acceptActionId,
+        'Принять',
+        showsUserInterface: true,
+        cancelNotification: true,
+      ),
+      AndroidNotificationAction(
+        NotificationCallActions.declineActionId,
+        'Отклонить',
+        showsUserInterface: false,
+        cancelNotification: true,
+      ),
+    ];
+  }
+
   static Future<void> showIncomingCallWakeUp({
     required String title,
     required String body,
@@ -560,12 +699,14 @@ class FamilyChatNotifications {
       playSound: true,
       enableVibration: true,
       visibility: NotificationVisibility.public,
+      actions: _callActions(),
     );
-    const iosDetails = DarwinNotificationDetails(
+    final iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
       interruptionLevel: InterruptionLevel.timeSensitive,
+      categoryIdentifier: NotificationCallActions.iosCategoryId,
     );
 
     await _plugin.show(
@@ -683,7 +824,7 @@ class FamilyChatNotifications {
       colorized: isChat,
       category: isChat ? AndroidNotificationCategory.message : null,
       styleInformation: messagingStyle,
-      actions: canReply ? _chatReplyActions() : null,
+      actions: canReply ? _chatMessageActions() : null,
       // Один баннер на чат: повторный show с тем же id/tag заменяет старый.
       onlyAlertOnce: false,
     );
@@ -725,7 +866,7 @@ class FamilyChatNotifications {
       enableVibration: true,
       tag: tag,
       category: isChat ? AndroidNotificationCategory.message : null,
-      actions: isChat && threadId != null ? _chatReplyActions() : null,
+      actions: isChat && threadId != null ? _chatMessageActions() : null,
     );
     const iosDetails = DarwinNotificationDetails(
       presentAlert: true,

@@ -82,6 +82,17 @@ class ChatPushThreadPreview {
     }
   }
 
+  /// Максимальный id сообщения из сохранённого превью пуша (fallback для «Прочитано»).
+  static Future<int?> newestStoredMessageId(int threadId) async {
+    final lines = await _loadStored(threadId);
+    var maxId = 0;
+    for (final line in lines) {
+      final id = line.messageId ?? 0;
+      if (id > maxId) maxId = id;
+    }
+    return maxId > 0 ? maxId : null;
+  }
+
   static Future<void> recordOutgoing(int threadId, String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;

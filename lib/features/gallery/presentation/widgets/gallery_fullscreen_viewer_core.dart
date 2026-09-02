@@ -14,8 +14,8 @@ class GalleryFullscreenViewerCore extends StatelessWidget {
     required this.title,
     this.zoomPageKey,
     this.actions = const [],
+    this.thumbnailStrip,
     this.bottomSlots = const [],
-    this.pageFlex = 1,
     this.backgroundColor = Colors.black,
   });
 
@@ -26,12 +26,18 @@ class GalleryFullscreenViewerCore extends StatelessWidget {
   final GlobalKey<ZoomAwarePageViewState>? zoomPageKey;
   final String title;
   final List<Widget> actions;
+  final Widget? thumbnailStrip;
   final List<Widget> bottomSlots;
-  final int pageFlex;
   final Color backgroundColor;
 
   @override
   Widget build(BuildContext context) {
+    final safeBottom = MediaQuery.paddingOf(context).bottom;
+    const collapsedBottomBarHeight = 44.0;
+    final bottomBarHeight =
+        bottomSlots.isEmpty ? 0.0 : collapsedBottomBarHeight + safeBottom;
+    final stripBottom = bottomBarHeight;
+
     return Scaffold(
       backgroundColor: backgroundColor,
       appBar: FamilyAppBar.build(
@@ -41,10 +47,10 @@ class GalleryFullscreenViewerCore extends StatelessWidget {
         iconTheme: const IconThemeData(color: Colors.white),
         actions: actions,
       ),
-      body: Column(
+      body: Stack(
+        fit: StackFit.expand,
         children: [
-          Expanded(
-            flex: pageFlex,
+          Positioned.fill(
             child: zoomPageKey != null
                 ? ZoomAwarePageView(
                     key: zoomPageKey,
@@ -60,7 +66,27 @@ class GalleryFullscreenViewerCore extends StatelessWidget {
                     itemBuilder: pageBuilder,
                   ),
           ),
-          ...bottomSlots,
+          if (thumbnailStrip != null)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: stripBottom,
+              child: thumbnailStrip!,
+            ),
+          if (bottomSlots.isNotEmpty)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: bottomSlots,
+                ),
+              ),
+            ),
         ],
       ),
     );

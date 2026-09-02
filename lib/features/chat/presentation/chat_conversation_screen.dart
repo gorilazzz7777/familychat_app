@@ -276,7 +276,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   String? _peerStatusLabel;
+  Map<String, dynamic>? _peerHttpProfile;
   Timer? _peerStatusTimer;
+  Timer? _peerStatusLabelTimer;
   Timer? _stickyDayThrottle;
 
   @override
@@ -316,7 +318,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _peerStatusTimer = Timer.periodic(const Duration(minutes: 3), (_) {
         unawaited(_loadPeerStatus(widget.peerUserId!));
       });
-      _onPeerPresenceCacheChanged();
+      _peerStatusLabelTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+        _refreshPeerStatusLabel();
+      });
+      _refreshPeerStatusLabel();
     }
     ChatScheduledSendService.instance.addListener(_onScheduledSend);
     unawaited(ChatWsTextSend.ensureConnection());
@@ -449,10 +454,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _loadPeerStatus(int userId) async {
     try {
-      final cached = UserPresenceCache.instance.snapshot(userId);
-      if (cached != null && mounted) {
-        _applyPeerPresenceMap(userId, cached);
-      }
+      _refreshPeerStatusLabel();
       final repo = ref.read(familychatRepositoryProvider);
       final profile = await repo.memberProfile(userId);
       // Prefer freshly known flag; fall back to status if init race.
@@ -466,33 +468,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           if (precise) _viewerIndividualPremium = true;
         } catch (_) {}
       }
-      if (!mounted) return;
+      if (!mounted || widget.peerUserId != userId) return;
       setState(() {
-        _peerStatusLabel = userPresenceFromProfile(
-          profile,
-          preciseLastSeen: precise,
-        ).label;
+        _peerHttpProfile = Map<String, dynamic>.from(profile);
         final url = profile['avatar_url']?.toString().trim();
         _headerAvatarUrl = url != null && url.isNotEmpty ? url : _headerAvatarUrl;
       });
+      _refreshPeerStatusLabel();
     } catch (_) {}
   }
 
   void _onPeerPresenceCacheChanged() {
-    final peerId = widget.peerUserId;
-    if (peerId == null) return;
-    final cached = UserPresenceCache.instance.snapshot(peerId);
-    if (cached == null) return;
-    _applyPeerPresenceMap(peerId, cached);
+    _refreshPeerStatusLabel();
   }
 
-  void _applyPeerPresenceMap(int userId, Map<String, dynamic> event) {
-    if (!mounted || widget.peerUserId != userId) return;
+  void _refreshPeerStatusLabel() {
+    final peerId = widget.peerUserId;
+    if (peerId == null || !mounted) return;
+    final merged = Map<String, dynamic>.from(_peerHttpProfile ?? const {});
+    final cached = UserPresenceCache.instance.snapshot(peerId);
+    if (cached != null) {
+      merged.addAll(profileFromPresenceEvent(cached));
+    }
+    if (merged.isEmpty) return;
+    final label = userPresenceFromProfile(
+      merged,
+      preciseLastSeen: _viewerIndividualPremium,
+    ).label;
+    if (_peerStatusLabel == label) return;
     setState(() {
-      _peerStatusLabel = userPresenceFromProfile(
-        profileFromPresenceEvent(event),
-        preciseLastSeen: _viewerIndividualPremium,
-      ).label;
+      _peerStatusLabel = label;
     });
   }
 
@@ -549,8 +554,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         }
         unawaited(MediaIncomingSync.ensureMessages(hydrated));
         if (!mounted) return;
+        final hidden = await _hiddenMessageIdsForThread();
+        if (!mounted) return;
         setState(() {
-          _messages = _clipUiMessages(sortChatMessages(hydrated));
+          _messages = _clipUiMessages(
+            sortChatMessages(_filterHiddenMessageIds(hydrated, hidden)),
+          );
           _loading = false;
         });
         showedCache = true;
@@ -1485,6 +1494,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _stopTypingLocal();
     _clearRemoteTyping();
     _peerStatusTimer?.cancel();
+    _peerStatusLabelTimer?.cancel();
     UserPresenceCache.instance.removeListener(_onPeerPresenceCacheChanged);
     WidgetsBinding.instance.removeObserver(this);
     _controller.removeListener(_onComposeTextChanged);
@@ -1855,7 +1865,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final userId = chatAsInt(event['user_id']);
       if (userId == null || userId != widget.peerUserId) return;
       UserPresenceCache.instance.applyEvent(event);
-      _applyPeerPresenceMap(userId, event);
+      _refreshPeerStatusLabel();
       return;
     }
 
@@ -2058,12 +2068,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           );
       if (!mounted || generation != _loadGeneration) return;
 
-      final pageMessages = await _filterMessagesForDisplay(page.messages);
+      final hidden = await _hiddenMessageIdsForThread();
+      final pageMessages = _filterHiddenMessageIds(page.messages, hidden);
+      final visibleUiMessages = _filterHiddenMessageIds(_messages, hidden);
 
       final List<Map<String, dynamic>> nextMessages;
       final apiOldest =
           pageMessages.isEmpty ? null : chatAsInt(pageMessages.first['id']);
-      final cacheNewest = chatNewestServerMessageId(_messages);
+      final cacheNewest = chatNewestServerMessageId(visibleUiMessages);
       // Старое окно кэша не пересекается с API — replace, не merge
       // (иначе на экране сначала «сообщения на 20 выше», потом скачок).
       final cacheBehindApi = silent &&
@@ -2072,12 +2084,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           cacheNewest < apiOldest;
       if (cacheBehindApi || !silent) {
         nextMessages = sortChatMessages(pageMessages);
-      } else if (_messages.length >
+      } else if (visibleUiMessages.length >
           FamilyChatLocalCache.maxCachedMessagesPerThread) {
-        nextMessages = _mergeLatestMessages(_messages, pageMessages);
+        nextMessages = _mergeLatestMessages(visibleUiMessages, pageMessages);
       } else {
         nextMessages = chatMergeMessageLists(
-          _messages,
+          visibleUiMessages,
           pageMessages,
           currentUserId: _currentUserId,
         );

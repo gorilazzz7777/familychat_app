@@ -1,10 +1,12 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:gorila_chat/gorila_chat.dart' show parseCallIsVideo;
 
 import '../../../core/call/call_lock_screen.dart';
+import '../../../core/call/callkit_incoming_service.dart';
 import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/notifications/familychat_notifications.dart';
 import '../../../core/push/push_message_handler.dart';
@@ -27,6 +29,10 @@ class IncomingCallCoordinator {
   static bool parseIsVideo(Object? raw) => parseCallIsVideo(raw);
 
   void presentFromPushData(Map<String, dynamic> data) {
+    if (data['type']?.toString() == 'familychat_call_accepted') {
+      openAcceptedCallFromPushData(data);
+      return;
+    }
     if (data['type']?.toString() != 'familychat_call') return;
     final callId = int.tryParse(data['session_id']?.toString() ?? '');
     final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
@@ -57,6 +63,19 @@ class IncomingCallCoordinator {
     familyChatScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
     unawaited(FamilyChatNotifications.cancelCallNotification(callId));
     unawaited(stopServiceWorkerCallRing(callId));
+
+    if (CallKitIncomingService.isSupported) {
+      _presenting = true;
+      unawaited(CallKitIncomingService.showIncomingCall(
+        callId: callId,
+        threadId: threadId,
+        callerUserId: callerUserId,
+        callerName: callerName,
+        isVideo: isVideo,
+      ));
+      return;
+    }
+
     unawaited(_presentWhenReady(
       callId: callId,
       threadId: threadId,
@@ -135,6 +154,16 @@ class IncomingCallCoordinator {
     presentFromPushData(pending);
   }
 
+  void noteCallAccepted(int callId) {
+    if (_activeCallId == callId) {
+      _activeCallId = null;
+      _presenting = false;
+    }
+    familyChatScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
+    unawaited(FamilyChatNotifications.cancelCallNotification(callId));
+    unawaited(stopServiceWorkerCallRing(callId));
+  }
+
   void markHandled(int callId) {
     if (_activeCallId == callId) {
       _activeCallId = null;
@@ -143,5 +172,6 @@ class IncomingCallCoordinator {
     familyChatScaffoldMessengerKey.currentState?.hideCurrentSnackBar();
     unawaited(FamilyChatNotifications.cancelCallNotification(callId));
     unawaited(stopServiceWorkerCallRing(callId));
+    unawaited(CallKitIncomingService.endCall(callId));
   }
 }

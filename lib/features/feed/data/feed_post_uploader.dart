@@ -58,6 +58,7 @@ abstract final class FeedPostUploader {
     required List<FeedPostPhoto> photos,
     String caption = '',
     bool shareToDiary = false,
+    int? childId,
     void Function(int index, int total, int sent, int totalBytes)?
         onUploadProgress,
   }) async {
@@ -72,18 +73,35 @@ abstract final class FeedPostUploader {
     for (var i = 0; i < photos.length; i++) {
       final prepared = await _prepare(photos[i]);
       if (prepared == null) continue;
-      final uploaded = await repo.familyGalleryUpload(
-        bytes: prepared.bytes,
-        filename: prepared.filename,
-        contentType: prepared.contentType,
-        destination: 'family_feed',
-        batchId: batchId,
-        shareToDiary: shareToDiary,
-        photoExif: prepared.photoExif,
-        onSendProgress: onUploadProgress == null
-            ? null
-            : (sent, total) => onUploadProgress(i, photos.length, sent, total),
-      );
+      final Map<String, dynamic> uploaded;
+      if (childId != null) {
+        uploaded = await repo.childGalleryUpload(
+          childId: childId,
+          bytes: prepared.bytes,
+          filename: prepared.filename,
+          contentType: prepared.contentType,
+          batchId: batchId,
+          photoExif: prepared.photoExif,
+          onSendProgress: onUploadProgress == null
+              ? null
+              : (sent, total) =>
+                  onUploadProgress(i, photos.length, sent, total),
+        );
+      } else {
+        uploaded = await repo.familyGalleryUpload(
+          bytes: prepared.bytes,
+          filename: prepared.filename,
+          contentType: prepared.contentType,
+          destination: 'family_feed',
+          batchId: batchId,
+          shareToDiary: shareToDiary,
+          photoExif: prepared.photoExif,
+          onSendProgress: onUploadProgress == null
+              ? null
+              : (sent, total) =>
+                  onUploadProgress(i, photos.length, sent, total),
+        );
+      }
       final uploadedId = uploaded['id'] is int
           ? uploaded['id'] as int
           : int.tryParse('${uploaded['id']}');
@@ -102,7 +120,7 @@ abstract final class FeedPostUploader {
     await repo.completeFeedPhotoBatch(
       batchId,
       caption: trimmedCaption.isEmpty ? null : trimmedCaption,
-      shareToDiary: shareToDiary,
+      shareToDiary: childId == null ? shareToDiary : false,
     );
     await ShellRefresh.instance.refreshMainTabs();
   }
@@ -113,6 +131,7 @@ abstract final class FeedPostUploader {
     required List<FeedPostPhoto> photos,
     String caption = '',
     bool shareToDiary = false,
+    int? childId,
   }) {
     unawaited(() async {
       try {
@@ -121,6 +140,7 @@ abstract final class FeedPostUploader {
           photos: photos,
           caption: caption,
           shareToDiary: shareToDiary,
+          childId: childId,
         );
       } catch (_) {
         // Ошибки не блокируют UI; лента обновится при следующем refresh.
@@ -272,6 +292,10 @@ abstract final class FeedPostUploader {
     required List<FeedPostPhoto> photos,
     required String caption,
     required Map<String, dynamic> actor,
+    int? childId,
+    String? childName,
+    String? childAvatarUrl,
+    String? childGender,
   }) {
     final now = DateTime.now().toUtc().toIso8601String();
     final tempId = -DateTime.now().microsecondsSinceEpoch;
@@ -285,6 +309,12 @@ abstract final class FeedPostUploader {
       'payload': {
         'caption': caption.trim(),
         'photo_count': photos.length,
+        if (childId != null) 'child_id': childId,
+        if (childName != null && childName.isNotEmpty) 'child_name': childName,
+        if (childAvatarUrl != null && childAvatarUrl.isNotEmpty)
+          'child_avatar_url': childAvatarUrl,
+        if (childGender != null && childGender.isNotEmpty)
+          'child_gender': childGender,
         'attachments': [
           for (var i = 0; i < photos.length; i++)
             {

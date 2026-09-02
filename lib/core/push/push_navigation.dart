@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../notifications/familychat_notifications.dart';
+import '../../features/chat/presentation/chat_call_screen.dart';
 import '../../features/chat/data/active_chat_context.dart';
 import '../../features/chat/data/chat_local_reads.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
@@ -222,4 +223,51 @@ void openFeedFromPushData(Map<String, dynamic> data) {
 
 void openCallFromPushData(Map<String, dynamic> data) {
   IncomingCallCoordinator.instance.presentFromPushData(data);
+}
+
+void openAcceptedCallFromPushData(Map<String, dynamic> data) {
+  final callId = int.tryParse(data['session_id']?.toString() ?? '');
+  final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
+  if (callId == null || threadId == null) return;
+  IncomingCallCoordinator.instance.noteCallAccepted(callId);
+  final callerName = data['caller_name']?.toString().trim();
+  final isVideo = data['is_video']?.toString() == '1';
+
+  final nav = familyChatNavigatorKey.currentState;
+  if (nav == null) {
+    pendingCallPushData = {
+      'type': 'familychat_call_accepted',
+      'session_id': '$callId',
+      'thread_id': '$threadId',
+      'caller_name': callerName ?? 'Family Space',
+      'is_video': isVideo ? '1' : '0',
+    };
+    if (!_chatPushRetryScheduled) {
+      _chatPushRetryScheduled = true;
+      Future<void>.delayed(const Duration(milliseconds: 400), () {
+        _chatPushRetryScheduled = false;
+        flushPendingChatPush();
+      });
+    }
+    return;
+  }
+
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!nav.mounted) return;
+    nav.push<void>(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        settings: RouteSettings(name: 'call_$callId'),
+        builder: (_) => ChatCallScreen(
+          threadId: threadId,
+          title: callerName != null && callerName.isNotEmpty
+              ? callerName
+              : 'Family Space',
+          callId: callId,
+          isCaller: false,
+          isVideo: isVideo,
+        ),
+      ),
+    );
+  });
 }

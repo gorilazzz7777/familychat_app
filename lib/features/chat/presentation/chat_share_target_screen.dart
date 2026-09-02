@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
 import '../../../core/media/local_device_file.dart';
+import '../../../core/share/share_direct_target_service.dart';
+import '../../../core/share/share_favorite_chats_store.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/family_compose_input.dart';
 import '../../../core/widgets/family_tab_bar.dart';
@@ -30,9 +32,15 @@ import 'widgets/chat_thread_select_tile.dart';
 
 /// Выбор чата для отправки контента из системного «Поделиться».
 class ChatShareTargetScreen extends ConsumerStatefulWidget {
-  const ChatShareTargetScreen({super.key, required this.media});
+  const ChatShareTargetScreen({
+    super.key,
+    required this.media,
+    this.directShareThreadId,
+  });
 
   final SharedMedia media;
+  /// Чат из direct share (ярлык в системном «Поделиться»).
+  final int? directShareThreadId;
 
   @override
   ConsumerState<ChatShareTargetScreen> createState() => _ChatShareTargetScreenState();
@@ -58,6 +66,8 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
   String _albumSearchQuery = '';
   List<ShareAttachmentData> _attachments = const [];
 
+  List<ShareFavoriteChatEntry> _favoriteChats = const [];
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +76,11 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
     _captionController = TextEditingController(text: widget.media.content ?? '');
     _captionController.addListener(_onCaptionChanged);
     _albumSearchController = TextEditingController();
+    final directId = widget.directShareThreadId;
+    if (directId != null && directId > 0) {
+      _selectedThreads.add(directId);
+    }
+    unawaited(_loadFavoriteChats());
     // Цели (чаты) — сразу из локальной БД; вложения и сеть не блокируют список.
     unawaited(_hydrateTargetsFromLocal());
     unawaited(_loadAttachments());
@@ -106,6 +121,54 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
     return int.tryParse(idStr.substring(7));
   }
 
+  Future<void> _loadFavoriteChats() async {
+    final favorites = await ShareFavoriteChatsStore.topFavorites(limit: 12);
+    if (!mounted) return;
+    setState(() => _favoriteChats = favorites);
+  }
+
+  List<Map<String, dynamic>> get _sortedThreads {
+    if (_favoriteChats.isEmpty) return _threads;
+    final rank = {
+      for (var i = 0; i < _favoriteChats.length; i++)
+        _favoriteChats[i].threadId: i,
+    };
+    final copy = List<Map<String, dynamic>>.from(_threads);
+    copy.sort((a, b) {
+      final aId = chatAsInt(a['id']) ?? 0;
+      final bId = chatAsInt(b['id']) ?? 0;
+      final aRank = rank[aId];
+      final bRank = rank[bId];
+      if (aRank != null && bRank != null) return aRank.compareTo(bRank);
+      if (aRank != null) return -1;
+      if (bRank != null) return 1;
+      return 0;
+    });
+    return copy;
+  }
+
+  Future<void> _rememberSharesForThreads(List<int> threadIds) async {
+    for (final threadId in threadIds) {
+      Map<String, dynamic>? thread;
+      for (final t in _threads) {
+        if (chatAsInt(t['id']) == threadId) {
+          thread = t;
+          break;
+        }
+      }
+      if (thread == null) continue;
+      await ShareFavoriteChatsStore.recordShare(
+        threadId: threadId,
+        title: ChatThreadSelectTile.titleOf(thread, _memberByUserId),
+        avatarUrl: ChatThreadSelectTile.dmAvatarUrl(thread, _memberByUserId),
+        threadKind: thread['kind']?.toString(),
+        peerUserId: ChatThreadSelectTile.dmPeerUserId(thread),
+      );
+    }
+    unawaited(ShareDirectTargetService.syncFromStore());
+    unawaited(_loadFavoriteChats());
+  }
+
   void _applyMembers(List<Map<String, dynamic>> members) {
     final byUserId = <int, Map<String, dynamic>>{};
     for (final member in members) {
@@ -144,6 +207,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
           }
           if (members.isNotEmpty) _applyMembers(members);
         });
+        unawaited(
+          ShareFavoriteChatsStore.mergeThreadMetadata(threads, _memberByUserId),
+        );
+        unawaited(ShareDirectTargetService.syncFromStore());
       }
 
       final myUserId = _myUserId;
@@ -214,6 +281,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
         _applyMembers(members);
         _loadingThreads = false;
       });
+      unawaited(
+        ShareFavoriteChatsStore.mergeThreadMetadata(list, _memberByUserId),
+      );
+      unawaited(ShareDirectTargetService.syncFromStore());
 
       await albumsFuture;
       if (mounted && _loadingAlbums) {
@@ -387,6 +458,10 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
 
     if (!mounted) return;
     shareNav.pop(true);
+
+    if (threadIds.isNotEmpty) {
+      unawaited(_rememberSharesForThreads(threadIds));
+    }
 
     unawaited(() async {
       try {
@@ -620,10 +695,11 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
     if (_threads.isEmpty) {
       return const Center(child: Text('Нет доступных чатов'));
     }
+    final threads = _sortedThreads;
     return ListView.builder(
-      itemCount: _threads.length,
+      itemCount: threads.length,
       itemBuilder: (_, i) {
-        final t = _threads[i];
+        final t = threads[i];
         final id = chatAsInt(t['id']);
         if (id == null) return const SizedBox.shrink();
         final selected = _selectedThreads.contains(id);

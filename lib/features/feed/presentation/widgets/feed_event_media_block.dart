@@ -11,7 +11,7 @@ import '../../../../core/media/media_local_index.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../chat/presentation/widgets/chat_network_image.dart';
-import '../../../gallery/presentation/gallery_media_thumbnail.dart';
+import '../../../gallery/presentation/widgets/gallery_carousel_thumbnail_strip.dart';
 
 /// Медиа в ленте: высота подстраивается под пропорции фото.
 ///
@@ -45,7 +45,6 @@ class FeedEventMediaBlock extends ConsumerStatefulWidget {
 
 class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
   late final PageController _pageController;
-  late final ScrollController _stripController;
   late int _index;
   late List<double?> _aspects;
   double _frameAspect = FeedEventMediaBlock.fallbackAspect;
@@ -63,7 +62,6 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     super.initState();
     _index = widget.initialIndex.clamp(0, widget.photos.length - 1);
     _pageController = PageController(initialPage: _index);
-    _stripController = ScrollController();
     _aspects = List<double?>.filled(widget.photos.length, null);
     _hydrateFromCache();
     _resolveAspects();
@@ -84,7 +82,6 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
   void dispose() {
     _hideStripTimer?.cancel();
     _pageController.dispose();
-    _stripController.dispose();
     super.dispose();
   }
 
@@ -93,9 +90,6 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     _hideStripTimer?.cancel();
     if (!_stripVisible) {
       setState(() => _stripVisible = true);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _ensureStripItemVisible(_index);
-      });
     }
     if (_stripHeld) return;
     _hideStripTimer = Timer(_hideStripAfter, () {
@@ -112,18 +106,6 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     } else {
       _revealStrip();
     }
-  }
-
-  void _ensureStripItemVisible(int index) {
-    if (!_stripController.hasClients) return;
-    const extent = _stripItem + _stripGap;
-    final viewport = _stripController.position.viewportDimension;
-    final target = index * extent - (viewport - _stripItem) / 2;
-    _stripController.animateTo(
-      target.clamp(0.0, _stripController.position.maxScrollExtent),
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOut,
-    );
   }
 
   void _goToPhoto(int index) {
@@ -393,7 +375,6 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
                     onPageChanged: (value) {
                       setState(() => _index = value);
                       widget.onIndexChanged?.call(value);
-                      _ensureStripItemVisible(value);
                       _revealStrip();
                     },
                     itemBuilder: (_, index) {
@@ -454,114 +435,17 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  child: _FeedCarouselStrip(
+                  child: GalleryCarouselThumbnailStrip(
                     photos: widget.photos,
                     index: _index,
                     visible: _stripVisible,
-                    controller: _stripController,
+                    onInteractionHeld: _setStripHeld,
                     itemSize: _stripItem,
                     gap: _stripGap,
-                    onHeld: _setStripHeld,
                     onSelect: _goToPhoto,
                   ),
                 ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _FeedCarouselStrip extends StatelessWidget {
-  const _FeedCarouselStrip({
-    required this.photos,
-    required this.index,
-    required this.visible,
-    required this.controller,
-    required this.itemSize,
-    required this.gap,
-    required this.onHeld,
-    required this.onSelect,
-  });
-
-  final List<Map<String, dynamic>> photos;
-  final int index;
-  final bool visible;
-  final ScrollController controller;
-  final double itemSize;
-  final double gap;
-  final ValueChanged<bool> onHeld;
-  final ValueChanged<int> onSelect;
-
-  int? _threadId(Map<String, dynamic> photo) {
-    final raw = photo['thread_id'];
-    if (raw is int) return raw;
-    return int.tryParse('$raw');
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedOpacity(
-      opacity: visible ? 1 : 0,
-      duration: const Duration(milliseconds: 180),
-      child: IgnorePointer(
-        ignoring: !visible,
-        child: Listener(
-          onPointerDown: (_) => onHeld(true),
-          onPointerUp: (_) => onHeld(false),
-          onPointerCancel: (_) => onHeld(false),
-          child: DecoratedBox(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Color(0x00000000),
-                  Color(0x99000000),
-                ],
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(8, 22, 8, 8),
-              child: SizedBox(
-                height: itemSize,
-                child: ListView.separated(
-                  controller: controller,
-                  scrollDirection: Axis.horizontal,
-                  itemCount: photos.length,
-                  separatorBuilder: (_, __) => SizedBox(width: gap),
-                  itemBuilder: (context, i) {
-                    final selected = i == index;
-                    return GestureDetector(
-                      onTap: () => onSelect(i),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        width: itemSize,
-                        height: itemSize,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: selected
-                                ? Colors.white
-                                : Colors.white24,
-                            width: selected ? 2 : 1,
-                          ),
-                        ),
-                        clipBehavior: Clip.antiAlias,
-                        child: GalleryMediaThumbnail(
-                          attachment: photos[i],
-                          threadId: _threadId(photos[i]),
-                          width: itemSize,
-                          height: itemSize,
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
           ),
         ),
       ),

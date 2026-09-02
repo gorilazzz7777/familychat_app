@@ -9,10 +9,12 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'app/bootstrap_screen.dart';
+import 'core/call/callkit_incoming_service.dart';
 import 'core/notifications/familychat_notifications.dart';
 import 'core/push/push_message_handler.dart';
 import 'core/push/push_navigation.dart';
 import 'core/push/push_registration_service.dart';
+import 'features/chat/data/incoming_call_coordinator.dart';
 import 'core/share/incoming_share_bus.dart';
 import 'core/media/media_local_index.dart';
 import 'core/settings/screen_timeout_guard.dart';
@@ -35,7 +37,20 @@ Future<void> main() async {
       }
     }());
     FirebaseMessaging.onBackgroundMessage(familychatFirebaseBackgroundHandler);
+    CallKitIncomingService.onAccepted = (extra, callId) async {
+      openAcceptedCallFromPushData({
+        'type': 'familychat_call_accepted',
+        'session_id': '$callId',
+        'thread_id': extra['thread_id']?.toString() ?? '',
+        'caller_name': extra['caller_name']?.toString() ?? 'Family Space',
+        'is_video': extra['is_video']?.toString() ?? '0',
+      });
+    };
+    CallKitIncomingService.onEnded = (callId) async {
+      IncomingCallCoordinator.instance.markHandled(callId);
+    };
     unawaited(FamilyChatNotifications.initialize());
+    unawaited(CallKitIncomingService.initialize());
     unawaited(IncomingShareBus.instance.init());
   }
   unawaited(MediaLocalIndex.ensureLoaded());

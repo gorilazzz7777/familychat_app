@@ -29,7 +29,10 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
     this.onSendLocation,
     this.onAddFromFamilyGallery,
     this.familyGalleryUserId,
+    this.familyGalleryChildId,
+    this.familyGalleryChildName,
     this.excludeFamilyAttachmentIds = const {},
+    this.excludeFamilyAlbumId,
     this.style = ChatAttachSheetStyle.chat,
     this.onRecordVideoCircle,
   });
@@ -41,7 +44,10 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
   final Future<void> Function(ChatLocationPoint point)? onSendLocation;
   final Future<void> Function(List<int> attachmentIds)? onAddFromFamilyGallery;
   final int? familyGalleryUserId;
+  final int? familyGalleryChildId;
+  final String? familyGalleryChildName;
   final Set<int> excludeFamilyAttachmentIds;
+  final String? excludeFamilyAlbumId;
   final ChatAttachSheetStyle style;
   final VoidCallback? onRecordVideoCircle;
 
@@ -57,7 +63,10 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
     Future<void> Function(ChatLocationPoint point)? onSendLocation,
     Future<void> Function(List<int> attachmentIds)? onAddFromFamilyGallery,
     int? familyGalleryUserId,
+    int? familyGalleryChildId,
+    String? familyGalleryChildName,
     Set<int> excludeFamilyAttachmentIds = const {},
+    String? excludeFamilyAlbumId,
     ChatAttachSheetStyle style = ChatAttachSheetStyle.chat,
     VoidCallback? onRecordVideoCircle,
   }) async {
@@ -80,7 +89,10 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
         onSendLocation: onSendLocation,
         onAddFromFamilyGallery: onAddFromFamilyGallery,
         familyGalleryUserId: familyGalleryUserId,
+        familyGalleryChildId: familyGalleryChildId,
+        familyGalleryChildName: familyGalleryChildName,
         excludeFamilyAttachmentIds: excludeFamilyAttachmentIds,
+        excludeFamilyAlbumId: excludeFamilyAlbumId,
         style: style,
         // Не открываем кружок сразу: live-preview шторки держит CameraController.
         onRecordVideoCircle: onRecordVideoCircle == null
@@ -268,6 +280,9 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
                         onSelectedChanged: _setFamilySelected,
                         scrollController: scrollController,
                         excludeAttachmentIds: widget.excludeFamilyAttachmentIds,
+                        childId: widget.familyGalleryChildId,
+                        childName: widget.familyGalleryChildName,
+                        excludeAlbumId: widget.excludeFamilyAlbumId,
                       ),
                   },
                 ),

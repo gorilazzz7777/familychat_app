@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../familychat/data/familychat_repository.dart';
+import 'map_display_override_store.dart';
 
 /// Периодическая отправка геолокации, пока пользователь кому-то шарит.
 ///
@@ -80,6 +81,23 @@ class LocationShareCoordinator with WidgetsBindingObserver {
       }
       final enabled = await Geolocator.isLocationServiceEnabled();
       if (!enabled) return;
+
+      final override = await MapDisplayOverrideStore.read();
+      if (override != null && override.isActive) {
+        await repo.pingLocation(
+          latitude: override.latitude,
+          longitude: override.longitude,
+          accuracyM: 50,
+        );
+        await prefs.setInt(
+          _prefsLastPing,
+          DateTime.now().millisecondsSinceEpoch,
+        );
+        return;
+      }
+      if (override != null && !override.isActive) {
+        await MapDisplayOverrideStore.clear();
+      }
 
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(

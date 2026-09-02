@@ -100,8 +100,24 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     return _actor['name']?.toString() ?? 'Именинник';
   }
 
+  Map<String, dynamic> get _displayActor {
+    final childId = _payload['child_id'];
+    if (childId != null) {
+      final name = _payload['child_name']?.toString().trim();
+      if (name != null && name.isNotEmpty) {
+        return {
+          'name': name,
+          'avatar_url': _payload['child_avatar_url']?.toString(),
+          'gender': _payload['child_gender']?.toString() ?? '',
+        };
+      }
+    }
+    return _actor;
+  }
+
   String _titleText() {
-    final name = _actor['name']?.toString() ?? 'Участник';
+    final actor = _displayActor;
+    final name = actor['name']?.toString() ?? 'Участник';
     if (_kind == 'calendar_event') {
       return _payload['title']?.toString() ?? 'Событие календаря';
     }
@@ -117,7 +133,7 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     return feedEventTitle(
       kind: _kind,
       actorName: name,
-      gender: actorGender(_actor),
+      gender: actorGender(actor),
       joinedName: _payload['name']?.toString(),
       photoCount: photoCount,
       othersCount: othersCount,
@@ -328,8 +344,8 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     ChatAvatar(
-                      name: _actor['name']?.toString() ?? '?',
-                      avatarUrl: _actor['avatar_url']?.toString(),
+                      name: _displayActor['name']?.toString() ?? '?',
+                      avatarUrl: _displayActor['avatar_url']?.toString(),
                       radius: 18,
                     ),
                     const SizedBox(width: 10),
