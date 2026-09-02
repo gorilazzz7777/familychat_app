@@ -30,9 +30,13 @@ open Runner.xcworkspace
 
 ## Firebase / Push (обязательно для уведомлений)
 
-1. В [Firebase Console](https://console.firebase.google.com/) → проект `familychat-53a64` добавьте iOS-приложение с Bundle ID `com.familychat.familychatApp`.
-2. Скачайте `GoogleService-Info.plist` и положите в `ios/Runner/`.
-3. В Apple Developer: включите Push Notifications для App ID, загрузите APNs key в Firebase → Project settings → Cloud Messaging.
+`ios/Runner/GoogleService-Info.plist` **в репозитории** (как `android/app/google-services.json`). После `git pull` файл должен быть на месте.
+
+Если нужно обновить конфиг Firebase:
+
+1. В [Firebase Console](https://console.firebase.google.com/) → проект `familychat-53a64` → iOS-приложение `com.familychat.familychatApp`.
+2. Скачайте новый `GoogleService-Info.plist` → `ios/Runner/`.
+3. В Apple Developer: Push Notifications для App ID, APNs key в Firebase → Cloud Messaging.
 4. В Xcode → Runner → Signing & Capabilities: Push Notifications, Associated Domains, App Groups (`group.com.familychat.familychatApp`).
 5. Для TestFlight/App Store в `Runner.entitlements` смените `aps-environment` на `production`.
 

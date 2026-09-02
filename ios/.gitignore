@@ -16,9 +16,8 @@ profile
 xcuserdata
 **/.generated/
 
-# Local Mac / Xcode (signing, Firebase, capabilities) — не коммитить с Windows.
+# Local Mac / Xcode (signing, capabilities) — не коммитить с Windows.
 Podfile.lock
-Runner/GoogleService-Info.plist
 Runner/Runner.entitlements
 Runner.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 Runner.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
