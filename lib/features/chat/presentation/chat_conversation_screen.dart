@@ -1425,6 +1425,35 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     return !chatSameCalendarDay(_messages[msgIndex - 1], _messages[msgIndex]);
   }
 
+  List<Map<String, dynamic>> _filterHiddenMessageIds(
+    List<Map<String, dynamic>> messages,
+    Set<int> hiddenIds,
+  ) {
+    if (hiddenIds.isEmpty) return messages;
+    return messages
+        .where((m) {
+          final id = chatAsInt(m['id']);
+          return id == null || !hiddenIds.contains(id);
+        })
+        .toList(growable: false);
+  }
+
+  Future<Set<int>> _hiddenMessageIdsForThread() async {
+    final blocked = await ChatOfflineOutbox.pendingRemovalMessageIds(
+      threadId: widget.threadId,
+    );
+    final undoHidden = _pendingDeleteUndo?.messageIds ?? const <int>{};
+    if (undoHidden.isEmpty) return blocked;
+    return {...blocked, ...undoHidden};
+  }
+
+  Future<List<Map<String, dynamic>>> _filterMessagesForDisplay(
+    List<Map<String, dynamic>> messages,
+  ) async {
+    final hidden = await _hiddenMessageIdsForThread();
+    return _filterHiddenMessageIds(messages, hidden);
+  }
+
   Future<void> _persistMessageCache([List<Map<String, dynamic>>? messages]) async {
     final source = messages ?? _messages;
     if (source.isEmpty) return;
@@ -2029,9 +2058,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           );
       if (!mounted || generation != _loadGeneration) return;
 
+      final pageMessages = await _filterMessagesForDisplay(page.messages);
+
       final List<Map<String, dynamic>> nextMessages;
       final apiOldest =
-          page.messages.isEmpty ? null : chatAsInt(page.messages.first['id']);
+          pageMessages.isEmpty ? null : chatAsInt(pageMessages.first['id']);
       final cacheNewest = chatNewestServerMessageId(_messages);
       // Старое окно кэша не пересекается с API — replace, не merge
       // (иначе на экране сначала «сообщения на 20 выше», потом скачок).
@@ -2040,14 +2071,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           apiOldest != null &&
           cacheNewest < apiOldest;
       if (cacheBehindApi || !silent) {
-        nextMessages = sortChatMessages(page.messages);
+        nextMessages = sortChatMessages(pageMessages);
       } else if (_messages.length >
           FamilyChatLocalCache.maxCachedMessagesPerThread) {
-        nextMessages = _mergeLatestMessages(_messages, page.messages);
+        nextMessages = _mergeLatestMessages(_messages, pageMessages);
       } else {
         nextMessages = chatMergeMessageLists(
           _messages,
-          page.messages,
+          pageMessages,
           currentUserId: _currentUserId,
         );
       }
@@ -2092,8 +2123,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         });
       }
 
-      // Авторитетный хвост с API — в кэш всегда (со звонками и чужими фото).
-      unawaited(_persistMessageCache(page.messages));
+      // В кэш — только то, что реально показываем (без tombstone/undo).
+      unawaited(_persistMessageCache(nextMessages));
       if (messagesChanged) {
         for (final message in nextMessages) {
           _maybeScheduleVoiceTranscriptPoll(message);
@@ -2178,9 +2209,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           );
       if (!mounted || generation != _loadGeneration) return;
 
+      final visiblePageMessages =
+          await _filterMessagesForDisplay(page.messages);
+
       final existingIds =
           _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
-      final older = page.messages.where((m) {
+      final older = visiblePageMessages.where((m) {
         final id = chatAsInt(m['id']);
         return id != null && !existingIds.contains(id);
       }).toList();
@@ -4491,6 +4525,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   void _hideMessagesFromUi(List<int> ids) {
     if (ids.isEmpty) return;
+    ChatOfflineOutbox.markMessagesPendingRemoval(widget.threadId, ids);
     final idSet = ids.toSet();
     setState(() {
       _messages = _messages.where((m) {
@@ -4560,10 +4595,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
 
     try {
-      await ref.read(familychatRepositoryProvider).deleteMessages(
+      final deleted = await ref.read(familychatRepositoryProvider).deleteMessages(
             widget.threadId,
             messageIds,
           );
+      ChatOfflineOutbox.clearMessagesPendingRemoval(
+        widget.threadId,
+        deleted,
+      );
     } catch (_) {
       if (!mounted || silent) return;
       await _restoreDeletedMessages(restoreOnFailure);
@@ -4598,10 +4637,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
 
     try {
-      await ref.read(familychatRepositoryProvider).hideMessagesForMe(
+      final hidden = await ref.read(familychatRepositoryProvider).hideMessagesForMe(
             widget.threadId,
             messageIds,
           );
+      ChatOfflineOutbox.clearMessagesPendingRemoval(
+        widget.threadId,
+        hidden,
+      );
     } catch (_) {
       if (!mounted || silent) return;
       await _restoreDeletedMessages(restoreOnFailure);
@@ -4613,6 +4656,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _restoreDeletedMessages(_MessageDeleteUndoSession? session) async {
     if (session == null || !mounted) return;
+    ChatOfflineOutbox.clearMessagesPendingRemoval(
+      widget.threadId,
+      session.messageIds,
+    );
     setState(() {
       for (final msg in session.snapshots) {
         _messages = chatUpsertMessage(_messages, msg);

@@ -168,8 +168,8 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
-        <!-- Ответ из шторки: без этого BroadcastReceiver Android крутит
-             спиннер RemoteInput, а Dart-колбэк так и не вызывается. -->
+        <!-- Ответ из шторки: showsUserInterface=true → MainActivity + основной engine.
+             BroadcastReceiver плагина оставлен для совместимости с другими action. -->
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
             android:exported="false" />

@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
 import '../../../core/local_db/chat_local_store.dart';
+import '../../../core/notifications/chat_push_thread_preview.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_unread_providers.dart';
 
@@ -22,6 +24,7 @@ abstract final class ChatLocalMutations {
       break;
     }
     ChatUnreadRefresh.onInvalidate?.call();
+    unawaited(ChatPushThreadPreview.clear(threadId));
   }
 
   static Future<void> patchThreadNotificationsLocal(

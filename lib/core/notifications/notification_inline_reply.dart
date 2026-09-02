@@ -4,8 +4,12 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/familychat/data/familychat_repository.dart';
+import '../../features/chat/data/chat_local_mutations.dart';
+import '../../features/chat/data/chat_offline_outbox.dart';
+import '../../features/chat/data/chat_ws_mark_read.dart';
 import '../local_db/chat_local_store.dart';
 import '../network/api_client.dart';
+import 'push_reply_trace.dart';
 
 /// Ответ из шторки уведомлений (как в Telegram).
 abstract final class NotificationInlineReply {
@@ -13,23 +17,85 @@ abstract final class NotificationInlineReply {
   static const iosCategoryId = 'familychat_message';
   static const sendTimeout = Duration(seconds: 20);
 
+  static int _nextClientMsgId() => -DateTime.now().microsecondsSinceEpoch;
+
+  static final Set<String> _sendInFlight = {};
+
+  @pragma('vm:entry-point')
   static Future<bool> sendFromPayload({
     required Map<String, dynamic> data,
     required String rawText,
+    String source = 'unknown',
   }) async {
     final text = rawText.trim();
-    if (text.isEmpty) return false;
+    if (text.isEmpty) {
+      PushReplyTrace.log(
+        'skip_empty',
+        source: source,
+        detail: 'body empty',
+      );
+      return false;
+    }
 
     final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
-    if (threadId == null) return false;
+    if (threadId == null) {
+      PushReplyTrace.log(
+        'skip_no_thread',
+        source: source,
+        extra: {'payloadKeys': data.keys.join(',')},
+      );
+      return false;
+    }
 
-    final dedupeKey =
-        'push_reply_${threadId}_${text.hashCode}_${DateTime.now().millisecondsSinceEpoch ~/ 8000}';
+    final dedupeKey = 'push_reply_${threadId}_${text.hashCode}';
+    if (_sendInFlight.contains(dedupeKey)) {
+      PushReplyTrace.log(
+        'dedupe_inflight',
+        threadId: threadId,
+        source: source,
+      );
+      return true;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (prefs.getBool(dedupeKey) == true) return true;
-      await prefs.setBool(dedupeKey, true);
+      final handledAt = prefs.getInt('${dedupeKey}_at');
+      if (handledAt != null &&
+          DateTime.now().millisecondsSinceEpoch - handledAt < 120000) {
+        PushReplyTrace.log(
+          'dedupe_skip',
+          threadId: threadId,
+          source: source,
+        );
+        return true;
+      }
+    } catch (e) {
+      PushReplyTrace.log(
+        'dedupe_error',
+        threadId: threadId,
+        source: source,
+        detail: '$e',
+      );
+    }
+
+    _sendInFlight.add(dedupeKey);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(
+        '${dedupeKey}_at',
+        DateTime.now().millisecondsSinceEpoch,
+      );
     } catch (_) {}
+
+    final clientMsgId = _nextClientMsgId();
+    PushReplyTrace.log(
+      'http_start',
+      threadId: threadId,
+      source: source,
+      extra: {
+        'bodyLen': text.length,
+        'clientMsgId': clientMsgId,
+      },
+    );
 
     try {
       final client = ApiClient();
@@ -43,40 +109,189 @@ abstract final class NotificationInlineReply {
         receiveTimeout: sendTimeout,
         sendTimeout: sendTimeout,
       );
+      final token = await client.tokenStorage.readAccess();
+      if (token == null || token.isEmpty) {
+        PushReplyTrace.log(
+          'http_no_token',
+          threadId: threadId,
+          source: source,
+        );
+        throw StateError('no access token');
+      }
+
       final repo = FamilyChatRepository(client);
       final msg = await repo
           .sendThreadMessage(
             threadId,
             body: text,
-            clientMsgId: DateTime.now().microsecondsSinceEpoch,
+            clientMsgId: clientMsgId,
           )
           .timeout(sendTimeout);
       final payload = Map<String, dynamic>.from(msg);
       payload['thread_id'] ??= threadId;
-      unawaited(_persistInBackground(threadId, payload));
+      final messageId = int.tryParse(payload['id']?.toString() ?? '');
+      PushReplyTrace.log(
+        'http_ok',
+        threadId: threadId,
+        messageId: messageId,
+        source: source,
+      );
+      unawaited(_persistInBackground(threadId, payload, source: source));
+      unawaited(
+        _markThreadReadAfterInlineReply(
+          threadId: threadId,
+          data: data,
+          sentMessageId: messageId,
+          source: source,
+        ),
+      );
       return true;
     } catch (e, st) {
+      PushReplyTrace.log(
+        'http_fail',
+        threadId: threadId,
+        source: source,
+        detail: '$e',
+      );
       debugPrint('[NotificationInlineReply] send failed: $e\n$st');
+      unawaited(
+        _markThreadReadAfterInlineReply(
+          threadId: threadId,
+          data: data,
+          source: source,
+        ),
+      );
       try {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.remove(dedupeKey);
+        await prefs.remove('${dedupeKey}_at');
       } catch (_) {}
       return false;
+    } finally {
+      _sendInFlight.remove(dedupeKey);
     }
   }
 
   /// Отдельное соединение больше не открываем — второй NativeDatabase давал SQLITE_BUSY.
   static Future<void> _persistInBackground(
     int threadId,
-    Map<String, dynamic> payload,
-  ) async {
+    Map<String, dynamic> payload, {
+    required String source,
+  }) async {
     if (!ChatLocalStore.isSupported) return;
     try {
       await ChatLocalStore.instance
           .upsertMessages(threadId, [payload])
           .timeout(const Duration(seconds: 3));
+      PushReplyTrace.log(
+        'sqlite_ok',
+        threadId: threadId,
+        messageId: int.tryParse(payload['id']?.toString() ?? ''),
+        source: source,
+      );
     } catch (e) {
+      PushReplyTrace.log(
+        'sqlite_fail',
+        threadId: threadId,
+        source: source,
+        detail: '$e',
+      );
       debugPrint('[NotificationInlineReply] local upsert failed: $e');
+    }
+  }
+
+  /// Пользователь ответил из шторки — считаем переписку просмотренной.
+  static Future<void> _markThreadReadAfterInlineReply({
+    required int threadId,
+    required Map<String, dynamic> data,
+    int? sentMessageId,
+    required String source,
+  }) async {
+    var lastId = sentMessageId ?? 0;
+    final fromPayload = int.tryParse(data['message_id']?.toString() ?? '');
+    if (fromPayload != null && fromPayload > lastId) {
+      lastId = fromPayload;
+    }
+
+    if (ChatLocalStore.isSupported) {
+      try {
+        final newest = await ChatLocalStore.instance
+            .newestServerMessageId(threadId)
+            .timeout(const Duration(seconds: 2));
+        if (newest != null && newest > lastId) {
+          lastId = newest;
+        }
+      } catch (e) {
+        PushReplyTrace.log(
+          'mark_read_local_id_fail',
+          threadId: threadId,
+          source: source,
+          detail: '$e',
+        );
+      }
+    }
+
+    if (lastId <= 0) {
+      PushReplyTrace.log(
+        'mark_read_skip',
+        threadId: threadId,
+        source: source,
+        detail: 'no last_message_id',
+      );
+      return;
+    }
+
+    try {
+      await ChatLocalMutations.markThreadReadLocal(
+        threadId,
+        lastMessageId: lastId,
+      );
+    } catch (e) {
+      PushReplyTrace.log(
+        'mark_read_local_fail',
+        threadId: threadId,
+        source: source,
+        detail: '$e',
+      );
+    }
+
+    final wsOk = await ChatWsMarkRead.tryMarkRead(
+      threadId: threadId,
+      lastMessageId: lastId,
+    );
+    if (wsOk) {
+      PushReplyTrace.log(
+        'mark_read_ws_ok',
+        threadId: threadId,
+        messageId: lastId,
+        source: source,
+      );
+      return;
+    }
+
+    try {
+      final client = ApiClient();
+      await FamilyChatRepository(client)
+          .markThreadRead(threadId, lastMessageId: lastId)
+          .timeout(const Duration(seconds: 12));
+      PushReplyTrace.log(
+        'mark_read_http_ok',
+        threadId: threadId,
+        messageId: lastId,
+        source: source,
+      );
+    } catch (e) {
+      PushReplyTrace.log(
+        'mark_read_http_fail',
+        threadId: threadId,
+        source: source,
+        detail: '$e',
+      );
+      try {
+        await ChatOfflineOutbox.enqueueMarkRead(
+          threadId: threadId,
+          lastMessageId: lastId,
+        );
+      } catch (_) {}
     }
   }
 }

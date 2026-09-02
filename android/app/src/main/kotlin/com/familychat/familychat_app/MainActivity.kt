@@ -22,6 +22,9 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     companion object {
         private const val TAG = "FamilyChatShare"
+        private const val PUSH_REPLY_TAG = "FamilyChatPushReply"
+        private const val FOREGROUND_NOTIFICATION_ACTION = "SELECT_FOREGROUND_NOTIFICATION"
+        private const val SELECT_NOTIFICATION = "SELECT_NOTIFICATION"
         private var pendingShareUris: List<Uri> = emptyList()
 
         /** Used by FCM service: strip system notification only while app is visible. */
@@ -39,9 +42,13 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onNewIntent(intent: Intent) {
+        val wasNotificationLaunch = isNotificationLaunchIntent(intent)
         super.onNewIntent(intent)
         setIntent(intent)
         captureShareUris(intent)
+        if (wasNotificationLaunch) {
+            clearNotificationLaunchIntent()
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -119,6 +126,19 @@ class MainActivity : FlutterActivity() {
         }
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
+            "com.familychat/push_reply",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "takePending" -> result.success(FamilyChatPushReplyStore.takePending(this))
+                "clearLaunchNotificationIntent" -> {
+                    clearNotificationLaunchIntent()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
             "com.familychat/share_intent",
         ).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -151,6 +171,22 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun isNotificationLaunchIntent(intent: Intent?): Boolean {
+        if (intent == null) return false
+        return intent.action == FOREGROUND_NOTIFICATION_ACTION ||
+            intent.action == SELECT_NOTIFICATION
+    }
+
+    private fun clearNotificationLaunchIntent() {
+        if (!isNotificationLaunchIntent(intent)) return
+        setIntent(
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
+        )
+        Log.i(PUSH_REPLY_TAG, "cleared notification launch intent")
     }
 
     private fun captureShareUris(intent: Intent?) {

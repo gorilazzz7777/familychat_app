@@ -22,6 +22,37 @@ void main() {
       expect(lines.last.messageId, 10);
     });
 
+    test('filters to unread incoming only', () {
+      final lines = [
+        for (var i = 1; i <= 7; i++)
+          ChatPushPreviewLine(
+            messageId: i,
+            sender: 'Alice',
+            text: 'msg $i',
+          ),
+      ];
+      final unreadOnly = ChatPushThreadPreview.filterToUnreadLines(lines, 1);
+      expect(unreadOnly.length, 1);
+      expect(unreadOnly.single.messageId, 7);
+      expect(unreadOnly.single.text, 'msg 7');
+    });
+
+    test('keeps recent outgoing lines from inline reply', () {
+      final lines = [
+        ChatPushPreviewLine(messageId: 1, sender: 'Alice', text: 'old read'),
+        ChatPushPreviewLine(messageId: 2, sender: 'Alice', text: 'unread'),
+        ChatPushPreviewLine(
+          messageId: -100,
+          sender: '',
+          text: 'my reply',
+        ),
+      ];
+      final filtered = ChatPushThreadPreview.filterToUnreadLines(lines, 1);
+      expect(filtered.length, 2);
+      expect(filtered.first.text, 'unread');
+      expect(filtered.last.text, 'my reply');
+    });
+
     test('parses sender prefix from group body', () {
       final line = ChatPushThreadPreview.lineFromPushData(
         data: const {

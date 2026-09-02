@@ -11,8 +11,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../push/push_navigation.dart';
+import 'chat_push_notification_style.dart';
 import 'chat_push_thread_preview.dart';
 import 'notification_inline_reply.dart';
+import 'push_reply_trace.dart';
 
 /// Локальные уведомления со звуком (Android/iOS) и каналы Android.
 class FamilyChatNotifications {
@@ -24,6 +26,8 @@ class FamilyChatNotifications {
   static bool _initialized = false;
 
   static const _pushDedupeWindowMs = 30000;
+  static const _handledInlineReplyPrefix = 'inline_reply_handled_';
+  static final Set<String> _inlineReplyInFlight = {};
 
   static const messagesChannelId = 'familychat_messages';
   static const callsChannelId = 'familychat_calls';
@@ -39,15 +43,31 @@ class FamilyChatNotifications {
     unawaited(_handleBackgroundNotificationResponse(response));
   }
 
+  @pragma('vm:entry-point')
   static Future<void> _handleBackgroundNotificationResponse(
     NotificationResponse response,
   ) async {
+    PushReplyTrace.log(
+      'action_received',
+      source: 'background',
+      extra: {
+        'actionId': response.actionId ?? '',
+        'inputLen': response.input?.length ?? 0,
+        'payloadLen': response.payload?.length ?? 0,
+        'notificationId': response.id ?? -1,
+      },
+    );
     try {
       WidgetsFlutterBinding.ensureInitialized();
       DartPluginRegistrant.ensureInitialized();
       await initialize();
       await handleNotificationResponse(response);
     } catch (e, st) {
+      PushReplyTrace.log(
+        'background_handler_fail',
+        source: 'background',
+        detail: '$e',
+      );
       debugPrint('background notification action failed: $e\n$st');
       if (response.actionId == NotificationInlineReply.actionId) {
         final data = _parseNotificationPayload(response.payload);
@@ -62,6 +82,7 @@ class FamilyChatNotifications {
     }
   }
 
+  @pragma('vm:entry-point')
   static Future<void> initialize() async {
     if (_initialized || kIsWeb) return;
 
@@ -130,14 +151,71 @@ class FamilyChatNotifications {
     unawaited(handleNotificationResponse(response));
   }
 
+  @pragma('vm:entry-point')
   static Future<void> handleNotificationResponse(
     NotificationResponse response,
   ) async {
     if (response.actionId == NotificationInlineReply.actionId) {
-      await _sendInlineReply(response);
+      final fingerprint = _inlineReplyFingerprint(response);
+      if (!await _tryClaimInlineReply(fingerprint)) {
+        PushReplyTrace.log(
+          'dedupe_handled',
+          source: 'foreground',
+          extra: {'fingerprint': fingerprint},
+        );
+        await clearAndroidLaunchNotificationIntent();
+        return;
+      }
+      PushReplyTrace.log(
+        'action_received',
+        source: 'foreground',
+        extra: {
+          'actionId': response.actionId ?? '',
+          'inputLen': response.input?.length ?? 0,
+          'payloadLen': response.payload?.length ?? 0,
+          'notificationId': response.id ?? -1,
+        },
+      );
+      try {
+        await _sendInlineReply(response);
+      } finally {
+        _inlineReplyInFlight.remove(fingerprint);
+        await clearAndroidLaunchNotificationIntent();
+      }
       return;
     }
     _handleNotificationPayload(response.payload);
+  }
+
+  static String _inlineReplyFingerprint(NotificationResponse response) {
+    final input = response.input?.trim() ?? '';
+    return '${response.id ?? 0}|${response.actionId ?? ''}|$input';
+  }
+
+  static Future<bool> _tryClaimInlineReply(String fingerprint) async {
+    if (fingerprint.isEmpty) return false;
+    if (_inlineReplyInFlight.contains(fingerprint)) return false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('$_handledInlineReplyPrefix$fingerprint') == true) {
+        return false;
+      }
+      await prefs.setBool('$_handledInlineReplyPrefix$fingerprint', true);
+    } catch (_) {
+      return false;
+    }
+    _inlineReplyInFlight.add(fingerprint);
+    return true;
+  }
+
+  static Future<void> clearAndroidLaunchNotificationIntent() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      const channel = MethodChannel('com.familychat/push_reply');
+      await channel.invokeMethod<void>('clearLaunchNotificationIntent');
+    } catch (e) {
+      debugPrint('clearAndroidLaunchNotificationIntent: $e');
+    }
   }
 
   static Map<String, dynamic> _parseNotificationPayload(String? payload) {
@@ -174,36 +252,60 @@ class FamilyChatNotifications {
 
   static Future<void> _sendInlineReply(NotificationResponse response) async {
     final text = response.input?.trim() ?? '';
-    if (text.isEmpty) return;
+    if (text.isEmpty) {
+      PushReplyTrace.log('skip_empty_input', source: 'ui');
+      return;
+    }
 
     var data = _parseNotificationPayload(response.payload);
     final threadId = _threadIdFromNotificationResponse(data, response);
     if (threadId == null) {
+      PushReplyTrace.log(
+        'skip_no_thread',
+        source: 'ui',
+        detail: 'payload=${response.payload}',
+      );
       debugPrint('inline reply: missing thread_id (payload=${response.payload})');
       return;
     }
     data = _ensureChatPayload(data, threadId);
 
-    // Снять RemoteInput-спиннер до HTTP: cancel надёжнее, чем notify() без
-    // полного MessagingStyle после ответа из шторки.
+    PushReplyTrace.log(
+      'dismiss_start',
+      threadId: threadId,
+      source: 'ui',
+      extra: {'bodyLen': text.length},
+    );
     await _dismissChatNotificationForInlineReply(
       threadId: threadId,
       outgoingText: text,
     );
+    PushReplyTrace.log('dismiss_done', threadId: threadId, source: 'ui');
 
     var ok = false;
     try {
       ok = await NotificationInlineReply.sendFromPayload(
         data: data,
         rawText: text,
+        source: 'ui',
       );
     } catch (e, st) {
+      PushReplyTrace.log(
+        'send_exception',
+        threadId: threadId,
+        source: 'ui',
+        detail: '$e',
+      );
       debugPrint('inline reply send failed: $e\n$st');
       ok = false;
     }
 
-    if (ok) return;
+    if (ok) {
+      PushReplyTrace.log('done_ok', threadId: threadId, source: 'ui');
+      return;
+    }
 
+    PushReplyTrace.log('done_fail_show_banner', threadId: threadId, source: 'ui');
     await showForegroundPush(
       title: 'Family Space',
       body: 'Не удалось отправить ответ. Откройте чат.',
@@ -227,25 +329,8 @@ class FamilyChatNotifications {
 
   static MessagingStyleInformation? _androidMessagingStyle(
     ChatPushThreadPreview preview,
-  ) {
-    if (preview.lines.isEmpty) return null;
-    return MessagingStyleInformation(
-      const Person(name: ''),
-      conversationTitle: preview.isGroup ? preview.title : null,
-      groupConversation: preview.isGroup,
-      messages: preview.lines
-          .map(
-            (line) => Message(
-              line.text,
-              DateTime.fromMillisecondsSinceEpoch(
-                line.timestampMs ?? DateTime.now().millisecondsSinceEpoch,
-              ),
-              line.sender.isNotEmpty ? Person(name: line.sender) : null,
-            ),
-          )
-          .toList(),
-    );
-  }
+  ) =>
+      ChatPushNotificationStyle.androidMessagingStyle(preview);
 
   static List<AndroidNotificationAction> _chatReplyActions() {
     return [
@@ -259,8 +344,10 @@ class FamilyChatNotifications {
           ),
         ],
         allowGeneratedReplies: true,
-        showsUserInterface: false,
-        // true: Android сразу снимает спиннер; dismiss выше — запасной путь.
+        // true → PendingIntent в MainActivity (основной Flutter engine).
+        // false → ActionBroadcastReceiver; ломается с «Engine is already initialised»
+        // после FCM background handler в том же процессе.
+        showsUserInterface: true,
         cancelNotification: true,
       ),
     ];
@@ -270,6 +357,7 @@ class FamilyChatNotifications {
     String title,
     String body,
     MessagingStyleInformation? messagingStyle,
+    String? androidSubText,
   })> _resolveChatNotificationContent({
     required int threadId,
     required Map<String, dynamic> data,
@@ -285,19 +373,22 @@ class FamilyChatNotifications {
       enrichFromDatabase: enrichFromDatabase,
     );
     var displayTitle = preview.title;
-    var displayBody = preview.collapsedBody;
+    var displayBody = ChatPushNotificationStyle.collapsedBody(preview);
+    String? androidSubText;
     MessagingStyleInformation? messagingStyle;
     if (defaultTargetPlatform == TargetPlatform.android &&
         preview.lines.isNotEmpty) {
       messagingStyle = _androidMessagingStyle(preview);
+      androidSubText = ChatPushNotificationStyle.androidSubText(preview);
     } else if (defaultTargetPlatform == TargetPlatform.iOS &&
         preview.lines.length > 1) {
-      displayBody = preview.expandedBody;
+      displayBody = ChatPushNotificationStyle.expandedBody(preview);
     }
     return (
       title: displayTitle,
       body: displayBody,
       messagingStyle: messagingStyle,
+      androidSubText: androidSubText,
     );
   }
 
@@ -329,16 +420,20 @@ class FamilyChatNotifications {
 
   static Future<void> consumeLaunchNotification() async {
     if (kIsWeb || !_initialized) return;
-    await consumePendingNativeReply();
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      await consumePendingNativeReply();
+    }
     final details = await _plugin.getNotificationAppLaunchDetails();
     if (details?.didNotificationLaunchApp != true) return;
     final response = details?.notificationResponse;
     if (response == null) return;
     await handleNotificationResponse(response);
+    await clearAndroidLaunchNotificationIntent();
   }
 
   static Future<void> consumePendingNativeReply() async {
     if (kIsWeb) return;
+    // Android inline reply идёт через onDidReceiveNotificationResponse (showsUserInterface).
     if (defaultTargetPlatform != TargetPlatform.iOS) return;
     try {
       const channel = MethodChannel('com.familychat/push_reply');
@@ -347,15 +442,38 @@ class FamilyChatNotifications {
       final data = raw.map((key, value) => MapEntry('$key', value));
       final text = data['text']?.toString() ?? '';
       if (text.trim().isEmpty) return;
+
+      final payloadJson = data.remove('payload')?.toString();
+      if (payloadJson != null && payloadJson.isNotEmpty) {
+        try {
+          final payload = Map<String, dynamic>.from(
+            jsonDecode(payloadJson) as Map,
+          );
+          data.addAll(payload.map((key, value) => MapEntry('$key', value)));
+        } catch (e) {
+          debugPrint('consumePendingNativeReply payload parse: $e');
+        }
+      }
+
+      PushReplyTrace.log(
+        'native_pending',
+        source: 'ios_pending',
+        extra: {
+          'threadId': data['thread_id']?.toString() ?? '',
+          'bodyLen': text.length,
+        },
+      );
       await NotificationInlineReply.sendFromPayload(
         data: data,
         rawText: text,
+        source: 'ios_pending',
       );
     } catch (e) {
       debugPrint('consumePendingNativeReply: $e');
     }
   }
 
+  @pragma('vm:entry-point')
   static Future<void> handleBackgroundRemoteMessage(RemoteMessage message) async {
     if (kIsWeb) return;
     await initialize();
@@ -481,6 +599,7 @@ class FamilyChatNotifications {
     }
   }
 
+  @pragma('vm:entry-point')
   static Future<void> showForegroundPush({
     required String title,
     required String body,
@@ -536,6 +655,7 @@ class FamilyChatNotifications {
     var displayTitle = title;
     var displayBody = body;
     MessagingStyleInformation? messagingStyle;
+    String? androidSubText;
     if (isChat && threadId != null) {
       final content = await _resolveChatNotificationContent(
         threadId: threadId,
@@ -547,6 +667,7 @@ class FamilyChatNotifications {
       displayTitle = content.title;
       displayBody = content.body;
       messagingStyle = content.messagingStyle;
+      androidSubText = content.androidSubText;
     }
 
     final androidDetails = AndroidNotificationDetails(
@@ -557,6 +678,9 @@ class FamilyChatNotifications {
       playSound: true,
       enableVibration: true,
       tag: tag,
+      subText: androidSubText,
+      color: isChat ? ChatPushNotificationStyle.notificationColor : null,
+      colorized: isChat,
       category: isChat ? AndroidNotificationCategory.message : null,
       styleInformation: messagingStyle,
       actions: canReply ? _chatReplyActions() : null,

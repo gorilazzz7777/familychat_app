@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../features/chat/data/chat_message_preview.dart';
+import '../../features/chat/data/chat_local_reads.dart';
 import '../../features/chat/data/chat_realtime_utils.dart';
 import '../local_db/chat_local_store.dart';
 
@@ -117,15 +118,13 @@ class ChatPushThreadPreview {
     if (enrichFromDatabase && ChatLocalStore.isSupported) {
       final fromDb = await _linesFromDatabase(threadId, data);
       if (fromDb.isNotEmpty) {
-        final storedLatest = _latestMessageId(lines);
-        final dbLatest = _latestMessageId(fromDb);
-        if (dbLatest >= storedLatest) {
-          lines = fromDb;
-          await _saveStored(threadId, lines);
-        }
+        lines = _mergeDbAndStored(lines, fromDb);
+        await _saveStored(threadId, lines);
       }
     }
 
+    final unreadCount = await _effectiveUnreadCount(threadId, data);
+    lines = _filterToUnreadLines(lines, unreadCount);
     lines = _trimLines(lines);
     final isGroup = isGroupThread(data);
     final threadTitle = data['thread_title']?.toString().trim() ?? '';
@@ -192,6 +191,83 @@ class ChatPushThreadPreview {
     return (prefix, rest);
   }
 
+  static Future<int> _threadUnreadCount(int threadId) async {
+    if (!ChatLocalStore.isSupported) return 0;
+    final thread = await ChatLocalReads.threadById(threadId);
+    return chatAsInt(thread?['unread_count']) ?? 0;
+  }
+
+  /// unread_count в SQLite может отставать от только что пришедшего push.
+  static Future<int> _effectiveUnreadCount(
+    int threadId,
+    Map<String, dynamic> data,
+  ) async {
+    var unread = await _threadUnreadCount(threadId);
+    final pushMessageId = chatAsInt(data['message_id']);
+    if (pushMessageId != null && pushMessageId > 0) {
+      unread = unread < 1 ? 1 : unread;
+    }
+    return unread;
+  }
+
+  static bool _isOutgoingPreviewLine(ChatPushPreviewLine line) {
+    final id = line.messageId ?? 0;
+    return id < 0;
+  }
+
+  static List<ChatPushPreviewLine> _mergeDbAndStored(
+    List<ChatPushPreviewLine> stored,
+    List<ChatPushPreviewLine> fromDb,
+  ) {
+    final outgoing =
+        stored.where(_isOutgoingPreviewLine).toList(growable: false);
+    if (outgoing.isEmpty) return fromDb;
+    return _appendLines(fromDb, outgoing);
+  }
+
+  static List<ChatPushPreviewLine> _appendLines(
+    List<ChatPushPreviewLine> base,
+    List<ChatPushPreviewLine> extra,
+  ) {
+    var out = List<ChatPushPreviewLine>.from(base);
+    for (final line in extra) {
+      out = _appendLine(out, line);
+    }
+    return out;
+  }
+
+  @visibleForTesting
+  static List<ChatPushPreviewLine> filterToUnreadLines(
+    List<ChatPushPreviewLine> lines,
+    int unreadCount,
+  ) =>
+      _filterToUnreadLines(lines, unreadCount);
+
+  static List<ChatPushPreviewLine> _filterToUnreadLines(
+    List<ChatPushPreviewLine> lines,
+    int unreadCount,
+  ) {
+    if (lines.isEmpty) return lines;
+
+    final outgoing =
+        lines.where(_isOutgoingPreviewLine).toList(growable: false);
+    final incoming =
+        lines.where((line) => !_isOutgoingPreviewLine(line)).toList();
+
+    List<ChatPushPreviewLine> unreadIncoming;
+    if (unreadCount <= 0) {
+      unreadIncoming =
+          incoming.isEmpty ? const [] : [incoming.last];
+    } else if (incoming.length <= unreadCount) {
+      unreadIncoming = incoming;
+    } else {
+      unreadIncoming = incoming.sublist(incoming.length - unreadCount);
+    }
+
+    if (outgoing.isEmpty) return unreadIncoming;
+    return _trimLines([...unreadIncoming, ...outgoing]);
+  }
+
   static Future<List<ChatPushPreviewLine>> _linesFromDatabase(
     int threadId,
     Map<String, dynamic> data,
@@ -200,18 +276,21 @@ class ChatPushThreadPreview {
       final db = await ChatLocalStore.instance.ensureOpen();
       if (db == null) return const [];
 
+      final unreadCount = await _effectiveUnreadCount(threadId, data);
+      if (unreadCount <= 0) return const [];
+
       final isGroup = isGroupThread(data);
       final tail = await ChatLocalStore.instance.readMessagesTail(
         threadId,
-        limit: maxMessages + 8,
+        limit: unreadCount + 6,
       );
-      final lines = <ChatPushPreviewLine>[];
+      final incoming = <ChatPushPreviewLine>[];
       for (final message in tail) {
         if (message['is_system'] == true) continue;
         if (message['is_mine'] == true) continue;
         final text = chatMessagePreviewText(message);
         if (text.isEmpty) continue;
-        lines.add(
+        incoming.add(
           ChatPushPreviewLine(
             messageId: chatAsInt(message['id']),
             sender: isGroup
@@ -222,7 +301,10 @@ class ChatPushThreadPreview {
           ),
         );
       }
-      return _trimLines(lines);
+      if (incoming.length > unreadCount) {
+        return incoming.sublist(incoming.length - unreadCount);
+      }
+      return incoming;
     } catch (e) {
       debugPrint('[ChatPushPreview] sqlite enrich failed: $e');
       return const [];
@@ -295,15 +377,6 @@ class ChatPushThreadPreview {
       return aTs.compareTo(bTs);
     });
     return out;
-  }
-
-  static int _latestMessageId(List<ChatPushPreviewLine> lines) {
-    var latest = 0;
-    for (final line in lines) {
-      final id = line.messageId ?? 0;
-      if (id > latest) latest = id;
-    }
-    return latest;
   }
 
   @visibleForTesting
