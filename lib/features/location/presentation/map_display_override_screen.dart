@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,6 +12,7 @@ import '../../../core/maps/yandex_tile_layer.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/data/chat_location_utils.dart';
+import '../../familychat/data/familychat_repository.dart';
 import '../data/location_share_coordinator.dart';
 import '../data/map_display_override_store.dart';
 
@@ -32,8 +34,10 @@ class _MapDisplayOverrideScreenState
   MapDisplayDurationPreset _preset = MapDisplayDurationPreset.hour1;
   bool _loadingLocation = true;
   bool _saving = false;
-  String? _error;
+  String? _hint;
   Timer? _countdownTimer;
+
+  static const _defaultCenter = LatLng(55.751244, 37.618423);
 
   @override
   void initState() {
@@ -51,13 +55,15 @@ class _MapDisplayOverrideScreenState
     super.dispose();
   }
 
+  FamilyChatRepository get _repo => ref.read(familychatRepositoryProvider);
+
   Future<void> _bootstrap() async {
     await _refreshActive();
-    await _loadCurrentLocation();
+    await _loadInitialMapCenter();
   }
 
   Future<void> _refreshActive({bool silent = false}) async {
-    final active = await MapDisplayOverrideStore.read();
+    final active = await MapDisplayOverrideStore.read(_repo);
     if (!mounted) return;
     if (active == null && _active == null) return;
     setState(() {
@@ -73,43 +79,62 @@ class _MapDisplayOverrideScreenState
     }
   }
 
-  Future<void> _loadCurrentLocation() async {
+  Future<void> _loadInitialMapCenter() async {
     setState(() {
       _loadingLocation = true;
-      _error = null;
+      _hint = null;
     });
+
+    LatLng? real;
+    String? hint;
+
     try {
-      final ok = await LocationShareCoordinator.ensurePermission();
-      if (!ok) {
-        throw StateError('Разрешите доступ к геолокации');
+      final settings = await _repo.locationSharingSettings();
+      final own = settings['own_location'];
+      if (own is Map) {
+        final lat = (own['latitude'] as num?)?.toDouble();
+        final lng = (own['longitude'] as num?)?.toDouble();
+        if (lat != null && lng != null) {
+          real = LatLng(lat, lng);
+        }
       }
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.medium,
-          timeLimit: Duration(seconds: 20),
-        ),
-      );
-      final real = LatLng(pos.latitude, pos.longitude);
-      if (!mounted) return;
-      setState(() {
-        _realPoint = real;
-        _pickPoint ??= real;
-        _loadingLocation = false;
-      });
-      if (_pickPoint != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          try {
-            _mapController.move(_pickPoint!, 14);
-          } catch (_) {}
-        });
+    } catch (_) {}
+
+    if (!kIsWeb && real == null) {
+      try {
+        final ok = await LocationShareCoordinator.ensurePermission();
+        if (ok) {
+          final pos = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.medium,
+              timeLimit: Duration(seconds: 20),
+            ),
+          );
+          real = LatLng(pos.latitude, pos.longitude);
+        } else {
+          hint = 'Геолокация недоступна — выберите точку на карте';
+        }
+      } catch (_) {
+        hint = 'Геолокация недоступна — выберите точку на карте';
       }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _loadingLocation = false;
-        _error = e.toString().replaceFirst('StateError: ', '');
-        _pickPoint ??= const LatLng(55.751244, 37.618423);
+    } else if (kIsWeb && real == null) {
+      hint = 'Выберите точку на карте — разрешение не нужно';
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _realPoint = real;
+      _pickPoint ??= real ?? _defaultCenter;
+      _loadingLocation = false;
+      _hint = hint;
+    });
+
+    if (_pickPoint != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        try {
+          _mapController.move(_pickPoint!, 14);
+        } catch (_) {}
       });
     }
   }
@@ -119,9 +144,7 @@ class _MapDisplayOverrideScreenState
     if (point == null || _saving) return;
     setState(() => _saving = true);
     try {
-      final settings = await ref
-          .read(familychatRepositoryProvider)
-          .locationSharingSettings();
+      final settings = await _repo.locationSharingSettings();
       if (settings['sharing_enabled'] != true) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -136,14 +159,15 @@ class _MapDisplayOverrideScreenState
       }
 
       await MapDisplayOverrideStore.set(
+        repo: _repo,
         latitude: point.latitude,
         longitude: point.longitude,
         duration: _preset.duration,
       );
-      LocationShareCoordinator.instance.attach(
-        ref.read(familychatRepositoryProvider),
-      );
-      await LocationShareCoordinator.instance.pingIfNeeded(force: true);
+      if (!kIsWeb) {
+        LocationShareCoordinator.instance.attach(_repo);
+        await LocationShareCoordinator.instance.pingIfNeeded(force: true);
+      }
       if (!mounted) return;
       await _refreshActive();
       setState(() => _saving = false);
@@ -154,11 +178,11 @@ class _MapDisplayOverrideScreenState
           ),
         ),
       );
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось сохранить')),
+        SnackBar(content: Text('Не удалось сохранить: $e')),
       );
     }
   }
@@ -167,8 +191,10 @@ class _MapDisplayOverrideScreenState
     if (_saving) return;
     setState(() => _saving = true);
     try {
-      await MapDisplayOverrideStore.clear();
-      await LocationShareCoordinator.instance.pingIfNeeded(force: true);
+      await MapDisplayOverrideStore.clear(_repo);
+      if (!kIsWeb) {
+        await LocationShareCoordinator.instance.pingIfNeeded(force: true);
+      }
       if (!mounted) return;
       setState(() {
         _active = null;
@@ -234,7 +260,8 @@ class _MapDisplayOverrideScreenState
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
             child: Text(
               'Выберите точку на карте и время — семья будет видеть её '
-              'вместо вашего текущего местоположения.',
+              'вместо вашего текущего местоположения. Точка хранится на сервере '
+              'и не перезапишется с телефона.',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -252,8 +279,7 @@ class _MapDisplayOverrideScreenState
                         mapController: _mapController,
                         options: MapOptions(
                           crs: const Epsg3395(),
-                          initialCenter:
-                              pick ?? const LatLng(55.751244, 37.618423),
+                          initialCenter: pick ?? _defaultCenter,
                           initialZoom: 14,
                           backgroundColor:
                               theme.colorScheme.surfaceContainerHighest,
@@ -304,12 +330,14 @@ class _MapDisplayOverrideScreenState
               ),
             ),
           ),
-          if (_error != null)
+          if (_hint != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: Text(
-                _error!,
-                style: TextStyle(color: theme.colorScheme.error),
+                _hint!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ),
           Padding(
@@ -318,27 +346,30 @@ class _MapDisplayOverrideScreenState
               children: [
                 Expanded(
                   child: Text(
-                    'Синяя — вы сейчас. Красная — что увидит семья.',
+                    _realPoint != null
+                        ? 'Синяя — вы сейчас. Красная — что увидит семья.'
+                        : 'Красная метка — что увидит семья.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Моё местоположение',
-                  onPressed: _loadingLocation
-                      ? null
-                      : () async {
-                          await _loadCurrentLocation();
-                          if (_realPoint != null) {
-                            setState(() => _pickPoint = _realPoint);
-                            try {
-                              _mapController.move(_realPoint!, 14);
-                            } catch (_) {}
-                          }
-                        },
-                  icon: const Icon(Icons.my_location),
-                ),
+                if (!kIsWeb)
+                  IconButton(
+                    tooltip: 'Моё местоположение',
+                    onPressed: _loadingLocation
+                        ? null
+                        : () async {
+                            await _loadInitialMapCenter();
+                            if (_realPoint != null) {
+                              setState(() => _pickPoint = _realPoint);
+                              try {
+                                _mapController.move(_realPoint!, 14);
+                              } catch (_) {}
+                            }
+                          },
+                    icon: const Icon(Icons.my_location),
+                  ),
                 IconButton(
                   tooltip: 'Открыть в Яндекс.Картах',
                   onPressed: pick == null ? null : _openInYandex,

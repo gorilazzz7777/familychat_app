@@ -66,7 +66,8 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
   }
 
   Future<void> _refreshMapOverride({bool silent = false}) async {
-    final override = await MapDisplayOverrideStore.read();
+    final override =
+        await MapDisplayOverrideStore.read(ref.read(familychatRepositoryProvider));
     if (!mounted) return;
     if (override == null && _mapOverride == null) return;
     setState(() => _mapOverride = override);

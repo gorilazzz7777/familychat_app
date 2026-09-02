@@ -2326,6 +2326,33 @@ class FamilyChatRepository {
     return res.data ?? {};
   }
 
+  Future<Map<String, dynamic>> getLocationDisplayOverride() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/location/display-override/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> setLocationDisplayOverride({
+    required double latitude,
+    required double longitude,
+    required int durationMinutes,
+  }) async {
+    final res = await _dio.put<Map<String, dynamic>>(
+      'familychat/location/display-override/',
+      data: {
+        'latitude': latitude,
+        'longitude': longitude,
+        'duration_minutes': durationMinutes,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  Future<void> clearLocationDisplayOverride() async {
+    await _dio.delete<void>('familychat/location/display-override/');
+  }
+
   Future<List<Map<String, dynamic>>> mediaComments(int attachmentId) async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/media/$attachmentId/comments/',

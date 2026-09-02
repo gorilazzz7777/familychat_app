@@ -82,7 +82,7 @@ class LocationShareCoordinator with WidgetsBindingObserver {
       final enabled = await Geolocator.isLocationServiceEnabled();
       if (!enabled) return;
 
-      final override = await MapDisplayOverrideStore.read();
+      final override = await MapDisplayOverrideStore.read(repo);
       if (override != null && override.isActive) {
         await repo.pingLocation(
           latitude: override.latitude,
@@ -94,9 +94,6 @@ class LocationShareCoordinator with WidgetsBindingObserver {
           DateTime.now().millisecondsSinceEpoch,
         );
         return;
-      }
-      if (override != null && !override.isActive) {
-        await MapDisplayOverrideStore.clear();
       }
 
       final pos = await Geolocator.getCurrentPosition(

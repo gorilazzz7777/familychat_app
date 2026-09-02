@@ -1,9 +1,6 @@
-import 'dart:convert';
+import '../../familychat/data/familychat_repository.dart';
 
-import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-/// Временная точка на семейной карте (individual premium).
+/// Временная точка на семейной карте (individual premium), хранится на сервере.
 class MapDisplayOverride {
   const MapDisplayOverride({
     required this.latitude,
@@ -24,13 +21,17 @@ class MapDisplayOverride {
     return Duration(milliseconds: ms);
   }
 
-  Map<String, dynamic> toJson() => {
-        'latitude': latitude,
-        'longitude': longitude,
-        'expires_at_ms': expiresAtMs,
-      };
-
-  factory MapDisplayOverride.fromJson(Map<String, dynamic> json) {
+  factory MapDisplayOverride.fromServerJson(Map<String, dynamic> json) {
+    var expiresAtMs = int.tryParse(json['expires_at_ms']?.toString() ?? '') ?? 0;
+    if (expiresAtMs <= 0) {
+      final raw = json['expires_at']?.toString();
+      if (raw != null && raw.isNotEmpty) {
+        final parsed = DateTime.tryParse(raw);
+        if (parsed != null) {
+          expiresAtMs = parsed.toLocal().millisecondsSinceEpoch;
+        }
+      }
+    }
     return MapDisplayOverride(
       latitude: (json['latitude'] as num?)?.toDouble() ??
           double.tryParse('${json['latitude']}') ??
@@ -38,7 +39,7 @@ class MapDisplayOverride {
       longitude: (json['longitude'] as num?)?.toDouble() ??
           double.tryParse('${json['longitude']}') ??
           0,
-      expiresAtMs: int.tryParse(json['expires_at_ms']?.toString() ?? '') ?? 0,
+      expiresAtMs: expiresAtMs,
     );
   }
 }
@@ -46,49 +47,41 @@ class MapDisplayOverride {
 abstract final class MapDisplayOverrideStore {
   MapDisplayOverrideStore._();
 
-  static const _prefsKey = 'familychat_map_display_override_v1';
+  static MapDisplayOverride? _parsePayload(Map<String, dynamic>? data) {
+    if (data == null) return null;
+    final raw = data['display_override'];
+    if (raw is! Map) return null;
+    final override =
+        MapDisplayOverride.fromServerJson(Map<String, dynamic>.from(raw));
+    if (!override.isActive) return null;
+    return override;
+  }
 
-  static Future<MapDisplayOverride?> read() async {
-    if (kIsWeb) return null;
+  static Future<MapDisplayOverride?> read(FamilyChatRepository repo) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_prefsKey);
-      if (raw == null || raw.isEmpty) return null;
-      final json = Map<String, dynamic>.from(jsonDecode(raw) as Map);
-      final override = MapDisplayOverride.fromJson(json);
-      if (!override.isActive) {
-        await clear();
-        return null;
-      }
-      return override;
+      final data = await repo.getLocationDisplayOverride();
+      return _parsePayload(data);
     } catch (_) {
       return null;
     }
   }
 
-  static Future<void> set({
+  static Future<MapDisplayOverride?> set({
+    required FamilyChatRepository repo,
     required double latitude,
     required double longitude,
     required Duration duration,
   }) async {
-    if (kIsWeb) return;
-    final expiresAtMs =
-        DateTime.now().add(duration).millisecondsSinceEpoch;
-    final override = MapDisplayOverride(
+    final data = await repo.setLocationDisplayOverride(
       latitude: latitude,
       longitude: longitude,
-      expiresAtMs: expiresAtMs,
+      durationMinutes: duration.inMinutes,
     );
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefsKey, jsonEncode(override.toJson()));
+    return _parsePayload(data);
   }
 
-  static Future<void> clear() async {
-    if (kIsWeb) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_prefsKey);
-    } catch (_) {}
+  static Future<void> clear(FamilyChatRepository repo) async {
+    await repo.clearLocationDisplayOverride();
   }
 }
 
