@@ -46,7 +46,15 @@ open Runner.xcworkspace
 
 ## Share Extension («Поделиться» → Family Chat)
 
-Target `ShareExtension` уже в Xcode-проекте. После `git pull` на Mac:
+Target `ShareExtension` уже в Xcode-проекте. Файл `ios/ShareExtension/ShareExtension.entitlements` (App Group) **в репозитории** — после `git pull` он должен быть на диске. Если Xcode пишет «could not be opened», проверьте:
+
+```bash
+ls -la ios/ShareExtension/ShareExtension.entitlements
+```
+
+Если файла нет — `git pull` и при необходимости `git checkout -- ios/ShareExtension/ShareExtension.entitlements`.
+
+После `git pull` на Mac:
 
 ```bash
 cd familychat_app

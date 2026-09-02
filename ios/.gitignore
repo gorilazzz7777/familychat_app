@@ -20,7 +20,6 @@ xcuserdata
 Podfile.lock
 Runner/GoogleService-Info.plist
 Runner/Runner.entitlements
-ShareExtension/ShareExtension.entitlements
 Runner.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 Runner.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 Flutter/App.framework
