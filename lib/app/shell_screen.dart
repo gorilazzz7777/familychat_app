@@ -575,21 +575,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     } catch (_) {}
   }
 
-  Future<void> _openFeedPost() async {
+  Future<void> _openFeedPost(FeedPostTarget target) async {
     final userId = _currentUserId;
     if (userId == null) return;
-
-    FeedPostTarget target = const FeedPostTargetSelf();
-    final childTargets =
-        await loadFeedPostChildTargets(ref.read(familychatRepositoryProvider));
-    if (childTargets.isNotEmpty && mounted) {
-      final picked = await showFeedPostTargetPicker(
-        context,
-        children: childTargets,
-      );
-      if (picked == null || !mounted) return;
-      target = picked;
-    }
 
     final childTarget = target is FeedPostTargetChild ? target : null;
     if (!mounted) return;
@@ -737,10 +725,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
               onProfileTap: _openProfile,
               actions: [
                 if (_index == _feedTabIndex)
-                  IconButton(
-                    icon: const Icon(Icons.add),
-                    tooltip: 'Новый пост',
-                    onPressed: _openFeedPost,
+                  FeedPostMenuButton(
+                    onTargetSelected: (target) =>
+                        unawaited(_openFeedPost(target)),
                   ),
                 if (_index == _familyTabIndex) ...[
                   IconButton(

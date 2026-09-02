@@ -6,6 +6,7 @@ import '../../../../../core/providers/app_providers.dart';
 import '../../../../../core/widgets/app_skeletons.dart';
 import '../../../../gallery/data/gallery_diary_album_bridge.dart';
 import '../../../../gallery/presentation/gallery_media_thumbnail.dart';
+import '../../../../members/presentation/utils/milestone_photo_add_trace.dart';
 import 'already_in_album_badge.dart';
 
 /// Выбор уже загруженных фото семьи (альбомы + сетка).
@@ -20,6 +21,7 @@ class AttachFamilyGalleryTab extends ConsumerStatefulWidget {
     this.childId,
     this.childName,
     this.excludeAlbumId,
+    this.onLinkIdMapUpdate,
   });
 
   final int userId;
@@ -30,6 +32,7 @@ class AttachFamilyGalleryTab extends ConsumerStatefulWidget {
   final int? childId;
   final String? childName;
   final String? excludeAlbumId;
+  final ValueChanged<Map<int, int>>? onLinkIdMapUpdate;
 
   @override
   ConsumerState<AttachFamilyGalleryTab> createState() =>
@@ -50,6 +53,8 @@ class _AttachFamilyGalleryTabState
   int _offset = 0;
   int _total = 0;
   int? _beforeId;
+
+  bool get _traceMilestoneFlow => widget.onLinkIdMapUpdate != null;
 
   bool get _inAlbumView => _openAlbum != null;
 
@@ -128,6 +133,14 @@ class _AttachFamilyGalleryTabState
   }
 
   Future<void> _openAlbumView(Map<String, dynamic> album) async {
+    if (_traceMilestoneFlow) {
+      MilestonePhotoAddTrace.fields('gallery.openAlbum', {
+        'albumId': album['id'],
+        'title': album['title'],
+        'source': _albumSource(album),
+        'childId': _albumChildId(album),
+      });
+    }
     setState(() {
       _openAlbum = album;
       _photos.clear();
@@ -174,6 +187,14 @@ class _AttachFamilyGalleryTabState
     try {
       final repo = ref.read(familychatRepositoryProvider);
       final albumId = album['id']?.toString() ?? 'all';
+      if (_traceMilestoneFlow) {
+        MilestonePhotoAddTrace.fields('gallery.loadPhotos', {
+          'reset': reset,
+          'albumId': albumId,
+          'source': _albumSource(album),
+          'childId': _albumChildId(album),
+        });
+      }
       List<Map<String, dynamic>> batch;
       if (_albumSource(album) == 'child') {
         final childId = _albumChildId(album);
@@ -208,6 +229,14 @@ class _AttachFamilyGalleryTabState
 
       await MediaLocalIndex.ensureLoaded();
       MediaLocalIndex.hydrateAttachments(batch);
+      if (_traceMilestoneFlow) {
+        MilestonePhotoAddTrace.galleryBatch(
+          'gallery.loadPhotos',
+          source: _albumSource(album),
+          photos: batch,
+        );
+      }
+      _publishLinkIds(batch);
       if (!mounted) return;
       setState(() {
         if (reset) {
@@ -225,7 +254,10 @@ class _AttachFamilyGalleryTabState
         _loadingPhotos = false;
         _loadingMore = false;
       });
-    } catch (e) {
+    } catch (e, st) {
+      if (_traceMilestoneFlow) {
+        MilestonePhotoAddTrace.error('gallery.loadPhotos', e, st);
+      }
       if (!mounted) return;
       setState(() {
         _loadingPhotos = false;
@@ -246,10 +278,45 @@ class _AttachFamilyGalleryTabState
     return int.tryParse('$id');
   }
 
+  int? _diaryLinkId(Map<String, dynamic> photo) {
+    final raw = photo['diary_attachment_id'];
+    if (raw is int) return raw;
+    return int.tryParse('${raw ?? ''}');
+  }
+
+  void _publishLinkIds(List<Map<String, dynamic>> batch) {
+    final cb = widget.onLinkIdMapUpdate;
+    if (cb == null || batch.isEmpty) return;
+    final map = <int, int>{};
+    for (final photo in batch) {
+      final fcId = _photoId(photo);
+      if (fcId == null) continue;
+      map[fcId] = _diaryLinkId(photo) ?? fcId;
+    }
+    if (map.isNotEmpty) {
+      if (_traceMilestoneFlow) {
+        MilestonePhotoAddTrace.linkMap('gallery.publishLinkIds', map);
+      }
+      cb(map);
+    }
+  }
+
+  bool _photoExcluded(Map<String, dynamic> photo) {
+    final fcId = _photoId(photo);
+    if (fcId != null && widget.excludeAttachmentIds.contains(fcId)) {
+      return true;
+    }
+    final diaryId = _diaryLinkId(photo);
+    if (diaryId != null && widget.excludeAttachmentIds.contains(diaryId)) {
+      return true;
+    }
+    return false;
+  }
+
   List<int> get _selectablePhotoIds => _photos
+      .where((photo) => !_photoExcluded(photo))
       .map(_photoId)
       .whereType<int>()
-      .where((id) => !widget.excludeAttachmentIds.contains(id))
       .toList();
 
   bool get _allPhotosSelected {
@@ -270,7 +337,23 @@ class _AttachFamilyGalleryTabState
 
   void _toggle(int photoId) {
     final next = Set<int>.from(widget.selected);
-    if (!next.add(photoId)) next.remove(photoId);
+    final added = next.add(photoId);
+    if (!added) next.remove(photoId);
+    if (_traceMilestoneFlow) {
+      Map<String, dynamic>? photo;
+      for (final p in _photos) {
+        if (_photoId(p) == photoId) {
+          photo = p;
+          break;
+        }
+      }
+      MilestonePhotoAddTrace.fields('gallery.toggle', {
+        'fcId': photoId,
+        'selected': added,
+        'diaryId': photo == null ? null : _diaryLinkId(photo),
+        'excluded': photo == null ? null : _photoExcluded(photo),
+      });
+    }
     widget.onSelectedChanged(next);
   }
 
@@ -362,7 +445,7 @@ class _AttachFamilyGalleryTabState
           if (photoId == null || threadId is! int) {
             return const ColoredBox(color: Color(0x22000000));
           }
-          final alreadyHere = widget.excludeAttachmentIds.contains(photoId);
+          final alreadyHere = _photoExcluded(photo);
           final inAlbums = _inCustomAlbums(photo);
           final selected = widget.selected.contains(photoId);
           return GestureDetector(

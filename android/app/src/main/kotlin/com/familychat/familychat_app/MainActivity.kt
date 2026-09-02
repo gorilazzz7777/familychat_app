@@ -244,7 +244,6 @@ class MainActivity : FlutterActivity() {
             ?: 0
         if (threadId <= 0) {
             val shortcutId = intent.getStringExtra("android.intent.extra.shortcut.ID")
-                ?: intent.getStringExtra(android.content.pm.ShortcutManager.EXTRA_SHORTCUT_ID)
             if (shortcutId != null && shortcutId.startsWith("share_chat_")) {
                 threadId = shortcutId.removePrefix("share_chat_").toIntOrNull() ?: 0
             }

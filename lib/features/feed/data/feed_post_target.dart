@@ -1,5 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../core/providers/app_providers.dart';
 import '../../familychat/data/familychat_repository.dart';
 
 /// От чьего имени публикуется пост в ленту.
@@ -57,55 +61,68 @@ Future<List<FeedPostTargetChild>> loadFeedPostChildTargets(
   }
 }
 
-/// «Моё» + каждый ребёнок; null — отмена.
-Future<FeedPostTarget?> showFeedPostTargetPicker(
-  BuildContext context, {
-  required List<FeedPostTargetChild> children,
-}) {
-  return showModalBottomSheet<FeedPostTarget>(
-    context: context,
-    showDragHandle: true,
-    builder: (ctx) {
-      return SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-              child: Text(
-                'Кто публикует в ленту?',
-                style: Theme.of(ctx).textTheme.titleMedium,
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.person_outline),
-              title: const Text('Моё'),
-              subtitle: const Text('Ваша галерея и профиль'),
-              onTap: () => Navigator.pop(ctx, const FeedPostTargetSelf()),
-            ),
-            for (final child in children)
-              ListTile(
-                leading: CircleAvatar(
-                  backgroundImage: (child.avatarUrl ?? '').isNotEmpty
-                      ? NetworkImage(child.avatarUrl!)
-                      : null,
-                  child: (child.avatarUrl ?? '').isEmpty
-                      ? Text(
-                          child.displayName.isNotEmpty
-                              ? child.displayName[0]
-                              : '?',
-                        )
-                      : null,
-                ),
-                title: Text(child.displayName),
-                subtitle: const Text('Галерея ребёнка и Dairy'),
-                onTap: () => Navigator.pop(ctx, child),
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
+/// «+» в ленте: подменю «Моё» / имя ребёнка (без шторки и подписей).
+class FeedPostMenuButton extends ConsumerStatefulWidget {
+  const FeedPostMenuButton({
+    super.key,
+    required this.onTargetSelected,
+  });
+
+  final ValueChanged<FeedPostTarget> onTargetSelected;
+
+  @override
+  ConsumerState<FeedPostMenuButton> createState() => _FeedPostMenuButtonState();
+}
+
+class _FeedPostMenuButtonState extends ConsumerState<FeedPostMenuButton> {
+  List<FeedPostTargetChild> _children = const [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadChildren());
+  }
+
+  Future<void> _loadChildren() async {
+    final children = await loadFeedPostChildTargets(
+      ref.read(familychatRepositoryProvider),
+    );
+    if (!mounted) return;
+    setState(() {
+      _children = children;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return IconButton(
+        icon: const Icon(Icons.add),
+        onPressed: null,
       );
-    },
-  );
+    }
+    if (_children.isEmpty) {
+      return IconButton(
+        icon: const Icon(Icons.add),
+        onPressed: () => widget.onTargetSelected(const FeedPostTargetSelf()),
+      );
+    }
+    return PopupMenuButton<FeedPostTarget>(
+      icon: const Icon(Icons.add),
+      onSelected: widget.onTargetSelected,
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: FeedPostTargetSelf(),
+          child: Text('Моё'),
+        ),
+        for (final child in _children)
+          PopupMenuItem(
+            value: child,
+            child: Text(child.displayName),
+          ),
+      ],
+    );
+  }
 }

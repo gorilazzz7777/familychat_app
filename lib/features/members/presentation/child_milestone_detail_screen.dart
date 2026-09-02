@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -12,6 +13,7 @@ import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart
 import '../../gallery/presentation/gallery_media_thumbnail.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
 import 'scrapbook/utils/milestone_gallery_viewer.dart';
+import 'utils/milestone_photo_add_trace.dart';
 
 /// Деталка вехи в стиле Dairy (просмотр + правки для опекунов).
 class ChildMilestoneDetailScreen extends ConsumerStatefulWidget {
@@ -193,6 +195,10 @@ class _ChildMilestoneDetailScreenState
   }
 
   Future<void> _persistBeforeMedia() async {
+    MilestonePhotoAddTrace.step(
+      'detail.persist',
+      'start achieved=$_achieved achievedAt=$_achievedAt',
+    );
     if (!_achieved) {
       setState(() {
         _achieved = true;
@@ -200,24 +206,55 @@ class _ChildMilestoneDetailScreenState
       });
     }
     _achievedAt ??= DateTime.now();
-    final m = await ref.read(familychatRepositoryProvider).patchDiaryMilestone(
-      widget.code,
-      {
-        'achieved': true,
-        'achieved_at': DateFormat('yyyy-MM-dd').format(_achievedAt!),
-      },
+    final payload = {
+      'achieved': true,
+      'achieved_at': DateFormat('yyyy-MM-dd').format(_achievedAt!),
+    };
+    MilestonePhotoAddTrace.apiRequest(
+      'detail.persist',
+      method: 'PATCH',
+      path: 'littleone-diary/milestones/${widget.code}/',
+      body: payload,
     );
-    if (mounted) setState(() => _apply(m));
+    try {
+      final m = await ref.read(familychatRepositoryProvider).patchDiaryMilestone(
+        widget.code,
+        payload,
+      );
+      MilestonePhotoAddTrace.milestone('detail.persist.ok', m);
+      if (mounted) setState(() => _apply(m));
+    } catch (e, st) {
+      MilestonePhotoAddTrace.error('detail.persist', e, st);
+      rethrow;
+    }
   }
 
   Future<void> _addPhotos() async {
     if (!widget.canEdit || _addingPhotos) return;
+    MilestonePhotoAddTrace.step('detail.openSheet', 'user tapped add photos');
+    MilestonePhotoAddTrace.fields('detail.context', {
+      'code': widget.code,
+      'childId': widget.childId,
+      'childName': widget.childName,
+      'canEdit': widget.canEdit,
+      'existingAttachmentIds': _existingAttachmentIds.toList(),
+      'excludeAlbumId': _excludeAlbumId,
+      'achieved': _achieved,
+      'photosBefore': _photos.length,
+    });
     final currentUserId = _currentUserId;
     if (currentUserId == null) {
       await _loadCurrentUserId();
     }
     final userId = _currentUserId;
-    if (userId == null || !mounted) return;
+    if (userId == null || !mounted) {
+      MilestonePhotoAddTrace.step(
+        'detail.openSheet',
+        'abort: currentUserId is null',
+      );
+      return;
+    }
+    MilestonePhotoAddTrace.fields('detail.openSheet', {'familyGalleryUserId': userId});
 
     await ChatAttachSheet.show(
       context,
@@ -228,18 +265,39 @@ class _ChildMilestoneDetailScreenState
       excludeFamilyAttachmentIds: _existingAttachmentIds,
       excludeFamilyAlbumId: _excludeAlbumId,
       onSendMedia: (_, items) async {
-        await _persistBeforeMedia();
-        await _uploadAttachItems(items);
+        MilestonePhotoAddTrace.step(
+          'detail.phonePath',
+          'selected ${items.length} items from phone',
+        );
+        try {
+          await _persistBeforeMedia();
+          await _uploadAttachItems(items);
+        } catch (e, st) {
+          MilestonePhotoAddTrace.error('detail.phonePath', e, st);
+          rethrow;
+        }
       },
       onAddFromFamilyGallery: (ids) async {
-        await _persistBeforeMedia();
-        await _linkGalleryAttachments(ids);
+        MilestonePhotoAddTrace.ids(
+          'detail.familyPath',
+          'received attachmentIds',
+          ids,
+        );
+        try {
+          await _persistBeforeMedia();
+          await _linkGalleryAttachments(ids);
+        } catch (e, st) {
+          MilestonePhotoAddTrace.error('detail.familyPath', e, st);
+          rethrow;
+        }
       },
     );
+    MilestonePhotoAddTrace.step('detail.openSheet', 'sheet closed');
   }
 
   Future<void> _uploadAttachItems(List<ChatAttachSelectionItem> items) async {
     if (items.isEmpty) return;
+    MilestonePhotoAddTrace.step('detail.upload', 'start count=${items.length}');
     setState(() => _addingPhotos = true);
     final repo = ref.read(familychatRepositoryProvider);
     var ok = 0;
@@ -248,6 +306,12 @@ class _ChildMilestoneDetailScreenState
       for (final item in items) {
         if (item.kind != 'image' && item.kind != 'video') continue;
         try {
+          MilestonePhotoAddTrace.fields('detail.upload.item', {
+            'index': ok + fail,
+            'kind': item.kind,
+            'filename': item.filename,
+            'bytes': item.bytes.length,
+          });
           final m = await repo.uploadMilestonePhoto(
             widget.code,
             bytes: item.bytes,
@@ -275,11 +339,16 @@ class _ChildMilestoneDetailScreenState
             }
           }
           ok++;
-        } catch (_) {
+        } catch (e, st) {
+          MilestonePhotoAddTrace.error('detail.upload.item', e, st);
           fail++;
         }
       }
       await _load();
+      MilestonePhotoAddTrace.step(
+        'detail.upload',
+        'done ok=$ok fail=$fail photosAfter=${_photos.length}',
+      );
       if (!mounted) return;
       final msg = fail == 0
           ? 'Добавлено: $ok'
@@ -291,26 +360,53 @@ class _ChildMilestoneDetailScreenState
   }
 
   Future<void> _linkGalleryAttachments(List<int> attachmentIds) async {
-    if (attachmentIds.isEmpty) return;
+    if (attachmentIds.isEmpty) {
+      MilestonePhotoAddTrace.step('detail.link', 'abort: empty attachmentIds');
+      return;
+    }
+    MilestonePhotoAddTrace.ids('detail.link', 'linkMilestonePhotos', attachmentIds);
+    MilestonePhotoAddTrace.fields('detail.link', {
+      'code': widget.code,
+      'photosBefore': _photos.length,
+    });
     setState(() => _addingPhotos = true);
     try {
       final m = await ref
           .read(familychatRepositoryProvider)
           .linkMilestonePhotos(widget.code, attachmentIds);
+      MilestonePhotoAddTrace.milestone('detail.link.ok', m);
       if (mounted) setState(() => _apply(m));
       await _load();
+      MilestonePhotoAddTrace.step(
+        'detail.link',
+        'reload done photosAfter=${_photos.length}',
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Добавлено: ${attachmentIds.length}')),
       );
-    } catch (_) {
-      if (!mounted) return;
+    } catch (e, st) {
+      MilestonePhotoAddTrace.error('detail.link', e, st);
+      if (!mounted) rethrow;
+      final msg = _milestoneLinkErrorMessage(e);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось добавить фото')),
+        SnackBar(content: Text(msg)),
       );
+      rethrow;
     } finally {
       if (mounted) setState(() => _addingPhotos = false);
     }
+  }
+
+  String _milestoneLinkErrorMessage(Object error) {
+    if (error is DioException) {
+      final data = error.response?.data;
+      if (data is Map) {
+        final raw = data['attachment_ids'] ?? data['detail'];
+        if (raw != null) return 'Не удалось добавить фото: $raw';
+      }
+    }
+    return 'Не удалось добавить фото';
   }
 
   Future<void> _deletePhoto(Map<String, dynamic> photo) async {

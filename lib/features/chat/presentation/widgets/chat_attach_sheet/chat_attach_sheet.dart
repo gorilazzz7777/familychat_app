@@ -9,6 +9,7 @@ import 'attach_location_tab.dart';
 import 'attach_selection_bar.dart';
 import 'chat_attach_models.dart';
 import '../../../../../core/widgets/share_to_diary_checkbox.dart';
+import '../../../../members/presentation/utils/milestone_photo_add_trace.dart';
 
 /// Режим шторки: полный чат, только телефон, или альбом (телефон + галерея семьи).
 enum ChatAttachSheetStyle {
@@ -115,6 +116,7 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
   late ChatAttachMode _mode;
   final List<ChatAttachSelectionItem> _selected = [];
   final Set<int> _familySelected = {};
+  final Map<int, int> _familyLinkIds = {};
   final _captionCtrl = TextEditingController();
   final _sheetCtrl = DraggableScrollableController();
   bool _sending = false;
@@ -129,7 +131,7 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
   @override
   void initState() {
     super.initState();
-    _mode = ChatAttachMode.gallery;
+    _mode = _albumMode ? ChatAttachMode.familyGallery : ChatAttachMode.gallery;
     _sheetCtrl.addListener(_onSheetSize);
   }
 
@@ -155,6 +157,7 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
       _mode = mode;
       _selected.clear();
       _familySelected.clear();
+      _familyLinkIds.clear();
     });
   }
 
@@ -171,6 +174,9 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
   }
 
   void _setFamilySelected(Set<int> ids) {
+    if (_milestoneAlbumFlow) {
+      MilestonePhotoAddTrace.ids('sheet.selection', 'familySelected', ids);
+    }
     setState(() {
       _familySelected
         ..clear()
@@ -194,15 +200,46 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
     }
   }
 
+  bool get _milestoneAlbumFlow => widget.style == ChatAttachSheetStyle.albumMedia;
+
+  void _mergeFamilyLinkIds(Map<int, int> chunk) {
+    if (chunk.isEmpty) return;
+    if (_milestoneAlbumFlow) {
+      MilestonePhotoAddTrace.linkMap('sheet.linkIds', chunk);
+    }
+    setState(() => _familyLinkIds.addAll(chunk));
+  }
+
   Future<void> _sendFamilySelected() async {
     if (_familySelected.isEmpty || _sending) return;
     setState(() => _sending = true);
-    final ids = _familySelected.toList();
+    final fcIds = _familySelected.toList();
+    final ids = fcIds.map((fcId) => _familyLinkIds[fcId] ?? fcId).toList();
+    if (_milestoneAlbumFlow) {
+      MilestonePhotoAddTrace.ids('sheet.addTap', 'fcSelected', fcIds);
+      MilestonePhotoAddTrace.ids('sheet.addTap', 'resolvedForApi', ids);
+      MilestonePhotoAddTrace.linkMap('sheet.addTap.map', _familyLinkIds);
+      MilestonePhotoAddTrace.fields('sheet.addTap', {
+        'childId': widget.familyGalleryChildId,
+        'userId': widget.familyGalleryUserId,
+        'excludeIds': widget.excludeFamilyAttachmentIds.toList(),
+        'excludeAlbumId': widget.excludeFamilyAlbumId,
+        'hasCallback': widget.onAddFromFamilyGallery != null,
+      });
+    }
     if (mounted) Navigator.of(context).pop();
     try {
       await widget.onAddFromFamilyGallery?.call(ids);
-    } catch (_) {
-      // caller shows errors
+      if (_milestoneAlbumFlow) {
+        MilestonePhotoAddTrace.step('sheet.addTap', 'callback completed OK');
+      }
+    } catch (e, st) {
+      if (_milestoneAlbumFlow) {
+        MilestonePhotoAddTrace.error('sheet.addTap.callback', e, st);
+      }
+      rethrow;
+    } finally {
+      _sending = false;
     }
   }
 
@@ -283,6 +320,7 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
                         childId: widget.familyGalleryChildId,
                         childName: widget.familyGalleryChildName,
                         excludeAlbumId: widget.excludeFamilyAlbumId,
+                        onLinkIdMapUpdate: _mergeFamilyLinkIds,
                       ),
                   },
                 ),

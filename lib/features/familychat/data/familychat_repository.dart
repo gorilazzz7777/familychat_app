@@ -14,6 +14,7 @@ import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../../core/settings/app_settings.dart';
 import '../../chat/data/link_preview_service.dart';
 import '../../gallery/data/gallery_diary_album_bridge.dart';
+import '../../members/presentation/utils/milestone_photo_add_trace.dart';
 
 class ThreadMessagesPage {
   const ThreadMessagesPage({
@@ -644,11 +645,32 @@ class FamilyChatRepository {
     String code,
     List<int> attachmentIds,
   ) async {
-    final res = await _dio.post<Map<String, dynamic>>(
-      'littleone-diary/milestones/$code/photos/',
-      data: {'attachment_ids': attachmentIds},
+    const path = 'littleone-diary/milestones/{code}/photos/';
+    MilestonePhotoAddTrace.apiRequest(
+      'repo.link',
+      method: 'POST',
+      path: path.replaceAll('{code}', code),
+      body: {'attachment_ids': attachmentIds},
     );
-    return res.data ?? {};
+    try {
+      final res = await _dio.post<Map<String, dynamic>>(
+        'littleone-diary/milestones/$code/photos/',
+        data: {'attachment_ids': attachmentIds},
+      );
+      MilestonePhotoAddTrace.apiResponse(
+        'repo.link',
+        status: res.statusCode,
+        data: {
+          'photos_count': (res.data?['photos'] as List?)?.length,
+          'achieved': res.data?['achieved'],
+          'gallery_album_id': res.data?['gallery_album_id'],
+        },
+      );
+      return res.data ?? {};
+    } catch (e, st) {
+      MilestonePhotoAddTrace.error('repo.link', e, st);
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> deleteMilestonePhoto(
