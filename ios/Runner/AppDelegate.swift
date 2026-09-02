@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import UserNotifications
 import CallKit
+import AVFAudio
 import flutter_callkit_incoming
 import Intents
 
@@ -175,5 +176,11 @@ import Intents
   }
 
   func onTimeOut(_ call: Call) {
+  }
+
+  func didActivateAudioSession(_ audioSession: AVAudioSession) {
+  }
+
+  func didDeactivateAudioSession(_ audioSession: AVAudioSession) {
   }
 }
