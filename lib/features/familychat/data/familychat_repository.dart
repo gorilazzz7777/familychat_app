@@ -50,6 +50,8 @@ class FamilyChatRepository {
   static const int _maxAttachmentCacheEntries = 64;
   static const int _maxAvatarCacheEntries = 32;
 
+  bool? _diaryGalleryMergeAvailable;
+
   static void _touchAttachmentLru(String key) {
     _attachmentLru.remove(key);
     _attachmentLru.add(key);
@@ -616,7 +618,7 @@ class FamilyChatRepository {
       linkedToDiary = child['diary_baby_id'] != null ||
           child['diary_family_id'] != null;
     } catch (_) {}
-    if (!linkedToDiary) return fcAlbums;
+    if (!linkedToDiary || !await _canMergeDiaryGallery()) return fcAlbums;
 
     try {
       final diaryRes =
@@ -1904,10 +1906,26 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  Future<bool> _canMergeDiaryGallery() async {
+    if (_diaryGalleryMergeAvailable != null) {
+      return _diaryGalleryMergeAvailable!;
+    }
+    try {
+      final data = await diaryShareStatus();
+      _diaryGalleryMergeAvailable = data['available'] == true;
+    } catch (_) {
+      _diaryGalleryMergeAvailable = false;
+    }
+    return _diaryGalleryMergeAvailable!;
+  }
+
   Future<Map<String, dynamic>> _mergeDiaryGalleryAlbums(
     Map<String, dynamic> familychatData,
     Future<Response<Map<String, dynamic>>> Function() loadDiary,
   ) async {
+    if (!await _canMergeDiaryGallery()) {
+      return familychatData;
+    }
     try {
       final diaryRes = await loadDiary();
       final merged = mergeDiaryCustomAlbums(
