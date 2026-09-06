@@ -12,6 +12,7 @@ import '../../../core/settings/app_settings_storage.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_media_auto_download.dart';
 import 'chat_realtime_utils.dart';
+import 'chat_sync_service.dart';
 
 /// Фоновая загрузка списка чатов и последних сообщений для офлайн-режима.
 abstract final class ChatOfflinePrefetch {
@@ -20,6 +21,12 @@ abstract final class ChatOfflinePrefetch {
   static const _secondaryDelay = Duration(seconds: 3);
 
   static Future<void> run(FamilyChatRepository repo) async {
+    if (ChatLocalStore.isSupported) {
+      // Native hub rows go through ChatSyncService so WS/local merge is kept.
+      // A raw replaceThreads() here raced syncHub and flickered the chat list.
+      await ChatSyncService.instance.syncHub(prefetchMessages: false);
+      return;
+    }
     try {
       final results = await Future.wait([
         repo.chatThreads(),
@@ -27,8 +34,8 @@ abstract final class ChatOfflinePrefetch {
       ]);
       final threads = (results[0] as List).cast<Map<String, dynamic>>();
       final members = (results[1] as List).cast<Map<String, dynamic>>();
-      await ChatLocalStore.instance.replaceThreads(threads);
-      await ChatLocalStore.instance.replaceMembers(members);
+      await FamilyChatLocalCache.saveChatThreads(threads);
+      await FamilyChatLocalCache.saveChatMembers(members);
     } catch (_) {}
   }
 
@@ -59,33 +66,15 @@ abstract final class ChatOfflinePrefetch {
 
   @Deprecated('Use run() + prefetchThreads()')
   static Future<void> runWithAllThreadMessages(FamilyChatRepository repo) async {
-    try {
-      final results = await Future.wait([
-        repo.chatThreads(),
-        repo.members(),
-      ]);
-      final threads = (results[0] as List).cast<Map<String, dynamic>>();
-      final members = (results[1] as List).cast<Map<String, dynamic>>();
-      await ChatLocalStore.instance.replaceThreads(threads);
-      await ChatLocalStore.instance.replaceMembers(members);
-
-      for (final thread in threads) {
-        final threadId = chatAsInt(thread['id']);
-        if (threadId == null) continue;
-        try {
-          final page = await repo.threadMessages(
-            threadId,
-            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
-          );
-          await ChatLocalStore.instance.upsertMessages(
-            threadId,
-            page.messages,
-          );
-          unawaited(MediaIncomingSync.ensureMessages(page.messages));
-          await prefetchThreadMedia(repo, threadId, page.messages);
-        } catch (_) {}
-      }
-    } catch (_) {}
+    await run(repo);
+    if (!ChatLocalStore.isSupported) return;
+    final threads = await ChatLocalStore.instance.readThreads();
+    final ids = <int>[];
+    for (final thread in threads) {
+      final threadId = chatAsInt(thread['id']);
+      if (threadId != null) ids.add(threadId);
+    }
+    await prefetchThreads(repo, ids);
   }
 
   /// Галерея + текущий месяц календаря — после паузы, чтобы не мешать старту.

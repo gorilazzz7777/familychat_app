@@ -83,16 +83,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   /// Обновить список чатов (например при возврате на вкладку).
   Future<void> refresh({bool silent = true}) async {
     if (_localFirst) {
-      await _hydrateFromLocalStore();
-      if (_threads.isEmpty && mounted) {
-        setState(() => _loading = true);
-      }
       final repo = ref.read(familychatRepositoryProvider);
-      unawaited(
-        ChatSyncService.instance.syncHub(
-          prefetchMessages: false,
-          force: true,
-        ),
+      // Watch SQLite is the UI source of truth. Hydrating here raced
+      // `_onThreadsUpdated` (no generation) and could flash skeleton.
+      await ChatSyncService.instance.syncHub(
+        prefetchMessages: false,
+        force: true,
       );
       unawaited(ChatOfflineSync.instance.run(repo));
       return;
@@ -104,20 +100,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Future<void> _refreshFromLocalStore() async {
     if (!_localFirst) return;
     final threads = await ChatLocalReads.threads();
-    final enriched = await _enrichThreadsForDisplay(threads);
+    await _onThreadsUpdated(threads);
     final members = await ChatLocalReads.members();
-    if (!mounted) return;
-    setState(() {
-      if (threads.isNotEmpty) {
-        _threads = _sortedThreads(enriched);
-      }
-      if (members.isNotEmpty) {
-        _applyMembers(members);
-      }
-      if (threads.isNotEmpty || _hubBootstrapDone) {
-        _loading = false;
-      }
-    });
+    if (!mounted || members.isEmpty) return;
+    setState(() => _applyMembers(members));
   }
 
   @override
@@ -148,10 +134,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       await _load(silent: false);
       return;
     }
-    final existing = await ChatLocalStore.instance.readThreads();
-    if (existing.isEmpty && mounted) {
-      setState(() => _loading = true);
-    }
     await ChatSyncService.instance.syncHub(
       prefetchMessages: true,
       force: true,
@@ -160,9 +142,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     final repo = ref.read(familychatRepositoryProvider);
     unawaited(ChatOfflineSync.instance.run(repo));
     _hubBootstrapDone = true;
-    if (_loading && _threads.isNotEmpty && mounted) {
-      setState(() => _loading = false);
-    }
+    final threads = await ChatLocalReads.threads();
+    if (!mounted) return;
+    await _onThreadsUpdated(threads);
+    if (!mounted || !_loading) return;
+    setState(() => _loading = false);
   }
 
   @override
@@ -308,23 +292,33 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     });
     _membersSub = ChatLocalStore.instance.watchMembers().listen((members) {
       if (!mounted) return;
+      if (members.isEmpty && _memberByUserId.isNotEmpty) return;
       setState(() => _applyMembers(members));
     });
   }
 
   Future<void> _onThreadsUpdated(List<Map<String, dynamic>> threads) async {
     if (!mounted) return;
+    if (threads.isEmpty) {
+      // Don't bump generation: a transient empty must not cancel in-flight
+      // enrich of a populated snapshot.
+      if (_threads.isNotEmpty) return;
+      if (!_hubBootstrapDone) return;
+      if (_loading) setState(() => _loading = false);
+      return;
+    }
     final gen = ++_threadsEnrichGen;
     final enriched = _localFirst
         ? await enrichChatThreadsLastMessages(threads)
         : threads;
     if (!mounted || gen != _threadsEnrichGen) return;
+    final sorted = _sortedThreads(enriched);
+    final same = _threadsFingerprint(_threads) == _threadsFingerprint(sorted);
+    final nextLoading = false;
+    if (same && _loading == nextLoading) return;
     setState(() {
-      _threads = _sortedThreads(enriched);
-      // Empty emission before bootstrap must not flash "Нет чатов".
-      if (threads.isNotEmpty || _hubBootstrapDone) {
-        _loading = false;
-      }
+      if (!same) _threads = sorted;
+      _loading = nextLoading;
     });
   }
 
@@ -356,23 +350,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Future<void> _hydrateFromLocalStore() async {
     final cachedThreads = await ChatLocalReads.threads();
     if (cachedThreads.isEmpty) return;
-    final enriched = await _enrichThreadsForDisplay(cachedThreads);
+    await _onThreadsUpdated(cachedThreads);
     final cachedMembers = await ChatLocalReads.members();
-    if (!mounted) return;
-    setState(() {
-      _threads = _sortedThreads(enriched);
-      if (cachedMembers.isNotEmpty) {
-        _applyMembers(cachedMembers);
-      }
-      _loading = false;
-    });
-  }
-
-  Future<List<Map<String, dynamic>>> _enrichThreadsForDisplay(
-    List<Map<String, dynamic>> threads,
-  ) async {
-    if (!_localFirst || threads.isEmpty) return threads;
-    return enrichChatThreadsLastMessages(threads);
+    if (!mounted || cachedMembers.isEmpty) return;
+    setState(() => _applyMembers(cachedMembers));
   }
 
   void _onRealtime(Map<String, dynamic> event) {
@@ -393,10 +374,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Future<void> _load({bool silent = false}) async {
     if (!silent) {
       await _hydrateFromLocalStore();
-      if (_threads.isEmpty && mounted) {
-        setState(() => _loading = true);
-      }
     }
+    final gen = ++_threadsEnrichGen;
     try {
       final repo = ref.read(familychatRepositoryProvider);
       final results = await Future.wait([
@@ -409,7 +388,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         threads: list,
         members: members,
       );
-      if (!mounted) return;
+      if (!mounted || gen != _threadsEnrichGen) return;
       final sorted = _sortedThreads(list);
       final sameThreads = _threadsFingerprint(_threads) ==
           _threadsFingerprint(sorted);
@@ -425,10 +404,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       });
       unawaited(ChatOfflineSync.instance.refreshOnline(repo));
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || gen != _threadsEnrichGen) return;
       if (_threads.isEmpty) {
         await _hydrateFromLocalStore();
       }
+      if (!mounted || gen != _threadsEnrichGen) return;
       setState(() {
         _loading = false;
       });
@@ -438,7 +418,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   String _threadsFingerprint(List<Map<String, dynamic>> threads) {
     return threads.map((t) {
       final last = t['last_message'] as Map<String, dynamic>?;
-      return '${t['id']}|${t['unread_count']}|${last?['id']}|${t['title']}|${t['custom_title']}';
+      return '${t['id']}|${t['unread_count']}|${last?['id']}|${last?['read_status']}|${t['title']}|${t['custom_title']}|${chatMessagePreviewText(last)}';
     }).join(';');
   }
 
@@ -645,6 +625,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               ],
             )
           : ListView.builder(
+              key: PageStorageKey<String>('chat-hub-${filter.name}'),
               physics: const AlwaysScrollableScrollPhysics(),
               itemCount: filtered.length,
               itemBuilder: (context, i) {
@@ -672,6 +653,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 );
 
                 return ListTile(
+                  key: ValueKey(t['id']),
                   leading: ChatAvatar(
                     name: _avatarName(t),
                     avatarUrl: avatarAsset != null ? null : _dmAvatarUrl(t),
