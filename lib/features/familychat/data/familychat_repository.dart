@@ -2290,6 +2290,21 @@ class FamilyChatRepository {
     } catch (_) {}
   }
 
+  Future<void> submitFeedback({
+    required String email,
+    required String message,
+    String category = 'general',
+  }) async {
+    await _dio.post(
+      'feedback/',
+      data: {
+        'email': email,
+        'message': message,
+        'category': category,
+      },
+    );
+  }
+
   Future<Map<String, dynamic>> locationSharingSettings() async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/location/sharing/',

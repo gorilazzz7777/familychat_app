@@ -18,6 +18,7 @@ import 'media_storage_settings_screen.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
+import 'child_safety_report_screen.dart';
 import 'profile_gallery_tab.dart';
 import '../../auth/presentation/social_account_link.dart';
 import '../../auth/presentation/widgets/google_registration_warning.dart';
@@ -746,6 +747,23 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
+            Icons.shield_outlined,
+            color: theme.colorScheme.primary,
+          ),
+          title: const Text('Безопасность детей'),
+          subtitle: const Text('Сообщить о проблеме'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const ChildSafetyReportScreen(),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
             Icons.privacy_tip_outlined,
             color: theme.colorScheme.primary,
           ),
@@ -762,6 +780,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           title: const Text('Пользовательское соглашение'),
           trailing: const Icon(Icons.open_in_new),
           onTap: () => openFamilyChatUserAgreement(context),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            Icons.child_care_outlined,
+            color: theme.colorScheme.primary,
+          ),
+          title: const Text('Стандарты безопасности детей'),
+          trailing: const Icon(Icons.open_in_new),
+          onTap: () => openFamilyChatChildSafetyStandards(context),
         ),
       ],
     );

@@ -20,3 +20,6 @@ Future<void> openFamilyChatPrivacyPolicy(BuildContext context) =>
 
 Future<void> openFamilyChatUserAgreement(BuildContext context) =>
     openLegalDocumentPage(context, Env.legalAgreementUrl);
+
+Future<void> openFamilyChatChildSafetyStandards(BuildContext context) =>
+    openLegalDocumentPage(context, Env.legalChildSafetyUrl);
