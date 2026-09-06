@@ -11,11 +11,13 @@ import '../core/cache/familychat_local_cache.dart';
 import '../core/platform/app_foreground.dart';
 import '../core/providers/app_providers.dart';
 import '../core/impersonation/admin_enter.dart';
+import '../core/impersonation/impersonation_storage.dart';
 import '../core/routing/app_uri_parser.dart';
 import '../core/push/push_navigation.dart';
 import '../core/session/auth_session_bus.dart';
 import '../features/auth/data/oauth_login_service.dart';
 import '../features/auth/presentation/login_screen.dart';
+import '../features/auth/utils/guest_status.dart';
 import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_realtime_utils.dart';
 import '../features/chat/data/chat_sync_service.dart';
@@ -72,7 +74,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     });
     _invalidSub = AuthSessionBus.instance.onSessionInvalidated.listen((_) {
       if (!mounted) return;
-      unawaited(_logout());
+      unawaited(_logout(explicit: false));
     });
     unawaited(_boot());
     if (!kIsWeb) {
@@ -174,13 +176,13 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       final token = prefs.getString(_pendingInviteKey);
       if (!mounted) return;
       setState(() {
-        _pendingFriendInvite =
-            (friendToken != null && friendToken.isNotEmpty) ? friendToken : null;
+        _pendingFriendInvite = (friendToken != null && friendToken.isNotEmpty)
+            ? friendToken
+            : null;
         _pendingInvite = (token != null && token.isNotEmpty) ? token : null;
       });
     } catch (_) {}
   }
-
 
   /// Фоновая проверка invite; невалидные токены убираем.
   Future<void> _validatePendingInvitesInBackground() async {
@@ -275,13 +277,14 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     return code == 401 || code == 403;
   }
 
-  void _enterWithStatus(Map<String, dynamic> status, {required bool fromCache}) {
+  void _enterWithStatus(Map<String, dynamic> status,
+      {required bool fromCache}) {
     setState(() {
       _checking = false;
       _loggedIn = true;
       _status = status;
-      _ready = status['onboarding_complete'] == true &&
-          status['has_family'] == true;
+      _ready =
+          status['onboarding_complete'] == true && status['has_family'] == true;
       _bootError = null;
     });
     if (fromCache) {
@@ -311,8 +314,8 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   void _applyFreshStatus(Map<String, dynamic> status) {
     if (!mounted) return;
     final wasReady = _ready;
-    final ready = status['onboarding_complete'] == true &&
-        status['has_family'] == true;
+    final ready =
+        status['onboarding_complete'] == true && status['has_family'] == true;
     setState(() {
       _status = status;
       _ready = ready;
@@ -421,36 +424,72 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     });
 
     await _persistWebEntryLocal();
-    // OAuth callback — единственный случай, где сеть до login допустима.
     await _consumeOAuthIfNeeded();
+
+    final auth = ref.read(authRepositoryProvider);
+    if (!await _hasSession()) {
+      try {
+        await auth.ensureSession();
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _checking = false;
+          _loggedIn = false;
+          _bootError = e is DioException
+              ? 'Не удалось войти (${e.response?.statusCode ?? 'сеть'})'
+              : 'Не удалось войти. Проверьте интернет.';
+        });
+        return;
+      }
+    }
 
     if (!await _hasSession()) {
       await _showLogin();
       return;
     }
 
+    if (!await ImpersonationStorage().isActive()) {
+      unawaited(auth.ensureDeviceBound());
+    }
+    unawaited(auth.syncGuestSessionFlag());
+
     // Cache-first: повторный запуск — Shell сразу, status в фоне.
     final cached = await FamilyChatLocalCache.readStatus();
     if (cached != null && cached.isNotEmpty) {
-      try {
-        await ref.read(themeSeedProvider.notifier).syncFromStatus(cached);
-      } catch (_) {}
-      if (!mounted) return;
-      _enterWithStatus(cached, fromCache: true);
-      unawaited(_finishBootFromNetwork(background: true));
-      return;
+      final me = await auth.fetchMe();
+      final meId = _userIdFromMe(me);
+      final cachedId = cached['user_id'] is int
+          ? cached['user_id'] as int
+          : int.tryParse('${cached['user_id']}');
+      if (meId != null && cachedId == meId) {
+        try {
+          await ref.read(themeSeedProvider.notifier).syncFromStatus(cached);
+        } catch (_) {}
+        if (!mounted) return;
+        _enterWithStatus(cached, fromCache: true);
+        unawaited(_finishBootFromNetwork(background: true));
+        return;
+      }
+      await FamilyChatLocalCache.clearStatus();
     }
 
     // Первый вход / нет кэша — ждём status (спиннер).
     await _finishBootFromNetwork(background: false);
   }
 
+  int? _userIdFromMe(Map<String, dynamic>? me) {
+    final user = me?['user'];
+    if (user is Map) {
+      final id = user['id'];
+      if (id is int) return id;
+      return int.tryParse('$id');
+    }
+    return null;
+  }
+
   Future<void> _maybeHandleFamilyTransfer() async {
     final token = _pendingInvite;
-    if (token == null ||
-        token.isEmpty ||
-        _familyTransferHandling ||
-        !_ready) {
+    if (token == null || token.isEmpty || _familyTransferHandling || !_ready) {
       return;
     }
     _familyTransferHandling = true;
@@ -548,7 +587,8 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       ChatOfflineSync.instance.setOnline(true);
       if (!mounted) return;
       final wasReady = _ready;
-      final ready = st['onboarding_complete'] == true && st['has_family'] == true;
+      final ready =
+          st['onboarding_complete'] == true && st['has_family'] == true;
       setState(() {
         _status = st;
         _ready = ready;
@@ -562,7 +602,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     } catch (_) {}
   }
 
-  Future<void> _logout() async {
+  Future<void> _logout({bool explicit = true}) async {
     final nav = familyChatNavigatorKey.currentState;
     if (nav != null && nav.canPop()) {
       nav.popUntil((route) => route.isFirst);
@@ -573,7 +613,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     PushRegistrationService.resetSession();
     await ref.read(themeSeedProvider.notifier).resetToDefault();
     await ref.read(appSettingsProvider.notifier).resetToDefaults();
-    await ref.read(authRepositoryProvider).logout();
+    final isGuest = GuestStatus.fromStatusMap(_status);
+    await ref
+        .read(authRepositoryProvider)
+        .logout(isGuest: isGuest, explicit: explicit);
     await FamilyChatLocalCache.clearStatus();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('familychat_push_prompt_dismissed');
@@ -585,12 +628,13 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       _loggedIn = false;
       _ready = false;
       _status = null;
-      _checking = false;
+      _checking = true;
       _bootError = null;
       _pendingInvite = null;
       _pendingFriendInvite = null;
       _transferOnboardingSession = null;
     });
+    await _boot();
   }
 
   @override

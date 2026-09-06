@@ -5,7 +5,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/constants/api_error_messages.dart';
 import '../../../core/invite/deferred_invite_recovery.dart';
+import '../../../core/legal/family_chat_legal_links.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../auth/presentation/social_account_link.dart';
+import '../../auth/presentation/widgets/google_registration_warning.dart';
+import '../../auth/presentation/widgets/social_login_panel.dart';
+import '../../auth/utils/guest_status.dart';
 import '../../members/family_invite_share.dart';
 import '../../members/presentation/family_join_code_dialog.dart';
 import '../../profile/presentation/birthday_format.dart';
@@ -34,6 +39,7 @@ class OnboardingScreen extends ConsumerStatefulWidget {
   final String? pendingInviteToken;
   final String? pendingFriendInviteToken;
   final VoidCallback? onPendingInviteCleared;
+
   /// После перехода в другую семью — только вопросы родства (без профиля).
   final Map<String, dynamic>? transferSession;
 
@@ -61,6 +67,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   String? _inviteToken;
   bool _joinByInvite = false;
   bool _fromFriendInvite = false;
+  bool _isGuest = true;
+  bool _linkingSocial = false;
+  bool _googleBlocked = false;
 
   @override
   void initState() {
@@ -90,6 +99,91 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     }
     _loadKinship();
     _loadPrefill();
+    _loadGuestFlag();
+  }
+
+  Future<void> _loadGuestFlag() async {
+    try {
+      final st = await ref.read(familychatRepositoryProvider).status();
+      if (!mounted) return;
+      setState(() => _isGuest = GuestStatus.fromStatusMap(st));
+    } catch (_) {}
+  }
+
+  Future<void> _linkSocial(String provider) async {
+    if (_linkingSocial || _loading) return;
+    setState(() {
+      _linkingSocial = true;
+      _googleBlocked = false;
+      _error = null;
+    });
+    final result = await linkSocialAccount(ref: ref, provider: provider);
+    if (!mounted) return;
+    if (result.ok) {
+      widget.onComplete();
+      return;
+    }
+    setState(() {
+      _linkingSocial = false;
+      _googleBlocked = result.googleRegistrationBlocked;
+      _error = result.error;
+    });
+  }
+
+  Widget _existingAccountBlock(ThemeData theme) {
+    if (!_isGuest) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Divider(height: 32),
+          Text(
+            'Вы вошли через соцсеть',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Продолжите регистрацию — аккаунт уже привязан.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.4,
+            ),
+          ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Divider(height: 32),
+        Text(
+          'Уже есть аккаунт?',
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Войдите через соцсеть, если у вас уже есть аккаунт.',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (_googleBlocked) ...[
+          const GoogleRegistrationWarning(),
+          const SizedBox(height: 12),
+        ],
+        SocialLoginPanel(
+          loading: _loading || _linkingSocial,
+          onVk: () => _linkSocial('vk'),
+          onYandex: () => _linkSocial('yandex'),
+          onGoogle: () => _linkSocial('google'),
+        ),
+      ],
+    );
   }
 
   Future<void> _clearInviteIntent() async {
@@ -108,7 +202,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _loadPrefill() async {
     if (_prefillLoaded) return;
     try {
-      final hints = await ref.read(familychatRepositoryProvider).onboardingPrefill();
+      final hints =
+          await ref.read(familychatRepositoryProvider).onboardingPrefill();
       if (!mounted) return;
       setState(() {
         _prefillLoaded = true;
@@ -146,7 +241,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   Future<void> _loadKinship() async {
     try {
-      final opts = await ref.read(familychatRepositoryProvider).kinshipOptions();
+      final opts =
+          await ref.read(familychatRepositoryProvider).kinshipOptions();
       if (!mounted) return;
       setState(() => _kinshipOptions = opts);
     } catch (_) {}
@@ -190,7 +286,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _continueInviteFlow() async {
     final token = _inviteToken!;
     try {
-      var accept = await ref.read(familychatRepositoryProvider).acceptInvite(token);
+      var accept =
+          await ref.read(familychatRepositoryProvider).acceptInvite(token);
       if (!mounted) return;
       if (accept['needs_transfer_confirm'] == true) {
         final current =
@@ -230,12 +327,16 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         if (!mounted) return;
       }
       if (accept['needs_profile'] == true) {
-        final q = await ref.read(familychatRepositoryProvider).startOnboardingQuestions(token);
+        final q = await ref
+            .read(familychatRepositoryProvider)
+            .startOnboardingQuestions(token);
         _sessionId = q['onboarding_session_id'] as int?;
-        _questions = (q['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        _questions =
+            (q['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
       } else {
         _sessionId = accept['onboarding_session_id'] as int?;
-        _questions = (accept['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        _questions =
+            (accept['questions'] as List?)?.cast<Map<String, dynamic>>() ?? [];
       }
       if (!mounted) return;
       if (_questions.isEmpty) {
@@ -378,10 +479,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _loading = true;
     });
     try {
-      final result = await ref.read(familychatRepositoryProvider).completeOnboarding(
-            sessionId: _sessionId!,
-            answers: answers,
-          );
+      final result =
+          await ref.read(familychatRepositoryProvider).completeOnboarding(
+                sessionId: _sessionId!,
+                answers: answers,
+              );
       if (!mounted) return;
       if (result['needs_more_answers'] == true) {
         final nextQuestions =
@@ -410,12 +512,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          widget.transferSession != null
-              ? 'Новая семья'
-              : 'Добро пожаловать',
+          widget.transferSession != null ? 'Новая семья' : 'Добро пожаловать',
         ),
         leading: BackButton(
-          onPressed: _loading ? null : widget.onLogout,
+          onPressed: _loading || _linkingSocial ? null : widget.onLogout,
         ),
       ),
       body: ListView(
@@ -423,29 +523,36 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         children: [
           const IosSafariInstallHint(),
           if (_error != null) ...[
-            Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            Text(_error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error)),
             const SizedBox(height: 16),
           ],
           if (_step == _OnboardingStep.choose) ...[
             const Text('Как вы хотите начать?'),
             const SizedBox(height: 16),
             FilledButton(
-              onPressed: () async {
-                await _clearInviteIntent();
-                if (!mounted) return;
-                setState(() {
-                  _error = null;
-                  _step = _OnboardingStep.profile;
-                });
-                _loadPrefill();
-              },
+              onPressed: _loading || _linkingSocial
+                  ? null
+                  : () async {
+                      await _clearInviteIntent();
+                      if (!mounted) return;
+                      setState(() {
+                        _error = null;
+                        _step = _OnboardingStep.profile;
+                      });
+                      _loadPrefill();
+                    },
               child: const Text('Создать свою семью'),
             ),
             const SizedBox(height: 8),
             OutlinedButton(
-              onPressed: _loading ? null : _joinWithInviteCode,
+              onPressed:
+                  _loading || _linkingSocial ? null : _joinWithInviteCode,
               child: const Text('У меня есть приглашение'),
             ),
+            _existingAccountBlock(Theme.of(context)),
+            const SizedBox(height: 24),
+            FamilyChatLegalLinks(enabled: !_loading && !_linkingSocial),
           ],
           if (_step == _OnboardingStep.profile) ...[
             TextField(
@@ -485,7 +592,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               value: _birthdayShowYear,
               onChanged: (v) => setState(() => _birthdayShowYear = v ?? true),
               title: const Text('Показывать год'),
-              subtitle: const Text('Другим участникам будет виден полный год рождения'),
+              subtitle: const Text(
+                  'Другим участникам будет виден полный год рождения'),
               controlAffinity: ListTileControlAffinity.leading,
             ),
             const SizedBox(height: 24),
@@ -495,7 +603,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
           ],
           if (_step == _OnboardingStep.createFamily) ...[
-            const Text('Создайте семью и пригласите близких по QR-коду или цифровому коду.'),
+            const Text(
+                'Создайте семью и пригласите близких по QR-коду или цифровому коду.'),
             const SizedBox(height: 24),
             FilledButton(
               onPressed: _loading ? null : _createFamily,
@@ -549,7 +658,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(q['text']?.toString() ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
+                    Text(q['text']?.toString() ?? '',
+                        style: const TextStyle(fontWeight: FontWeight.w600)),
                     const SizedBox(height: 8),
                     if (options.isNotEmpty)
                       DropdownButtonFormField<String>(
@@ -562,7 +672,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                               ),
                             )
                             .toList(),
-                        onChanged: (v) => setState(() => _answers[id] = v ?? ''),
+                        onChanged: (v) =>
+                            setState(() => _answers[id] = v ?? ''),
                       )
                     else
                       TextField(
@@ -590,7 +701,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
               child: const Text('Завершить'),
             ),
           ],
-          if (_loading) ...[
+          if (_loading || _linkingSocial) ...[
             const SizedBox(height: 24),
             const Center(child: CircularProgressIndicator()),
           ],

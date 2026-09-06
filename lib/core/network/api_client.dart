@@ -15,6 +15,8 @@ const String _kAuthRefreshPath = 'auth/refresh/';
 
 bool _isAnonymousApiAuthPath(String path) {
   return path.contains(_kAuthRefreshPath) ||
+      path.contains('auth/guest/') ||
+      path.contains('auth/device-auth/') ||
       path.contains('auth/yandex/session/consume/') ||
       path.contains('auth/vk/session/consume/') ||
       path.contains('auth/google/session/consume/');
@@ -48,14 +50,14 @@ class ApiClient {
     final storage = this.tokenStorage;
     configureNativeHttpAdapter(this.dio);
     this.dio.interceptors.add(
-      _AuthInterceptor(storage, this.dio, this.dio),
-    );
+          _AuthInterceptor(storage, this.dio, this.dio),
+        );
 
     if (!identical(this.dio, this.sendDio)) {
       configureNativeHttpAdapter(this.sendDio);
       this.sendDio.interceptors.add(
-        _AuthInterceptor(storage, this.sendDio, this.sendDio),
-      );
+            _AuthInterceptor(storage, this.sendDio, this.sendDio),
+          );
     }
 
     if (kDebugMode) {
@@ -169,7 +171,8 @@ class _AuthInterceptor extends Interceptor {
   }
 
   @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) async {
+  void onRequest(
+      RequestOptions options, RequestInterceptorHandler handler) async {
     if (!_isAnonymousApiAuthPath(options.path)) {
       final token = await _accessTokenForRequest();
       if (token != null && token.isNotEmpty) {

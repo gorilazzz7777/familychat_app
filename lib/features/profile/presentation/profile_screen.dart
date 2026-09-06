@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/widgets/family_app_bar.dart';
+import '../../../core/legal/legal_page_launcher.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/settings/app_settings_controller.dart';
 import '../../../core/settings/media_storage_options.dart';
@@ -18,6 +19,10 @@ import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
 import 'profile_gallery_tab.dart';
+import '../../auth/presentation/social_account_link.dart';
+import '../../auth/presentation/widgets/google_registration_warning.dart';
+import '../../auth/presentation/widgets/social_login_panel.dart';
+import '../../auth/utils/guest_status.dart';
 import '../../chat/presentation/widgets/chat_image_viewer.dart';
 import '../../location/presentation/location_sharing_settings_screen.dart';
 import '../../members/presentation/members_screen.dart';
@@ -50,6 +55,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   String? _avatarUrl;
   bool _avatarBusy = false;
   bool _saving = false;
+  bool _linkingSocial = false;
+  bool _googleBlocked = false;
 
   @override
   void initState() {
@@ -89,6 +96,32 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     final full = '${_firstName.text} ${_lastName.text}'.trim();
     if (full.isNotEmpty) return full;
     return widget.status['display_name']?.toString() ?? 'Профиль';
+  }
+
+  bool get _isGuest => GuestStatus.fromStatusMap(widget.status);
+
+  Future<void> _linkSocial(String provider) async {
+    if (_linkingSocial) return;
+    setState(() {
+      _linkingSocial = true;
+      _googleBlocked = false;
+    });
+    final result = await linkSocialAccount(ref: ref, provider: provider);
+    if (!mounted) return;
+    setState(() => _linkingSocial = false);
+    if (result.ok) {
+      widget.onStatusChanged();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Аккаунт успешно привязан')),
+      );
+      return;
+    }
+    setState(() => _googleBlocked = result.googleRegistrationBlocked);
+    if (result.error != null && result.error!.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.error!)),
+      );
+    }
   }
 
   Future<void> _pickBirthDate() async {
@@ -162,7 +195,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             ),
             if (hasPhoto)
               ListTile(
-                leading: Icon(Icons.delete_outline, color: Theme.of(ctx).colorScheme.error),
+                leading: Icon(Icons.delete_outline,
+                    color: Theme.of(ctx).colorScheme.error),
                 title: Text(
                   'Удалить фото',
                   style: TextStyle(color: Theme.of(ctx).colorScheme.error),
@@ -306,7 +340,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     if (ok != true || !mounted) return;
 
     try {
-      await ref.read(authRepositoryProvider).deleteAccount(confirmDeletion: true);
+      await ref
+          .read(authRepositoryProvider)
+          .deleteAccount(confirmDeletion: true);
       await widget.onLogout();
     } catch (e) {
       if (!mounted) return;
@@ -466,9 +502,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               border: Border.all(
-                color: selected
-                    ? cs.primary
-                    : cs.outline.withValues(alpha: 0.5),
+                color:
+                    selected ? cs.primary : cs.outline.withValues(alpha: 0.5),
               ),
             ),
             child: SizedBox(
@@ -535,6 +570,33 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                 )
               : const Text('Сохранить'),
         ),
+        if (_isGuest) ...[
+          const SizedBox(height: 32),
+          Text(
+            'Привязать аккаунт',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Чтобы не потерять семью при смене телефона, войдите через соцсеть.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (_googleBlocked) ...[
+            const GoogleRegistrationWarning(),
+            const SizedBox(height: 12),
+          ],
+          SocialLoginPanel(
+            loading: _linkingSocial,
+            onVk: () => _linkSocial('vk'),
+            onYandex: () => _linkSocial('yandex'),
+            onGoogle: () => _linkSocial('google'),
+          ),
+        ],
         const SizedBox(height: 24),
         OutlinedButton.icon(
           onPressed: _confirmLogout,
@@ -544,7 +606,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         const SizedBox(height: 12),
         TextButton.icon(
           onPressed: _confirmDeleteAccount,
-          icon: Icon(Icons.delete_forever_outlined, color: theme.colorScheme.error),
+          icon: Icon(Icons.delete_forever_outlined,
+              color: theme.colorScheme.error),
           label: Text(
             'Удалить профиль',
             style: TextStyle(color: theme.colorScheme.error),
@@ -561,7 +624,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
       children: [
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.palette_outlined, color: theme.colorScheme.primary),
+          leading:
+              Icon(Icons.palette_outlined, color: theme.colorScheme.primary),
           title: const Text('Оформление'),
           subtitle: const Text('Цвет темы приложения'),
           trailing: Row(
@@ -650,7 +714,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.notifications_outlined, color: theme.colorScheme.primary),
+          leading: Icon(Icons.notifications_outlined,
+              color: theme.colorScheme.primary),
           title: const Text('Пуш-уведомления'),
           subtitle: const Text('Типы уведомлений и тихие часы'),
           trailing: const Icon(Icons.chevron_right),
@@ -664,7 +729,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.view_agenda_outlined, color: theme.colorScheme.primary),
+          leading: Icon(Icons.view_agenda_outlined,
+              color: theme.colorScheme.primary),
           title: const Text('Разделы меню'),
           subtitle: const Text('Что показывать в нижней панели'),
           trailing: const Icon(Icons.chevron_right),
@@ -675,6 +741,27 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
               ),
             );
           },
+        ),
+        const Divider(height: 32),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            Icons.privacy_tip_outlined,
+            color: theme.colorScheme.primary,
+          ),
+          title: const Text('Политика конфиденциальности'),
+          trailing: const Icon(Icons.open_in_new),
+          onTap: () => openFamilyChatPrivacyPolicy(context),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            Icons.description_outlined,
+            color: theme.colorScheme.primary,
+          ),
+          title: const Text('Пользовательское соглашение'),
+          trailing: const Icon(Icons.open_in_new),
+          onTap: () => openFamilyChatUserAgreement(context),
         ),
       ],
     );
