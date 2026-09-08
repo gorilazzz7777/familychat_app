@@ -35,6 +35,7 @@ class ChatImageAlbum extends StatelessWidget {
     this.uploadMessageId,
     this.onCancelUpload,
     this.messageMetadata = const {},
+    this.messageCreatedAt,
   });
 
   final int threadId;
@@ -45,6 +46,7 @@ class ChatImageAlbum extends StatelessWidget {
   final int? uploadMessageId;
   final VoidCallback? onCancelUpload;
   final Map<String, dynamic> messageMetadata;
+  final DateTime? messageCreatedAt;
 
   static const double _gap = 2;
 
@@ -66,6 +68,7 @@ class ChatImageAlbum extends StatelessWidget {
         uploadMessageId: uploadMessageId,
         onCancelUpload: onCancelUpload,
         messageMetadata: messageMetadata,
+        messageCreatedAt: messageCreatedAt,
       );
     }
 
@@ -183,32 +186,23 @@ class ChatImageAlbum extends StatelessWidget {
     BorderRadius? borderRadius,
     String? overlayLabel,
   }) {
-    final local = attachment['local_bytes'];
-    final hasLocal = isSafeUiPreviewBytes(local);
-    final canOpen = onImageTap != null && !hasLocal;
+    // Always ChatNetworkImage: it prefers local_bytes / local_device_path, then
+    // URL. Avoid Image.memory → network switch that blinks on share deliver.
+    final canOpen = onImageTap != null &&
+        !isSafeUiPreviewBytes(attachment['local_bytes']);
 
-    Widget image;
-    if (hasLocal) {
-      image = Image.memory(
-        local as Uint8List,
-        width: width,
-        height: height,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-      );
-    } else {
-      image = ChatNetworkImage(
-        threadId: threadId,
-        attachment: attachment,
-        width: width,
-        height: height,
-        fit: BoxFit.cover,
-        uploadMessageId: uploadMessageId,
-        onCancelUpload: onCancelUpload,
-        messageMetadata: messageMetadata,
-        borderRadius: borderRadius,
-      );
-    }
+    Widget image = ChatNetworkImage(
+      threadId: threadId,
+      attachment: attachment,
+      width: width,
+      height: height,
+      fit: BoxFit.cover,
+      uploadMessageId: uploadMessageId,
+      onCancelUpload: onCancelUpload,
+      messageMetadata: messageMetadata,
+      messageCreatedAt: messageCreatedAt,
+      borderRadius: borderRadius,
+    );
 
     // Жёсткий SizedBox обязателен: StackFit.expand в Column пузыря
     // без bounded constraints роняет layout всего списка сообщений.
@@ -263,6 +257,7 @@ class _ChatSingleAspectThumb extends StatefulWidget {
     this.uploadMessageId,
     this.onCancelUpload,
     this.messageMetadata = const {},
+    this.messageCreatedAt,
   });
 
   final int threadId;
@@ -274,6 +269,7 @@ class _ChatSingleAspectThumb extends StatefulWidget {
   final int? uploadMessageId;
   final VoidCallback? onCancelUpload;
   final Map<String, dynamic> messageMetadata;
+  final DateTime? messageCreatedAt;
 
   @override
   State<_ChatSingleAspectThumb> createState() => _ChatSingleAspectThumbState();
@@ -325,32 +321,23 @@ class _ChatSingleAspectThumbState extends State<_ChatSingleAspectThumb> {
     final hasLocal = isSafeUiPreviewBytes(local);
     final canOpen = widget.onImageTap != null && !hasLocal;
 
-    Widget image;
-    if (hasLocal) {
-      image = Image.memory(
-        local as Uint8List,
-        width: size.width,
-        height: size.height,
-        fit: BoxFit.contain,
-        gaplessPlayback: true,
-      );
-    } else {
-      image = ChatNetworkImage(
-        threadId: widget.threadId,
-        attachment: widget.attachment,
-        width: size.width,
-        height: size.height,
-        fit: BoxFit.contain,
-        uploadMessageId: widget.uploadMessageId,
-        onCancelUpload: widget.onCancelUpload,
-        messageMetadata: widget.messageMetadata,
-        borderRadius: widget.borderRadius,
-        onResolvedSize: (resolved) {
-          if (resolved.height <= 0) return;
-          _applyAspect(resolved.width / resolved.height);
-        },
-      );
-    }
+    // Prefer ChatNetworkImage always so share deliver doesn't swap widget types.
+    final image = ChatNetworkImage(
+      threadId: widget.threadId,
+      attachment: widget.attachment,
+      width: size.width,
+      height: size.height,
+      fit: BoxFit.contain,
+      uploadMessageId: widget.uploadMessageId,
+      onCancelUpload: widget.onCancelUpload,
+      messageMetadata: widget.messageMetadata,
+      messageCreatedAt: widget.messageCreatedAt,
+      borderRadius: widget.borderRadius,
+      onResolvedSize: (resolved) {
+        if (resolved.height <= 0) return;
+        _applyAspect(resolved.width / resolved.height);
+      },
+    );
 
     Widget child = SizedBox(
       width: size.width,

@@ -50,6 +50,7 @@ import '../data/chat_scheduled_send_service.dart';
 import '../data/chat_send_options.dart';
 import '../data/chat_gif_item.dart';
 import '../data/chat_typing_utils.dart';
+import '../data/chat_voice_playback_coordinator.dart';
 import '../data/chat_voice_transcription.dart';
 import '../data/chat_voice_utils.dart';
 import '../data/chat_ws_text_send.dart';
@@ -194,10 +195,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   StreamSubscription<List<Map<String, dynamic>>>? _messagesSub;
   bool get _localFirst => ChatSyncService.isSupported;
   bool _loadingOlder = false;
+  bool _loadingNewer = false;
   bool _hasMoreOlder = false;
+  bool _hasMoreNewer = false;
   bool _showScrollToBottom = false;
   bool _followLiveTail = true;
+  bool _restoringLiveTail = false;
   Timer? _scrollToBottomHintTimer;
+  Timer? _slidingTrimTimer;
   double _lastScrollPixels = 0;
   String? _stickyDayLabel;
   bool _showStickyDay = false;
@@ -249,8 +254,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   _MessageDeleteUndoSession? _pendingDeleteUndo;
 
   static const _maxSpeakMessages = 30;
-  static const _uiMessageWindow = 80;
-  static const _uiMessageWindowMax = 300;
+  /// Live-tail UI window (newest messages while following the bottom).
+  static const _uiMessageWindow = 25;
+  /// Sliding window while browsing history (around the viewport).
+  static const _uiSlidingWindow = 60;
+  /// Trim only after growing past window + hysteresis (avoids thrash).
+  static const _uiSlidingTrimOverhead = 12;
 
   bool get _isGroupLike => widget.kind == 'group' || widget.kind == 'family';
 
@@ -277,7 +286,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   String? _peerStatusLabel;
   Map<String, dynamic>? _peerHttpProfile;
-  Timer? _peerStatusTimer;
   Timer? _peerStatusLabelTimer;
   Timer? _stickyDayThrottle;
 
@@ -315,9 +323,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_isDm && widget.peerUserId != null) {
       UserPresenceCache.instance.addListener(_onPeerPresenceCacheChanged);
       unawaited(_loadPeerStatus(widget.peerUserId!));
-      _peerStatusTimer = Timer.periodic(const Duration(minutes: 3), (_) {
-        unawaited(_loadPeerStatus(widget.peerUserId!));
-      });
+      // Presence updates come via WS `user_presence` — no periodic HTTP.
       _peerStatusLabelTimer = Timer.periodic(const Duration(seconds: 30), (_) {
         _refreshPeerStatusLabel();
       });
@@ -663,9 +669,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       return rows.sublist(rows.length - _uiMessageWindow);
     }
 
-    // Viewing history: keep from current UI oldest through newer messages.
-    // Cap by dropping the live tail (newest), not the history being viewed.
-    if (rows.length <= _uiMessageWindowMax) return rows;
+    // History: keep a sliding slice covering the current UI window.
+    if (rows.length <= _uiSlidingWindow) return rows;
 
     if (_messages.isNotEmpty) {
       final oldestId = chatAsInt(_messages.first['id']);
@@ -674,17 +679,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             rows.indexWhere((m) => chatAsInt(m['id']) == oldestId);
         if (startIdx < 0) startIdx = 0;
         final endIdx =
-            (startIdx + _uiMessageWindowMax).clamp(0, rows.length);
+            (startIdx + _uiSlidingWindow).clamp(0, rows.length);
+        startIdx = (endIdx - _uiSlidingWindow).clamp(0, rows.length);
         return rows.sublist(startIdx, endIdx);
       }
     }
 
-    return rows.sublist(0, _uiMessageWindowMax);
+    return rows.sublist(rows.length - _uiSlidingWindow);
   }
 
   List<Map<String, dynamic>> _clipUiMessages(
-    List<Map<String, dynamic>> messages,
-  ) {
+    List<Map<String, dynamic>> messages, {
+    bool preferOldest = true,
+  }) {
     if (messages.isEmpty) return messages;
 
     if (_followLiveTail) {
@@ -692,9 +699,108 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       return messages.sublist(messages.length - _uiMessageWindow);
     }
 
-    if (messages.length <= _uiMessageWindowMax) return messages;
-    // Keep oldest end while browsing history.
-    return messages.sublist(0, _uiMessageWindowMax);
+    if (messages.length <= _uiSlidingWindow) return messages;
+    if (preferOldest) {
+      return messages.sublist(0, _uiSlidingWindow);
+    }
+    return messages.sublist(messages.length - _uiSlidingWindow);
+  }
+
+  /// Drop far-from-viewport messages while browsing (keeps ~[_uiSlidingWindow]).
+  void _scheduleSlidingWindowTrim() {
+    if (_followLiveTail || _restoringLiveTail || _seekingMessageId != null) {
+      return;
+    }
+    if (_messages.length <= _uiSlidingWindow + _uiSlidingTrimOverhead) {
+      return;
+    }
+    _slidingTrimTimer?.cancel();
+    _slidingTrimTimer = Timer(const Duration(milliseconds: 180), () {
+      _slidingTrimTimer = null;
+      if (!mounted) return;
+      _trimSlidingWindowAroundViewport();
+    });
+  }
+
+  int? _viewportAnchorMessageId() {
+    if (!_scrollController.hasClients || _messages.isEmpty) return null;
+    final scrollCtx = _scrollController.position.context.notificationContext;
+    final viewport = scrollCtx?.findRenderObject() as RenderBox?;
+    if (viewport == null || !viewport.hasSize) return null;
+
+    final listTop = viewport.localToGlobal(Offset.zero).dy;
+    final midY = listTop + viewport.size.height * 0.5;
+
+    int? bestId;
+    var bestDist = double.infinity;
+    for (final m in _messages) {
+      final msgId = chatAsInt(m['id']);
+      if (msgId == null) continue;
+      final ctx = _messageKeys[msgId]?.currentContext;
+      if (ctx == null) continue;
+      final box = ctx.findRenderObject() as RenderBox?;
+      if (box == null || !box.attached || !box.hasSize) continue;
+      final top = box.localToGlobal(Offset.zero).dy;
+      final center = top + box.size.height * 0.5;
+      final dist = (center - midY).abs();
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestId = msgId;
+      }
+    }
+    return bestId;
+  }
+
+  void _trimSlidingWindowAroundViewport() {
+    if (_followLiveTail || _restoringLiveTail) return;
+    if (_messages.length <= _uiSlidingWindow) return;
+
+    final anchorId = _viewportAnchorMessageId();
+    var focus = _messages.length ~/ 2;
+    if (anchorId != null) {
+      final idx =
+          _messages.indexWhere((m) => chatAsInt(m['id']) == anchorId);
+      if (idx >= 0) focus = idx;
+    } else if (_scrollController.hasClients) {
+      final pos = _scrollController.position;
+      final max = pos.maxScrollExtent;
+      final t = max <= 0 ? 0.0 : (pos.pixels / max).clamp(0.0, 1.0);
+      // reverse: pixels≈0 → newest (high index).
+      focus = ((_messages.length - 1) * (1.0 - t)).round();
+    }
+
+    final half = _uiSlidingWindow ~/ 2;
+    var start = (focus - half).clamp(0, _messages.length);
+    var end = (start + _uiSlidingWindow).clamp(0, _messages.length);
+    start = (end - _uiSlidingWindow).clamp(0, _messages.length);
+    if (start <= 0 && end >= _messages.length) return;
+
+    final droppedOldest = start > 0;
+    final droppedNewest = end < _messages.length;
+    setState(() {
+      _messages = _messages.sublist(start, end);
+      if (droppedNewest) _hasMoreNewer = true;
+      if (droppedOldest) _hasMoreOlder = true;
+    });
+    _pruneMessageKeys();
+
+    if (anchorId != null &&
+        _messages.any((m) => chatAsInt(m['id']) == anchorId)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final key = _messageKeys[anchorId];
+        final ctx = key?.currentContext;
+        if (ctx != null && ctx.mounted) {
+          unawaited(
+            Scrollable.ensureVisible(
+              ctx,
+              alignment: 0.45,
+              duration: Duration.zero,
+            ),
+          );
+        }
+      });
+    }
   }
 
   Future<void> _onLocalMessagesWatch(List<Map<String, dynamic>> rows) async {
@@ -877,6 +983,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   /// Keep in-memory local_bytes across SQLite round-trips (JSON drops Uint8List).
+  /// Also bridges share/optimistic temp→server id changes.
   List<Map<String, dynamic>> _preserveLocalPreviews(
     List<Map<String, dynamic>> previous,
     List<Map<String, dynamic>> incoming,
@@ -886,10 +993,45 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       for (final m in previous)
         if (chatAsInt(m['id']) != null) chatAsInt(m['id'])!: m,
     };
-    return [
-      for (final message in incoming)
-        _mergeAttachmentPreviews(prevById[chatAsInt(message['id'])], message),
+    final pendingPrev = <Map<String, dynamic>>[
+      for (final m in previous)
+        if (chatMessageIsPending(m)) m,
     ];
+    final usedPending = <int>{};
+    final out = <Map<String, dynamic>>[];
+
+    for (final message in incoming) {
+      final id = chatAsInt(message['id']);
+      final byId = id == null ? null : prevById[id];
+      if (byId != null) {
+        out.add(_mergeAttachmentPreviews(byId, message));
+        continue;
+      }
+      // Share deliver: temp id gone, server id new — match by shape.
+      Map<String, dynamic>? matchedPending;
+      if (!chatMessageIsPending(message) && pendingPrev.isNotEmpty) {
+        for (var i = 0; i < pendingPrev.length; i++) {
+          if (usedPending.contains(i)) continue;
+          final pending = pendingPrev[i];
+          if (!chatPendingMatchesServer(
+            pending,
+            message,
+            currentUserId: _currentUserId,
+          )) {
+            continue;
+          }
+          usedPending.add(i);
+          matchedPending = pending;
+          break;
+        }
+      }
+      out.add(
+        matchedPending == null
+            ? message
+            : _mergeAttachmentPreviews(matchedPending, message),
+      );
+    }
+    return out;
   }
 
   Map<String, dynamic> _mergeAttachmentPreviews(
@@ -1284,31 +1426,67 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _scrollToLiveTail() async {
-    _followLiveTail = true;
-    if (_localFirst) {
-      final rows = await ChatLocalStore.instance.readMessagesTail(
-        widget.threadId,
-        limit: _uiMessageWindow,
-      );
-      if (!mounted) return;
-      final next = await _buildMessagesFromSqliteRows(rows);
-      if (!mounted) return;
-      setState(() {
-        _messages = next;
-        _showScrollToBottom = false;
-        _loading = false;
-      });
-      _scrollToBottomHintTimer?.cancel();
-      _scrollToBottomHintTimer = null;
-      unawaited(ChatSyncService.instance.syncThread(widget.threadId));
-    } else {
-      await _load(silent: true);
-      if (!mounted) return;
-      setState(() => _showScrollToBottom = false);
-      _scrollToBottomHintTimer?.cancel();
-      _scrollToBottomHintTimer = null;
+    await _restoreLiveTailWindow(jumpScroll: true);
+  }
+
+  /// Reload the newest [_uiMessageWindow] messages and drop history from UI.
+  Future<void> _restoreLiveTailWindow({bool jumpScroll = false}) async {
+    if (!mounted) return;
+    if (_restoringLiveTail) {
+      _followLiveTail = true;
+      return;
     }
-    _scrollToBottom(jump: true, settle: true);
+    _restoringLiveTail = true;
+    _followLiveTail = true;
+    try {
+      if (_localFirst) {
+        final rows = await ChatLocalStore.instance.readMessagesTail(
+          widget.threadId,
+          limit: _uiMessageWindow,
+        );
+        if (!mounted) return;
+        final next = await _buildMessagesFromSqliteRows(rows);
+        if (!mounted) return;
+        setState(() {
+          _messages = next;
+          _showScrollToBottom = false;
+          _loading = false;
+          _hasMoreNewer = false;
+        });
+        _pruneMessageKeys();
+        _scrollToBottomHintTimer?.cancel();
+        _scrollToBottomHintTimer = null;
+        unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+        unawaited(_refreshHasMoreOlder());
+      } else {
+        await _load(silent: true);
+        if (!mounted) return;
+        setState(() {
+          _messages = _clipUiMessages(_messages);
+          _showScrollToBottom = false;
+          _hasMoreNewer = false;
+        });
+        _pruneMessageKeys();
+        _scrollToBottomHintTimer?.cancel();
+        _scrollToBottomHintTimer = null;
+      }
+      if (jumpScroll) {
+        _scrollToBottom(jump: true, settle: true);
+      } else if (_scrollController.hasClients) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scrollController.hasClients) return;
+          _scrollController.jumpTo(0);
+        });
+      }
+    } finally {
+      _restoringLiveTail = false;
+    }
+  }
+
+  void _pruneMessageKeys() {
+    final ids =
+        _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+    _messageKeys.removeWhere((id, _) => !ids.contains(id));
   }
 
   Future<void> _refreshHasMoreOlder() async {
@@ -1338,6 +1516,29 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
+  Future<void> _refreshHasMoreNewer() async {
+    if (!_localFirst) {
+      if (_hasMoreNewer) setState(() => _hasMoreNewer = false);
+      return;
+    }
+    if (_followLiveTail || _messages.isEmpty) {
+      if (_hasMoreNewer) setState(() => _hasMoreNewer = false);
+      return;
+    }
+    final newestUi = chatAsInt(_messages.last['id']);
+    if (newestUi == null || newestUi <= 0) return;
+    final newer = await ChatLocalStore.instance.readMessagesAfter(
+      widget.threadId,
+      afterId: newestUi,
+      limit: 1,
+    );
+    if (!mounted) return;
+    final next = newer.isNotEmpty;
+    if (next != _hasMoreNewer) {
+      setState(() => _hasMoreNewer = next);
+    }
+  }
+
   Future<void> _onPullRefresh() async {
     _followLiveTail = true;
     await _load();
@@ -1351,18 +1552,44 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   void _onScroll() {
     _updateScrollToBottomVisibility();
     _scheduleStickyDayUpdate();
-    if (_scrollController.hasClients) {
-      final atTail =
-          _scrollController.position.pixels <= _scrollToBottomAwayPx;
-      if (!atTail && _followLiveTail) {
-        _followLiveTail = false;
+    _scheduleSlidingWindowTrim();
+    if (!_scrollController.hasClients) return;
+
+    final pos = _scrollController.position;
+    final atTail = pos.pixels <= _scrollToBottomAwayPx;
+    final nearNewerEdge = pos.pixels <= 420;
+
+    if (!atTail && _followLiveTail) {
+      _followLiveTail = false;
+    } else if (atTail &&
+        !_followLiveTail &&
+        !_restoringLiveTail &&
+        !_loadingNewer) {
+      if (_hasMoreNewer) {
+        unawaited(_loadNewer());
+      } else if (_messages.length > _uiMessageWindow) {
+        // True live tip — shrink to the live window.
+        unawaited(_restoreLiveTailWindow());
+      } else {
+        _followLiveTail = true;
+        if (_hasMoreNewer) {
+          setState(() => _hasMoreNewer = false);
+        }
       }
     }
-    if (!_scrollController.hasClients || _loadingOlder || !_hasMoreOlder) {
-      return;
+
+    if (_followLiveTail || _restoringLiveTail) return;
+
+    // Prefetch newer while approaching the bottom of the current window.
+    if (nearNewerEdge &&
+        _hasMoreNewer &&
+        !_loadingNewer &&
+        !atTail) {
+      unawaited(_loadNewer());
     }
+
+    if (_loadingOlder || !_hasMoreOlder) return;
     // reverse: true — верх истории (старые) у maxScrollExtent.
-    final pos = _scrollController.position;
     if (pos.pixels >= pos.maxScrollExtent - 72) {
       unawaited(_loadOlder());
     }
@@ -1493,7 +1720,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     unawaited(_commitPendingDeleteUndo(silent: true));
     _stopTypingLocal();
     _clearRemoteTyping();
-    _peerStatusTimer?.cancel();
     _peerStatusLabelTimer?.cancel();
     UserPresenceCache.instance.removeListener(_onPeerPresenceCacheChanged);
     WidgetsBinding.instance.removeObserver(this);
@@ -1510,6 +1736,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     ChatScheduledSendService.instance.removeListener(_onScheduledSend);
     _transcriptPollTimer?.cancel();
     _scrollToBottomHintTimer?.cancel();
+    _slidingTrimTimer?.cancel();
     _stickyDayThrottle?.cancel();
     unawaited(_speakPlayer?.dispose() ?? Future<void>.value());
     _controller.dispose();
@@ -1528,7 +1755,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       unawaited(_markLatestRead());
       if (_localFirst) {
         unawaited(_refreshFromLocalStore());
-        unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+        if (!ChatSyncService.instance.resumeCatchUpFresh) {
+          unawaited(ChatSyncService.instance.syncThread(widget.threadId));
+        }
       }
     }
   }
@@ -2042,7 +2271,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   Future<void> _load({bool silent = false}) async {
     if (_localFirst) {
       _followLiveTail = true;
-      await ChatSyncService.instance.syncThread(widget.threadId, limit: 80);
+      await ChatSyncService.instance.syncThread(
+        widget.threadId,
+        limit: _uiMessageWindow,
+      );
       await _refreshHasMoreOlder();
       if (mounted && _loading) {
         setState(() => _loading = false);
@@ -2278,7 +2510,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   void _ensureTranscriptPollTimer() {
-    _transcriptPollTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
+    _transcriptPollTimer ??= Timer.periodic(const Duration(seconds: 6), (_) {
       if (_transcriptPollAttempts.isEmpty) {
         _transcriptPollTimer?.cancel();
         _transcriptPollTimer = null;
@@ -2290,7 +2522,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _pollVoiceTranscripts() async {
     if (!mounted || _transcriptPollAttempts.isEmpty) return;
-    const maxAttempts = 15;
+    const maxAttempts = 12;
 
     final pendingIds = _transcriptPollAttempts.keys.toList();
     for (final id in pendingIds) {
@@ -2361,6 +2593,72 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     return sortChatMessages([...mergedOlder, ...latest]);
   }
 
+  Future<void> _loadNewer() async {
+    if (!_localFirst || _loadingNewer || _followLiveTail || _messages.isEmpty) {
+      return;
+    }
+    final afterId = chatAsInt(_messages.last['id']);
+    if (afterId == null || afterId <= 0) return;
+
+    setState(() => _loadingNewer = true);
+    try {
+      final localNewer = await ChatLocalStore.instance.readMessagesAfter(
+        widget.threadId,
+        afterId: afterId,
+        limit: 40,
+      );
+      if (!mounted) return;
+      if (localNewer.isEmpty) {
+        setState(() {
+          _hasMoreNewer = false;
+          _loadingNewer = false;
+        });
+        if (_scrollController.hasClients &&
+            _scrollController.position.pixels <= _scrollToBottomAwayPx &&
+            _messages.length > _uiMessageWindow) {
+          unawaited(_restoreLiveTailWindow());
+        } else if (_scrollController.hasClients &&
+            _scrollController.position.pixels <= _scrollToBottomAwayPx) {
+          _followLiveTail = true;
+        }
+        return;
+      }
+
+      final existingIds =
+          _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
+      final newer = localNewer.where((m) {
+        final id = chatAsInt(m['id']);
+        return id != null && !existingIds.contains(id);
+      }).toList();
+      if (newer.isEmpty) {
+        setState(() {
+          _hasMoreNewer = false;
+          _loadingNewer = false;
+        });
+        return;
+      }
+
+      final applied = await _buildMessagesFromSqliteRows(
+        sortChatMessages([..._messages, ...newer]),
+        hydrateAttachments: false,
+      );
+      if (!mounted) return;
+      final beforeLen = applied.length;
+      final clipped = _clipUiMessages(applied, preferOldest: false);
+      setState(() {
+        _messages = clipped;
+        if (clipped.length < beforeLen) _hasMoreOlder = true;
+        _loadingNewer = false;
+        _hasMoreNewer = localNewer.length >= 40;
+      });
+      _pruneMessageKeys();
+      unawaited(_refreshHasMoreNewer());
+      unawaited(_refreshHasMoreOlder());
+    } catch (_) {
+      if (mounted) setState(() => _loadingNewer = false);
+    }
+  }
+
   Future<void> _loadOlder() async {
     if (_loadingOlder || !_hasMoreOlder || _messages.isEmpty) return;
     final firstId = chatAsInt(_messages.first['id']);
@@ -2390,11 +2688,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               hydrateAttachments: false,
             );
             if (!mounted) return;
+            final beforeLen = applied.length;
             setState(() {
-              _messages = _clipUiMessages(applied);
+              _messages = _clipUiMessages(applied, preferOldest: true);
+              if (_messages.length < beforeLen) _hasMoreNewer = true;
               _loadingOlder = false;
             });
+            _pruneMessageKeys();
             unawaited(_refreshHasMoreOlder());
+            unawaited(_refreshHasMoreNewer());
             return;
           }
         }
@@ -2422,11 +2724,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               hydrateAttachments: false,
             );
             if (!mounted) return;
+            final beforeLen = applied.length;
             setState(() {
-              _messages = _clipUiMessages(applied);
+              _messages = _clipUiMessages(applied, preferOldest: true);
+              if (_messages.length < beforeLen) _hasMoreNewer = true;
               _loadingOlder = false;
             });
+            _pruneMessageKeys();
             unawaited(_refreshHasMoreOlder());
+            unawaited(_refreshHasMoreNewer());
             return;
           }
         }
@@ -2461,10 +2767,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         return id != null && !existingIds.contains(id);
       }).toList();
       setState(() {
-        _messages = sortChatMessages([...older, ..._messages]);
+        final merged = sortChatMessages([...older, ..._messages]);
+        final beforeLen = merged.length;
+        _messages = _clipUiMessages(merged, preferOldest: true);
+        if (_messages.length < beforeLen) _hasMoreNewer = true;
         _hasMoreOlder = page.hasMore;
         _loadingOlder = false;
       });
+      _pruneMessageKeys();
       _scheduleStickyDayUpdate();
       // reverse: true — низ остаётся на offset 0, компенсация не нужна.
     } catch (_) {
@@ -5410,7 +5720,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                             ),
                                           ),
                                         )
-                                      : Stack(
+                                      : Builder(
+                                          builder: (context) {
+                                            ChatVoicePlaybackCoordinator
+                                                .instance
+                                                .syncFromMessages(_messages);
+                                            return Stack(
                                           children: [
                                             RefreshIndicator(
                             onRefresh: _onPullRefresh,
@@ -5721,8 +6036,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 ),
                               ),
                             ],
-                          ),
-                            ),
+                          );
+                                          },
+                                        ),
+                                      ),
                             if (!_selectionMode)
                               LayoutBuilder(
                                 builder: (context, slot) {

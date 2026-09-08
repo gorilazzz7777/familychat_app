@@ -130,6 +130,20 @@ class ChatLocalStore {
     );
   }
 
+  Future<List<Map<String, dynamic>>> readMessagesAfter(
+    int threadId, {
+    required int afterId,
+    int limit = 50,
+  }) async {
+    final db = await ensureOpen();
+    if (db == null) return const [];
+    return db.readMessagesAfter(
+      threadId,
+      afterId: afterId,
+      limit: limit,
+    );
+  }
+
   Future<List<Map<String, dynamic>>> readMessagesAroundId(
     int threadId,
     int messageId, {

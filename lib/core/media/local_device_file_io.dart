@@ -19,12 +19,16 @@ Widget localDeviceFileImage({
   double? height,
   BoxFit fit = BoxFit.cover,
   Widget? error,
+  int? cacheWidth,
+  int? cacheHeight,
 }) {
   return Image.file(
     File(path),
     width: width,
     height: height,
     fit: fit,
+    cacheWidth: cacheWidth,
+    cacheHeight: cacheHeight,
     gaplessPlayback: true,
     errorBuilder: (_, __, ___) => error ?? const SizedBox.shrink(),
   );

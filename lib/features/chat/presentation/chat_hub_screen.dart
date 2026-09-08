@@ -84,12 +84,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Future<void> refresh({bool silent = true}) async {
     if (_localFirst) {
       final repo = ref.read(familychatRepositoryProvider);
-      // Watch SQLite is the UI source of truth. Hydrating here raced
-      // `_onThreadsUpdated` (no generation) and could flash skeleton.
-      await ChatSyncService.instance.syncHub(
-        prefetchMessages: false,
-        force: true,
-      );
+      // Shell resume already ran one catch-up (reconnect + open thread).
+      if (!ChatSyncService.instance.resumeCatchUpFresh) {
+        await ChatSyncService.instance.syncHub(
+          prefetchMessages: false,
+          force: true,
+        );
+      }
       unawaited(ChatOfflineSync.instance.run(repo));
       return;
     }
@@ -341,7 +342,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       unawaited(_refreshFromLocalStore());
       if (_localFirst) {
         final repo = ref.read(familychatRepositoryProvider);
-        unawaited(ChatSyncService.instance.syncHub(prefetchMessages: false));
+        if (!ChatSyncService.instance.resumeCatchUpFresh) {
+          unawaited(ChatSyncService.instance.syncHub(prefetchMessages: false));
+        }
         unawaited(ChatOfflineSync.instance.run(repo));
       }
     }

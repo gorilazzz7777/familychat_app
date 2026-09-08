@@ -62,6 +62,9 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
   bool _usingFrontCamera = true;
   bool _remoteHasVideo = false;
   bool _renderersReady = false;
+  Timer? _signalPollTimer;
+  Duration _signalPollInterval = const Duration(milliseconds: 800);
+  MediaStream? _remoteFallbackStream;
 
   bool _showingMicHint = false;
   bool _showingCamHint = false;
@@ -190,33 +193,16 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
       final repo = ref.read(familychatRepositoryProvider);
       final ice = await repo.threadCallIceServers(widget.threadId);
       _peer = await createPeerConnection({'iceServers': ice});
+      _peer!.onAddStream = (stream) {
+        _remoteRenderer.srcObject = stream;
+        if (!mounted) return;
+        setState(() {
+          _refreshRemoteVideoFlag();
+          if (_remoteDescriptionSet) _stateText = 'Разговор идет';
+        });
+      };
       _peer!.onTrack = (event) {
-        if (event.streams.isNotEmpty) {
-          _remoteRenderer.srcObject = event.streams[0];
-        } else if (event.track.kind == 'video') {
-          // Some platforms deliver track without stream list.
-          final stream = _remoteRenderer.srcObject;
-          if (stream != null) {
-            unawaited(stream.addTrack(event.track));
-          }
-        }
-        final hasVideo = event.track.kind == 'video' && event.track.enabled;
-        if (mounted) {
-          setState(() {
-            if (event.track.kind == 'video') {
-              _remoteHasVideo = hasVideo;
-            }
-            if (_remoteDescriptionSet) {
-              _stateText = 'Разговор идет';
-            }
-          });
-        }
-        event.track.onEnded = () {
-          if (!mounted) return;
-          if (event.track.kind == 'video') {
-            setState(() => _remoteHasVideo = false);
-          }
-        };
+        unawaited(_attachRemoteTrack(event));
       };
       _localStream = await navigator.mediaDevices.getUserMedia({
         'audio': true,
@@ -282,6 +268,10 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
         });
       }
       await _syncCallSignals();
+      _startSignalPoll();
+      if (!FamilyChatRealtime.instance.isConnected) {
+        unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -572,9 +562,70 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
 
   bool _cleaned = false;
 
+  void _startSignalPoll() {
+    _signalPollInterval = FamilyChatRealtime.instance.isConnected
+        ? const Duration(seconds: 4)
+        : const Duration(milliseconds: 800);
+    _restartSignalPollTimer();
+  }
+
+  void _restartSignalPollTimer() {
+    _signalPollTimer?.cancel();
+    _signalPollTimer = Timer.periodic(_signalPollInterval, (_) {
+      if (_ended || _callId == null) return;
+      final desired = FamilyChatRealtime.instance.isConnected
+          ? const Duration(seconds: 4)
+          : const Duration(milliseconds: 800);
+      if (desired != _signalPollInterval) {
+        _signalPollInterval = desired;
+        _restartSignalPollTimer();
+        return;
+      }
+      unawaited(_syncCallSignals());
+    });
+  }
+
+  Future<void> _attachRemoteTrack(RTCTrackEvent event) async {
+    try {
+      event.track.enabled = true;
+    } catch (_) {}
+    try {
+      if (event.streams.isNotEmpty) {
+        _remoteRenderer.srcObject = event.streams[0];
+      } else {
+        var stream = _remoteRenderer.srcObject ?? _remoteFallbackStream;
+        if (stream == null) {
+          stream = await createLocalMediaStream('remote-call');
+          if (_ended || !mounted) return;
+          _remoteFallbackStream = stream;
+        }
+        final already = stream.getTracks().any((t) => t.id == event.track.id);
+        if (!already) {
+          await stream.addTrack(event.track);
+        }
+        _remoteRenderer.srcObject = stream;
+      }
+    } catch (e, st) {
+      debugPrint('remote track attach failed: $e\n$st');
+    }
+    event.track.onEnded = () {
+      if (!mounted) return;
+      setState(_refreshRemoteVideoFlag);
+    };
+    if (!mounted || _ended) return;
+    setState(() {
+      _refreshRemoteVideoFlag();
+      if (_remoteDescriptionSet || event.track.kind == 'audio') {
+        _stateText = 'Разговор идет';
+      }
+    });
+  }
+
   Future<void> _cleanup() async {
     if (_cleaned) return;
     _cleaned = true;
+    _signalPollTimer?.cancel();
+    _signalPollTimer = null;
     await CallProximityController.disable();
     if (!kIsWeb) {
       try {
@@ -589,6 +640,10 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
       await _localStream?.dispose();
     } catch (_) {}
     _localStream = null;
+    try {
+      await _remoteFallbackStream?.dispose();
+    } catch (_) {}
+    _remoteFallbackStream = null;
     try {
       await _peer?.close();
     } catch (_) {}

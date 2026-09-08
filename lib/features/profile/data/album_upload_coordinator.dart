@@ -7,6 +7,7 @@ import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../../core/media/gallery_photo_local_state.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
+import '../../../core/media/media_upload_foreground.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../../core/push/push_message_handler.dart';
 import '../../familychat/data/familychat_repository.dart';
@@ -137,7 +138,17 @@ class AlbumUploadCoordinator extends ChangeNotifier {
     activeSession.active = true;
     (_queues[albumPk] ??= []).addAll(photos);
     notifyListeners();
+    // Kick FGS while still in foreground (Android 12+ start rules).
+    unawaited(MediaUploadForeground.enter(MediaUploadForeground.scopeAlbum));
     unawaited(_drainQueue(repo: repo, albumPk: albumPk));
+  }
+
+  bool get _hasActiveAlbumWork {
+    if (_processing.isNotEmpty) return true;
+    for (final queue in _queues.values) {
+      if (queue.isNotEmpty) return true;
+    }
+    return false;
   }
 
   Future<void> _drainQueue({
@@ -223,6 +234,8 @@ class AlbumUploadCoordinator extends ChangeNotifier {
       final remaining = _queues[albumPk];
       if (remaining != null && remaining.isNotEmpty) {
         unawaited(_drainQueue(repo: repo, albumPk: albumPk));
+      } else if (!_hasActiveAlbumWork) {
+        await MediaUploadForeground.leave(MediaUploadForeground.scopeAlbum);
       }
     }
   }

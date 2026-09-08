@@ -9,6 +9,8 @@ import 'chat_offline_outbox.dart';
 import 'chat_offline_prefetch.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_scheduled_send_service.dart';
+import 'chat_ui_connectivity.dart';
+import '../../../core/media/media_upload_foreground.dart';
 
 /// Координатор офлайн-кэша чатов и синхронизации очереди.
 class ChatOfflineSync extends ChangeNotifier {
@@ -39,6 +41,9 @@ class ChatOfflineSync extends ChangeNotifier {
     }
     _online = online;
     _lastOnlineCheckAt = online ? DateTime.now() : null;
+    if (online) {
+      ChatUiConnectivity.instance.onHttpReachable();
+    }
     notifyListeners();
   }
 
@@ -84,6 +89,9 @@ class ChatOfflineSync extends ChangeNotifier {
       if (!online) _lastOnlineCheckAt = null;
       notifyListeners();
     }
+    if (online) {
+      ChatUiConnectivity.instance.onHttpReachable();
+    }
     return online;
   }
 
@@ -111,6 +119,11 @@ class ChatOfflineSync extends ChangeNotifier {
           if (!online) break;
         }
 
+        if (await ChatOfflineOutbox.hasPendingMediaUploads()) {
+          // Prefer starting while still foreground (also kicked from enqueue).
+          await MediaUploadForeground.enter(MediaUploadForeground.scopeChat);
+        }
+
         final result = await ChatOfflineOutbox.sync(activeRepo);
         if (result.deliveries.isNotEmpty) {
           _recentDeliveries = [..._recentDeliveries, ...result.deliveries];
@@ -125,16 +138,25 @@ class ChatOfflineSync extends ChangeNotifier {
       final again = _pendingRepo;
       // Drop the lock before reading the dirty flag so a concurrent run()
       // either sets _rerunRequested or starts a new worker — never both lost.
+      final shouldChain = _rerunRequested && again != null;
       _syncing = false;
       _syncStartedAt = null;
-      if (_rerunRequested && again != null) {
+      if (shouldChain) {
         if (kDebugMode) {
           debugPrint(
             '[ChatOfflineSync] run chain passes=$passes -> rerun',
           );
         }
+        // Keep FGS across the chained pass; the next run owns stop.
         unawaited(run(again));
       } else {
+        // Keep FGS only while online media remains (covers short retry backoff).
+        // Offline / empty queue: drop the chat scope (other scopes may keep FGS).
+        final keepUploadFg = _online &&
+            await ChatOfflineOutbox.hasPendingMediaUploads();
+        if (!keepUploadFg) {
+          await MediaUploadForeground.leave(MediaUploadForeground.scopeChat);
+        }
         if (kDebugMode) {
           debugPrint('[ChatOfflineSync] run done passes=$passes');
         }

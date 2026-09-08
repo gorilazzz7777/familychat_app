@@ -37,6 +37,8 @@ import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/chat/data/chat_offline_prefetch.dart';
 import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
+import '../features/chat/data/chat_sync_service.dart';
+import '../features/chat/data/chat_ui_connectivity.dart';
 import '../features/chat/data/chat_voice_transcription_prefs.dart';
 import '../features/chat/data/incoming_call_coordinator.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
@@ -88,7 +90,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   /// Чат (главная) + лента сразу; остальные — при первом заходе.
   final _visitedTabs = <int>{_chatTabIndex, _feedTabIndex};
   Timer? _webPollTimer;
-  Timer? _presenceTimer;
   bool _lastKnownOnline = true;
 
   @override
@@ -149,36 +150,19 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
     _lastKnownOnline = ChatOfflineSync.instance.isOnline;
     ShellRefresh.instance.register(_refreshMainTabs);
-    _startPresenceHeartbeat();
+    ChatUiConnectivity.instance.start(
+      ref.read(familychatRepositoryProvider),
+      syncApiOnline: ChatOfflineSync.instance.setOnline,
+    );
     installWebVisibilityPresenceListener();
     AppActions.bindShell(selectSection: _selectSection);
   }
 
-  void _startPresenceHeartbeat() {
-    _presenceTimer?.cancel();
-    unawaited(_touchPresence());
-    _presenceTimer = Timer.periodic(const Duration(seconds: 45), (_) {
-      unawaited(_touchPresence());
-    });
-  }
-
   Future<void> _webRealtimeSoftSync() async {
     final realtime = FamilyChatRealtime.instance;
-    if (!realtime.isConnected) {
-      await realtime.reconnectAndRefresh();
-      return;
-    }
-    final threadId = ActiveChatContext.instance.openThreadId;
-    realtime.emitSyntheticEvent({
-      'event': 'chat_refresh',
-      if (threadId != null) 'thread_id': threadId,
-    });
-  }
-
-  Future<void> _touchPresence() async {
-    await ChatOfflineSync.instance.refreshOnline(
-      ref.read(familychatRepositoryProvider),
-    );
+    // While WS is healthy, live events already update SQLite — no HTTP refresh.
+    if (realtime.isConnected) return;
+    await realtime.reconnectAndRefresh();
   }
 
   Future<void> _runCalendarSyncAndMaybeReview(int userId) async {
@@ -299,7 +283,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _webPollTimer?.cancel();
-    _presenceTimer?.cancel();
     IncomingShareBus.instance.removeListener(_onIncomingShare);
     onOpenFeedFromPush = null;
     FamilyChatRealtime.instance.removeListener(_onChatRealtime);
@@ -307,6 +290,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       ChatUnreadRefresh.onInvalidate = null;
     }
     ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
+    ChatUiConnectivity.instance.stop();
     ChatScheduledSendService.instance.stop();
     LocationShareCoordinator.instance.detach();
     ShellRefresh.instance.unregister();
@@ -322,9 +306,16 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       unawaited(CallKitIncomingService.reconcileActiveCalls());
       unawaited(FamilyChatNotifications.consumeLaunchNotification());
       unawaited(FamilyChatNotifications.clearMessageNotificationsOnAppOpen());
-      unawaited(FamilyChatRealtime.instance.reconnectAndRefresh());
+      ChatSyncService.instance.beginResumeCatchUp();
+      unawaited(() async {
+        await FamilyChatRealtime.instance.reconnectAndRefresh();
+        final openId = ActiveChatContext.instance.openThreadId;
+        if (openId != null) {
+          await ChatSyncService.instance.syncThread(openId);
+        }
+      }());
+      ChatUiConnectivity.instance.onAppResumed();
       unawaited(_refreshTab(_index, silent: true));
-      unawaited(_touchPresence());
       unawaited(
         PushRegistrationService.registerIfPossible(
           client: ref.read(apiClientProvider),
@@ -348,6 +339,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     } else if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
+      ChatUiConnectivity.instance.onAppBackground();
       if (state == AppLifecycleState.paused ||
           state == AppLifecycleState.hidden) {
         RuStoreReviewPromptService.onAppPaused();
@@ -358,6 +350,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   Future<void> _reportAppBackground() async {
     FamilyChatPresenceService.syncNow();
+    // WS presence_update already sent when connected — skip duplicate HTTP.
+    if (FamilyChatRealtime.instance.isConnected) return;
     try {
       await ref
           .read(familychatRepositoryProvider)

@@ -11,6 +11,7 @@ import '../../../core/network/chat_network_link.dart';
 import '../../../core/settings/app_settings_storage.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_media_auto_download.dart';
+import 'chat_media_display_policy.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_sync_service.dart';
 
@@ -139,6 +140,9 @@ abstract final class ChatOfflinePrefetch {
     // Свежие сообщения важнее — идём с конца.
     for (final message in messages.reversed) {
       if (remaining <= 0) break;
+      final created = DateTime.tryParse(message['created_at']?.toString() ?? '');
+      // Don't warm RAM/bin for deferred-age history; Load uses disk/network on tap.
+      if (ChatMediaDisplayPolicy.isOlderThanDeferredAge(created)) continue;
       for (final attachment in chatAttachmentsOf(message)) {
         if (remaining <= 0) break;
         // Только картинки: полный mp4 в bin-кэш / Image.memory тормозит скролл.

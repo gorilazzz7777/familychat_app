@@ -9,6 +9,7 @@ import '../../../core/media/media_local_index.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../chat/data/chat_attach_local_cache.dart';
 import '../../familychat/data/familychat_repository.dart';
+import '../../../core/media/media_upload_foreground.dart';
 
 class FeedPostPhoto {
   const FeedPostPhoto({
@@ -69,60 +70,65 @@ abstract final class FeedPostUploader {
       throw ArgumentError('Описание не длиннее $maxCaptionLength символов');
     }
 
-    final batchId = createFeedPhotoBatchId();
-    for (var i = 0; i < photos.length; i++) {
-      final prepared = await _prepare(photos[i]);
-      if (prepared == null) continue;
-      final Map<String, dynamic> uploaded;
-      if (childId != null) {
-        uploaded = await repo.childGalleryUpload(
-          childId: childId,
-          bytes: prepared.bytes,
-          filename: prepared.filename,
-          contentType: prepared.contentType,
-          batchId: batchId,
-          photoExif: prepared.photoExif,
-          onSendProgress: onUploadProgress == null
-              ? null
-              : (sent, total) =>
-                  onUploadProgress(i, photos.length, sent, total),
-        );
-      } else {
-        uploaded = await repo.familyGalleryUpload(
-          bytes: prepared.bytes,
-          filename: prepared.filename,
-          contentType: prepared.contentType,
-          destination: 'family_feed',
-          batchId: batchId,
-          shareToDiary: shareToDiary,
-          photoExif: prepared.photoExif,
-          onSendProgress: onUploadProgress == null
-              ? null
-              : (sent, total) =>
-                  onUploadProgress(i, photos.length, sent, total),
-        );
-      }
-      final uploadedId = uploaded['id'] is int
-          ? uploaded['id'] as int
-          : int.tryParse('${uploaded['id']}');
-      final localPath = photos[i].localPath?.trim() ?? '';
-      if (uploadedId != null && localPath.isNotEmpty) {
-        unawaited(
-          MediaLocalIndex.saveOutgoing(
-            attachmentId: uploadedId,
-            localPath: localPath,
+    await MediaUploadForeground.enter(MediaUploadForeground.scopeFeed);
+    try {
+      final batchId = createFeedPhotoBatchId();
+      for (var i = 0; i < photos.length; i++) {
+        final prepared = await _prepare(photos[i]);
+        if (prepared == null) continue;
+        final Map<String, dynamic> uploaded;
+        if (childId != null) {
+          uploaded = await repo.childGalleryUpload(
+            childId: childId,
+            bytes: prepared.bytes,
             filename: prepared.filename,
-            kind: prepared.kind,
-          ),
-        );
+            contentType: prepared.contentType,
+            batchId: batchId,
+            photoExif: prepared.photoExif,
+            onSendProgress: onUploadProgress == null
+                ? null
+                : (sent, total) =>
+                    onUploadProgress(i, photos.length, sent, total),
+          );
+        } else {
+          uploaded = await repo.familyGalleryUpload(
+            bytes: prepared.bytes,
+            filename: prepared.filename,
+            contentType: prepared.contentType,
+            destination: 'family_feed',
+            batchId: batchId,
+            shareToDiary: shareToDiary,
+            photoExif: prepared.photoExif,
+            onSendProgress: onUploadProgress == null
+                ? null
+                : (sent, total) =>
+                    onUploadProgress(i, photos.length, sent, total),
+          );
+        }
+        final uploadedId = uploaded['id'] is int
+            ? uploaded['id'] as int
+            : int.tryParse('${uploaded['id']}');
+        final localPath = photos[i].localPath?.trim() ?? '';
+        if (uploadedId != null && localPath.isNotEmpty) {
+          unawaited(
+            MediaLocalIndex.saveOutgoing(
+              attachmentId: uploadedId,
+              localPath: localPath,
+              filename: prepared.filename,
+              kind: prepared.kind,
+            ),
+          );
+        }
       }
+      await repo.completeFeedPhotoBatch(
+        batchId,
+        caption: trimmedCaption.isEmpty ? null : trimmedCaption,
+        shareToDiary: childId == null ? shareToDiary : false,
+      );
+      await ShellRefresh.instance.refreshMainTabs();
+    } finally {
+      await MediaUploadForeground.leave(MediaUploadForeground.scopeFeed);
     }
-    await repo.completeFeedPhotoBatch(
-      batchId,
-      caption: trimmedCaption.isEmpty ? null : trimmedCaption,
-      shareToDiary: childId == null ? shareToDiary : false,
-    );
-    await ShellRefresh.instance.refreshMainTabs();
   }
 
   /// Сразу возвращает управление: сжатие и upload идут в фоне.
@@ -133,6 +139,9 @@ abstract final class FeedPostUploader {
     bool shareToDiary = false,
     int? childId,
   }) {
+    if (photos.isEmpty) return;
+    // Kick FGS while still in foreground (before compose pops).
+    unawaited(MediaUploadForeground.enter(MediaUploadForeground.scopeFeed));
     unawaited(() async {
       try {
         await publish(
@@ -144,6 +153,9 @@ abstract final class FeedPostUploader {
         );
       } catch (_) {
         // Ошибки не блокируют UI; лента обновится при следующем refresh.
+      } finally {
+        // Covers throws before publish()'s enter; no-op if already left.
+        await MediaUploadForeground.leave(MediaUploadForeground.scopeFeed);
       }
     }());
   }

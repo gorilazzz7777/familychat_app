@@ -13,6 +13,7 @@ import 'chat_realtime_utils.dart';
 import 'chat_send_trace.dart';
 import 'chat_ws_mark_read.dart';
 import 'chat_network_status.dart';
+import '../../../core/media/media_upload_foreground.dart';
 
 /// Очередь исходящих сообщений и реакций для офлайн-режима (Drift).
 class ChatOfflineOutbox {
@@ -136,6 +137,10 @@ class ChatOfflineOutbox {
       });
       await _writeItems(items);
     });
+    // Start FGS while the UI is still foreground (Android 12+ start rules).
+    if (attachmentMeta.isNotEmpty) {
+      unawaited(MediaUploadForeground.enter(MediaUploadForeground.scopeChat));
+    }
   }
 
   static Future<void> enqueueMarkRead({
@@ -379,6 +384,23 @@ class ChatOfflineOutbox {
     return items.length;
   }
 
+  /// True when an unpaused outbox message still has local attachment blobs.
+  static Future<bool> hasPendingMediaUploads() async {
+    final items = await _readItems();
+    for (final item in items) {
+      if (item['kind']?.toString() != 'message') continue;
+      if (item['paused'] == true) continue;
+      final raw = item['attachments'];
+      if (raw is! List || raw.isEmpty) continue;
+      for (final entry in raw) {
+        if (entry is! Map) continue;
+        final key = entry['storage_key']?.toString();
+        if (key != null && key.isNotEmpty) return true;
+      }
+    }
+    return false;
+  }
+
   static const maxAttempts = 5;
 
   static Future<void> resumeMessage({
@@ -399,6 +421,12 @@ class ChatOfflineOutbox {
       }
       if (changed) await _writeItems(items);
     });
+    // Retry may resume media upload — raise FGS early if still in foreground.
+    unawaited(() async {
+      if (await hasPendingMediaUploads()) {
+        await MediaUploadForeground.enter(MediaUploadForeground.scopeChat);
+      }
+    }());
   }
 
   static Future<void> _patchItem(String itemId, Map<String, dynamic> patch) async {

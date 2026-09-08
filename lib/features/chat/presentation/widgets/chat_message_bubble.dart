@@ -733,6 +733,7 @@ class ChatMessageBubble extends StatelessWidget {
           uploadMessageId: pendingMessageId,
           onCancelUpload: onCancelUpload,
           messageMetadata: messageMetadata,
+          messageCreatedAt: createdAt,
         ),
       );
     }
@@ -792,6 +793,7 @@ class ChatMessageBubble extends StatelessWidget {
               borderRadius: mediaRadius,
               onOpen: onImageTap != null ? () => onImageTap!(a) : null,
               messageMetadata: messageMetadata,
+              messageCreatedAt: createdAt,
               uploadMessageId: pendingMessageId,
               onCancelUpload: onCancelUpload,
             ),
@@ -802,7 +804,9 @@ class ChatMessageBubble extends StatelessWidget {
           _ChatFileAttachmentRow(
             threadId: threadId,
             attachment: a,
+            isMine: isMine,
             textColor: textColor,
+            metaColor: metaColor,
             messageMetadata: messageMetadata,
             uploadMessageId: pendingMessageId,
             onCancelUpload: onCancelUpload,
@@ -824,6 +828,7 @@ class _ChatVideoAttachmentPreview extends ConsumerStatefulWidget {
     this.borderRadius,
     this.onOpen,
     this.messageMetadata = const {},
+    this.messageCreatedAt,
     this.uploadMessageId,
     this.onCancelUpload,
   });
@@ -835,6 +840,7 @@ class _ChatVideoAttachmentPreview extends ConsumerStatefulWidget {
   final BorderRadius? borderRadius;
   final VoidCallback? onOpen;
   final Map<String, dynamic> messageMetadata;
+  final DateTime? messageCreatedAt;
   final int? uploadMessageId;
   final VoidCallback? onCancelUpload;
 
@@ -885,7 +891,6 @@ class _ChatVideoAttachmentPreviewState
     final attachment = widget.attachment;
     final maxWidth = widget.maxWidth;
     final circular = widget.circular;
-    final localBytes = attachment['local_bytes'];
     final size = circular
         ? (maxWidth * 0.72).clamp(160.0, 220.0)
         : maxWidth;
@@ -896,24 +901,23 @@ class _ChatVideoAttachmentPreviewState
             maxWidth: size,
             maxHeight: chatMediaMaxThumbHeight(size),
           );
-    Widget background;
-    if (isSafeUiPreviewBytes(localBytes)) {
-      background = Image.memory(
-        localBytes as Uint8List,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-      );
-    } else {
-      background = ChatNetworkImage(
-        threadId: widget.threadId,
-        attachment: attachment,
-        fit: BoxFit.cover,
-        uploadMessageId: widget.uploadMessageId,
-        onCancelUpload: widget.onCancelUpload,
-        messageMetadata: widget.messageMetadata,
-        borderRadius: widget.borderRadius,
-      );
-    }
+    // Always ChatNetworkImage so age-gate + bubble-size decode apply uniformly.
+    final background = ChatNetworkImage(
+      threadId: widget.threadId,
+      attachment: attachment,
+      width: fitted.width,
+      height: fitted.height,
+      fit: BoxFit.cover,
+      uploadMessageId: widget.uploadMessageId,
+      onCancelUpload: widget.onCancelUpload,
+      messageMetadata: widget.messageMetadata,
+      messageCreatedAt: widget.messageCreatedAt,
+      borderRadius: widget.borderRadius,
+      onResolvedSize: (resolved) {
+        if (resolved.height <= 0) return;
+        _applyAspect(resolved.width / resolved.height);
+      },
+    );
 
     final content = SizedBox(
       width: fitted.width,
@@ -957,7 +961,9 @@ class _ChatFileAttachmentRow extends ConsumerStatefulWidget {
   const _ChatFileAttachmentRow({
     required this.threadId,
     required this.attachment,
+    required this.isMine,
     required this.textColor,
+    required this.metaColor,
     this.messageMetadata = const {},
     this.uploadMessageId,
     this.onCancelUpload,
@@ -965,7 +971,9 @@ class _ChatFileAttachmentRow extends ConsumerStatefulWidget {
 
   final int threadId;
   final Map<String, dynamic> attachment;
+  final bool isMine;
   final Color textColor;
+  final Color metaColor;
   final Map<String, dynamic> messageMetadata;
   final int? uploadMessageId;
   final VoidCallback? onCancelUpload;
@@ -1032,8 +1040,85 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
         );
   }
 
+  String get _filename {
+    final raw = widget.attachment['filename']?.toString().trim();
+    if (raw == null || raw.isEmpty) return 'Файл';
+    return raw;
+  }
+
+  String get _extension {
+    final name = _filename;
+    final dot = name.lastIndexOf('.');
+    if (dot <= 0 || dot >= name.length - 1) return 'FILE';
+    final ext = name.substring(dot + 1).toUpperCase();
+    if (ext.length > 4) return ext.substring(0, 4);
+    return ext;
+  }
+
+  Color get _badgeColor {
+    switch (_extension) {
+      case 'PDF':
+        return const Color(0xFFE53935);
+      case 'DOC':
+      case 'DOCX':
+      case 'ODT':
+        return const Color(0xFF1E88E5);
+      case 'XLS':
+      case 'XLSX':
+      case 'CSV':
+        return const Color(0xFF43A047);
+      case 'PPT':
+      case 'PPTX':
+        return const Color(0xFFFB8C00);
+      case 'ZIP':
+      case 'RAR':
+      case '7Z':
+        return const Color(0xFF8E24AA);
+      case 'TXT':
+      case 'MD':
+        return const Color(0xFF546E7A);
+      case 'APK':
+        return const Color(0xFF00897B);
+      default:
+        return widget.isMine
+            ? const Color(0xFF90CAF9)
+            : const Color(0xFF5C6BC0);
+    }
+  }
+
+  int? get _sizeBytes {
+    final raw = widget.attachment['size_bytes'] ??
+        widget.attachment['size'] ??
+        widget.attachment['file_size'];
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
+  }
+
+  String? get _formattedSize {
+    final bytes = _sizeBytes;
+    if (bytes == null || bytes <= 0) return null;
+    if (bytes < 1024) return '$bytes Б';
+    if (bytes < 1024 * 1024) {
+      final kb = bytes / 1024;
+      return '${kb < 10 ? kb.toStringAsFixed(1) : kb.toStringAsFixed(0)} КБ';
+    }
+    final mb = bytes / (1024 * 1024);
+    return '${mb < 10 ? mb.toStringAsFixed(1) : mb.toStringAsFixed(0)} МБ';
+  }
+
+  String get _subtitle {
+    final parts = <String>[_extension == 'FILE' ? 'Файл' : _extension];
+    final size = _formattedSize;
+    if (size != null) parts.add(size);
+    return parts.join(' · ');
+  }
+
   @override
   Widget build(BuildContext context) {
+    final badgeFg = _badgeColor.computeLuminance() > 0.55
+        ? const Color(0xFF1A237E)
+        : Colors.white;
+
     return ChatMediaTransferOverlay(
       threadId: widget.threadId,
       attachment: widget.attachment,
@@ -1043,20 +1128,68 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
       showManualDownload: !_skipDownloadOverlay(),
       child: InkWell(
         onTap: _openFile,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.insert_drive_file_outlined, color: widget.textColor),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                widget.attachment['filename']?.toString() ?? 'Файл',
-                style: TextStyle(color: widget.textColor),
+        borderRadius: BorderRadius.circular(12),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 180, maxWidth: 280),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: _badgeColor,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  _extension,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: badgeFg,
+                    fontSize: _extension.length > 3 ? 10 : 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.2,
+                    height: 1,
+                  ),
+                ),
               ),
-            ),
-          ],
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _filename,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: widget.textColor,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        height: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      _subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: widget.metaColor,
+                        fontSize: 12,
+                        height: 1.15,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
+

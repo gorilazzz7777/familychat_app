@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../features/chat/data/chat_offline_sync.dart';
+import '../../features/chat/data/chat_ui_connectivity.dart';
 import '../../features/profile/presentation/widgets/chat_avatar.dart';
 
 /// Заголовок AppBar с индикатором «Ожидание соединения» при офлайне.
@@ -18,9 +18,9 @@ class FamilyAppBarTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     final content = child ?? Text(text!);
     return ListenableBuilder(
-      listenable: ChatOfflineSync.instance,
+      listenable: ChatUiConnectivity.instance,
       builder: (context, _) {
-        if (ChatOfflineSync.instance.isOnline) return content;
+        if (ChatUiConnectivity.instance.isOnline) return content;
         return _offlineTitle(context, content);
       },
     );

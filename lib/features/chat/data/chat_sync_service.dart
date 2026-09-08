@@ -33,9 +33,24 @@ class ChatSyncService {
   Timer? _historyTimer;
   final Set<int> _syncingThreads = <int>{};
   final Map<int, Future<void>> _threadQueues = <int, Future<void>>{};
+  DateTime? _resumeCatchUpAt;
+
+  /// Window where hub/conversation resume skips duplicate HTTP catch-up.
+  static const resumeCatchUpWindow = Duration(seconds: 8);
 
   static bool get isSupported => ChatLocalStore.isSupported;
   static const _historyCompletePrefix = 'hist_done_v1_';
+
+  /// Shell calls this once per resume before [reconnectAndRefresh].
+  void beginResumeCatchUp() {
+    _resumeCatchUpAt = DateTime.now();
+  }
+
+  bool get resumeCatchUpFresh {
+    final at = _resumeCatchUpAt;
+    if (at == null) return false;
+    return DateTime.now().difference(at) < resumeCatchUpWindow;
+  }
 
   Future<void> start(FamilyChatRepository repo, {int? currentUserId}) async {
     if (!isSupported) return;

@@ -28,6 +28,8 @@ class GorilaChatRealtime {
   int _reconnectAttempt = 0;
   bool _connecting = false;
   bool _connected = false;
+  /// Skip `ws_disconnected` while [connect] intentionally closes the channel.
+  bool _intentionalClose = false;
   /// True when the next successful [connect] should emit `chat_refresh`
   /// (after drop / backoff reconnect — open chats must HTTP-resync).
   bool _refreshAfterConnect = false;
@@ -55,7 +57,9 @@ class GorilaChatRealtime {
     if (_connecting) return;
     _connecting = true;
     try {
+      _intentionalClose = true;
       await _closeChannel();
+      _intentionalClose = false;
       final uri = uriForToken(accessToken);
       if (kDebugMode) {
         debugPrint('$debugName ws connect: $uri');
@@ -77,17 +81,11 @@ class GorilaChatRealtime {
         },
         onError: (Object error) {
           debugPrint('$debugName ws error: $error');
-          _connected = false;
-          _failPendingTextSends();
-          _failPendingMarkReads();
-          _scheduleReconnect();
+          _handleTransportLost();
         },
         onDone: () {
           debugPrint('$debugName ws closed');
-          _connected = false;
-          _failPendingTextSends();
-          _failPendingMarkReads();
-          _scheduleReconnect();
+          _handleTransportLost();
         },
         cancelOnError: false,
       );
@@ -111,8 +109,20 @@ class GorilaChatRealtime {
       _connected = false;
       _scheduleReconnect();
     } finally {
+      _intentionalClose = false;
       _connecting = false;
     }
+  }
+
+  void _handleTransportLost() {
+    final wasConnected = _connected;
+    _connected = false;
+    _failPendingTextSends();
+    _failPendingMarkReads();
+    if (wasConnected && !_intentionalClose) {
+      emitSyntheticEvent({'event': 'ws_disconnected'});
+    }
+    _scheduleReconnect();
   }
 
   void _dispatch(Map<String, dynamic> event) {

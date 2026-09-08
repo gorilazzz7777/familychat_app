@@ -371,8 +371,20 @@ class MainActivity : FlutterActivity() {
             )
         }
 
+        val uploads = NotificationChannel(
+            "familychat_uploads",
+            "Отправка медиа",
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description =
+                "Показывается, пока медиа (чат, лента, альбомы) отправляются в фоне"
+            enableVibration(false)
+            setSound(null, null)
+        }
+
         manager.createNotificationChannel(messages)
         manager.createNotificationChannel(calls)
+        manager.createNotificationChannel(uploads)
     }
 
     override fun onResume() {

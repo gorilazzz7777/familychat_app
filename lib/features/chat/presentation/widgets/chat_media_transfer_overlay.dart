@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/chat_attachment_download_manager.dart';
 import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_media_providers.dart';
-import '../../data/chat_media_upload_tracker.dart';
 import '../../data/chat_realtime_utils.dart';
 import '../../../../core/media/media_local_index.dart';
 
@@ -75,7 +74,8 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
         );
 
         final state = manager.stateFor(tid, attachmentId);
-        if (locallyAvailable) {
+        // Locally ready and bubble already allowed to decode → no overlay.
+        if (locallyAvailable && !showManualDownload) {
           if (state.phase == ChatAttachmentDownloadPhase.downloading) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (!context.mounted) return;
@@ -87,13 +87,6 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
           return child;
         }
 
-        final hideManualPrompt = !showManualDownload || locallyAvailable;
-        if (state.phase != ChatAttachmentDownloadPhase.downloading &&
-            (hideManualPrompt ||
-                locallyAvailable ||
-                state.phase == ChatAttachmentDownloadPhase.completed)) {
-          return child;
-        }
         if (state.phase == ChatAttachmentDownloadPhase.downloading &&
             showWhenDownloading) {
           return _stack(
@@ -103,7 +96,9 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
             onCancel: () => manager.cancelDownload(tid, attachmentId),
           );
         }
-        if (!hideManualPrompt && state.needsManualTap) {
+
+        // Manual load (auto-download off, or deferred old media in bubble).
+        if (showManualDownload && onDownloadTap != null) {
           return Stack(
             fit: StackFit.passthrough,
             children: [

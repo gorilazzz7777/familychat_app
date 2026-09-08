@@ -167,6 +167,15 @@ class ChatScheduledSendService extends ChangeNotifier {
     final repo = _repo;
     if (repo == null) return;
 
+    final cached = await FamilyChatLocalCache.readScheduledItems();
+    if (cached.isEmpty) return;
+    final nowProbe = DateTime.now().toUtc();
+    final hasDue = cached.any((item) {
+      final sendAt = DateTime.tryParse(item['send_at']?.toString() ?? '');
+      return sendAt != null && !sendAt.isAfter(nowProbe);
+    });
+    if (!hasDue) return;
+
     final online = await ChatNetworkStatus.isOnline(() async {
       await repo.status(timeout: const Duration(seconds: 3));
     });

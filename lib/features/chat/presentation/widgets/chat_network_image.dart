@@ -17,6 +17,7 @@ import '../../../../core/widgets/web_image_cache_registry.dart';
 import '../../../familychat/data/familychat_repository.dart';
 import '../../data/chat_attachment_download_manager.dart';
 import '../../data/chat_media_auto_download.dart';
+import '../../data/chat_media_display_policy.dart';
 import '../../data/chat_media_providers.dart';
 import '../../data/chat_realtime_utils.dart';
 import 'chat_attachment_thumb.dart';
@@ -31,6 +32,9 @@ String _attachmentCacheKey(int threadId, int attachmentId) =>
 ///
 /// Превью сразу; полный файл — через [ChatAttachmentDownloadManager]
 /// (авто или по кнопке «Загрузить»), с % и отменой.
+///
+/// Медиа старше [ChatMediaDisplayPolicy.deferredFullMediaAge] не декодятся
+/// в пузыре, пока пользователь не нажмёт «Загрузить» (кэш на диске не чистим).
 class ChatNetworkImage extends ConsumerStatefulWidget {
   const ChatNetworkImage({
     super.key,
@@ -43,6 +47,7 @@ class ChatNetworkImage extends ConsumerStatefulWidget {
     this.uploadMessageId,
     this.onCancelUpload,
     this.messageMetadata = const {},
+    this.messageCreatedAt,
     this.borderRadius,
     this.showTransferOverlay = true,
   });
@@ -56,6 +61,7 @@ class ChatNetworkImage extends ConsumerStatefulWidget {
   final int? uploadMessageId;
   final VoidCallback? onCancelUpload;
   final Map<String, dynamic> messageMetadata;
+  final DateTime? messageCreatedAt;
   final BorderRadius? borderRadius;
   final bool showTransferOverlay;
 
@@ -71,10 +77,16 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
 
   int? get _attachmentId => chatAsInt(widget.attachment['id']);
 
+  bool get _deferFullDecode => ChatMediaDisplayPolicy.shouldDeferFullDecode(
+        threadId: widget.threadId,
+        attachmentId: _attachmentId,
+        messageCreatedAt: widget.messageCreatedAt,
+      );
+
   @override
   void initState() {
     super.initState();
-    _urlLoadAllowed = _shouldAutoLoadUrl();
+    _urlLoadAllowed = !_deferFullDecode && _shouldAutoLoadUrl();
     if (_useBytesPath) {
       _scheduleAutoDownload();
     } else {
@@ -89,12 +101,15 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     final newId = _attachmentId;
     final urlChanged =
         oldWidget.attachment['file_url'] != widget.attachment['file_url'];
+    final ageChanged =
+        oldWidget.messageCreatedAt != widget.messageCreatedAt;
     if (oldId != newId ||
         oldWidget.threadId != widget.threadId ||
-        urlChanged) {
+        urlChanged ||
+        ageChanged) {
       _sizeReported = false;
       _sizeListenAttached = false;
-      _urlLoadAllowed = _shouldAutoLoadUrl();
+      _urlLoadAllowed = !_deferFullDecode && _shouldAutoLoadUrl();
       if (_useBytesPath) {
         _scheduleAutoDownload();
       } else {
@@ -118,6 +133,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   void _scheduleAutoDownload() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      if (_deferFullDecode) return;
       final attachmentId = _attachmentId;
       if (attachmentId == null || attachmentId <= 0) return;
       final settings = ref.read(appSettingsProvider);
@@ -173,15 +189,26 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     stream.addListener(listener);
   }
 
+  int? get _memCacheWidth =>
+      ChatMediaDisplayPolicy.memCacheWidthPx(context, widget.width);
+
+  ImageProvider _sizedProvider(ImageProvider provider) {
+    final w = _memCacheWidth;
+    if (w == null) return provider;
+    // Width-only keeps aspect; height would force-crop decode.
+    return ResizeImage(provider, width: w);
+  }
+
   Widget _sizedImage({
     required ImageProvider provider,
     Key? key,
     ImageErrorWidgetBuilder? errorBuilder,
   }) {
-    _listenProviderSize(provider);
+    final sized = _sizedProvider(provider);
+    _listenProviderSize(sized);
     return Image(
       key: key,
-      image: provider,
+      image: sized,
       width: widget.width,
       height: widget.height,
       fit: widget.fit,
@@ -201,6 +228,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   bool _isFullMediaDisplayed() {
+    if (_deferFullDecode) return false;
     MediaLocalIndex.hydrateAttachment(widget.attachment);
     final localPath = galleryLocalDevicePath(widget.attachment);
     if (localDeviceFileExists(localPath)) return true;
@@ -228,12 +256,18 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   Future<void> _manualDownload() async {
     final attachmentId = _attachmentId;
     if (attachmentId == null) return;
+
+    ChatMediaDisplayPolicy.markExpanded(widget.threadId, attachmentId);
+
     if (!_useBytesPath) {
       if (!_urlLoadAllowed) {
         setState(() => _urlLoadAllowed = true);
+      } else {
+        setState(() {});
       }
       return;
     }
+    setState(() {});
     final bytes = await ref.read(chatAttachmentDownloadManagerProvider).startDownload(
           threadId: widget.threadId,
           attachmentId: attachmentId,
@@ -268,13 +302,14 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     return url.contains('/attachments/') && url.contains('/content');
   }
 
-  Widget _thumbPlaceholder() {
+  Widget _thumbPlaceholder({bool lightOnly = false}) {
     return ChatAttachmentThumb(
       attachment: widget.attachment,
       width: widget.width,
       height: widget.height,
       fit: widget.fit,
       borderRadius: widget.borderRadius,
+      lightOnly: lightOnly || _deferFullDecode,
     );
   }
 
@@ -288,7 +323,7 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       onDownloadTap: _manualDownload,
       borderRadius: widget.borderRadius,
       showManualDownload: !_isFullMediaDisplayed(),
-      showWhenDownloading: _useBytesPath,
+      showWhenDownloading: _useBytesPath || _deferFullDecode,
       child: child,
     );
   }
@@ -334,6 +369,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         height: widget.height,
         width: widget.width,
         fit: widget.fit,
+        memCacheWidth: _memCacheWidth,
+        memCacheHeight: null,
         progressIndicatorBuilder: (context, _, progress) {
           final total = progress.totalSize;
           final downloaded = progress.downloaded;
@@ -368,7 +405,15 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         errorWidget: (_, __, ___) => _wrapOverlay(_thumbPlaceholder()),
         imageBuilder: (context, imageProvider) {
           unawaited(FamilyChatMediaCache.trimIfNeeded());
-          return _sizedImage(provider: imageProvider);
+          // Provider already constrained via memCacheWidth on CachedNetworkImage.
+          _listenProviderSize(imageProvider);
+          return Image(
+            image: imageProvider,
+            width: widget.width,
+            height: widget.height,
+            fit: widget.fit,
+            gaplessPlayback: true,
+          );
         },
       ),
     );
@@ -384,11 +429,17 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     });
     ref.listen(appSettingsProvider, (_, __) {
       if (!mounted) return;
+      if (_deferFullDecode) return;
       final allowed = _shouldAutoLoadUrl();
       if (allowed != _urlLoadAllowed) {
         setState(() => _urlLoadAllowed = allowed);
       }
     });
+
+    // Old media: light stub + Load — skip full local / network decode.
+    if (_deferFullDecode) {
+      return _wrapOverlay(_thumbPlaceholder(lightOnly: true));
+    }
 
     MediaLocalIndex.hydrateAttachment(widget.attachment);
     final localPath = galleryLocalDevicePath(widget.attachment);
@@ -398,6 +449,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         width: widget.width,
         height: widget.height,
         fit: widget.fit,
+        cacheWidth: _memCacheWidth,
+        cacheHeight: null,
         error: _thumbPlaceholder(),
       );
       if (localImage is Image) {

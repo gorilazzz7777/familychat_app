@@ -36,6 +36,7 @@ class FamilyChatNotifications {
 
   static const messagesChannelId = 'familychat_messages';
   static const callsChannelId = 'familychat_calls_v2';
+  static const uploadsChannelId = 'familychat_uploads';
 
   static String chatNotificationTag(int threadId) => 'familychat_chat_$threadId';
 
@@ -165,6 +166,18 @@ class FamilyChatNotifications {
           importance: Importance.high,
           playSound: true,
           enableVibration: true,
+        ),
+      );
+      await android?.createNotificationChannel(
+        const AndroidNotificationChannel(
+          uploadsChannelId,
+          'Отправка медиа',
+          description:
+              'Показывается, пока медиа (чат, лента, альбомы) отправляются в фоне',
+          importance: Importance.low,
+          playSound: false,
+          enableVibration: false,
+          showBadge: false,
         ),
       );
       // Канал звонков создаётся в MainActivity с рингтоном (IMPORTANCE_MAX).

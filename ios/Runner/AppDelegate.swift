@@ -73,6 +73,10 @@ import Intents
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
 
+    SwiftFlutterForegroundTaskPlugin.setPluginRegistrantCallback { registry in
+      GeneratedPluginRegistrant.register(with: registry)
+    }
+
     let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "FamilyChatCallProximity")!
     let proximityChannel = FlutterMethodChannel(
       name: "com.familychat/call_proximity",

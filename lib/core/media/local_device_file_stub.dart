@@ -9,6 +9,8 @@ Widget localDeviceFileImage({
   double? height,
   BoxFit fit = BoxFit.cover,
   Widget? error,
+  int? cacheWidth,
+  int? cacheHeight,
 }) {
   return error ?? const SizedBox.shrink();
 }

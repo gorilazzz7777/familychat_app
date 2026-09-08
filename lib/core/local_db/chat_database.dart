@@ -523,6 +523,27 @@ class ChatDatabase extends _$ChatDatabase {
     return rows.reversed.map(_decodeMessage).toList();
   }
 
+  /// Page of messages newer than [afterId] (oldest → newest).
+  Future<List<Map<String, dynamic>>> readMessagesAfter(
+    int threadId, {
+    required int afterId,
+    int limit = 50,
+  }) async {
+    final rows = await (select(chatMessageRows)
+          ..where(
+            (t) =>
+                t.threadId.equals(threadId) &
+                t.messageId.isBiggerThanValue(afterId),
+          )
+          ..orderBy([
+            (t) => OrderingTerm.asc(t.createdAtMs),
+            (t) => OrderingTerm.asc(t.messageId),
+          ])
+          ..limit(limit))
+        .get();
+    return rows.map(_decodeMessage).toList();
+  }
+
   /// Window around [messageId] for jump-to-message (oldest → newest).
   Future<List<Map<String, dynamic>>> readMessagesAroundId(
     int threadId,

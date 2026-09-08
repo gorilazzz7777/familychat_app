@@ -10,6 +10,7 @@ import 'package:intl/date_symbol_data_local.dart';
 
 import 'app/bootstrap_screen.dart';
 import 'core/call/callkit_incoming_service.dart';
+import 'core/media/media_upload_foreground.dart';
 import 'core/notifications/familychat_notifications.dart';
 import 'core/push/push_message_handler.dart';
 import 'core/push/push_navigation.dart';
@@ -29,6 +30,8 @@ Future<void> main() async {
   if (kIsWeb) {
     usePathUrlStrategy();
   } else {
+    MediaUploadForeground.initCommunicationPort();
+    MediaUploadForeground.ensureInitialized();
     unawaited(() async {
       try {
         await PushRegistrationService.ensureFirebaseInitialized();
