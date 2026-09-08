@@ -41,6 +41,7 @@ import '../data/chat_mutation_coordinator.dart';
 import '../data/chat_media_providers.dart';
 import '../data/chat_media_upload_tracker.dart';
 import '../data/chat_offline_outbox.dart';
+import '../data/chat_page_jump_trace.dart';
 import '../data/chat_send_trace.dart';
 import '../data/chat_offline_prefetch.dart';
 import '../data/chat_offline_sync.dart';
@@ -196,6 +197,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool get _localFirst => ChatSyncService.isSupported;
   bool _loadingOlder = false;
   bool _loadingNewer = false;
+  /// Captured at loadOlder start — layout growth during await must not clear this.
+  bool _loadOlderFromEdge = false;
+  DateTime? _loadOlderCooldownUntil;
+  /// Temporarily enlarge ListView cache so stick-target keys mount.
+  bool _stickBoostCache = false;
   bool _hasMoreOlder = false;
   bool _hasMoreNewer = false;
   bool _showScrollToBottom = false;
@@ -216,6 +222,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   int _tempIdCounter = 0;
   int _loadGeneration = 0;
   int _messagesWatchGen = 0;
+  int _restoreViewGen = 0;
   bool _awaitingFirstThreadSync = false;
   bool _selectionMode = false;
   final Set<int> _selectedMessageIds = {};
@@ -257,7 +264,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   /// Live-tail UI window (newest messages while following the bottom).
   static const _uiMessageWindow = 25;
   /// Sliding window while browsing history (around the viewport).
-  static const _uiSlidingWindow = 60;
+  static const _uiSlidingWindow = 100;
   /// Trim only after growing past window + hysteresis (avoids thrash).
   static const _uiSlidingTrimOverhead = 12;
 
@@ -666,31 +673,125 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
     if (_followLiveTail) {
       if (rows.length <= _uiMessageWindow) return rows;
-      return rows.sublist(rows.length - _uiMessageWindow);
+      final out = rows.sublist(rows.length - _uiMessageWindow);
+      _logPageJump(
+        'clip_sqlite_live_tail',
+        before: _messages,
+        after: out,
+        extra: {'sqliteRows': rows.length, 'out': ChatPageJumpTrace.windowSummary(out)},
+      );
+      return out;
     }
 
-    // History: keep a sliding slice covering the current UI window.
-    if (rows.length <= _uiSlidingWindow) return rows;
-
-    if (_messages.isNotEmpty) {
-      final oldestId = chatAsInt(_messages.first['id']);
-      if (oldestId != null) {
-        var startIdx =
-            rows.indexWhere((m) => chatAsInt(m['id']) == oldestId);
-        if (startIdx < 0) startIdx = 0;
-        final endIdx =
-            (startIdx + _uiSlidingWindow).clamp(0, rows.length);
-        startIdx = (endIdx - _uiSlidingWindow).clamp(0, rows.length);
-        return rows.sublist(startIdx, endIdx);
-      }
+    // History browse: watch may only refresh the current UI span.
+    // Never prepend older rows here — that was the jump on leave_live_tail
+    // (#278: 25 → 100 with Sept 2 injected before loadOlder).
+    if (_messages.isEmpty) {
+      return rows.length <= _uiSlidingWindow
+          ? rows
+          : rows.sublist(rows.length - _uiSlidingWindow);
     }
 
-    return rows.sublist(rows.length - _uiSlidingWindow);
+    final idToIndex = <int, int>{};
+    for (var i = 0; i < rows.length; i++) {
+      final id = chatAsInt(rows[i]['id']);
+      if (id != null) idToIndex[id] = i;
+    }
+
+    int? spanStart;
+    int? spanEnd;
+    for (final m in _messages) {
+      final id = chatAsInt(m['id']);
+      if (id == null || id <= 0) continue;
+      final idx = idToIndex[id];
+      if (idx == null) continue;
+      spanStart = spanStart == null ? idx : (idx < spanStart ? idx : spanStart);
+      spanEnd = spanEnd == null ? idx : (idx > spanEnd ? idx : spanEnd);
+    }
+
+    if (spanStart == null || spanEnd == null) {
+      final out = rows.sublist(rows.length - _uiSlidingWindow.clamp(1, rows.length));
+      _logPageJump(
+        'clip_sqlite_FALLBACK_NEWEST',
+        before: _messages,
+        after: out,
+        extra: {
+          'sqliteRows': rows.length,
+          'out': ChatPageJumpTrace.windowSummary(out),
+        },
+      );
+      return out;
+    }
+
+    // Allow a little newer tip growth, but do not move spanStart older.
+    var end = (spanEnd + 1).clamp(0, rows.length);
+    var start = spanStart;
+    if (end - start > _uiSlidingWindow) {
+      start = end - _uiSlidingWindow;
+      // Still never older than the current UI oldest if present.
+      if (start < spanStart) start = spanStart;
+    }
+    final out = rows.sublist(start, end);
+    _logPageJump(
+      'clip_sqlite_ui_span',
+      before: _messages,
+      after: out,
+      extra: {
+        'sqliteRows': rows.length,
+        'span': '$spanStart-$spanEnd',
+        'slice': '$start-$end',
+        'out': ChatPageJumpTrace.windowSummary(out),
+      },
+    );
+    return out;
+  }
+
+  int? _midUiMessageId() {
+    if (_messages.isEmpty) return null;
+    return chatAsInt(_messages[_messages.length ~/ 2]['id']);
+  }
+
+  String _scrollJumpSnapshot() {
+    if (!_scrollController.hasClients) {
+      return 'scroll=noClients follow=$_followLiveTail';
+    }
+    final pos = _scrollController.position;
+    final max = pos.maxScrollExtent;
+    final t = max <= 0 ? 0.0 : (pos.pixels / max).clamp(0.0, 1.0);
+    return 'px=${pos.pixels.toStringAsFixed(1)} '
+        'max=${max.toStringAsFixed(1)} '
+        't=${t.toStringAsFixed(3)} '
+        'follow=$_followLiveTail '
+        'hasMoreOld=$_hasMoreOlder hasMoreNew=$_hasMoreNewer '
+        'loadOld=$_loadingOlder loadNew=$_loadingNewer';
+  }
+
+  void _logPageJump(
+    String phase, {
+    List<Map<String, dynamic>>? before,
+    List<Map<String, dynamic>>? after,
+    Map<String, Object?> extra = const {},
+  }) {
+    final merged = <String, Object?>{
+      'win': ChatPageJumpTrace.windowSummary(_messages),
+      'scroll': _scrollJumpSnapshot(),
+      'viewport': _viewportAnchorMessageId(),
+      ...extra,
+    };
+    final gap = (before != null && after != null)
+        ? ChatPageJumpTrace.dateGapHint(before, after)
+        : null;
+    ChatPageJumpTrace.log(
+      phase,
+      threadId: widget.threadId,
+      detail: gap,
+      extra: merged,
+    );
   }
 
   List<Map<String, dynamic>> _clipUiMessages(
     List<Map<String, dynamic>> messages, {
-    bool preferOldest = true,
+    bool preferOldest = false,
   }) {
     if (messages.isEmpty) return messages;
 
@@ -704,6 +805,310 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       return messages.sublist(0, _uiSlidingWindow);
     }
     return messages.sublist(messages.length - _uiSlidingWindow);
+  }
+
+  /// Keep a window around [messageId] so load-older/newer does not jump to the far end.
+  List<Map<String, dynamic>> _clipAroundMessageId(
+    List<Map<String, dynamic>> messages,
+    int? messageId, {
+    bool preferLoadOlder = false,
+    bool keepOldestSide = false,
+  }) {
+    if (messages.length <= _uiSlidingWindow) {
+      _logPageJump(
+        'clip_around_no_clip',
+        after: messages,
+        extra: {
+          'anchor': messageId,
+          'preferOlder': preferLoadOlder,
+          'keepOldest': keepOldestSide,
+          'n': messages.length,
+        },
+      );
+      return messages;
+    }
+    // At the older edge the user is reading the top: keep the oldest side so
+    // newly prepended history is not discarded by a mid-window clip.
+    if (keepOldestSide) {
+      final out = messages.sublist(0, _uiSlidingWindow);
+      _logPageJump(
+        'clip_around_keep_oldest',
+        before: messages,
+        after: out,
+        extra: {
+          'anchor': messageId,
+          'in': ChatPageJumpTrace.windowSummary(messages),
+          'out': ChatPageJumpTrace.windowSummary(out),
+        },
+      );
+      return out;
+    }
+    if (messageId == null) {
+      final out = _clipUiMessages(messages, preferOldest: false);
+      _logPageJump(
+        'clip_around_null_anchor_newest',
+        before: messages,
+        after: out,
+        extra: {'preferOlder': preferLoadOlder},
+      );
+      return out;
+    }
+    final idx =
+        messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
+    if (idx < 0) {
+      final out = _clipUiMessages(messages, preferOldest: false);
+      _logPageJump(
+        'clip_around_anchor_MISSING_newest',
+        before: messages,
+        after: out,
+        extra: {'anchor': messageId, 'preferOlder': preferLoadOlder},
+      );
+      return out;
+    }
+    // Load-older with viewport anchor: keep it near mid-upper so newly loaded
+    // older messages sit above without discarding the visible bubble.
+    // Load-newer: keep it near mid-lower.
+    final olderBias = preferLoadOlder
+        ? (_uiSlidingWindow * 2) ~/ 5
+        : (_uiSlidingWindow * 3) ~/ 5;
+    var start = (idx - olderBias).clamp(0, messages.length);
+    var end = (start + _uiSlidingWindow).clamp(0, messages.length);
+    start = (end - _uiSlidingWindow).clamp(0, messages.length);
+    final out = messages.sublist(start, end);
+    _logPageJump(
+      'clip_around',
+      before: messages,
+      after: out,
+      extra: {
+        'anchor': messageId,
+        'anchorIdx': idx,
+        'preferOlder': preferLoadOlder,
+        'bias': olderBias,
+        'slice': '$start-$end',
+        'in': ChatPageJumpTrace.windowSummary(messages),
+        'out': ChatPageJumpTrace.windowSummary(out),
+      },
+    );
+    return out;
+  }
+
+  bool _isNearOlderEdge({double slackPx = 240}) {
+    if (!_scrollController.hasClients) return false;
+    final pos = _scrollController.position;
+    if (pos.maxScrollExtent <= 0) return false;
+    final t = (pos.pixels / pos.maxScrollExtent).clamp(0.0, 1.0);
+    return t >= 0.85 || pos.pixels >= pos.maxScrollExtent - slackPx;
+  }
+
+  void _clampScrollPixels() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    final max = pos.maxScrollExtent;
+    if (pos.pixels > max) {
+      _scrollController.jumpTo(max);
+    } else if (pos.pixels < 0) {
+      _scrollController.jumpTo(0);
+    }
+  }
+
+  /// Keep [messageId] near the top after keep-oldest clip.
+  ///
+  /// After keep-oldest the scroll offset often stays at maxScrollExtent, which
+  /// shows the newly prepended oldest messages (the "fly after loader"). Keys
+  /// are usually not mounted yet, so we jump by list index first, then
+  /// ensureVisible. Never nudge toward max — that worsens the jump.
+  void _stickMessageNearTop(int messageId, {required int gen}) {
+    void jumpByIndex({required String reason, required int attempt}) {
+      if (!_scrollController.hasClients || _messages.isEmpty) return;
+      final msgIdx =
+          _messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
+      if (msgIdx < 0) {
+        _logPageJump(
+          'stick_top_missing',
+          extra: {'anchor': messageId, 'attempt': attempt, 'gen': gen},
+        );
+        return;
+      }
+      final n = _messages.length;
+      final max = _scrollController.position.maxScrollExtent;
+      // reverse ListView: msgIdx 0 (oldest) → max, last (newest) → 0.
+      final t = n <= 1 ? 1.0 : (1.0 - (msgIdx / (n - 1))).clamp(0.0, 1.0);
+      // Slightly below the item's nominal top so the bubble sits under the app bar.
+      final target = (max * t * 0.98).clamp(0.0, max);
+      final px = _scrollController.position.pixels;
+      if ((target - px).abs() > 16) {
+        _scrollController.jumpTo(target);
+      }
+      _logPageJump(
+        'stick_top_index_jump',
+        extra: {
+          'anchor': messageId,
+          'msgIdx': msgIdx,
+          'n': n,
+          't': t.toStringAsFixed(3),
+          'from': px.toStringAsFixed(1),
+          'to': target.toStringAsFixed(1),
+          'reason': reason,
+          'attempt': attempt,
+          'gen': gen,
+        },
+      );
+    }
+
+    void attempt(int n) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || gen != _restoreViewGen) return;
+
+        // Always correct away from max first — keys are rarely mounted while
+        // pixels sit on the newly prepended oldest edge.
+        jumpByIndex(reason: 'pre_ensure', attempt: n);
+
+        final key = _messageKeys[messageId];
+        final ctx = key?.currentContext;
+        if (ctx != null && ctx.mounted) {
+          _logPageJump(
+            'stick_top_apply',
+            extra: {'anchor': messageId, 'attempt': n, 'gen': gen},
+          );
+          unawaited(
+            Scrollable.ensureVisible(
+              ctx,
+              alignment: 0.08,
+              duration: Duration.zero,
+            ),
+          );
+          _stickBoostCache = false;
+          return;
+        }
+        if (n >= 5) {
+          _logPageJump(
+            'stick_top_give_up',
+            extra: {'anchor': messageId, 'gen': gen},
+          );
+          _stickBoostCache = false;
+          return;
+        }
+        _logPageJump(
+          'stick_top_retry',
+          extra: {'anchor': messageId, 'attempt': n, 'gen': gen},
+        );
+        attempt(n + 1);
+      });
+    }
+
+    _logPageJump(
+      'stick_top_schedule',
+      extra: {'anchor': messageId, 'gen': gen},
+    );
+    // First frame: index-jump so the anchor enters the build range; then
+    // ensureVisible can fine-tune. Do not jump synchronously during setState —
+    // maxScrollExtent is still stale.
+    attempt(0);
+  }
+
+  void _restoreMessageInView(
+    int messageId, {
+    double alignment = 0.45,
+    int attempt = 0,
+    int? gen,
+  }) {
+    final restoreGen = gen ?? ++_restoreViewGen;
+    if (gen == null) {
+      _logPageJump(
+        'restore_in_view_schedule',
+        extra: {'anchor': messageId, 'align': alignment, 'gen': restoreGen},
+      );
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || restoreGen != _restoreViewGen) {
+        if (mounted && restoreGen != _restoreViewGen) {
+          _logPageJump(
+            'restore_in_view_cancelled',
+            extra: {'anchor': messageId, 'gen': restoreGen, 'cur': _restoreViewGen},
+          );
+        }
+        return;
+      }
+      // User is loading/reading at the older edge — do not yank to mid-list.
+      if (_isNearOlderEdge() || _loadingOlder) {
+        _logPageJump(
+          'restore_in_view_skip_older_edge',
+          extra: {
+            'anchor': messageId,
+            'attempt': attempt,
+            'loadingOlder': _loadingOlder,
+          },
+        );
+        return;
+      }
+      final key = _messageKeys[messageId];
+      final ctx = key?.currentContext;
+      if (ctx == null || !ctx.mounted) {
+        if (attempt < 6 &&
+            _scrollController.hasClients &&
+            _messages.length > 1 &&
+            !_isNearOlderEdge()) {
+          final idx =
+              _messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
+          if (idx >= 0) {
+            final pos = _scrollController.position;
+            final t = 1.0 - (idx / (_messages.length - 1));
+            final target =
+                (t * pos.maxScrollExtent).clamp(0.0, pos.maxScrollExtent);
+            // Never jump downward-away from an older-edge browse session.
+            if (target + 80 >= pos.pixels || pos.pixels < pos.maxScrollExtent * 0.7) {
+              if ((pos.pixels - target).abs() > 24) {
+                _scrollController.jumpTo(target);
+              }
+            }
+          }
+          _logPageJump(
+            'restore_in_view_retry',
+            extra: {
+              'anchor': messageId,
+              'attempt': attempt,
+              'hasKey': key != null,
+              'align': alignment,
+              'gen': restoreGen,
+            },
+          );
+          _restoreMessageInView(
+            messageId,
+            alignment: alignment,
+            attempt: attempt + 1,
+            gen: restoreGen,
+          );
+          return;
+        }
+        _logPageJump(
+          'restore_in_view_MISS',
+          extra: {
+            'anchor': messageId,
+            'hasKey': key != null,
+            'align': alignment,
+            'attempt': attempt,
+            'gen': restoreGen,
+          },
+        );
+        return;
+      }
+      _logPageJump(
+        'restore_in_view_apply',
+        extra: {
+          'anchor': messageId,
+          'align': alignment,
+          'attempt': attempt,
+          'gen': restoreGen,
+        },
+      );
+      unawaited(
+        Scrollable.ensureVisible(
+          ctx,
+          alignment: alignment,
+          duration: Duration.zero,
+        ),
+      );
+    });
   }
 
   /// Drop far-from-viewport messages while browsing (keeps ~[_uiSlidingWindow]).
@@ -755,6 +1160,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_followLiveTail || _restoringLiveTail) return;
     if (_messages.length <= _uiSlidingWindow) return;
 
+    final before = List<Map<String, dynamic>>.from(_messages);
     final anchorId = _viewportAnchorMessageId();
     var focus = _messages.length ~/ 2;
     if (anchorId != null) {
@@ -783,6 +1189,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (droppedOldest) _hasMoreOlder = true;
     });
     _pruneMessageKeys();
+    _logPageJump(
+      'trim_sliding_window',
+      before: before,
+      after: _messages,
+      extra: {
+        'anchor': anchorId,
+        'focus': focus,
+        'slice': '$start-$end',
+        'dropOld': droppedOldest,
+        'dropNew': droppedNewest,
+        'out': ChatPageJumpTrace.windowSummary(_messages),
+      },
+    );
 
     if (anchorId != null &&
         _messages.any((m) => chatAsInt(m['id']) == anchorId)) {
@@ -807,6 +1226,62 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (!mounted) return;
     final gen = ++_messagesWatchGen;
     final beforeUi = List<Map<String, dynamic>>.from(_messages);
+
+    // Pagination owns the UI list; applying a full sqlite clip here races
+    // loadOlder/loadNewer and jumps scroll onto distant dates.
+    if (_loadingOlder || _loadingNewer || _restoringLiveTail) {
+      _logPageJump(
+        'watch_skip_paginating',
+        extra: {
+          'gen': gen,
+          'loadingOlder': _loadingOlder,
+          'loadingNewer': _loadingNewer,
+          'restoring': _restoringLiveTail,
+          'sqliteRows': rows.length,
+        },
+      );
+      ChatSendTrace.log(
+        'watch_skip_paginating',
+        threadId: widget.threadId,
+        source: 'ui',
+        extra: {
+          'gen': gen,
+          'loadingOlder': _loadingOlder,
+          'loadingNewer': _loadingNewer,
+        },
+      );
+      return;
+    }
+
+    // If follow flag flipped on while the user is still up in history
+    // (pull-refresh / sync), do not clip to the live tip.
+    if (_followLiveTail &&
+        _scrollController.hasClients &&
+        _messages.length > _uiMessageWindow) {
+      final pos = _scrollController.position;
+      if (pos.maxScrollExtent > 200 &&
+          pos.pixels > pos.maxScrollExtent * 0.35) {
+        _followLiveTail = false;
+        _logPageJump(
+          'follow_cleared_scroll_in_history',
+          extra: {
+            'px': pos.pixels.toStringAsFixed(1),
+            'max': pos.maxScrollExtent.toStringAsFixed(1),
+          },
+        );
+      }
+    }
+
+    // Background sync must not reshape the window while reading at the top —
+    // that was yanking t=1.0 → ~0.37 right after a successful loadOlder.
+    if (!_followLiveTail && _isNearOlderEdge()) {
+      _logPageJump(
+        'watch_skip_near_older_edge',
+        extra: {'gen': gen, 'sqliteRows': rows.length},
+      );
+      return;
+    }
+
     final blocked = await ChatOfflineOutbox.pendingRemovalMessageIds(
       threadId: widget.threadId,
     );
@@ -850,6 +1325,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       hydrateAttachments: false,
     );
     if (!mounted || gen != _messagesWatchGen) return;
+    if (_loadingOlder || _loadingNewer || _restoringLiveTail) return;
 
     List<Map<String, dynamic>>? localPins;
     if (_localFirst) {
@@ -887,6 +1363,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final oldNewest = chatNewestServerMessageId(_messages);
     final newNewest = chatNewestServerMessageId(next);
     final followTail = _followLiveTail;
+    final restoreId = !followTail
+        ? (_viewportAnchorMessageId() ?? _midUiMessageId())
+        : null;
+    _logPageJump(
+      'watch_apply',
+      before: beforeUi,
+      after: next,
+      extra: {
+        'gen': gen,
+        'sqliteRows': rows.length,
+        'clipped': clippedRows.length,
+        'restoreId': restoreId,
+        'followTail': followTail,
+        'beforeWin': ChatPageJumpTrace.windowSummary(beforeUi),
+        'afterWin': ChatPageJumpTrace.windowSummary(next),
+      },
+    );
     ChatSendTrace.log(
       'watch_apply',
       threadId: widget.threadId,
@@ -915,12 +1408,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
     });
     _awaitingFirstThreadSync = false;
+    _pruneMessageKeys();
 
     if (followTail &&
         (wasEmpty ||
             (newNewest != null &&
                 (oldNewest == null || newNewest > oldNewest)))) {
       _scrollToBottom();
+    } else if (restoreId != null &&
+        next.any((m) => chatAsInt(m['id']) == restoreId)) {
+      _restoreMessageInView(restoreId, alignment: 0.45);
     }
     if (newNewest != null &&
         (oldNewest == null || newNewest > oldNewest)) {
@@ -1436,6 +1933,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _followLiveTail = true;
       return;
     }
+    final before = List<Map<String, dynamic>>.from(_messages);
+    _logPageJump(
+      'restore_live_tail_start',
+      before: before,
+      extra: {'jumpScroll': jumpScroll},
+    );
     _restoringLiveTail = true;
     _followLiveTail = true;
     try {
@@ -1458,6 +1961,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _scrollToBottomHintTimer = null;
         unawaited(ChatSyncService.instance.syncThread(widget.threadId));
         unawaited(_refreshHasMoreOlder());
+        _logPageJump(
+          'restore_live_tail_done_local',
+          before: before,
+          after: next,
+          extra: {'out': ChatPageJumpTrace.windowSummary(next)},
+        );
       } else {
         await _load(silent: true);
         if (!mounted) return;
@@ -1469,6 +1978,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _pruneMessageKeys();
         _scrollToBottomHintTimer?.cancel();
         _scrollToBottomHintTimer = null;
+        _logPageJump(
+          'restore_live_tail_done_remote',
+          before: before,
+          after: _messages,
+        );
       }
       if (jumpScroll) {
         _scrollToBottom(jump: true, settle: true);
@@ -1540,6 +2054,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _onPullRefresh() async {
+    // While browsing history, pull-to-refresh must NOT load-older or yank to
+    // live tip — scroll already paginates; a second load caused post-loader jumps.
+    if (!_followLiveTail) {
+      _logPageJump('pull_refresh_while_browsing_ignored');
+      return;
+    }
     _followLiveTail = true;
     await _load();
     unawaited(
@@ -1561,14 +2081,18 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
     if (!atTail && _followLiveTail) {
       _followLiveTail = false;
+      _logPageJump('leave_live_tail');
     } else if (atTail &&
         !_followLiveTail &&
         !_restoringLiveTail &&
-        !_loadingNewer) {
+        !_loadingNewer &&
+        !_loadingOlder) {
       if (_hasMoreNewer) {
+        _logPageJump('scroll_trigger_load_newer_at_tail');
         unawaited(_loadNewer());
       } else if (_messages.length > _uiMessageWindow) {
         // True live tip — shrink to the live window.
+        _logPageJump('scroll_trigger_restore_live_tail');
         unawaited(_restoreLiveTailWindow());
       } else {
         _followLiveTail = true;
@@ -1585,12 +2109,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         _hasMoreNewer &&
         !_loadingNewer &&
         !atTail) {
+      _logPageJump('scroll_trigger_load_newer');
       unawaited(_loadNewer());
     }
 
     if (_loadingOlder || !_hasMoreOlder) return;
+    final cooldown = _loadOlderCooldownUntil;
+    if (cooldown != null && DateTime.now().isBefore(cooldown)) return;
     // reverse: true — верх истории (старые) у maxScrollExtent.
     if (pos.pixels >= pos.maxScrollExtent - 72) {
+      _logPageJump(
+        'scroll_trigger_load_older',
+        extra: {
+          'px': pos.pixels.toStringAsFixed(1),
+          'max': pos.maxScrollExtent.toStringAsFixed(1),
+        },
+      );
       unawaited(_loadOlder());
     }
   }
@@ -2270,6 +2804,17 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _load({bool silent = false}) async {
     if (_localFirst) {
+      // Never force live-tail while the user is reading history — that made
+      // sqlite watch clip to the newest 25 and jump months forward.
+      if (!_followLiveTail && !_restoringLiveTail) {
+        _logPageJump('load_sync_without_live_tail');
+        await ChatSyncService.instance.syncThread(widget.threadId, limit: 80);
+        await _refreshHasMoreOlder();
+        if (mounted && _loading) {
+          setState(() => _loading = false);
+        }
+        return;
+      }
       _followLiveTail = true;
       await ChatSyncService.instance.syncThread(
         widget.threadId,
@@ -2593,14 +3138,123 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     return sortChatMessages([...mergedOlder, ...latest]);
   }
 
+  void _applyLoadedHistoryPage({
+    required List<Map<String, dynamic>> applied,
+    required int anchorMessageId,
+    required bool preferLoadOlder,
+    bool? hasMoreOlder,
+  }) {
+    final beforeUi = List<Map<String, dynamic>>.from(_messages);
+    final beforeLen = applied.length;
+    // Edge mode is frozen at loadOlder start — after await, maxScrollExtent
+    // often grows and _isNearOlderEdge() falsely becomes false (t≈0.32).
+    final fromOlderEdge =
+        preferLoadOlder && (_loadOlderFromEdge || _isNearOlderEdge());
+    final clipped = _clipAroundMessageId(
+      applied,
+      anchorMessageId,
+      preferLoadOlder: preferLoadOlder,
+      keepOldestSide: fromOlderEdge,
+    );
+    _messages = clipped;
+    if (clipped.length < beforeLen) {
+      if (chatAsInt(clipped.last['id']) != chatAsInt(applied.last['id'])) {
+        _hasMoreNewer = true;
+      }
+      if (chatAsInt(clipped.first['id']) != chatAsInt(applied.first['id'])) {
+        _hasMoreOlder = true;
+      }
+    }
+    if (hasMoreOlder != null) _hasMoreOlder = hasMoreOlder;
+    if (preferLoadOlder) {
+      _loadingOlder = false;
+      _loadOlderFromEdge = false;
+      _loadOlderCooldownUntil =
+          DateTime.now().add(const Duration(milliseconds: 700));
+    } else {
+      _loadingNewer = false;
+    }
+    _pruneMessageKeys();
+    final anchorInView =
+        clipped.any((m) => chatAsInt(m['id']) == anchorMessageId);
+    final didClip = clipped.length < beforeLen;
+    _logPageJump(
+      preferLoadOlder ? 'apply_load_older' : 'apply_load_newer',
+      before: beforeUi,
+      after: clipped,
+      extra: {
+        'anchor': anchorMessageId,
+        'anchorInView': anchorInView,
+        'appliedN': beforeLen,
+        'clippedN': clipped.length,
+        'didClip': didClip,
+        'fromOlderEdge': fromOlderEdge,
+        'nearOlderEdgeNow': _isNearOlderEdge(),
+        'applied': ChatPageJumpTrace.windowSummary(applied),
+        'out': ChatPageJumpTrace.windowSummary(clipped),
+      },
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _clampScrollPixels();
+    });
+
+    // Prefer-older: never mid-list restore (align 0.35) — that was the
+    // "fly after loader". Reverse list keeps the viewport on prepend when
+    // !didClip; only stick when we clipped newest away from the edge window.
+    if (preferLoadOlder) {
+      if (!didClip || !fromOlderEdge) {
+        _restoreViewGen += 1;
+        _logPageJump(
+          'restore_skipped_load_older',
+          extra: {
+            'anchor': anchorMessageId,
+            'didClip': didClip,
+            'fromOlderEdge': fromOlderEdge,
+          },
+        );
+        return;
+      }
+      final gen = ++_restoreViewGen;
+      final prevTop = beforeUi.isEmpty ? null : chatAsInt(beforeUi.first['id']);
+      final stickId = (prevTop != null &&
+              clipped.any((m) => chatAsInt(m['id']) == prevTop))
+          ? prevTop
+          : (anchorInView
+              ? anchorMessageId
+              : (chatAsInt(clipped.first['id']) ?? anchorMessageId));
+      _logPageJump(
+        'stick_top_after_load_older',
+        extra: {
+          'anchor': anchorMessageId,
+          'prevTop': prevTop,
+          'stickId': stickId,
+          'didClip': didClip,
+          'gen': gen,
+        },
+      );
+      _stickBoostCache = true;
+      _stickMessageNearTop(stickId, gen: gen);
+      return;
+    }
+    if (anchorInView) {
+      _restoreMessageInView(
+        anchorMessageId,
+        alignment: 0.65,
+      );
+    }
+  }
+
   Future<void> _loadNewer() async {
     if (!_localFirst || _loadingNewer || _followLiveTail || _messages.isEmpty) {
       return;
     }
     final afterId = chatAsInt(_messages.last['id']);
     if (afterId == null || afterId <= 0) return;
+    final viewportAnchor =
+        _viewportAnchorMessageId() ?? _midUiMessageId() ?? afterId;
 
-    setState(() => _loadingNewer = true);
+    _loadingNewer = true;
+    setState(() {});
     try {
       final localNewer = await ChatLocalStore.instance.readMessagesAfter(
         widget.threadId,
@@ -2643,15 +3297,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         hydrateAttachments: false,
       );
       if (!mounted) return;
-      final beforeLen = applied.length;
-      final clipped = _clipUiMessages(applied, preferOldest: false);
       setState(() {
-        _messages = clipped;
-        if (clipped.length < beforeLen) _hasMoreOlder = true;
-        _loadingNewer = false;
+        _applyLoadedHistoryPage(
+          applied: applied,
+          anchorMessageId: viewportAnchor,
+          preferLoadOlder: false,
+        );
         _hasMoreNewer = localNewer.length >= 40;
       });
-      _pruneMessageKeys();
       unawaited(_refreshHasMoreNewer());
       unawaited(_refreshHasMoreOlder());
     } catch (_) {
@@ -2661,12 +3314,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _loadOlder() async {
     if (_loadingOlder || !_hasMoreOlder || _messages.isEmpty) return;
+    final cooldown = _loadOlderCooldownUntil;
+    if (cooldown != null && DateTime.now().isBefore(cooldown)) return;
     final firstId = chatAsInt(_messages.first['id']);
     if (firstId == null || firstId <= 0) return;
+    // Pin the message currently on screen — NOT firstId (top of window).
+    // Logs showed restore targeting firstId while viewport stayed on ~210x,
+    // then scroll jumped to the oldest edge of the clipped window.
+    final viewportAnchor =
+        _viewportAnchorMessageId() ?? _midUiMessageId() ?? firstId;
+    final fromEdge = _isNearOlderEdge();
+    final beforeUi = List<Map<String, dynamic>>.from(_messages);
+    _logPageJump(
+      'load_older_start',
+      before: beforeUi,
+      extra: {
+        'beforeId': firstId,
+        'beforeDate': ChatPageJumpTrace.shortDate(_messages.first),
+        'viewportAnchor': viewportAnchor,
+        'fromOlderEdge': fromEdge,
+      },
+    );
     _followLiveTail = false;
+    // Invalidate any in-flight ensureVisible from the previous page.
+    _restoreViewGen += 1;
+    // Set before any await so sqlite watch cannot race-replace the window.
+    _loadingOlder = true;
+    _loadOlderFromEdge = fromEdge;
 
     if (_localFirst) {
-      setState(() => _loadingOlder = true);
+      setState(() {});
       try {
         final beforeCount = _messages.length;
         final localOlder = await ChatLocalStore.instance.readMessagesBefore(
@@ -2675,6 +3352,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           limit: 50,
         );
         if (!mounted) return;
+        _logPageJump(
+          'load_older_local_page',
+          extra: {
+            'beforeId': firstId,
+            'viewportAnchor': viewportAnchor,
+            'pageN': localOlder.length,
+            'page': ChatPageJumpTrace.windowSummary(localOlder),
+          },
+        );
         if (localOlder.isNotEmpty) {
           final existingIds =
               _messages.map((m) => chatAsInt(m['id'])).whereType<int>().toSet();
@@ -2688,19 +3374,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               hydrateAttachments: false,
             );
             if (!mounted) return;
-            final beforeLen = applied.length;
             setState(() {
-              _messages = _clipUiMessages(applied, preferOldest: true);
-              if (_messages.length < beforeLen) _hasMoreNewer = true;
-              _loadingOlder = false;
+              _applyLoadedHistoryPage(
+                applied: applied,
+                anchorMessageId: viewportAnchor,
+                preferLoadOlder: true,
+              );
             });
-            _pruneMessageKeys();
             unawaited(_refreshHasMoreOlder());
             unawaited(_refreshHasMoreNewer());
             return;
           }
         }
 
+        _logPageJump(
+          'load_older_sync_network',
+          extra: {'beforeId': firstId},
+        );
         await ChatSyncService.instance.syncThreadOlder(
           widget.threadId,
           beforeId: firstId,
@@ -2710,6 +3400,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           widget.threadId,
           beforeId: firstId,
           limit: 50,
+        );
+        _logPageJump(
+          'load_older_after_sync_page',
+          extra: {
+            'beforeId': firstId,
+            'viewportAnchor': viewportAnchor,
+            'pageN': afterSync.length,
+            'page': ChatPageJumpTrace.windowSummary(afterSync),
+          },
         );
         if (afterSync.isNotEmpty) {
           final existingIds =
@@ -2724,13 +3423,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               hydrateAttachments: false,
             );
             if (!mounted) return;
-            final beforeLen = applied.length;
             setState(() {
-              _messages = _clipUiMessages(applied, preferOldest: true);
-              if (_messages.length < beforeLen) _hasMoreNewer = true;
-              _loadingOlder = false;
+              _applyLoadedHistoryPage(
+                applied: applied,
+                anchorMessageId: viewportAnchor,
+                preferLoadOlder: true,
+              );
             });
-            _pruneMessageKeys();
             unawaited(_refreshHasMoreOlder());
             unawaited(_refreshHasMoreNewer());
             return;
@@ -2742,16 +3441,24 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               _hasMoreOlder = false;
             }
             _loadingOlder = false;
+            _loadOlderFromEdge = false;
           });
+          _logPageJump('load_older_empty');
           unawaited(_refreshHasMoreOlder());
         }
-      } catch (_) {
-        if (mounted) setState(() => _loadingOlder = false);
+      } catch (e) {
+        _logPageJump('load_older_error', extra: {'error': '$e'});
+        if (mounted) {
+          setState(() {
+            _loadingOlder = false;
+            _loadOlderFromEdge = false;
+          });
+        }
       }
       return;
     }
 
-    setState(() => _loadingOlder = true);
+    setState(() {});
 
     try {
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
@@ -2766,19 +3473,34 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         final id = chatAsInt(m['id']);
         return id != null && !existingIds.contains(id);
       }).toList();
+      _logPageJump(
+        'load_older_remote_page',
+        extra: {
+          'beforeId': firstId,
+          'viewportAnchor': viewportAnchor,
+          'pageN': older.length,
+          'page': ChatPageJumpTrace.windowSummary(older),
+        },
+      );
       setState(() {
         final merged = sortChatMessages([...older, ..._messages]);
-        final beforeLen = merged.length;
-        _messages = _clipUiMessages(merged, preferOldest: true);
-        if (_messages.length < beforeLen) _hasMoreNewer = true;
-        _hasMoreOlder = page.hasMore;
-        _loadingOlder = false;
+        _applyLoadedHistoryPage(
+          applied: merged,
+          anchorMessageId: viewportAnchor,
+          preferLoadOlder: true,
+          hasMoreOlder: page.hasMore,
+        );
       });
-      _pruneMessageKeys();
       _scheduleStickyDayUpdate();
       // reverse: true — низ остаётся на offset 0, компенсация не нужна.
-    } catch (_) {
-      if (mounted) setState(() => _loadingOlder = false);
+    } catch (e) {
+      _logPageJump('load_older_remote_error', extra: {'error': '$e'});
+      if (mounted) {
+        setState(() {
+          _loadingOlder = false;
+          _loadOlderFromEdge = false;
+        });
+      }
     }
   }
 
@@ -5731,11 +6453,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                             onRefresh: _onPullRefresh,
                             // reverse-list: жест обновления у верхнего края истории.
                             edgeOffset: 12,
+                            notificationPredicate: (n) =>
+                                _followLiveTail && n.depth == 0,
                             child: ListView.builder(
                               controller: _scrollController,
                               reverse: true,
                               // Меньше оффскрин-префетча медиа — видимые грузятся первыми.
-                              cacheExtent: _seekingMessageId != null ? 2400 : 180,
+                              cacheExtent: _stickBoostCache ||
+                                      _seekingMessageId != null
+                                  ? 5000
+                                  : 180,
                               physics: const AlwaysScrollableScrollPhysics(),
                               keyboardDismissBehavior:
                                   ScrollViewKeyboardDismissBehavior.onDrag,
@@ -5748,23 +6475,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         ? 0
                                         : _composeOverlayHeight),
                               ),
-                              itemCount:
-                                  _messages.length + (_loadingOlder ? 1 : 0),
+                              itemCount: _messages.length,
                               itemBuilder: (context, i) {
                                 // reverse: index 0 = низ (новые), последний = верх (старые).
-                                if (_loadingOlder && i == _messages.length) {
-                                  return const Padding(
-                                    padding: EdgeInsets.symmetric(vertical: 12),
-                                    child: Center(
-                                      child: SizedBox(
-                                        width: 22,
-                                        height: 22,
-                                        child: CircularProgressIndicator(
-                                            strokeWidth: 2),
-                                      ),
-                                    ),
-                                  );
-                                }
                                 final msgIndex = _messages.length - 1 - i;
                                 final m = _messages[msgIndex];
                                 final msgId = chatAsInt(m['id']);
@@ -5988,6 +6701,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                   ),
                                 ),
                               ),
+                              // Overlay spinner — never insert into ListView
+                              // (that grew maxScrollExtent and caused post-loader fly).
+                              if (_loadingOlder)
+                                const Positioned(
+                                  left: 0,
+                                  right: 0,
+                                  top: 10,
+                                  child: IgnorePointer(
+                                    child: Center(
+                                      child: SizedBox(
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               Positioned(
                                 left: 0,
                                 right: 0,
