@@ -11,6 +11,7 @@ import 'feed_holiday_event_card.dart';
 import 'feed_event_action_bar.dart';
 import 'feed_expandable_caption.dart';
 import 'feed_event_media_block.dart';
+import 'feed_reactions.dart';
 import 'feed_viewed_by_row.dart';
 
 class FeedEventCard extends ConsumerStatefulWidget {
@@ -291,52 +292,151 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     widget.onOpenMedia?.call(photo);
   }
 
+  Future<void> _openViewedPeople() {
+    return openFeedViewedByPeople(
+      context: context,
+      ref: ref,
+      viewedBy: _viewedBy,
+      eventId: _eventId,
+      onViewedByChanged: _storeViewedBy,
+    );
+  }
+
+  Future<void> _openReactionPeople(int? attachmentId) {
+    final stored = feedEngagementFromEvent(
+      _event,
+      attachmentId: attachmentId,
+    );
+    return openFeedReactionPeople(
+      context: context,
+      ref: ref,
+      reactions: stored.reactions,
+      attachmentId: attachmentId,
+      commentsCount: stored.commentsCount,
+      onEngagementUpdated: ({
+        required List<Map<String, dynamic>> reactions,
+        required int commentsCount,
+      }) {
+        if (attachmentId != null) {
+          writeFeedEngagementToEvent(
+            _event,
+            attachmentId: attachmentId,
+            reactions: reactions,
+            commentsCount: commentsCount,
+          );
+        }
+        widget.onEngagementChanged?.call();
+        if (mounted) setState(() {});
+      },
+    );
+  }
+
+  Future<void> _onPostLongPress({int? attachmentId}) async {
+    final stored = feedEngagementFromEvent(
+      _event,
+      attachmentId: attachmentId,
+    );
+    final hasReactions = mediaReactionsTotalCount(stored.reactions) > 0;
+    if (!hasReactions) {
+      await _openViewedPeople();
+      return;
+    }
+
+    if (!mounted) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.visibility_outlined),
+                title: const Text('Просмотрено'),
+                onTap: () => Navigator.pop(ctx, 'viewed'),
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.favorite_border,
+                  color: theme.colorScheme.onSurface,
+                ),
+                title: const Text('Реакции'),
+                onTap: () => Navigator.pop(ctx, 'reactions'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'viewed') {
+      await _openViewedPeople();
+    } else if (choice == 'reactions') {
+      await _openReactionPeople(attachmentId);
+    }
+  }
+
+  Widget _longPressArea({required Widget child, int? attachmentId}) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onLongPress: () => _onPostLongPress(attachmentId: attachmentId),
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final createdAt = DateTime.tryParse(_event['created_at']?.toString() ?? '');
 
     if (_isBirthdayEvent) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          FeedBirthdayEventCard(
-            honoreeName: _honoreeName(),
-            honoreeAvatarUrl: _actor['avatar_url']?.toString(),
-            eventDate: _payload['date']?.toString(),
-            createdAt: createdAt,
-            onOpenChat: widget.onOpenSource,
-            onOpenProfile: widget.onOpenProfile,
-          ),
-          FeedViewedByRow(
-            viewedBy: _viewedBy,
-            eventId: _eventId,
-            onViewedByChanged: _storeViewedBy,
-          ),
-        ],
+      return _longPressArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            FeedBirthdayEventCard(
+              honoreeName: _honoreeName(),
+              honoreeAvatarUrl: _actor['avatar_url']?.toString(),
+              eventDate: _payload['date']?.toString(),
+              createdAt: createdAt,
+              onOpenChat: widget.onOpenSource,
+              onOpenProfile: widget.onOpenProfile,
+            ),
+            FeedViewedByRow(
+              viewedBy: _viewedBy,
+              eventId: _eventId,
+              onViewedByChanged: _storeViewedBy,
+            ),
+          ],
+        ),
       );
     }
 
     if (_isHolidayEvent) {
       final description = _payload['description']?.toString().trim() ?? '';
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          FeedHolidayEventCard(
-            title: _payload['title']?.toString() ?? 'Праздник',
-            description: description.isNotEmpty
-                ? description
-                : 'Сегодня в семейном календаре отмечен праздник.',
-            holidayCode: _payload['code']?.toString() ?? '',
-            eventDate: _payload['date']?.toString(),
-            createdAt: createdAt,
-            onOpenCalendar: widget.onOpenSource,
-          ),
-          FeedViewedByRow(
-            viewedBy: _viewedBy,
-            eventId: _eventId,
-            onViewedByChanged: _storeViewedBy,
-          ),
-        ],
+      return _longPressArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            FeedHolidayEventCard(
+              title: _payload['title']?.toString() ?? 'Праздник',
+              description: description.isNotEmpty
+                  ? description
+                  : 'Сегодня в семейном календаре отмечен праздник.',
+              holidayCode: _payload['code']?.toString() ?? '',
+              eventDate: _payload['date']?.toString(),
+              createdAt: createdAt,
+              onOpenCalendar: widget.onOpenSource,
+            ),
+            FeedViewedByRow(
+              viewedBy: _viewedBy,
+              eventId: _eventId,
+              onViewedByChanged: _storeViewedBy,
+            ),
+          ],
+        ),
       );
     }
 
@@ -358,42 +458,48 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: widget.onOpenProfile,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    ChatAvatar(
-                      name: _displayActor['name']?.toString() ?? '?',
-                      avatarUrl: _displayActor['avatar_url']?.toString(),
-                      radius: 18,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _titleText(),
-                        style: theme.textTheme.titleSmall,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+          _longPressArea(
+            attachmentId: engagementAttachmentId,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: widget.onOpenProfile,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      ChatAvatar(
+                        name: _displayActor['name']?.toString() ?? '?',
+                        avatarUrl: _displayActor['avatar_url']?.toString(),
+                        radius: 18,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          _titleText(),
+                          style: theme.textTheme.titleSmall,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
           if (preview.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-              child: Text(
-                preview,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodyMedium,
+            _longPressArea(
+              attachmentId: engagementAttachmentId,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: Text(
+                  preview,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium,
+                ),
               ),
             ),
           if (hasMedia)
@@ -413,20 +519,32 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                     }
                   : null,
             ),
-          if (caption != null) FeedExpandableCaption(text: caption),
-          FeedEventActionBar(
-            key: ValueKey<int?>(engagementAttachmentId),
+          if (caption != null)
+            _longPressArea(
+              attachmentId: engagementAttachmentId,
+              child: FeedExpandableCaption(text: caption),
+            ),
+          _longPressArea(
             attachmentId: engagementAttachmentId,
-            event: _event,
-            createdAt: createdAt,
-            onNavigate: widget.onOpenSource,
-            navigateTooltip: _navigateTooltip(),
-            onEngagementChanged: widget.onEngagementChanged,
-          ),
-          FeedViewedByRow(
-            viewedBy: _viewedBy,
-            eventId: _eventId,
-            onViewedByChanged: _storeViewedBy,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                FeedEventActionBar(
+                  key: ValueKey<int?>(engagementAttachmentId),
+                  attachmentId: engagementAttachmentId,
+                  event: _event,
+                  createdAt: createdAt,
+                  onNavigate: widget.onOpenSource,
+                  navigateTooltip: _navigateTooltip(),
+                  onEngagementChanged: widget.onEngagementChanged,
+                ),
+                FeedViewedByRow(
+                  viewedBy: _viewedBy,
+                  eventId: _eventId,
+                  onViewedByChanged: _storeViewedBy,
+                ),
+              ],
+            ),
           ),
         ],
       ),

@@ -10,6 +10,85 @@ import 'feed_event_date_format.dart';
 import 'feed_people_list_sheet.dart';
 import 'feed_reactions.dart';
 
+/// Opens the reaction people sheet, refreshing from API when names are placeholders.
+Future<void> openFeedReactionPeople({
+  required BuildContext context,
+  required WidgetRef ref,
+  required List<Map<String, dynamic>> reactions,
+  int? attachmentId,
+  void Function({
+    required List<Map<String, dynamic>> reactions,
+    required int commentsCount,
+  })? onEngagementUpdated,
+  int commentsCount = 0,
+}) async {
+  var people = await resolveFeedPeopleLocally(mediaReactionPeople(reactions));
+  if (!context.mounted) return;
+  if (people.isEmpty) {
+    await FeedPeopleListSheet.show(
+      context,
+      title: 'Реакции',
+      people: const [],
+      emptyText: 'Пока никто не поставил реакцию',
+      resolveLocally: false,
+    );
+    return;
+  }
+
+  var nextReactions = reactions;
+  var nextComments = commentsCount;
+  if (feedPeopleHaveUnresolvedNames(people) && attachmentId != null) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(20),
+            child: SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+          ),
+        ),
+      ),
+    );
+    try {
+      final data = await ref
+          .read(familychatRepositoryProvider)
+          .mediaEngagement(attachmentId);
+      if (!context.mounted) return;
+      nextReactions = parseMediaReactions(data['reactions']);
+      nextComments = data['comments_count'] is int
+          ? data['comments_count'] as int
+          : int.tryParse('${data['comments_count']}') ?? commentsCount;
+      onEngagementUpdated?.call(
+        reactions: nextReactions,
+        commentsCount: nextComments,
+      );
+      people = await resolveFeedPeopleLocally(
+        mediaReactionPeople(nextReactions),
+      );
+    } catch (_) {
+      // Keep locally resolved list if the request fails.
+    } finally {
+      if (context.mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    }
+  }
+
+  if (!context.mounted || people.isEmpty) return;
+  await FeedPeopleListSheet.show(
+    context,
+    title: 'Реакции',
+    people: people,
+    emptyText: 'Пока никто не поставил реакцию',
+    resolveLocally: false,
+  );
+}
+
 class FeedEventActionBar extends ConsumerStatefulWidget {
   const FeedEventActionBar({
     super.key,
@@ -147,61 +226,24 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
     } catch (_) {}
   }
 
-  Future<void> _openReactionPeople() async {
-    final attachmentId = _attachmentId;
-    var people = await resolveFeedPeopleLocally(mediaReactionPeople(_reactions));
-    if (!mounted || people.isEmpty) return;
-
-    // Stale posts may still say «Участник» — fetch real profiles from API,
-    // show that list, and persist into the feed event / local snapshot.
-    if (feedPeopleHaveUnresolvedNames(people) && attachmentId != null) {
-      showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => const Center(
-          child: Card(
-            child: Padding(
-              padding: EdgeInsets.all(20),
-              child: SizedBox(
-                width: 28,
-                height: 28,
-                child: CircularProgressIndicator(strokeWidth: 2.5),
-              ),
-            ),
-          ),
-        ),
-      );
-      try {
-        final data = await ref
-            .read(familychatRepositoryProvider)
-            .mediaEngagement(attachmentId);
+  Future<void> _openReactionPeople() {
+    return openFeedReactionPeople(
+      context: context,
+      ref: ref,
+      reactions: _reactions,
+      attachmentId: _attachmentId,
+      commentsCount: _commentsCount,
+      onEngagementUpdated: ({
+        required List<Map<String, dynamic>> reactions,
+        required int commentsCount,
+      }) {
         if (!mounted) return;
-        final nextReactions = parseMediaReactions(data['reactions']);
-        final commentsCount = data['comments_count'] is int
-            ? data['comments_count'] as int
-            : int.tryParse('${data['comments_count']}') ?? _commentsCount;
         setState(() {
-          _reactions = nextReactions;
+          _reactions = reactions;
           _commentsCount = commentsCount;
         });
-        _storeLocal(reactions: nextReactions, commentsCount: commentsCount);
-        people = await resolveFeedPeopleLocally(
-          mediaReactionPeople(nextReactions),
-        );
-      } catch (_) {
-        // Keep locally resolved list if the request fails.
-      } finally {
-        if (mounted) Navigator.of(context, rootNavigator: true).pop();
-      }
-    }
-
-    if (!mounted || people.isEmpty) return;
-    await FeedPeopleListSheet.show(
-      context,
-      title: 'Реакции',
-      people: people,
-      emptyText: 'Пока никто не поставил реакцию',
-      resolveLocally: false,
+        _storeLocal(reactions: reactions, commentsCount: commentsCount);
+      },
     );
   }
 

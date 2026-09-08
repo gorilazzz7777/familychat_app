@@ -4,6 +4,68 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/providers/app_providers.dart';
 import 'feed_people_list_sheet.dart';
 
+/// Opens the viewed-by people sheet, refreshing from API when names are placeholders.
+Future<void> openFeedViewedByPeople({
+  required BuildContext context,
+  required WidgetRef ref,
+  required List<Map<String, dynamic>> viewedBy,
+  int? eventId,
+  ValueChanged<List<Map<String, dynamic>>>? onViewedByChanged,
+}) async {
+  var people = await resolveFeedPeopleLocally(
+    viewedBy.map((e) => Map<String, dynamic>.from(e)).toList(growable: false),
+  );
+  if (!context.mounted) return;
+
+  if ((feedPeopleHaveUnresolvedNames(people) || people.isEmpty) &&
+      eventId != null) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(20),
+            child: SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+          ),
+        ),
+      ),
+    );
+    try {
+      final data =
+          await ref.read(familychatRepositoryProvider).markFeedEventViewed(eventId);
+      if (!context.mounted) return;
+      final next = (data['viewed_by'] as List<dynamic>? ?? [])
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList(growable: false);
+      if (next.isNotEmpty) {
+        people = await resolveFeedPeopleLocally(next);
+        onViewedByChanged?.call(people);
+      }
+    } catch (_) {
+      // Keep locally resolved list if the request fails.
+    } finally {
+      if (context.mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    }
+  }
+
+  if (!context.mounted) return;
+  await FeedPeopleListSheet.show(
+    context,
+    title: 'Просмотрели',
+    people: people,
+    emptyText: 'Пока никто не просмотрел',
+    resolveLocally: false,
+  );
+}
+
 class FeedViewedByRow extends ConsumerStatefulWidget {
   const FeedViewedByRow({
     super.key,
@@ -24,59 +86,13 @@ class FeedViewedByRow extends ConsumerStatefulWidget {
 }
 
 class _FeedViewedByRowState extends ConsumerState<FeedViewedByRow> {
-  Future<void> _openViewedByPeople() async {
-    var people = await resolveFeedPeopleLocally(
-      widget.viewedBy
-          .map((e) => Map<String, dynamic>.from(e))
-          .toList(growable: false),
-    );
-    if (!mounted || people.isEmpty) return;
-
-    final eventId = widget.eventId;
-    if (feedPeopleHaveUnresolvedNames(people) && eventId != null) {
-      showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => const Center(
-          child: Card(
-            child: Padding(
-              padding: EdgeInsets.all(20),
-              child: SizedBox(
-                width: 28,
-                height: 28,
-                child: CircularProgressIndicator(strokeWidth: 2.5),
-              ),
-            ),
-          ),
-        ),
-      );
-      try {
-        final data = await ref
-            .read(familychatRepositoryProvider)
-            .markFeedEventViewed(eventId);
-        if (!mounted) return;
-        final next = (data['viewed_by'] as List<dynamic>? ?? [])
-            .whereType<Map>()
-            .map((e) => Map<String, dynamic>.from(e))
-            .toList(growable: false);
-        if (next.isNotEmpty) {
-          people = await resolveFeedPeopleLocally(next);
-          widget.onViewedByChanged?.call(people);
-        }
-      } catch (_) {
-        // Keep locally resolved list if the request fails.
-      } finally {
-        if (mounted) Navigator.of(context, rootNavigator: true).pop();
-      }
-    }
-
-    if (!mounted || people.isEmpty) return;
-    await FeedPeopleListSheet.show(
-      context,
-      title: 'Просмотрели',
-      people: people,
-      emptyText: 'Пока никто не просмотрел',
-      resolveLocally: false,
+  Future<void> _openViewedByPeople() {
+    return openFeedViewedByPeople(
+      context: context,
+      ref: ref,
+      viewedBy: widget.viewedBy,
+      eventId: widget.eventId,
+      onViewedByChanged: widget.onViewedByChanged,
     );
   }
 
