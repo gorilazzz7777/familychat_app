@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../familychat/data/familychat_repository.dart';
+import 'chat_local_mutations.dart';
 import 'chat_media_upload_tracker.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_send_trace.dart';
@@ -768,6 +769,10 @@ class ChatOfflineOutbox {
       );
       // Outbox delivery is always our send — keep ownership even if API omits it.
       serverMsg['is_mine'] = true;
+      final existingStatus = serverMsg['read_status']?.toString().trim() ?? '';
+      if (existingStatus.isEmpty) {
+        serverMsg['read_status'] = 'sent';
+      }
       ChatSendTrace.log(
         'outbox_sqlite_upsert_server',
         threadId: threadId,
@@ -776,6 +781,7 @@ class ChatOfflineOutbox {
         source: 'outbox',
       );
       await ChatLocalStore.instance.upsertMessage(serverMsg);
+      await ChatLocalMutations.patchThreadLastMessage(threadId, serverMsg);
       ChatSendTrace.log(
         'outbox_sqlite_delete_temp',
         threadId: threadId,
@@ -820,6 +826,10 @@ class ChatOfflineOutbox {
         previous: pendingRow,
       );
       serverMsg['is_mine'] = true;
+      final existingStatus = serverMsg['read_status']?.toString().trim() ?? '';
+      if (existingStatus.isEmpty) {
+        serverMsg['read_status'] = 'sent';
+      }
       final withoutTemp = messages
           .where((m) => chatAsInt(m['id']) != tempMessageId)
           .toList();

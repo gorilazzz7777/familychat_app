@@ -167,7 +167,7 @@ Future<List<Map<String, dynamic>>> enrichChatThreadsLastMessages(
       continue;
     }
     final lastMap = Map<String, dynamic>.from(last);
-    if (!chatLastMessageLacksPreviewPayload(lastMap)) {
+    if (!chatLastMessageNeedsLocalEnrich(lastMap)) {
       out.add(thread);
       continue;
     }
@@ -177,16 +177,35 @@ Future<List<Map<String, dynamic>>> enrichChatThreadsLastMessages(
       continue;
     }
     final local = await ChatLocalStore.instance.readMessage(threadId, messageId);
-    if (local == null || chatLastMessageLacksPreviewPayload(local)) {
-      out.add(thread);
+    if (local == null) {
+      out.add({
+        ...thread,
+        'last_message': _lastMessageWithOwnReceipt(lastMap),
+      });
       continue;
     }
     out.add({
       ...thread,
-      'last_message': chatPreferRicherLastMessage(lastMap, local),
+      'last_message': _lastMessageWithOwnReceipt(
+        chatPreferRicherLastMessage(lastMap, local),
+      ),
     });
   }
   return out;
+}
+
+bool chatLastMessageNeedsLocalEnrich(Map<String, dynamic> message) {
+  if (chatLastMessageLacksPreviewPayload(message)) return true;
+  if (message['is_mine'] != true) return false;
+  final status = message['read_status']?.toString().trim() ?? '';
+  return status.isEmpty;
+}
+
+Map<String, dynamic> _lastMessageWithOwnReceipt(Map<String, dynamic> message) {
+  if (message['is_mine'] != true) return message;
+  final status = message['read_status']?.toString().trim() ?? '';
+  if (status.isNotEmpty) return message;
+  return {...message, 'read_status': 'sent'};
 }
 
 bool chatLastMessageLacksPreviewPayload(Map<String, dynamic> message) {

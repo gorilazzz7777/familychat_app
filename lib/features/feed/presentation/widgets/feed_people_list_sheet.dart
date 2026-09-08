@@ -27,8 +27,53 @@ String feedPersonDisplayName(Map<String, dynamic> person) {
   return '';
 }
 
-bool _isPlaceholderPersonName(String name) =>
-    RegExp(r'^User \d+$').hasMatch(name);
+bool _isPlaceholderPersonName(String name) {
+  final trimmed = name.trim();
+  if (trimmed.isEmpty) return true;
+  final lower = trimmed.toLowerCase();
+  if (lower == 'участник' || lower == 'participant') return true;
+  return RegExp(r'^user\s+\d+$', caseSensitive: false).hasMatch(trimmed);
+}
+
+bool _peopleNeedNames(dynamic raw) {
+  if (raw is! List) return false;
+  for (final item in raw) {
+    if (item is! Map) continue;
+    final person = Map<String, dynamic>.from(item);
+    if (feedPersonUserId(person) == null) continue;
+    if (feedPersonDisplayName(person).isEmpty) return true;
+  }
+  return false;
+}
+
+bool _reactionsNeedNames(dynamic raw) {
+  if (raw is! List) return false;
+  for (final item in raw) {
+    if (item is! Map) continue;
+    final users = item['users'];
+    final ids = item['user_ids'];
+    if (_peopleNeedNames(users)) return true;
+    final idCount = ids is List ? ids.where((e) => mediaReactionUserId(e) != null).length : 0;
+    final userCount = users is List ? users.length : 0;
+    if (idCount > 0 && userCount < idCount) return true;
+  }
+  return false;
+}
+
+/// True when a cached event still has reaction/view people without real names.
+bool feedEventNeedsPeopleRefresh(Map<String, dynamic> event) {
+  if (_reactionsNeedNames(event['reactions'])) return true;
+  if (_peopleNeedNames(event['viewed_by'])) return true;
+  final payload = event['payload'];
+  if (payload is! Map) return false;
+  if (_reactionsNeedNames(payload['reactions'])) return true;
+  final attachments = payload['attachments'];
+  if (attachments is! List) return false;
+  for (final item in attachments) {
+    if (item is Map && _reactionsNeedNames(item['reactions'])) return true;
+  }
+  return false;
+}
 
 bool _hasAvatar(Map<String, dynamic> person) =>
     (person['avatar_url']?.toString().trim() ?? '').isNotEmpty;

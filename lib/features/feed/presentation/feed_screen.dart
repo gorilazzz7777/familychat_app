@@ -95,6 +95,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   String? _lastReadAt;
   bool _hasMore = false;
   bool _showScrollToTop = false;
+  int _feedLoadGen = 0;
   static const _pageSize = 30;
   static const _deltaLimit = 50;
   static const _scrollToTopThreshold = 120.0;
@@ -134,8 +135,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       return;
     }
     await _syncUpdates();
-    // После быстрого delta — тихо подтянуть первую страницу (лайки/просмотры).
-    if (!silent) {
+    // After a fast delta, quietly refresh the first page (likes/views)
+    // and backfill names on older cached posts if they still say «Участник».
+    if (!silent || _events.any(feedEventNeedsPeopleRefresh)) {
       unawaited(_loadFull(showSpinner: false));
     }
   }
@@ -390,6 +392,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   }
 
   Future<void> _loadFull({required bool showSpinner}) async {
+    final gen = ++_feedLoadGen;
     if (showSpinner) {
       setState(() {
         _loading = true;
@@ -402,7 +405,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             limit: _pageSize,
             personUserId: _personUserId,
           );
-      if (!mounted) return;
+      if (!mounted || gen != _feedLoadGen) return;
       final batch = await _prepareFeedEvents(
         (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
       );
@@ -418,14 +421,17 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           batch.isNotEmpty &&
           _feedEventsSameIds(_events.take(batch.length).toList(), batch);
 
+      if (canKeepTail) {
+        _events.replaceRange(0, batch.length, batch);
+        await hydrateFeedEventsPeople(_events.skip(batch.length));
+      } else {
+        _events
+          ..clear()
+          ..addAll(batch);
+      }
+      if (!mounted || gen != _feedLoadGen) return;
+
       setState(() {
-        if (canKeepTail) {
-          _events.replaceRange(0, batch.length, batch);
-        } else {
-          _events
-            ..clear()
-            ..addAll(batch);
-        }
         _lastReadAt = newLastRead;
         if (newFilter.isNotEmpty) {
           _filterPeople = newFilter;
@@ -436,9 +442,14 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       });
       unawaited(_persistCache());
       unawaited(_maybeMarkRead());
+      if (canKeepTail) {
+        unawaited(
+          _reloadStaleCachedEvents(gen: gen, firstPageLength: batch.length),
+        );
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _feedLoadGen) return;
       setState(() {
         _loading = false;
         _error = _events.isEmpty
@@ -446,6 +457,59 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             : null;
       });
     }
+  }
+
+  /// Re-fetch older cached pages so reaction/view names are not leftover «Участник».
+  Future<void> _reloadStaleCachedEvents({
+    required int gen,
+    required int firstPageLength,
+  }) async {
+    if (!mounted || gen != _feedLoadGen) return;
+    if (firstPageLength <= 0 || _events.length <= firstPageLength) return;
+    if (_events.every((event) => !feedEventNeedsPeopleRefresh(event))) return;
+    if (!ChatOfflineSync.instance.isOnline) return;
+
+    var cursor = _eventId(_events[firstPageLength - 1]);
+    if (cursor == null) return;
+    final oldest = _oldestEventId;
+    var changed = false;
+    for (var page = 0; page < 5; page++) {
+      if (!mounted || gen != _feedLoadGen) return;
+      try {
+        final data = await ref.read(familychatRepositoryProvider).familyFeed(
+              beforeId: cursor,
+              limit: _pageSize,
+              personUserId: _personUserId,
+            );
+        if (!mounted || gen != _feedLoadGen) return;
+        final batch = await _prepareFeedEvents(
+          (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
+        );
+        if (batch.isEmpty) break;
+        final byId = <int, Map<String, dynamic>>{};
+        for (final event in batch) {
+          final id = _eventId(event);
+          if (id != null) byId[id] = event;
+        }
+        for (var i = 0; i < _events.length; i++) {
+          final id = _eventId(_events[i]);
+          final fresh = id == null ? null : byId[id];
+          if (fresh == null) continue;
+          _events[i] = fresh;
+          changed = true;
+        }
+        final lastId = _eventId(batch.last);
+        if (lastId == null) break;
+        cursor = lastId;
+        if (oldest != null && cursor <= oldest) break;
+        if (!_parseHasMore(data, batchLength: batch.length)) break;
+      } catch (_) {
+        break;
+      }
+    }
+    if (!mounted || gen != _feedLoadGen || !changed) return;
+    setState(() {});
+    unawaited(_persistCache());
   }
 
   Future<void> _syncUpdates() async {
@@ -587,6 +651,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     if (cached != null && mounted) {
       await _showCachedSnapshot(cached);
       await _syncUpdates();
+      if (mounted && _events.any(feedEventNeedsPeopleRefresh)) {
+        unawaited(_loadFull(showSpinner: false));
+      }
       return;
     }
     await _loadFull(showSpinner: true);

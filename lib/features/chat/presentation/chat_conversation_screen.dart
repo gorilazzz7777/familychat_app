@@ -200,8 +200,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   /// Captured at loadOlder start — layout growth during await must not clear this.
   bool _loadOlderFromEdge = false;
   DateTime? _loadOlderCooldownUntil;
-  /// Temporarily enlarge ListView cache so stick-target keys mount.
-  bool _stickBoostCache = false;
+  /// Bumped on history page rebuild so ListView remounts cleanly (no scroll surgery).
+  int _historyListEpoch = 0;
+  bool _historyPageSettling = false;
   bool _hasMoreOlder = false;
   bool _hasMoreNewer = false;
   bool _showScrollToBottom = false;
@@ -827,8 +828,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       );
       return messages;
     }
-    // At the older edge the user is reading the top: keep the oldest side so
-    // newly prepended history is not discarded by a mid-window clip.
+    // At the older edge: keep newly prepended oldest messages in the UI window.
+    // (edge_cushion dropped them → OLDEST_DATE_JUMP_DAYS>0 and stuck upward scroll.)
+    // Scroll is reset via list remount + pin after rebuild, not live surgery.
     if (keepOldestSide) {
       final out = messages.sublist(0, _uiSlidingWindow);
       _logPageJump(
@@ -911,99 +913,71 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
-  /// Keep [messageId] near the top after keep-oldest clip.
-  ///
-  /// After keep-oldest the scroll offset often stays at maxScrollExtent, which
-  /// shows the newly prepended oldest messages (the "fly after loader"). Keys
-  /// are usually not mounted yet, so we jump by list index first, then
-  /// ensureVisible. Never nudge toward max — that worsens the jump.
-  void _stickMessageNearTop(int messageId, {required int gen}) {
-    void jumpByIndex({required String reason, required int attempt}) {
-      if (!_scrollController.hasClients || _messages.isEmpty) return;
-      final msgIdx =
-          _messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
-      if (msgIdx < 0) {
-        _logPageJump(
-          'stick_top_missing',
-          extra: {'anchor': messageId, 'attempt': attempt, 'gen': gen},
-        );
-        return;
-      }
-      final n = _messages.length;
-      final max = _scrollController.position.maxScrollExtent;
-      // reverse ListView: msgIdx 0 (oldest) → max, last (newest) → 0.
-      final t = n <= 1 ? 1.0 : (1.0 - (msgIdx / (n - 1))).clamp(0.0, 1.0);
-      // Slightly below the item's nominal top so the bubble sits under the app bar.
-      final target = (max * t * 0.98).clamp(0.0, max);
-      final px = _scrollController.position.pixels;
-      if ((target - px).abs() > 16) {
-        _scrollController.jumpTo(target);
-      }
-      _logPageJump(
-        'stick_top_index_jump',
-        extra: {
-          'anchor': messageId,
-          'msgIdx': msgIdx,
-          'n': n,
-          't': t.toStringAsFixed(3),
-          'from': px.toStringAsFixed(1),
-          'to': target.toStringAsFixed(1),
-          'reason': reason,
-          'attempt': attempt,
-          'gen': gen,
-        },
-      );
-    }
-
-    void attempt(int n) {
+  /// After a history page remount: put [messageId] near the top once.
+  /// No ensureVisible (layout-cycle prone); approx index jump only.
+  void _pinHistoryPageAfterRebuild(int? messageId, {required int epoch}) {
+    void go(int attempt) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || gen != _restoreViewGen) return;
-
-        // Always correct away from max first — keys are rarely mounted while
-        // pixels sit on the newly prepended oldest edge.
-        jumpByIndex(reason: 'pre_ensure', attempt: n);
-
-        final key = _messageKeys[messageId];
-        final ctx = key?.currentContext;
-        if (ctx != null && ctx.mounted) {
-          _logPageJump(
-            'stick_top_apply',
-            extra: {'anchor': messageId, 'attempt': n, 'gen': gen},
-          );
-          unawaited(
-            Scrollable.ensureVisible(
-              ctx,
-              alignment: 0.08,
-              duration: Duration.zero,
-            ),
-          );
-          _stickBoostCache = false;
+        if (!mounted || epoch != _historyListEpoch) return;
+        if (!_scrollController.hasClients) {
+          if (attempt < 6) go(attempt + 1);
           return;
         }
-        if (n >= 5) {
-          _logPageJump(
-            'stick_top_give_up',
-            extra: {'anchor': messageId, 'gen': gen},
-          );
-          _stickBoostCache = false;
+        final pos = _scrollController.position;
+        final max = pos.maxScrollExtent;
+        if (max < 24 && attempt < 8) {
+          go(attempt + 1);
           return;
         }
+        if (messageId == null || _messages.isEmpty) {
+          _scrollController.jumpTo(max);
+          _logPageJump(
+            'history_page_pin_max',
+            extra: {'epoch': epoch, 'attempt': attempt},
+          );
+          if (_historyPageSettling) {
+            setState(() => _historyPageSettling = false);
+          }
+          return;
+        }
+        final msgIdx =
+            _messages.indexWhere((m) => chatAsInt(m['id']) == messageId);
+        if (msgIdx < 0) {
+          _scrollController.jumpTo(max);
+          _logPageJump(
+            'history_page_pin_missing_max',
+            extra: {'anchor': messageId, 'epoch': epoch},
+          );
+          if (_historyPageSettling) {
+            setState(() => _historyPageSettling = false);
+          }
+          return;
+        }
+        final n = _messages.length;
+        // reverse: oldest idx0 → max, newest → 0.
+        final t = n <= 1 ? 1.0 : (1.0 - msgIdx / (n - 1)).clamp(0.0, 1.0);
+        final target = (max * t).clamp(0.0, max);
+        _scrollController.jumpTo(target);
         _logPageJump(
-          'stick_top_retry',
-          extra: {'anchor': messageId, 'attempt': n, 'gen': gen},
+          'history_page_pinned',
+          extra: {
+            'anchor': messageId,
+            'msgIdx': msgIdx,
+            'n': n,
+            't': t.toStringAsFixed(3),
+            'to': target.toStringAsFixed(1),
+            'max': max.toStringAsFixed(1),
+            'epoch': epoch,
+            'attempt': attempt,
+          },
         );
-        attempt(n + 1);
+        if (_historyPageSettling) {
+          setState(() => _historyPageSettling = false);
+        }
       });
     }
 
-    _logPageJump(
-      'stick_top_schedule',
-      extra: {'anchor': messageId, 'gen': gen},
-    );
-    // First frame: index-jump so the anchor enters the build range; then
-    // ensureVisible can fine-tune. Do not jump synchronously during setState —
-    // maxScrollExtent is still stale.
-    attempt(0);
+    go(0);
   }
 
   void _restoreMessageInView(
@@ -2113,7 +2087,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       unawaited(_loadNewer());
     }
 
-    if (_loadingOlder || !_hasMoreOlder) return;
+    if (_loadingOlder || _historyPageSettling || !_hasMoreOlder) return;
     final cooldown = _loadOlderCooldownUntil;
     if (cooldown != null && DateTime.now().isBefore(cooldown)) return;
     // reverse: true — верх истории (старые) у maxScrollExtent.
@@ -2168,7 +2142,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
       return;
     }
-    final away = _scrollController.position.pixels > _stickyDayAwayPx;
+    final pos = _scrollController.position;
+    // Near older edge the in-list day chip sits at the top — sticky doubles it
+    // (see screenshot: two "25 августа" badges).
+    final nearOlder = pos.maxScrollExtent > 0 &&
+        (pos.pixels >= pos.maxScrollExtent - 120 ||
+            (pos.pixels / pos.maxScrollExtent) >= 0.90);
+    if (nearOlder || _loadingOlder || _historyPageSettling) {
+      if (_showStickyDay || _stickyDayLabel != null) {
+        setState(() {
+          _showStickyDay = false;
+          _stickyDayLabel = null;
+        });
+      }
+      return;
+    }
+    final away = pos.pixels > _stickyDayAwayPx;
     final day = away ? _dayOfTopmostVisibleMessage() : null;
     final label = day == null ? null : formatChatDayLabel(day);
     final show = away && label != null;
@@ -3198,42 +3187,43 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (mounted) _clampScrollPixels();
     });
 
-    // Prefer-older: never mid-list restore (align 0.35) — that was the
-    // "fly after loader". Reverse list keeps the viewport on prepend when
-    // !didClip; only stick when we clipped newest away from the edge window.
     if (preferLoadOlder) {
-      if (!didClip || !fromOlderEdge) {
-        _restoreViewGen += 1;
+      _restoreViewGen += 1;
+      final prevTop =
+          beforeUi.isEmpty ? null : chatAsInt(beforeUi.first['id']);
+      // Page rebuild: remount ListView so we don't fight RangeMaintaining /
+      // partial extents. Loader covers the swap; then pin prevTop near top.
+      if (fromOlderEdge) {
+        _historyListEpoch += 1;
+        _historyPageSettling = true;
+        _showStickyDay = false;
+        _stickyDayLabel = null;
+        final epoch = _historyListEpoch;
+        final stickId = (prevTop != null &&
+                clipped.any((m) => chatAsInt(m['id']) == prevTop))
+            ? prevTop
+            : (anchorInView ? anchorMessageId : chatAsInt(clipped.first['id']));
         _logPageJump(
-          'restore_skipped_load_older',
+          'history_page_rebuild',
           extra: {
             'anchor': anchorMessageId,
+            'prevTop': prevTop,
+            'stickId': stickId,
             'didClip': didClip,
-            'fromOlderEdge': fromOlderEdge,
+            'epoch': epoch,
           },
         );
+        _pinHistoryPageAfterRebuild(stickId, epoch: epoch);
         return;
       }
-      final gen = ++_restoreViewGen;
-      final prevTop = beforeUi.isEmpty ? null : chatAsInt(beforeUi.first['id']);
-      final stickId = (prevTop != null &&
-              clipped.any((m) => chatAsInt(m['id']) == prevTop))
-          ? prevTop
-          : (anchorInView
-              ? anchorMessageId
-              : (chatAsInt(clipped.first['id']) ?? anchorMessageId));
       _logPageJump(
-        'stick_top_after_load_older',
+        'restore_skipped_load_older',
         extra: {
           'anchor': anchorMessageId,
-          'prevTop': prevTop,
-          'stickId': stickId,
           'didClip': didClip,
-          'gen': gen,
+          'fromOlderEdge': fromOlderEdge,
         },
       );
-      _stickBoostCache = true;
-      _stickMessageNearTop(stickId, gen: gen);
       return;
     }
     if (anchorInView) {
@@ -3313,7 +3303,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   Future<void> _loadOlder() async {
-    if (_loadingOlder || !_hasMoreOlder || _messages.isEmpty) return;
+    if (_loadingOlder ||
+        _historyPageSettling ||
+        !_hasMoreOlder ||
+        _messages.isEmpty) {
+      return;
+    }
     final cooldown = _loadOlderCooldownUntil;
     if (cooldown != null && DateTime.now().isBefore(cooldown)) return;
     final firstId = chatAsInt(_messages.first['id']);
@@ -3614,6 +3609,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     };
     await ChatLocalStore.instance.upsertMessage(serverMsg);
     await ChatLocalStore.instance.deleteMessages(widget.threadId, [tempId]);
+    await ChatLocalMutations.patchThreadLastMessage(widget.threadId, serverMsg);
   }
 
   Future<void> _injectScheduledMessages() async {
@@ -6456,13 +6452,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                             notificationPredicate: (n) =>
                                 _followLiveTail && n.depth == 0,
                             child: ListView.builder(
+                              key: ValueKey('chat-hist-$_historyListEpoch'),
                               controller: _scrollController,
                               reverse: true,
                               // Меньше оффскрин-префетча медиа — видимые грузятся первыми.
-                              cacheExtent: _stickBoostCache ||
-                                      _seekingMessageId != null
-                                  ? 5000
-                                  : 180,
+                              cacheExtent: _seekingMessageId != null ? 2400 : 180,
                               physics: const AlwaysScrollableScrollPhysics(),
                               keyboardDismissBehavior:
                                   ScrollViewKeyboardDismissBehavior.onDrag,
@@ -6701,20 +6695,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                   ),
                                 ),
                               ),
-                              // Overlay spinner — never insert into ListView
-                              // (that grew maxScrollExtent and caused post-loader fly).
-                              if (_loadingOlder)
-                                const Positioned(
-                                  left: 0,
-                                  right: 0,
-                                  top: 10,
+                              // Full-list loader while history page rebuilds —
+                              // hides the swap and avoids mid-scroll surgery.
+                              if (_loadingOlder || _historyPageSettling)
+                                Positioned.fill(
                                   child: IgnorePointer(
-                                    child: Center(
-                                      child: SizedBox(
-                                        width: 22,
-                                        height: 22,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
+                                    child: ColoredBox(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .surface
+                                          .withValues(alpha: 0.45),
+                                      child: const Center(
+                                        child: SizedBox(
+                                          width: 28,
+                                          height: 28,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2.5,
+                                          ),
                                         ),
                                       ),
                                     ),

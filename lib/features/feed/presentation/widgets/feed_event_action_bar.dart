@@ -148,8 +148,33 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
   }
 
   Future<void> _openReactionPeople() async {
-    final people = mediaReactionPeople(_reactions);
+    var people = mediaReactionPeople(_reactions);
     if (people.isEmpty) return;
+    final needsNames = people.any(
+      (person) =>
+          feedPersonUserId(person) != null &&
+          feedPersonDisplayName(person).isEmpty,
+    );
+    final attachmentId = _attachmentId;
+    if (needsNames && attachmentId != null) {
+      try {
+        final data = await ref
+            .read(familychatRepositoryProvider)
+            .mediaEngagement(attachmentId);
+        if (!mounted) return;
+        final nextReactions = parseMediaReactions(data['reactions']);
+        final commentsCount = data['comments_count'] is int
+            ? data['comments_count'] as int
+            : int.tryParse('${data['comments_count']}') ?? _commentsCount;
+        setState(() {
+          _reactions = nextReactions;
+          _commentsCount = commentsCount;
+        });
+        _storeLocal(reactions: nextReactions, commentsCount: commentsCount);
+        people = mediaReactionPeople(nextReactions);
+      } catch (_) {}
+    }
+    if (!mounted || people.isEmpty) return;
     await FeedPeopleListSheet.show(
       context,
       title: 'Реакции',

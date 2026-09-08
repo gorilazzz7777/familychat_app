@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/notifications/chat_push_thread_preview.dart';
+import 'chat_message_preview.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_unread_providers.dart';
 
@@ -29,6 +30,39 @@ abstract final class ChatLocalMutations {
     }
     ChatUnreadRefresh.onInvalidate?.call();
     unawaited(ChatPushThreadPreview.clear(threadId));
+  }
+
+  /// Keep hub preview/ticks in sync after we send, without waiting for HTTP hub.
+  static Future<void> patchThreadLastMessage(
+    int threadId,
+    Map<String, dynamic> message, {
+    bool clearUnread = false,
+  }) async {
+    if (!ChatLocalStore.isSupported) return;
+    final messageId = chatAsInt(message['id']);
+    final threads = await ChatLocalStore.instance.readThreads();
+    for (final thread in threads) {
+      if (chatAsInt(thread['id']) != threadId) continue;
+      final last = thread['last_message'];
+      final lastMap =
+          last is Map ? Map<String, dynamic>.from(last) : null;
+      final lastId = lastMap == null ? null : chatAsInt(lastMap['id']);
+      if (messageId != null && lastId != null && lastId > messageId) return;
+      var payload = Map<String, dynamic>.from(message);
+      if (payload['is_mine'] == true) {
+        final status = payload['read_status']?.toString().trim() ?? '';
+        if (status.isEmpty) payload['read_status'] = 'sent';
+      }
+      final richer = (lastId != null && lastId == messageId)
+          ? chatPreferRicherLastMessage(lastMap, payload)
+          : payload;
+      final next = Map<String, dynamic>.from(thread);
+      next['last_message'] = richer;
+      if (clearUnread) next['unread_count'] = 0;
+      await ChatLocalStore.instance.upsertThread(next);
+      ChatUnreadRefresh.onInvalidate?.call();
+      return;
+    }
   }
 
   static Future<void> patchThreadNotificationsLocal(

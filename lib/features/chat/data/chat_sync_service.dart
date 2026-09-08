@@ -211,11 +211,15 @@ class ChatSyncService {
       }
     }
     if (thread != null) {
+      final isMine = _messageIsMine(owned);
+      if (isMine) {
+        final status = owned['read_status']?.toString().trim() ?? '';
+        if (status.isEmpty) owned['read_status'] = 'sent';
+      }
       thread['last_message'] = owned;
       var unread = chatAsInt(thread['unread_count']) ?? 0;
       final viewing =
           FamilyChatForegroundBridge.isActivelyViewingThread(threadId);
-      final isMine = _messageIsMine(owned);
       if (!viewing && !isMine && !chatMessageIsPending(owned)) {
         unread += 1;
       }

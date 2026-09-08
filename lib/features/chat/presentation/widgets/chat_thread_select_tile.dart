@@ -61,6 +61,7 @@ class ChatThreadSelectTile extends StatelessWidget {
 
   static String? lastMessageReadStatus(Map<String, dynamic>? last) {
     if (last == null || last['is_system'] == true) return null;
+    if (last['is_mine'] == false) return null;
     final status = last['read_status']?.toString().trim();
     if (status == null || status.isEmpty) return null;
     return status;
