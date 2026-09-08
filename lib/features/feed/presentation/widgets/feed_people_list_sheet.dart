@@ -123,7 +123,18 @@ Map<String, dynamic> _mergePerson(
     final memberAvatar = member['avatar_url']?.toString().trim() ?? '';
     if (memberAvatar.isNotEmpty) merged['avatar_url'] = memberAvatar;
   }
+  // Local family members can open a profile even on older cached payloads.
+  if (merged['in_family'] != false) {
+    merged['in_family'] = true;
+  }
   return merged;
+}
+
+bool feedPersonCanOpenProfile(Map<String, dynamic> person) {
+  if (person['in_family'] == false) return false;
+  if (person['in_family'] == true) return true;
+  final id = feedPersonUserId(person);
+  return id != null && _membersByUserId.containsKey(id);
 }
 
 void _hydrateReactions(dynamic raw) {
@@ -393,23 +404,25 @@ class _FeedPeopleListSheetState extends State<FeedPeopleListSheet> {
                               name.isEmpty ? 'Участник' : name;
                           final userId = feedPersonUserId(person);
                           final emoji = person['emoji']?.toString() ?? '';
+                          final canOpenProfile =
+                              feedPersonCanOpenProfile(person);
                           return ListTile(
                             leading: ChatAvatar(
                               name: displayName,
                               avatarUrl: person['avatar_url']?.toString(),
-                              userId: userId,
+                              userId: canOpenProfile ? userId : null,
                               radius: 20,
                             ),
                             title: Text(displayName),
                             trailing: emoji.isEmpty
-                                ? (userId == null
-                                    ? null
-                                    : const Icon(Icons.chevron_right, size: 20))
+                                ? (canOpenProfile
+                                    ? const Icon(Icons.chevron_right, size: 20)
+                                    : null)
                                 : Text(
                                     emoji,
                                     style: const TextStyle(fontSize: 20),
                                   ),
-                            onTap: userId == null
+                            onTap: !canOpenProfile || userId == null
                                 ? null
                                 : () => _openProfile(userId),
                           );

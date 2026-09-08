@@ -82,9 +82,23 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
       if (!mounted) return;
       final next = _parseViewedBy(data['viewed_by']);
       if (next.isNotEmpty) {
-        setState(() => _viewedBy = next);
+        _storeViewedBy(next);
       }
     } catch (_) {}
+  }
+
+  void _storeViewedBy(List<Map<String, dynamic>> people) {
+    widget.event['viewed_by'] = people;
+    widget.event['viewed_count'] = people.length;
+    if (!mounted) return;
+    setState(() => _viewedBy = people);
+    widget.onEngagementChanged?.call();
+  }
+
+  int? get _eventId {
+    final raw = _event['id'];
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
   }
 
   bool get _isBirthdayEvent =>
@@ -293,7 +307,11 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
             onOpenChat: widget.onOpenSource,
             onOpenProfile: widget.onOpenProfile,
           ),
-          FeedViewedByRow(viewedBy: _viewedBy),
+          FeedViewedByRow(
+            viewedBy: _viewedBy,
+            eventId: _eventId,
+            onViewedByChanged: _storeViewedBy,
+          ),
         ],
       );
     }
@@ -313,7 +331,11 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
             createdAt: createdAt,
             onOpenCalendar: widget.onOpenSource,
           ),
-          FeedViewedByRow(viewedBy: _viewedBy),
+          FeedViewedByRow(
+            viewedBy: _viewedBy,
+            eventId: _eventId,
+            onViewedByChanged: _storeViewedBy,
+          ),
         ],
       );
     }
@@ -401,7 +423,11 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
             navigateTooltip: _navigateTooltip(),
             onEngagementChanged: widget.onEngagementChanged,
           ),
-          FeedViewedByRow(viewedBy: _viewedBy),
+          FeedViewedByRow(
+            viewedBy: _viewedBy,
+            eventId: _eventId,
+            onViewedByChanged: _storeViewedBy,
+          ),
         ],
       ),
     );
