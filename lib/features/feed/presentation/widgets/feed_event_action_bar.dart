@@ -148,15 +148,29 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
   }
 
   Future<void> _openReactionPeople() async {
-    var people = mediaReactionPeople(_reactions);
-    if (people.isEmpty) return;
-    final needsNames = people.any(
-      (person) =>
-          feedPersonUserId(person) != null &&
-          feedPersonDisplayName(person).isEmpty,
-    );
     final attachmentId = _attachmentId;
-    if (needsNames && attachmentId != null) {
+    var people = await resolveFeedPeopleLocally(mediaReactionPeople(_reactions));
+    if (!mounted || people.isEmpty) return;
+
+    // Stale posts may still say «Участник» — fetch real profiles from API,
+    // show that list, and persist into the feed event / local snapshot.
+    if (feedPeopleHaveUnresolvedNames(people) && attachmentId != null) {
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(
+          child: Card(
+            child: Padding(
+              padding: EdgeInsets.all(20),
+              child: SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+            ),
+          ),
+        ),
+      );
       try {
         final data = await ref
             .read(familychatRepositoryProvider)
@@ -171,15 +185,23 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
           _commentsCount = commentsCount;
         });
         _storeLocal(reactions: nextReactions, commentsCount: commentsCount);
-        people = mediaReactionPeople(nextReactions);
-      } catch (_) {}
+        people = await resolveFeedPeopleLocally(
+          mediaReactionPeople(nextReactions),
+        );
+      } catch (_) {
+        // Keep locally resolved list if the request fails.
+      } finally {
+        if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      }
     }
+
     if (!mounted || people.isEmpty) return;
     await FeedPeopleListSheet.show(
       context,
       title: 'Реакции',
       people: people,
       emptyText: 'Пока никто не поставил реакцию',
+      resolveLocally: false,
     );
   }
 

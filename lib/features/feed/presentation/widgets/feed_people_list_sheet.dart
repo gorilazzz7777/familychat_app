@@ -60,6 +60,15 @@ bool _reactionsNeedNames(dynamic raw) {
   return false;
 }
 
+/// True when any person still resolves to the «Участник» placeholder.
+bool feedPeopleHaveUnresolvedNames(List<Map<String, dynamic>> people) {
+  for (final person in people) {
+    if (feedPersonUserId(person) == null) continue;
+    if (feedPersonDisplayName(person).isEmpty) return true;
+  }
+  return false;
+}
+
 /// True when a cached event still has reaction/view people without real names.
 bool feedEventNeedsPeopleRefresh(Map<String, dynamic> event) {
   if (_reactionsNeedNames(event['reactions'])) return true;
@@ -235,8 +244,10 @@ class FeedPeopleListSheet extends StatefulWidget {
     required String title,
     required List<Map<String, dynamic>> people,
     String emptyText = 'Пока никого нет',
+    bool resolveLocally = true,
   }) async {
-    final resolved = await resolveFeedPeopleLocally(people);
+    final resolved =
+        resolveLocally ? await resolveFeedPeopleLocally(people) : people;
     if (!context.mounted) return;
     return showModalBottomSheet<void>(
       context: context,
