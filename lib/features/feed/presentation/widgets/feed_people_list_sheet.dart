@@ -1,0 +1,396 @@
+import 'package:flutter/material.dart';
+
+import '../../../chat/data/chat_local_reads.dart';
+import '../../../members/presentation/member_profile_screen.dart';
+import '../../../profile/presentation/widgets/chat_avatar.dart';
+import 'feed_reactions.dart';
+
+Map<int, Map<String, dynamic>> _membersByUserId = {};
+DateTime? _membersByUserIdAt;
+
+int? feedPersonUserId(Map<String, dynamic> person) {
+  return mediaReactionUserId(person['user_id']) ??
+      mediaReactionUserId(person['id']);
+}
+
+String feedPersonDisplayName(Map<String, dynamic> person) {
+  for (final key in const ['display_name', 'name', 'first_name']) {
+    final value = person[key]?.toString().trim() ?? '';
+    if (value.isNotEmpty && !_isPlaceholderPersonName(value)) return value;
+  }
+  final first = person['first_name']?.toString().trim() ?? '';
+  final last = person['last_name']?.toString().trim() ?? '';
+  final combined = [first, last].where((e) => e.isNotEmpty).join(' ');
+  if (combined.isNotEmpty && !_isPlaceholderPersonName(combined)) {
+    return combined;
+  }
+  return '';
+}
+
+bool _isPlaceholderPersonName(String name) =>
+    RegExp(r'^User \d+$').hasMatch(name);
+
+bool _hasAvatar(Map<String, dynamic> person) =>
+    (person['avatar_url']?.toString().trim() ?? '').isNotEmpty;
+
+TextStyle? feedTappableCountStyle(ThemeData theme, {TextStyle? base}) {
+  return (base ?? theme.textTheme.labelLarge)?.copyWith(
+    color: theme.colorScheme.primary,
+    fontWeight: FontWeight.w700,
+  );
+}
+
+void _indexMembers(Iterable<Map<String, dynamic>> members) {
+  for (final member in members) {
+    if (member['is_child'] == true) continue;
+    final id = mediaReactionUserId(member['user_id']);
+    if (id == null || id <= 0) continue;
+    _membersByUserId[id] = member;
+  }
+}
+
+bool _membersCacheFresh() {
+  final at = _membersByUserIdAt;
+  if (_membersByUserId.isEmpty || at == null) return false;
+  return DateTime.now().difference(at) < const Duration(minutes: 5);
+}
+
+Map<String, dynamic> _mergePerson(
+  Map<String, dynamic> person,
+  Map<String, dynamic>? member,
+) {
+  if (member == null) return person;
+  final merged = Map<String, dynamic>.from(person);
+  if (feedPersonDisplayName(merged).isEmpty) {
+    final name = feedPersonDisplayName(member);
+    if (name.isNotEmpty) merged['display_name'] = name;
+  }
+  if (!_hasAvatar(merged)) {
+    final memberAvatar = member['avatar_url']?.toString().trim() ?? '';
+    if (memberAvatar.isNotEmpty) merged['avatar_url'] = memberAvatar;
+  }
+  return merged;
+}
+
+void _hydrateReactions(dynamic raw) {
+  if (raw is! List) return;
+  for (final item in raw) {
+    if (item is! Map) continue;
+    final reaction = item.cast<String, dynamic>();
+    final seen = <int>{};
+    final users = <Map<String, dynamic>>[];
+    final rawUsers = reaction['users'];
+    if (rawUsers is List) {
+      for (final user in rawUsers) {
+        if (user is! Map) continue;
+        final map = Map<String, dynamic>.from(user);
+        final id = feedPersonUserId(map);
+        final merged = _mergePerson(map, id == null ? null : _membersByUserId[id]);
+        final mergedId = feedPersonUserId(merged);
+        if (mergedId != null) seen.add(mergedId);
+        users.add(merged);
+      }
+    }
+    final rawIds = reaction['user_ids'];
+    if (rawIds is List) {
+      for (final rawId in rawIds) {
+        final id = mediaReactionUserId(rawId);
+        if (id == null || seen.contains(id)) continue;
+        seen.add(id);
+        users.add(_mergePerson({'user_id': id}, _membersByUserId[id]));
+      }
+    }
+    reaction['users'] = users;
+  }
+}
+
+void _hydratePeopleList(dynamic raw) {
+  if (raw is! List) return;
+  for (var i = 0; i < raw.length; i++) {
+    final item = raw[i];
+    if (item is! Map) continue;
+    final person = Map<String, dynamic>.from(item);
+    final id = feedPersonUserId(person);
+    raw[i] = _mergePerson(person, id == null ? null : _membersByUserId[id]);
+  }
+}
+
+void hydrateFeedEventPeople(Map<String, dynamic> event) {
+  _hydrateReactions(event['reactions']);
+  _hydratePeopleList(event['viewed_by']);
+  final payload = event['payload'];
+  if (payload is! Map) return;
+  _hydrateReactions(payload['reactions']);
+  final attachments = payload['attachments'];
+  if (attachments is! List) return;
+  for (final item in attachments) {
+    if (item is! Map) continue;
+    _hydrateReactions(item['reactions']);
+  }
+}
+
+Future<void> hydrateFeedEventsPeople(
+  Iterable<Map<String, dynamic>> events,
+) async {
+  try {
+    final local = await ChatLocalReads.members();
+    _indexMembers(local);
+    if (local.isNotEmpty) {
+      _membersByUserIdAt = DateTime.now();
+    }
+  } catch (_) {}
+  for (final event in events) {
+    hydrateFeedEventPeople(event);
+  }
+}
+
+Future<List<Map<String, dynamic>>> resolveFeedPeopleLocally(
+  List<Map<String, dynamic>> people,
+) async {
+  if (people.isEmpty) return people;
+  final missing = people.any((person) {
+    final id = feedPersonUserId(person);
+    if (id == null) return false;
+    return feedPersonDisplayName(person).isEmpty || !_hasAvatar(person);
+  });
+  if (!missing && _membersCacheFresh()) {
+    return [
+      for (final person in people)
+        _mergePerson(person, _membersByUserId[feedPersonUserId(person)]),
+    ];
+  }
+  try {
+    final local = await ChatLocalReads.members();
+    _indexMembers(local);
+    if (local.isNotEmpty) _membersByUserIdAt = DateTime.now();
+  } catch (_) {}
+  return [
+    for (final person in people)
+      _mergePerson(
+        Map<String, dynamic>.from(person),
+        _membersByUserId[feedPersonUserId(person)],
+      ),
+  ];
+}
+
+class FeedPeopleListSheet extends StatefulWidget {
+  const FeedPeopleListSheet({
+    super.key,
+    required this.title,
+    required this.people,
+    this.emptyText = 'Пока никого нет',
+  });
+
+  final String title;
+  final List<Map<String, dynamic>> people;
+  final String emptyText;
+
+  static Future<void> show(
+    BuildContext context, {
+    required String title,
+    required List<Map<String, dynamic>> people,
+    String emptyText = 'Пока никого нет',
+  }) async {
+    final resolved = await resolveFeedPeopleLocally(people);
+    if (!context.mounted) return;
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => FeedPeopleListSheet(
+        title: title,
+        people: resolved,
+        emptyText: emptyText,
+      ),
+    );
+  }
+
+  @override
+  State<FeedPeopleListSheet> createState() =>
+      _FeedPeopleListSheetState();
+}
+
+class _FeedPeopleListSheetState extends State<FeedPeopleListSheet> {
+  late List<Map<String, dynamic>> _people;
+  String? _emojiFilter;
+
+  @override
+  void initState() {
+    super.initState();
+    _people = widget.people
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList(growable: false);
+  }
+
+  List<String> get _emojis {
+    final seen = <String>{};
+    final list = <String>[];
+    for (final person in _people) {
+      final emoji = person['emoji']?.toString() ?? '';
+      if (emoji.isEmpty || seen.contains(emoji)) continue;
+      seen.add(emoji);
+      list.add(emoji);
+    }
+    return list;
+  }
+
+  List<Map<String, dynamic>> get _visiblePeople {
+    final emoji = _emojiFilter;
+    if (emoji == null || emoji.isEmpty) return _people;
+    return _people
+        .where((p) => (p['emoji']?.toString() ?? '') == emoji)
+        .toList();
+  }
+
+  void _openProfile(int userId) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MemberProfileScreen(userId: userId),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final emojis = _emojis;
+    final visible = _visiblePeople;
+
+    return SizedBox(
+      height: MediaQuery.sizeOf(context).height * 0.55,
+      child: Column(
+        children: [
+          const SizedBox(height: 8),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.outlineVariant,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 8, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.title,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Закрыть',
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+          ),
+          if (emojis.length > 1)
+            SizedBox(
+              height: 40,
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                scrollDirection: Axis.horizontal,
+                children: [
+                  _EmojiFilterChip(
+                    label: 'Все',
+                    selected: _emojiFilter == null,
+                    onTap: () => setState(() => _emojiFilter = null),
+                  ),
+                  for (final emoji in emojis)
+                    _EmojiFilterChip(
+                      label: emoji,
+                      selected: _emojiFilter == emoji,
+                      onTap: () => setState(() => _emojiFilter = emoji),
+                    ),
+                ],
+              ),
+            ),
+          const Divider(height: 1),
+          Expanded(
+            child: visible.isEmpty
+                ? Center(
+                    child: Text(
+                      widget.emptyText,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
+                        itemCount: visible.length,
+                        separatorBuilder: (_, index) => Divider(
+                          height: 1,
+                          indent: 72,
+                          color: theme.colorScheme.outlineVariant
+                              .withValues(alpha: 0.4),
+                        ),
+                        itemBuilder: (context, index) {
+                          final person = visible[index];
+                          final name = feedPersonDisplayName(person);
+                          final displayName =
+                              name.isEmpty ? 'Участник' : name;
+                          final userId = feedPersonUserId(person);
+                          final emoji = person['emoji']?.toString() ?? '';
+                          return ListTile(
+                            leading: ChatAvatar(
+                              name: displayName,
+                              avatarUrl: person['avatar_url']?.toString(),
+                              userId: userId,
+                              radius: 20,
+                            ),
+                            title: Text(displayName),
+                            trailing: emoji.isEmpty
+                                ? (userId == null
+                                    ? null
+                                    : const Icon(Icons.chevron_right, size: 20))
+                                : Text(
+                                    emoji,
+                                    style: const TextStyle(fontSize: 20),
+                                  ),
+                            onTap: userId == null
+                                ? null
+                                : () => _openProfile(userId),
+                          );
+                        },
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmojiFilterChip extends StatelessWidget {
+  const _EmojiFilterChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: FilterChip(
+        label: Text(label),
+        selected: selected,
+        showCheckmark: false,
+        visualDensity: VisualDensity.compact,
+        selectedColor: cs.primaryContainer,
+        onSelected: (_) => onTap(),
+      ),
+    );
+  }
+}

@@ -19,6 +19,7 @@ import '../../calendar/presentation/calendar_screen.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import 'widgets/feed_event_card.dart';
 import 'widgets/feed_people_filter.dart';
+import 'widgets/feed_people_list_sheet.dart';
 
 bool _isVisibleFeedEvent(Map<String, dynamic> event) {
   final kind = event['kind']?.toString();
@@ -35,6 +36,14 @@ List<Map<String, dynamic>> _visibleFeedEvents(
     MediaLocalIndex.hydrateFeedEvent(event);
   }
   unawaited(MediaIncomingSync.ensureFeedEvents(list));
+  return list;
+}
+
+Future<List<Map<String, dynamic>>> _prepareFeedEvents(
+  Iterable<Map<String, dynamic>> events,
+) async {
+  final list = _visibleFeedEvents(events);
+  await hydrateFeedEventsPeople(list);
   return list;
 }
 
@@ -187,6 +196,16 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       if (maxId == null || id > maxId) maxId = id;
     }
     return maxId;
+  }
+
+  /// Cursor for older pages: last non-optimistic event in the list (oldest in UI).
+  int? get _oldestEventId {
+    for (var i = _events.length - 1; i >= 0; i--) {
+      if (_events[i]['_optimistic'] == true) continue;
+      final id = _eventId(_events[i]);
+      if (id != null && id > 0) return id;
+    }
+    return null;
   }
 
   DateTime? get _lastReadDateTime {
@@ -347,16 +366,24 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     } catch (_) {}
   }
 
+  Future<void> _showCachedSnapshot(Map<String, dynamic> cached) async {
+    _applyFromCache(cached);
+    await hydrateFeedEventsPeople(_events);
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      _error = null;
+    });
+    unawaited(_persistCache());
+  }
+
   Future<void> _loadInitial() async {
     final cached =
         await FamilyChatLocalCache.readFeedSnapshot(personUserId: _personUserId);
     if (cached != null && mounted) {
-      setState(() {
-        _applyFromCache(cached);
-        _loading = false;
-        _error = null;
-      });
+      await _showCachedSnapshot(cached);
       await _syncUpdates();
+      unawaited(_loadFull(showSpinner: false));
       return;
     }
     await _loadFull(showSpinner: true);
@@ -376,7 +403,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             personUserId: _personUserId,
           );
       if (!mounted) return;
-      final batch = _visibleFeedEvents(
+      final batch = await _prepareFeedEvents(
         (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
       );
       final newLastRead = data['last_read_at']?.toString();
@@ -384,8 +411,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           .cast<Map<String, dynamic>>();
       final newHasMore = _parseHasMore(data, batchLength: batch.length);
 
-      // Не затираем более длинный кэш первой страницей API, если id совпадают —
-      // обновляем голову (лайки/просмотры) и оставляем хвост.
+      // Keep a longer cached tail only when the first page is an exact prefix.
+      // If the head drifted (new posts / reordering), replace fully — otherwise
+      // offset holes appear between the new head and a stale tail.
       final canKeepTail = _events.length > batch.length &&
           batch.isNotEmpty &&
           _feedEventsSameIds(_events.take(batch.length).toList(), batch);
@@ -429,7 +457,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             personUserId: _personUserId,
           );
       if (!mounted) return;
-      final batch = _visibleFeedEvents(
+      final batch = await _prepareFeedEvents(
         (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
       );
       // Большой catch-up (протухший кэш / дырка в id): prepend истории наверх
@@ -517,19 +545,30 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
 
   Future<void> _loadMore() async {
     if (_loadingMore || !_hasMore) return;
+    final beforeId = _oldestEventId;
     setState(() => _loadingMore = true);
     try {
       final data = await ref.read(familychatRepositoryProvider).familyFeed(
-            offset: _events.length,
+            // Prefer stable cursor; offset falls back for older servers.
+            beforeId: beforeId,
+            offset: beforeId == null ? _events.length : 0,
             limit: _pageSize,
             personUserId: _personUserId,
           );
       if (!mounted) return;
-      final batch = _visibleFeedEvents(
+      final batch = await _prepareFeedEvents(
         (data['events'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
       );
+      final existingIds = _events.map(_eventId).whereType<int>().toSet();
+      final unique = <Map<String, dynamic>>[];
+      for (final event in batch) {
+        final id = _eventId(event);
+        if (id != null && existingIds.contains(id)) continue;
+        if (id != null) existingIds.add(id);
+        unique.add(event);
+      }
       setState(() {
-        _events.addAll(batch);
+        _events.addAll(unique);
         _hasMore = _parseHasMore(data, batchLength: batch.length);
         _loadingMore = false;
       });
@@ -546,11 +585,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     final cached =
         await FamilyChatLocalCache.readFeedSnapshot(personUserId: userId);
     if (cached != null && mounted) {
-      setState(() {
-        _applyFromCache(cached);
-        _loading = false;
-        _error = null;
-      });
+      await _showCachedSnapshot(cached);
       await _syncUpdates();
       return;
     }
@@ -815,6 +850,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             },
             onOpenPhotoBatch: (batchEvent, {initialIndex = 0}) =>
                 _openPhotoBatch(batchEvent, initialIndex: initialIndex),
+            onEngagementChanged: () => unawaited(_persistCache()),
             onOpenMedia: (photo) async {
               final status = await ref.read(familychatRepositoryProvider).status();
               final currentUserId =

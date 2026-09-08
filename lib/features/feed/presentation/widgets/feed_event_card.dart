@@ -21,6 +21,7 @@ class FeedEventCard extends ConsumerStatefulWidget {
     this.onOpenProfile,
     this.onOpenMedia,
     this.onOpenPhotoBatch,
+    this.onEngagementChanged,
   });
 
   final Map<String, dynamic> event;
@@ -28,6 +29,7 @@ class FeedEventCard extends ConsumerStatefulWidget {
   final VoidCallback? onOpenProfile;
   final void Function(Map<String, dynamic> photo)? onOpenMedia;
   final void Function(Map<String, dynamic> event, {int initialIndex})? onOpenPhotoBatch;
+  final VoidCallback? onEngagementChanged;
 
   @override
   ConsumerState<FeedEventCard> createState() => _FeedEventCardState();
@@ -393,9 +395,11 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
           FeedEventActionBar(
             key: ValueKey<int?>(engagementAttachmentId),
             attachmentId: engagementAttachmentId,
+            event: _event,
             createdAt: createdAt,
             onNavigate: widget.onOpenSource,
             navigateTooltip: _navigateTooltip(),
+            onEngagementChanged: widget.onEngagementChanged,
           ),
           FeedViewedByRow(viewedBy: _viewedBy),
         ],

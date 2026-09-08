@@ -12,21 +12,78 @@ List<Map<String, dynamic>> parseMediaReactions(dynamic raw) {
     final rawIds = item['user_ids'];
     if (rawIds is List) {
       for (final e in rawIds) {
-        final id = e is int ? e : int.tryParse('$e');
+        final id = mediaReactionUserId(e);
         if (id != null) userIds.add(id);
       }
     }
     final count = item['count'] is int
         ? item['count'] as int
         : int.tryParse('${item['count']}') ?? userIds.length;
+    final users = <Map<String, dynamic>>[];
+    final rawUsers = item['users'];
+    if (rawUsers is List) {
+      for (final user in rawUsers) {
+        if (user is Map) {
+          users.add(Map<String, dynamic>.from(user));
+        }
+      }
+    }
     result.add({
       'emoji': emoji,
       'count': count,
       'user_ids': userIds,
+      'users': users,
       'reacted_by_me': item['reacted_by_me'] == true,
     });
   }
   return result;
+}
+
+int? mediaReactionUserId(dynamic raw) {
+  if (raw == null) return null;
+  if (raw is int) return raw;
+  if (raw is num) return raw.toInt();
+  final text = '$raw'.trim();
+  if (text.isEmpty || text == 'null') return null;
+  return int.tryParse(text);
+}
+
+/// Плоский список людей, поставивших реакцию (emoji + user_id / профиль).
+List<Map<String, dynamic>> mediaReactionPeople(
+  List<Map<String, dynamic>> reactions,
+) {
+  final people = <Map<String, dynamic>>[];
+  for (final reaction in reactions) {
+    final emoji = reaction['emoji']?.toString() ?? '';
+    final seen = <int>{};
+    final users = reaction['users'];
+    if (users is List) {
+      for (final user in users) {
+        if (user is! Map) continue;
+        final map = Map<String, dynamic>.from(user);
+        map['emoji'] = emoji;
+        final userId = mediaReactionUserId(map['user_id']) ??
+            mediaReactionUserId(map['id']);
+        if (userId != null) {
+          map['user_id'] = userId;
+          seen.add(userId);
+        }
+        people.add(map);
+      }
+    }
+    final userIds = reaction['user_ids'];
+    if (userIds is! List) continue;
+    for (final rawId in userIds) {
+      final userId = mediaReactionUserId(rawId);
+      if (userId == null || seen.contains(userId)) continue;
+      seen.add(userId);
+      people.add({
+        'user_id': userId,
+        'emoji': emoji,
+      });
+    }
+  }
+  return people;
 }
 
 int mediaReactionsTotalCount(List<Map<String, dynamic>> reactions) {
@@ -44,6 +101,93 @@ int mediaReactionsTotalCount(List<Map<String, dynamic>> reactions) {
 
 bool mediaReactionsHasMine(List<Map<String, dynamic>> reactions) =>
     reactions.any((r) => r['reacted_by_me'] == true);
+
+int _asCommentsCount(dynamic raw) {
+  if (raw is int) return raw;
+  return int.tryParse('$raw') ?? 0;
+}
+
+class FeedStoredEngagement {
+  const FeedStoredEngagement({
+    this.reactions = const [],
+    this.commentsCount = 0,
+  });
+
+  final List<Map<String, dynamic>> reactions;
+  final int commentsCount;
+}
+
+FeedStoredEngagement feedEngagementFromMap(Map<dynamic, dynamic>? raw) {
+  if (raw == null) return const FeedStoredEngagement();
+  return FeedStoredEngagement(
+    reactions: parseMediaReactions(raw['reactions']),
+    commentsCount: _asCommentsCount(raw['comments_count']),
+  );
+}
+
+FeedStoredEngagement feedEngagementFromEvent(
+  Map<String, dynamic> event, {
+  int? attachmentId,
+}) {
+  if (attachmentId != null) {
+    final payload = event['payload'];
+    if (payload is Map) {
+      final attachments = payload['attachments'];
+      if (attachments is List) {
+        for (final item in attachments) {
+          if (item is! Map) continue;
+          final id = mediaReactionUserId(item['id'] ?? item['attachment_id']);
+          if (id == attachmentId) return feedEngagementFromMap(item);
+        }
+      }
+      final payloadId = mediaReactionUserId(payload['attachment_id']);
+      if (payloadId == attachmentId) {
+        final fromPayload = feedEngagementFromMap(payload);
+        if (fromPayload.reactions.isNotEmpty || fromPayload.commentsCount > 0) {
+          return fromPayload;
+        }
+      }
+    }
+  }
+  return feedEngagementFromMap(event);
+}
+
+void writeFeedEngagementToEvent(
+  Map<String, dynamic> event, {
+  required int attachmentId,
+  required List<Map<String, dynamic>> reactions,
+  required int commentsCount,
+}) {
+  event['reactions'] = reactions;
+  event['comments_count'] = commentsCount;
+  final payload = event['payload'];
+  if (payload is! Map) return;
+  final payloadMap = payload is Map<String, dynamic>
+      ? payload
+      : Map<String, dynamic>.from(payload);
+  if (payload is! Map<String, dynamic>) {
+    event['payload'] = payloadMap;
+  }
+  final payloadId = mediaReactionUserId(payloadMap['attachment_id']);
+  if (payloadId == attachmentId) {
+    payloadMap['reactions'] = reactions;
+    payloadMap['comments_count'] = commentsCount;
+  }
+  final attachments = payloadMap['attachments'];
+  if (attachments is! List) return;
+  for (var i = 0; i < attachments.length; i++) {
+    final item = attachments[i];
+    if (item is! Map) continue;
+    final id = mediaReactionUserId(item['id'] ?? item['attachment_id']);
+    if (id != attachmentId) continue;
+    final row = item is Map<String, dynamic>
+        ? item
+        : Map<String, dynamic>.from(item);
+    row['reactions'] = reactions;
+    row['comments_count'] = commentsCount;
+    attachments[i] = row;
+  }
+}
 
 class FeedReactionsRow extends StatelessWidget {
   const FeedReactionsRow({

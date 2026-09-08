@@ -7,28 +7,32 @@ import '../../../../core/providers/app_providers.dart';
 import '../../../../core/services/rustore_review_prompt_service.dart';
 import '../../../profile/presentation/media_engagement_sheet.dart';
 import 'feed_event_date_format.dart';
+import 'feed_people_list_sheet.dart';
 import 'feed_reactions.dart';
 
 class FeedEventActionBar extends ConsumerStatefulWidget {
   const FeedEventActionBar({
     super.key,
     this.attachmentId,
+    required this.event,
     required this.createdAt,
     required this.onNavigate,
     this.navigateTooltip = 'Перейти',
+    this.onEngagementChanged,
   });
 
   final int? attachmentId;
+  final Map<String, dynamic> event;
   final DateTime? createdAt;
   final VoidCallback onNavigate;
   final String navigateTooltip;
+  final VoidCallback? onEngagementChanged;
 
   @override
   ConsumerState<FeedEventActionBar> createState() => _FeedEventActionBarState();
 }
 
 class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
-  bool _loading = false;
   bool _reactBusy = false;
   int _commentsCount = 0;
   List<Map<String, dynamic>> _reactions = const [];
@@ -38,48 +42,39 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
   @override
   void initState() {
     super.initState();
-    _loadEngagement();
+    _readStored();
   }
 
   @override
   void didUpdateWidget(covariant FeedEventActionBar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.attachmentId != widget.attachmentId) {
-      _loadEngagement();
-    }
+    if (_reactBusy) return;
+    _readStored();
   }
 
-  int _asInt(Object? value) {
-    if (value is int) return value;
-    return int.tryParse('$value') ?? 0;
+  void _readStored() {
+    final stored = feedEngagementFromEvent(
+      widget.event,
+      attachmentId: _attachmentId,
+    );
+    _reactions = stored.reactions;
+    _commentsCount = stored.commentsCount;
   }
 
-  Future<void> _loadEngagement() async {
+  void _storeLocal({
+    required List<Map<String, dynamic>> reactions,
+    required int commentsCount,
+  }) {
     final attachmentId = _attachmentId;
-    if (attachmentId == null) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _commentsCount = 0;
-          _reactions = const [];
-        });
-      }
-      return;
+    if (attachmentId != null) {
+      writeFeedEngagementToEvent(
+        widget.event,
+        attachmentId: attachmentId,
+        reactions: reactions,
+        commentsCount: commentsCount,
+      );
     }
-    setState(() => _loading = true);
-    try {
-      final data =
-          await ref.read(familychatRepositoryProvider).mediaEngagement(attachmentId);
-      if (!mounted) return;
-      setState(() {
-        _commentsCount = _asInt(data['comments_count']);
-        _reactions = parseMediaReactions(data['reactions']);
-        _loading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-    }
+    widget.onEngagementChanged?.call();
   }
 
   bool get _hasMyReaction => mediaReactionsHasMine(_reactions);
@@ -97,11 +92,15 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
           .toggleMediaReaction(attachmentId, emoji: emoji);
       if (!mounted) return;
       final nextReactions = parseMediaReactions(data['reactions']);
+      final commentsCount = data['comments_count'] is int
+          ? data['comments_count'] as int
+          : int.tryParse('${data['comments_count']}') ?? _commentsCount;
       setState(() {
-        _commentsCount = _asInt(data['comments_count']);
+        _commentsCount = commentsCount;
         _reactions = nextReactions;
         _reactBusy = false;
       });
+      _storeLocal(reactions: nextReactions, commentsCount: commentsCount);
       if (!hadMine && mediaReactionsHasMine(nextReactions) && mounted) {
         unawaited(
           RuStoreReviewPromptService.onFirstFeedLike(
@@ -132,7 +131,31 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
       focusComment: true,
     );
     if (!mounted) return;
-    await _loadEngagement();
+    try {
+      final data =
+          await ref.read(familychatRepositoryProvider).mediaEngagement(attachmentId);
+      if (!mounted) return;
+      final nextReactions = parseMediaReactions(data['reactions']);
+      final commentsCount = data['comments_count'] is int
+          ? data['comments_count'] as int
+          : int.tryParse('${data['comments_count']}') ?? _commentsCount;
+      setState(() {
+        _reactions = nextReactions;
+        _commentsCount = commentsCount;
+      });
+      _storeLocal(reactions: nextReactions, commentsCount: commentsCount);
+    } catch (_) {}
+  }
+
+  Future<void> _openReactionPeople() async {
+    final people = mediaReactionPeople(_reactions);
+    if (people.isEmpty) return;
+    await FeedPeopleListSheet.show(
+      context,
+      title: 'Реакции',
+      people: people,
+      emptyText: 'Пока никто не поставил реакцию',
+    );
   }
 
   @override
@@ -153,7 +176,7 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
           if (hasMedia && _reactions.isNotEmpty) ...[
             FeedReactionsRow(
               reactions: _reactions,
-              onReactionTap: _reactBusy || _loading ? null : _toggleReaction,
+              onReactionTap: _reactBusy ? null : _toggleReaction,
             ),
             const SizedBox(height: 4),
           ],
@@ -165,7 +188,7 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                  onPressed: _reactBusy || _loading ? null : _openReactionSheet,
+                  onPressed: _reactBusy ? null : _openReactionSheet,
                   icon: Icon(
                     reacted ? Icons.favorite : Icons.favorite_border,
                     size: 24,
@@ -173,11 +196,21 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
                   ),
                 ),
                 if (_reactionsTotal > 0)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: Text(
-                      '$_reactionsTotal',
-                      style: theme.textTheme.labelLarge,
+                  Tooltip(
+                    message: 'Кто поставил реакцию',
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: _openReactionPeople,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(2, 6, 8, 6),
+                          child: Text(
+                            '$_reactionsTotal',
+                            style: feedTappableCountStyle(theme),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 IconButton(
@@ -185,7 +218,7 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                  onPressed: _loading ? null : _openComments,
+                  onPressed: _openComments,
                   icon: Icon(
                     Icons.chat_bubble_outline,
                     size: 22,
