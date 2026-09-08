@@ -396,6 +396,7 @@ class ChatSyncService {
     Map<String, dynamic>? local,
   ) {
     if (local == null) return server;
+    final threadId = chatAsInt(server['id']);
     final serverUnread = chatAsInt(server['unread_count']) ?? 0;
     final localUnread = chatAsInt(local['unread_count']) ?? 0;
     final serverLast = server['last_message'];
@@ -410,13 +411,40 @@ class ChatSyncService {
         : chatAsInt(serverLastMap['id']);
     final localLastId =
         localLastMap == null ? null : chatAsInt(localLastMap['id']);
+    final readThrough = chatAsInt(local['local_read_through_id']);
+
+    int mergedUnread() {
+      if (threadId != null &&
+          FamilyChatForegroundBridge.isActivelyViewingThread(threadId)) {
+        return 0;
+      }
+      // Local mark-read must win over a stale hub snapshot with the same tip.
+      if (readThrough != null &&
+          serverLastId != null &&
+          serverLastId > 0 &&
+          serverLastId <= readThrough) {
+        return 0;
+      }
+      if (localLastId != null &&
+          (serverLastId == null || localLastId > serverLastId)) {
+        return math.max(serverUnread, localUnread);
+      }
+      if (localLastId != null && localLastId == serverLastId) {
+        if (localUnread == 0) return 0;
+        return math.max(serverUnread, localUnread);
+      }
+      return serverUnread;
+    }
+
+    final unread = mergedUnread();
 
     if (localLastId != null &&
         (serverLastId == null || localLastId > serverLastId)) {
       return {
         ...server,
         'last_message': localLastMap,
-        'unread_count': math.max(serverUnread, localUnread),
+        'unread_count': unread,
+        if (readThrough != null) 'local_read_through_id': readThrough,
       };
     }
     if (localLastId != null && localLastId == serverLastId) {
@@ -424,16 +452,22 @@ class ChatSyncService {
       return {
         ...server,
         'last_message': richer,
-        if (localUnread > serverUnread) 'unread_count': localUnread,
+        'unread_count': unread,
+        if (readThrough != null) 'local_read_through_id': readThrough,
       };
     }
-    return server;
+    return {
+      ...server,
+      'unread_count': unread,
+      if (readThrough != null) 'local_read_through_id': readThrough,
+    };
   }
 
   Future<void> _patchHubLastMessageFromSynced(
     int threadId,
-    List<Map<String, dynamic>> messages,
-  ) async {
+    List<Map<String, dynamic>> messages, {
+    bool clearUnread = false,
+  }) async {
     if (messages.isEmpty) return;
     Map<String, dynamic>? newest;
     var newestId = -1;
@@ -454,14 +488,28 @@ class ChatSyncService {
       final lastMap =
           last is Map ? Map<String, dynamic>.from(last) : null;
       final lastId = lastMap == null ? null : chatAsInt(lastMap['id']);
-      if (lastId != null && lastId > newestId) return;
+      if (lastId != null && lastId > newestId) {
+        if (clearUnread) {
+          await ChatLocalMutations.markThreadReadLocal(
+            threadId,
+            lastMessageId: lastId,
+          );
+        }
+        return;
+      }
       final richer = lastId == newestId
           ? chatPreferRicherLastMessage(lastMap, newest)
           : newest;
-      await ChatLocalStore.instance.upsertThread({
+      final next = <String, dynamic>{
         ...thread,
         'last_message': richer,
-      });
+      };
+      if (clearUnread ||
+          FamilyChatForegroundBridge.isActivelyViewingThread(threadId)) {
+        next['unread_count'] = 0;
+        next['local_read_through_id'] = newestId;
+      }
+      await ChatLocalStore.instance.upsertThread(next);
       _notifyUnreadChanged();
       return;
     }
@@ -538,7 +586,11 @@ class ChatSyncService {
           chatEnsureMessageOwnership(m, currentUserId: _currentUserId),
       ];
       await ChatLocalStore.instance.upsertMessages(threadId, messages);
-      await _patchHubLastMessageFromSynced(threadId, messages);
+      await _patchHubLastMessageFromSynced(
+        threadId,
+        messages,
+        clearUnread: markRead,
+      );
       if (page.pinnedMessages.isNotEmpty) {
         final pins = blocked.isEmpty
             ? page.pinnedMessages

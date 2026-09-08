@@ -20,6 +20,10 @@ abstract final class ChatLocalMutations {
       if (chatAsInt(thread['id']) != threadId) continue;
       final next = Map<String, dynamic>.from(thread);
       next['unread_count'] = 0;
+      final prevThrough = chatAsInt(next['local_read_through_id']) ?? 0;
+      if (lastMessageId > prevThrough) {
+        next['local_read_through_id'] = lastMessageId;
+      }
       await ChatLocalStore.instance.upsertThread(next);
       break;
     }
