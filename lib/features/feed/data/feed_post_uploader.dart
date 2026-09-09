@@ -1,14 +1,14 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import '../../../app/shell_refresh.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
+import '../../../core/feed/feed_post_outbox.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
-import '../../../core/media/media_local_index.dart';
 import '../../../core/media/video_upload_pipeline.dart';
 import '../../chat/data/chat_attach_local_cache.dart';
 import '../../familychat/data/familychat_repository.dart';
+import '../../../core/media/media_upload_limits.dart';
 import '../../../core/media/media_upload_foreground.dart';
 
 class FeedPostPhoto {
@@ -49,7 +49,7 @@ class FeedPostPhoto {
 
 /// Фоновая публикация поста в ленту (сжатие + upload после закрытия compose).
 abstract final class FeedPostUploader {
-  static const maxPhotos = 30;
+  static const maxPhotos = kMaxMediaUploadCount;
   static const maxCaptionLength = 500;
   static const _thumbMaxSide = 360;
   static const _thumbQuality = 55;
@@ -60,6 +60,7 @@ abstract final class FeedPostUploader {
     String caption = '',
     bool shareToDiary = false,
     int? childId,
+    int? optimisticId,
     void Function(int index, int total, int sent, int totalBytes)?
         onUploadProgress,
   }) async {
@@ -70,91 +71,51 @@ abstract final class FeedPostUploader {
       throw ArgumentError('Описание не длиннее $maxCaptionLength символов');
     }
 
-    await MediaUploadForeground.enter(MediaUploadForeground.scopeFeed);
-    try {
-      final batchId = createFeedPhotoBatchId();
-      for (var i = 0; i < photos.length; i++) {
-        final prepared = await _prepare(photos[i]);
-        if (prepared == null) continue;
-        final Map<String, dynamic> uploaded;
-        if (childId != null) {
-          uploaded = await repo.childGalleryUpload(
-            childId: childId,
-            bytes: prepared.bytes,
-            filename: prepared.filename,
-            contentType: prepared.contentType,
-            batchId: batchId,
-            photoExif: prepared.photoExif,
-            onSendProgress: onUploadProgress == null
-                ? null
-                : (sent, total) =>
-                    onUploadProgress(i, photos.length, sent, total),
-          );
-        } else {
-          uploaded = await repo.familyGalleryUpload(
-            bytes: prepared.bytes,
-            filename: prepared.filename,
-            contentType: prepared.contentType,
-            destination: 'family_feed',
-            batchId: batchId,
-            shareToDiary: shareToDiary,
-            photoExif: prepared.photoExif,
-            onSendProgress: onUploadProgress == null
-                ? null
-                : (sent, total) =>
-                    onUploadProgress(i, photos.length, sent, total),
-          );
-        }
-        final uploadedId = uploaded['id'] is int
-            ? uploaded['id'] as int
-            : int.tryParse('${uploaded['id']}');
-        final localPath = photos[i].localPath?.trim() ?? '';
-        if (uploadedId != null && localPath.isNotEmpty) {
-          unawaited(
-            MediaLocalIndex.saveOutgoing(
-              attachmentId: uploadedId,
-              localPath: localPath,
-              filename: prepared.filename,
-              kind: prepared.kind,
-            ),
-          );
-        }
-      }
-      await repo.completeFeedPhotoBatch(
-        batchId,
-        caption: trimmedCaption.isEmpty ? null : trimmedCaption,
-        shareToDiary: childId == null ? shareToDiary : false,
-      );
-      await ShellRefresh.instance.refreshMainTabs();
-    } finally {
-      await MediaUploadForeground.leave(MediaUploadForeground.scopeFeed);
-    }
+    final batchId = createFeedPhotoBatchId();
+    await FeedPostOutbox.instance.enqueue(
+      batchId: batchId,
+      photos: photos,
+      caption: trimmedCaption,
+      shareToDiary: shareToDiary,
+      childId: childId,
+      optimisticId: optimisticId,
+    );
+    await FeedPostOutbox.instance.flush(repo);
   }
 
-  /// Сразу возвращает управление: сжатие и upload идут в фоне.
+  /// Сразу возвращает управление: сжатие и upload идут в фоне через outbox.
   static void publishInBackground({
     required FamilyChatRepository repo,
     required List<FeedPostPhoto> photos,
     String caption = '',
     bool shareToDiary = false,
     int? childId,
+    int? optimisticId,
+    String? batchId,
   }) {
     if (photos.isEmpty) return;
-    // Kick FGS while still in foreground (before compose pops).
     unawaited(MediaUploadForeground.enter(MediaUploadForeground.scopeFeed));
     unawaited(() async {
       try {
-        await publish(
-          repo: repo,
+        final trimmedCaption = caption.trim();
+        if (trimmedCaption.length > maxCaptionLength) {
+          throw ArgumentError('Описание не длиннее $maxCaptionLength символов');
+        }
+        final id = (batchId != null && batchId.isNotEmpty)
+            ? batchId
+            : createFeedPhotoBatchId();
+        await FeedPostOutbox.instance.enqueue(
+          batchId: id,
           photos: photos,
-          caption: caption,
+          caption: trimmedCaption,
           shareToDiary: shareToDiary,
           childId: childId,
+          optimisticId: optimisticId,
         );
+        await FeedPostOutbox.instance.flush(repo);
       } catch (_) {
-        // Ошибки не блокируют UI; лента обновится при следующем refresh.
+        // Outbox сохранит pending — flush на следующем старте/resume.
       } finally {
-        // Covers throws before publish()'s enter; no-op if already left.
         await MediaUploadForeground.leave(MediaUploadForeground.scopeFeed);
       }
     }());
@@ -304,6 +265,7 @@ abstract final class FeedPostUploader {
     required List<FeedPostPhoto> photos,
     required String caption,
     required Map<String, dynamic> actor,
+    String? batchId,
     int? childId,
     String? childName,
     String? childAvatarUrl,
@@ -321,6 +283,7 @@ abstract final class FeedPostUploader {
       'payload': {
         'caption': caption.trim(),
         'photo_count': photos.length,
+        if (batchId != null && batchId.isNotEmpty) 'batch_id': batchId,
         if (childId != null) 'child_id': childId,
         if (childName != null && childName.isNotEmpty) 'child_name': childName,
         if (childAvatarUrl != null && childAvatarUrl.isNotEmpty)

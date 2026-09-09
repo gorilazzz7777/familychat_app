@@ -40,9 +40,10 @@ class FeedPhotoBatchSession {
           shareToDiary: shareToDiary,
         );
         final created = result['created'] == true;
-        if (created || attempt == 3) {
+        final already = result['already_finalized'] == true;
+        if (created || already || attempt == 3) {
           _completed = true;
-          if (created) {
+          if (created || already) {
             await ShellRefresh.instance.refreshMainTabs();
           }
           return;

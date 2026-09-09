@@ -112,11 +112,17 @@ class ChatOfflineSync extends ChangeNotifier {
         _rerunRequested = false;
         passes++;
         final activeRepo = _pendingRepo ?? repo;
-        // Never block the outbox on /status: a slow ping (tens of seconds
-        // behind Dio traffic) was delaying sends by queue_wait≈10s+.
+        // Prefer knowing reachability, but never skip delivery solely because
+        // /status failed: UI can be "online" via WebSocket while this flag is
+        // still false (cache-first boot), and POST can succeed when /status
+        // flakes. Failed sends still retry via nextRetryAt.
         if (!_online) {
           final online = await refreshOnline(activeRepo, force: true);
-          if (!online) break;
+          if (!online && kDebugMode) {
+            debugPrint(
+              '[ChatOfflineSync] /status offline — still attempting outbox',
+            );
+          }
         }
 
         if (await ChatOfflineOutbox.hasPendingMediaUploads()) {

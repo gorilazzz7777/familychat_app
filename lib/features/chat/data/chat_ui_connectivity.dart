@@ -33,12 +33,16 @@ class ChatUiConnectivity extends ChangeNotifier {
   }) {
     _repo = repo;
     _syncApiOnline = syncApiOnline;
+    // WS up ⇒ outbox may deliver (HTTP often works too). Keep flags aligned
+    // even on re-bind after bootstrap set ChatOfflineSync offline from cache.
+    if (FamilyChatRealtime.instance.isConnected) {
+      _markReachable(syncApi: true);
+    }
     if (_started) return;
     _started = true;
     FamilyChatRealtime.instance.addListener(_onRealtime);
-    if (FamilyChatRealtime.instance.isConnected) {
-      _setOnline(true);
-    } else if (FamilyChatForegroundBridge.isAppInForeground()) {
+    if (!FamilyChatRealtime.instance.isConnected &&
+        FamilyChatForegroundBridge.isAppInForeground()) {
       // Cold start / not yet connected — wait grace, then ping.
       _beginGrace();
     }
@@ -57,7 +61,7 @@ class ChatUiConnectivity extends ChangeNotifier {
   void onAppResumed() {
     if (!_started) return;
     if (FamilyChatRealtime.instance.isConnected) {
-      _setOnline(true);
+      _markReachable(syncApi: true);
       return;
     }
     _beginGrace();
@@ -72,20 +76,29 @@ class ChatUiConnectivity extends ChangeNotifier {
   /// HTTP became reachable (outbox ping / boot) — clear banner early.
   void onHttpReachable() {
     if (!_started) return;
-    _setOnline(true);
-    _cancelGrace();
+    _markReachable(syncApi: false);
   }
 
   void _onRealtime(Map<String, dynamic> event) {
     final ev = event['event']?.toString();
     if (ev == 'ws_connected') {
-      _setOnline(true);
-      _cancelGrace();
+      // UI was already flipping online here; also unlock outbox — otherwise
+      // clock bubbles stay forever when ChatOfflineSync still thinks offline
+      // (e.g. after cache-first boot) while the header shows no "waiting".
+      _markReachable(syncApi: true);
       return;
     }
     if (ev == 'ws_disconnected') {
       if (!FamilyChatForegroundBridge.isAppInForeground()) return;
       _beginGrace();
+    }
+  }
+
+  void _markReachable({required bool syncApi}) {
+    _setOnline(true);
+    _cancelGrace();
+    if (syncApi) {
+      _syncApiOnline?.call(true);
     }
   }
 
@@ -105,7 +118,7 @@ class ChatUiConnectivity extends ChangeNotifier {
     if (!_started) return;
     if (!FamilyChatForegroundBridge.isAppInForeground()) return;
     if (FamilyChatRealtime.instance.isConnected) {
-      _setOnline(true);
+      _markReachable(syncApi: true);
       return;
     }
     final repo = _repo;
@@ -122,7 +135,7 @@ class ChatUiConnectivity extends ChangeNotifier {
     }
     if (!_started || gen != _pingGeneration) return;
     if (FamilyChatRealtime.instance.isConnected) {
-      _setOnline(true);
+      _markReachable(syncApi: true);
       return;
     }
     _syncApiOnline?.call(online);

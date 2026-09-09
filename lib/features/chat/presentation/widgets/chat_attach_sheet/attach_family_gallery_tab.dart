@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../../core/cache/familychat_local_cache.dart';
+import '../../../../../core/constants/api_error_messages.dart';
 import '../../../../../core/media/media_local_index.dart';
+import '../../../../../core/network/offline_ui.dart';
 import '../../../../../core/providers/app_providers.dart';
 import '../../../../../core/widgets/app_skeletons.dart';
 import '../../../../gallery/data/gallery_diary_album_bridge.dart';
@@ -83,53 +86,120 @@ class _AttachFamilyGalleryTabState
     return int.tryParse('$raw');
   }
 
+  String _loadErrorText(Object error) {
+    return OfflineUi.loadErrorMessage(
+          error,
+          fallback: userFacingErrorMessage(error),
+        ) ??
+        'Не удалось загрузить альбомы';
+  }
+
+  List<Map<String, dynamic>> _markAlbums(
+    Iterable<Map<String, dynamic>> albums, {
+    required String source,
+    int? childId,
+    String? titlePrefix,
+  }) {
+    final out = <Map<String, dynamic>>[];
+    for (final raw in albums) {
+      final album = Map<String, dynamic>.from(raw);
+      album['_pickerSource'] = source;
+      if (childId != null) album['_pickerChildId'] = childId;
+      if (titlePrefix != null && titlePrefix.isNotEmpty) {
+        final title = album['title']?.toString().trim();
+        if (title != null && title.isNotEmpty) {
+          album['title'] = '$titlePrefix: $title';
+        }
+      }
+      out.add(album);
+    }
+    return out;
+  }
+
   Future<void> _loadAlbums() async {
     setState(() {
       _loadingAlbums = true;
       _error = null;
-      _albums.clear();
     });
+
+    final cached = await FamilyChatLocalCache.readFamilyAlbums();
+    if (!mounted) return;
+    if (cached != null && _albums.isEmpty) {
+      final cachedAlbums = _markAlbums(
+        galleryAlbumMapsOf(cached['albums']),
+        source: 'family',
+      );
+      setState(() {
+        _albums
+          ..clear()
+          ..addAll(cachedAlbums.where((a) => !_albumExcluded(a)));
+        _loadingAlbums = false;
+      });
+    }
+
+    final repo = ref.read(familychatRepositoryProvider);
+    final merged = <Map<String, dynamic>>[];
+    Object? lastError;
+
     try {
-      final repo = ref.read(familychatRepositoryProvider);
-      final memberData = await repo.memberGalleryAlbums(widget.userId);
-      final memberAlbums = galleryAlbumMapsOf(memberData['albums']);
-      for (final album in memberAlbums) {
-        album['_pickerSource'] = 'member';
+      final familyData = await repo.familyGalleryAlbums();
+      await FamilyChatLocalCache.saveFamilyAlbums(familyData);
+      merged.addAll(
+        _markAlbums(
+          galleryAlbumMapsOf(familyData['albums']),
+          source: 'family',
+        ),
+      );
+    } catch (e) {
+      lastError = e;
+      try {
+        final memberData = await repo.memberGalleryAlbums(widget.userId);
+        merged.addAll(
+          _markAlbums(
+            galleryAlbumMapsOf(memberData['albums']),
+            source: 'member',
+          ),
+        );
+      } catch (memberError) {
+        lastError = memberError;
       }
+    }
 
-      final merged = <Map<String, dynamic>>[...memberAlbums];
-
-      final childId = widget.childId;
-      if (childId != null) {
+    final childId = widget.childId;
+    if (childId != null) {
+      try {
         final childAlbums = await repo.childGalleryAlbums(childId);
         final childLabel = (widget.childName?.trim().isNotEmpty == true)
             ? widget.childName!.trim()
             : 'Ребёнок';
-        for (final album in childAlbums) {
-          album['_pickerSource'] = 'child';
-          album['_pickerChildId'] = childId;
-          final title = album['title']?.toString().trim();
-          if (title != null && title.isNotEmpty) {
-            album['title'] = '$childLabel: $title';
-          }
-        }
-        merged.addAll(childAlbums);
+        merged.addAll(
+          _markAlbums(
+            childAlbums,
+            source: 'child',
+            childId: childId,
+            titlePrefix: childLabel,
+          ),
+        );
+      } catch (e) {
+        lastError ??= e;
       }
+    }
 
-      if (!mounted) return;
-      setState(() {
+    if (!mounted) return;
+    final visible = merged.where((a) => !_albumExcluded(a)).toList();
+    setState(() {
+      if (visible.isNotEmpty) {
         _albums
           ..clear()
-          ..addAll(merged.where((a) => !_albumExcluded(a)));
-        _loadingAlbums = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _loadingAlbums = false;
-        _error = e.toString();
-      });
-    }
+          ..addAll(visible);
+        _error = null;
+      } else if (_albums.isEmpty) {
+        _error = lastError == null
+            ? null
+            : _loadErrorText(lastError);
+      }
+      _loadingAlbums = false;
+    });
   }
 
   Future<void> _openAlbumView(Map<String, dynamic> album) async {
@@ -212,12 +282,18 @@ class _AttachFamilyGalleryTabState
               .cast<Map<String, dynamic>>();
         }
       } else {
-        final data = await repo.memberGalleryPhotos(
-          widget.userId,
-          albumId,
-          offset: reset ? 0 : _offset,
-          limit: _pageSize,
-        );
+        final data = _albumSource(album) == 'family' || isDiaryAlbumId(albumId)
+            ? await repo.familyGalleryPhotos(
+                albumId,
+                offset: reset ? 0 : _offset,
+                limit: _pageSize,
+              )
+            : await repo.memberGalleryPhotos(
+                widget.userId,
+                albumId,
+                offset: reset ? 0 : _offset,
+                limit: _pageSize,
+              );
         batch = (data['photos'] as List<dynamic>? ?? [])
             .cast<Map<String, dynamic>>();
         if (reset) {
@@ -262,7 +338,7 @@ class _AttachFamilyGalleryTabState
       setState(() {
         _loadingPhotos = false;
         _loadingMore = false;
-        _error = e.toString();
+        _error = _loadErrorText(e);
       });
     }
   }
@@ -362,6 +438,22 @@ class _AttachFamilyGalleryTabState
     return value == true || value == 1 || value == 'true';
   }
 
+  Widget _buildErrorState(String message, {required VoidCallback onRetry}) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(message, textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            FilledButton(onPressed: onRetry, child: const Text('Повторить')),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildAlbumTile(Map<String, dynamic> album) {
     final title = album['title']?.toString().trim();
     final count = album['count'] ?? album['photos_count'];
@@ -369,7 +461,11 @@ class _AttachFamilyGalleryTabState
       leading: const Icon(Icons.photo_album_outlined),
       title: Text(title?.isNotEmpty == true ? title! : 'Альбом'),
       subtitle: Text(
-        _albumSource(album) == 'child' ? 'Галерея ребёнка' : 'Моя галерея',
+        switch (_albumSource(album)) {
+          'child' => 'Галерея ребёнка',
+          'family' => 'Галерея семьи',
+          _ => 'Моя галерея',
+        },
       ),
       trailing: count == null ? null : Text('$count'),
       onTap: () => _openAlbumView(album),
@@ -382,8 +478,8 @@ class _AttachFamilyGalleryTabState
         child: Center(child: CircularProgressIndicator()),
       );
     }
-    if (_error != null) {
-      return Center(child: Text(_error!));
+    if (_error != null && _albums.isEmpty) {
+      return _buildErrorState(_error!, onRetry: _loadAlbums);
     }
     if (_albums.isEmpty) {
       return const Center(child: Text('Нет доступных альбомов'));
@@ -402,8 +498,11 @@ class _AttachFamilyGalleryTabState
         child: Center(child: CircularProgressIndicator()),
       );
     }
-    if (_error != null) {
-      return Center(child: Text(_error!));
+    if (_error != null && _photos.isEmpty) {
+      return _buildErrorState(
+        _error!,
+        onRetry: () => _loadPhotos(reset: true),
+      );
     }
     if (_photos.isEmpty) {
       return const Center(child: Text('В альбоме нет фото'));

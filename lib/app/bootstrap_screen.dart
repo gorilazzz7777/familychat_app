@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/cache/familychat_local_cache.dart';
+import '../core/feed/feed_post_outbox.dart';
 import '../core/platform/app_foreground.dart';
 import '../core/providers/app_providers.dart';
 import '../core/impersonation/admin_enter.dart';
@@ -336,7 +337,8 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   }
 
   Future<void> _startSessionServices() async {
-    final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
+    final client = ref.read(apiClientProvider);
+    final token = await client.authRefresher.startWatching();
     if (token != null && token.isNotEmpty) {
       unawaited(FamilyChatRealtime.instance.connect(token));
     }
@@ -344,6 +346,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       client: ref.read(apiClientProvider),
       repository: ref.read(familychatRepositoryProvider),
     ));
+    unawaited(
+      FeedPostOutbox.instance.flush(ref.read(familychatRepositoryProvider)),
+    );
     unawaited(_validatePendingInvitesInBackground());
   }
 
@@ -383,6 +388,24 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
 
     if (_isAuthFailure(statusError)) {
+      final auth = ref.read(authRepositoryProvider);
+      if (await auth.tryDeviceAuth()) {
+        try {
+          st = await ref.read(familychatRepositoryProvider).status();
+        } catch (_) {
+          st = null;
+        }
+        if (st != null && mounted) {
+          await _startSessionServices();
+          if (!mounted) return;
+          if (background) {
+            _applyFreshStatus(st);
+          } else {
+            _enterWithStatus(st, fromCache: false);
+          }
+          return;
+        }
+      }
       await ref.read(apiClientProvider).tokenStorage.clear();
       await FamilyChatLocalCache.clearStatus();
       await _showLogin();

@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 
 import '../../../core/config/env.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/session/auth_session_bus.dart';
 import '../../../core/storage/device_id_storage.dart';
 import '../../../core/storage/guest_session_storage.dart';
 
@@ -13,10 +14,13 @@ class AuthRepository {
   Future<bool> hasSession() => _client.tokenStorage.hasRefreshCredential();
 
   Future<void> _saveAuthTokens(Map<String, dynamic> data) async {
+    final access = data['access'] as String;
     await _client.tokenStorage.saveTokens(
-      access: data['access'] as String,
+      access: access,
       refresh: data['refresh'] as String,
     );
+    _client.authRefresher.armFromAccess(access);
+    AuthSessionBus.instance.emitAccessRefreshed(access);
   }
 
   Future<void> guestLogin() async {
@@ -46,7 +50,7 @@ class AuthRepository {
     }
   }
 
-  /// Восстановить сессию: refresh, иначе device-auth, иначе новый guest.
+  /// Восстановить сессию: refresh уже есть — ок; иначе device-auth, иначе guest.
   Future<bool> ensureSession() async {
     if (await hasSession()) return true;
     if (await tryDeviceAuth()) {
@@ -158,6 +162,7 @@ class AuthRepository {
       await DeviceIdStorage.regenerate();
     }
     await _client.tokenStorage.clear();
+    _client.authRefresher.cancel();
   }
 
   Future<void> deleteAccount({required bool confirmDeletion}) async {

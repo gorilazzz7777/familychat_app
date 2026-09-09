@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/chat_location_utils.dart';
+import '../../../../../core/media/media_upload_limits.dart';
 import 'attach_family_gallery_tab.dart';
 import 'attach_file_tab.dart';
 import 'attach_gallery_tab.dart';
@@ -36,6 +37,7 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
     this.excludeFamilyAlbumId,
     this.style = ChatAttachSheetStyle.chat,
     this.onRecordVideoCircle,
+    this.maxSelection = kMaxMediaUploadCount,
   });
 
   final Future<void> Function(
@@ -51,6 +53,7 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
   final String? excludeFamilyAlbumId;
   final ChatAttachSheetStyle style;
   final VoidCallback? onRecordVideoCircle;
+  final int maxSelection;
 
   /// Sentinel: закрыть шторку и открыть запись кружка после release камеры.
   static const videoCircleResult = 'video_circle';
@@ -70,6 +73,7 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
     String? excludeFamilyAlbumId,
     ChatAttachSheetStyle style = ChatAttachSheetStyle.chat,
     VoidCallback? onRecordVideoCircle,
+    int maxSelection = kMaxMediaUploadCount,
   }) async {
     assert(
       style != ChatAttachSheetStyle.chat || onSendLocation != null,
@@ -80,6 +84,7 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
           (onAddFromFamilyGallery != null && familyGalleryUserId != null),
       'ChatAttachSheetStyle.albumMedia requires family gallery callbacks',
     );
+    if (maxSelection <= 0) return;
     final result = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
@@ -95,6 +100,7 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
         excludeFamilyAttachmentIds: excludeFamilyAttachmentIds,
         excludeFamilyAlbumId: excludeFamilyAlbumId,
         style: style,
+        maxSelection: maxSelection,
         // Не открываем кружок сразу: live-preview шторки держит CameraController.
         onRecordVideoCircle: onRecordVideoCircle == null
             ? null
@@ -162,10 +168,11 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
   }
 
   void _setSelected(List<ChatAttachSelectionItem> items) {
+    final capped = _capMediaSelection(items);
     setState(() {
       _selected
         ..clear()
-        ..addAll(items);
+        ..addAll(capped);
     });
   }
 
@@ -174,14 +181,48 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
   }
 
   void _setFamilySelected(Set<int> ids) {
+    final capped = _capIdSelection(ids);
     if (_milestoneAlbumFlow) {
-      MilestonePhotoAddTrace.ids('sheet.selection', 'familySelected', ids);
+      MilestonePhotoAddTrace.ids('sheet.selection', 'familySelected', capped);
     }
     setState(() {
       _familySelected
         ..clear()
-        ..addAll(ids);
+        ..addAll(capped);
     });
+  }
+
+  List<ChatAttachSelectionItem> _capMediaSelection(
+    List<ChatAttachSelectionItem> items,
+  ) {
+    final max = widget.maxSelection;
+    if (items.length <= max) return items;
+    _showSelectionLimit(max);
+    return items.take(max).toList();
+  }
+
+  Set<int> _capIdSelection(Set<int> ids) {
+    final max = widget.maxSelection;
+    if (ids.length <= max) return ids;
+    _showSelectionLimit(max);
+    final keep = <int>{};
+    for (final id in _familySelected) {
+      if (ids.contains(id)) keep.add(id);
+      if (keep.length >= max) return keep;
+    }
+    for (final id in ids) {
+      keep.add(id);
+      if (keep.length >= max) break;
+    }
+    return keep;
+  }
+
+  void _showSelectionLimit(int max) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(
+      SnackBar(content: Text('Можно выбрать не более $max фото.')),
+    );
   }
 
   Future<void> _sendSelected() async {
@@ -366,6 +407,7 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
                     child: _mode == ChatAttachMode.familyGallery
                         ? _FamilySelectionBar(
                             count: _familySelected.length,
+                            maxCount: widget.maxSelection,
                             sending: _sending,
                             onSend: _sendFamilySelected,
                           )
@@ -403,11 +445,13 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
 class _FamilySelectionBar extends StatelessWidget {
   const _FamilySelectionBar({
     required this.count,
+    required this.maxCount,
     required this.sending,
     required this.onSend,
   });
 
   final int count;
+  final int maxCount;
   final bool sending;
   final VoidCallback onSend;
 
@@ -421,7 +465,7 @@ class _FamilySelectionBar extends StatelessWidget {
           children: [
             Expanded(
               child: Text(
-                'Выбрано: $count',
+                'Выбрано: $count из $maxCount',
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),

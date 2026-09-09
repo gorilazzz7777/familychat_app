@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../core/feed/feed_post_outbox.dart';
 import '../core/call/callkit_incoming_service.dart';
 import '../core/notifications/familychat_notifications.dart';
 import '../core/platform/web_visibility_presence.dart';
@@ -302,6 +303,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     FamilyChatPresenceService.onLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
+      unawaited(ref.read(apiClientProvider).authRefresher.startWatching());
       IncomingCallCoordinator.instance.flushPendingIfAny();
       unawaited(CallKitIncomingService.reconcileActiveCalls());
       unawaited(FamilyChatNotifications.consumeLaunchNotification());
@@ -324,6 +326,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       );
       unawaited(
         ChatOfflineSync.instance.run(ref.read(familychatRepositoryProvider)),
+      );
+      unawaited(
+        FeedPostOutbox.instance.flush(ref.read(familychatRepositoryProvider)),
       );
       unawaited(ChatScheduledSendService.instance.dispatchDue());
       final userId = _currentUserId;
@@ -630,8 +635,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         final found = <int, Map<String, dynamic>>{};
         var offset = 0;
         while (found.length < wanted.length && offset < 600) {
-          final data = await repo.memberGalleryPickablePhotos(
-            userId,
+          final data = await repo.familyGalleryPhotos(
+            'all',
             offset: offset,
             limit: 60,
           );

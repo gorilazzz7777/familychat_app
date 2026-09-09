@@ -5,18 +5,15 @@ import 'package:flutter/foundation.dart';
 
 import '../config/env.dart';
 import '../client/app_client.dart';
-import '../session/auth_session_bus.dart';
 import '../storage/token_storage.dart';
+import 'auth_token_refresher.dart';
 import 'dio_jwt_error.dart';
-import 'jwt_access_token.dart';
 import 'native_http_adapter.dart';
 
-const String _kAuthRefreshPath = 'auth/refresh/';
-
 bool _isAnonymousApiAuthPath(String path) {
-  return path.contains(_kAuthRefreshPath) ||
+  return path.contains(kAuthRefreshPath) ||
       path.contains('auth/guest/') ||
-      path.contains('auth/device-auth/') ||
+      path.contains(kAuthDeviceAuthPath) ||
       path.contains('auth/yandex/session/consume/') ||
       path.contains('auth/vk/session/consume/') ||
       path.contains('auth/google/session/consume/');
@@ -48,15 +45,21 @@ class ApiClient {
         dio = dio ?? _newDio(),
         sendDio = sendDio ?? dio ?? _newDio() {
     final storage = this.tokenStorage;
+    final refreshDio = _newDio();
+    configureNativeHttpAdapter(refreshDio);
     configureNativeHttpAdapter(this.dio);
+    authRefresher = AuthTokenRefresher(
+      tokenStorage: storage,
+      refreshDio: refreshDio,
+    );
     this.dio.interceptors.add(
-          _AuthInterceptor(storage, this.dio, this.dio),
+          _AuthInterceptor(authRefresher, this.dio),
         );
 
     if (!identical(this.dio, this.sendDio)) {
       configureNativeHttpAdapter(this.sendDio);
       this.sendDio.interceptors.add(
-            _AuthInterceptor(storage, this.sendDio, this.sendDio),
+            _AuthInterceptor(authRefresher, this.sendDio),
           );
     }
 
@@ -74,109 +77,37 @@ class ApiClient {
 
   /// Dedicated connection pool for chat send / outbox mutations.
   final Dio sendDio;
+
+  late final AuthTokenRefresher authRefresher;
+
+  /// Превентивный refresh (таймер / возврат в приложение / перед пачкой запросов).
+  Future<String?> ensureFreshAccess() => authRefresher.ensureAccess();
 }
 
 class _AuthInterceptor extends Interceptor {
-  _AuthInterceptor(this._tokenStorage, this._refreshDio, this._retryDio);
+  _AuthInterceptor(this._refresher, this._retryDio);
 
-  final TokenStorage _tokenStorage;
-  final Dio _refreshDio;
+  final AuthTokenRefresher _refresher;
   final Dio _retryDio;
 
-  static const _kJwtRefreshRetried = '__jwt_refresh_retried';
-  static Future<String?>? _refreshFuture;
-
-  Future<void> _invalidateSession() async {
-    await _tokenStorage.clear();
-    AuthSessionBus.instance.emitSessionInvalidated();
-  }
-
-  Future<String?> _applyRefreshResponse(Map<String, dynamic>? data) async {
-    if (data == null) return null;
-    final access = data['access'] as String?;
-    if (access == null || access.isEmpty) return null;
-    final refresh = data['refresh'] as String?;
-    if (refresh != null && refresh.isNotEmpty) {
-      await _tokenStorage.saveTokens(access: access, refresh: refresh);
-    } else {
-      await _tokenStorage.saveAccess(access);
-    }
-    AuthSessionBus.instance.emitAccessRefreshed(access);
-    return access;
-  }
-
-  Future<String?> _performRefresh(String refreshToken) async {
-    try {
-      final response = await _refreshDio.post<Map<String, dynamic>>(
-        _kAuthRefreshPath,
-        data: {'refresh': refreshToken},
-      );
-      return _applyRefreshResponse(response.data);
-    } on DioException catch (e) {
-      final code = e.response?.statusCode;
-      if (code == 401 || code == 403) {
-        throw e;
-      }
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Single in-flight refresh shared by all Dio instances / parallel requests.
-  Future<String?> _coordinatedRefresh(String refreshToken) {
-    final existing = _refreshFuture;
-    if (existing != null) return existing;
-
-    late final Future<String?> future;
-    future = _performRefresh(refreshToken).whenComplete(() {
-      if (identical(_refreshFuture, future)) {
-        _refreshFuture = null;
-      }
-    });
-    _refreshFuture = future;
-    return future;
-  }
-
-  Future<String?> _accessTokenForRequest() async {
-    final inFlight = _refreshFuture;
-    if (inFlight != null) {
-      try {
-        await inFlight;
-      } catch (_) {}
-    }
-
-    var token = await _tokenStorage.readAccess();
-    if (token == null || token.isEmpty) return null;
-    if (!jwtAccessTokenIsExpired(token)) return token;
-
-    final refresh = await _tokenStorage.readRefresh();
-    if (refresh == null || refresh.isEmpty) {
-      await _invalidateSession();
-      return token;
-    }
-
-    try {
-      final refreshed = await _coordinatedRefresh(refresh);
-      if (refreshed != null && refreshed.isNotEmpty) {
-        return refreshed;
-      }
-    } on DioException catch (e) {
-      final code = e.response?.statusCode;
-      if (code == 401 || code == 403) {
-        await _invalidateSession();
-      }
-    }
-    return await _tokenStorage.readAccess();
-  }
+  static const _kAuthRestoreRetried = '__auth_restore_retried';
 
   @override
   void onRequest(
       RequestOptions options, RequestInterceptorHandler handler) async {
     if (!_isAnonymousApiAuthPath(options.path)) {
-      final token = await _accessTokenForRequest();
+      final token = await _refresher.ensureAccess();
       if (token != null && token.isNotEmpty) {
         options.headers['Authorization'] = 'Bearer $token';
+      } else {
+        return handler.reject(
+          DioException(
+            requestOptions: options,
+            type: DioExceptionType.unknown,
+            error: kAuthRestoreFailed,
+            message: 'Нужно войти заново.',
+          ),
+        );
       }
     }
     handler.next(options);
@@ -189,36 +120,41 @@ class _AuthInterceptor extends Interceptor {
       return handler.next(err);
     }
 
-    final status = err.response?.statusCode;
     final request = err.requestOptions;
-    final tryRefresh = (status == 401 || dioErrorIsExpiredJwtAccess(err)) &&
-        request.extra[_kJwtRefreshRetried] != true;
-
-    if (!tryRefresh) {
+    final alreadyTried = request.extra[_kAuthRestoreRetried] == true;
+    if (alreadyTried || !dioErrorNeedsAuthRestore(err)) {
       return handler.next(err);
     }
 
-    final refresh = await _tokenStorage.readRefresh();
-    if (refresh == null || refresh.isEmpty) {
-      await _invalidateSession();
-      return handler.next(err);
+    final access = await _refresher.ensureAccess(force: true);
+    if (access == null || access.isEmpty) {
+      return handler.next(
+        DioException(
+          requestOptions: request,
+          type: DioExceptionType.unknown,
+          error: kAuthRestoreFailed,
+          message: 'Нужно войти заново.',
+        ),
+      );
     }
 
+    request.headers['Authorization'] = 'Bearer $access';
+    request.extra[_kAuthRestoreRetried] = true;
     try {
-      final access = await _coordinatedRefresh(refresh);
-      if (access == null || access.isEmpty) {
-        return handler.next(err);
-      }
-      request.headers['Authorization'] = 'Bearer $access';
-      request.extra[_kJwtRefreshRetried] = true;
       final response = await _retryDio.fetch<dynamic>(request);
       return handler.resolve(response);
-    } on DioException catch (re) {
-      final code = re.response?.statusCode;
-      if (code == 401 || code == 403) {
-        await _invalidateSession();
+    } on DioException catch (retryErr) {
+      if (dioErrorNeedsAuthRestore(retryErr)) {
+        return handler.next(
+          DioException(
+            requestOptions: request,
+            type: DioExceptionType.unknown,
+            error: kAuthRestoreFailed,
+            message: 'Нужно войти заново.',
+          ),
+        );
       }
-      return handler.next(err);
+      return handler.next(retryErr);
     } catch (_) {
       return handler.next(err);
     }

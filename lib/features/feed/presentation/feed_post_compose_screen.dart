@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
@@ -89,6 +90,17 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       userId = _userId;
     }
     if (userId == null || !mounted) return;
+    final remaining = FeedPostUploader.maxPhotos - _photos.length;
+    if (remaining <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Можно выбрать не более ${FeedPostUploader.maxPhotos} фото.',
+          ),
+        ),
+      );
+      return;
+    }
 
     await ChatAttachSheet.show(
       context,
@@ -96,11 +108,12 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       familyGalleryUserId: userId,
       familyGalleryChildId: _childTarget?.childId,
       familyGalleryChildName: _childTarget?.displayName,
+      maxSelection: remaining,
       onSendMedia: (caption, items) async {
         await _appendAttachItems(items);
       },
       onAddFromFamilyGallery: (ids) async {
-        await _appendFromFamilyGallery(userId!, ids);
+        await _appendFromFamilyGallery(ids);
       },
     );
   }
@@ -132,18 +145,15 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
     _appendPhotos(photos);
   }
 
-  Future<void> _appendFromFamilyGallery(
-    int userId,
-    List<int> attachmentIds,
-  ) async {
+  Future<void> _appendFromFamilyGallery(List<int> attachmentIds) async {
     if (attachmentIds.isEmpty || !mounted) return;
     final repo = ref.read(familychatRepositoryProvider);
     final wanted = attachmentIds.toSet();
     final found = <int, Map<String, dynamic>>{};
     var offset = 0;
     while (found.length < wanted.length && offset < 600) {
-      final data = await repo.memberGalleryPickablePhotos(
-        userId,
+      final data = await repo.familyGalleryPhotos(
+        'all',
         offset: offset,
         limit: 60,
       );
@@ -272,15 +282,21 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
         ..addAll(snapshot);
     });
 
+    final batchId = createFeedPhotoBatchId();
     final optimistic = FeedPostUploader.buildOptimisticEvent(
       photos: snapshot,
       caption: caption,
       actor: actor,
+      batchId: batchId,
       childId: child?.childId,
       childName: child?.displayName,
       childAvatarUrl: child?.avatarUrl,
       childGender: child?.gender,
     );
+
+    final optimisticId = optimistic['id'] is int
+        ? optimistic['id'] as int
+        : int.tryParse('${optimistic['id']}');
 
     FeedPostUploader.publishInBackground(
       repo: ref.read(familychatRepositoryProvider),
@@ -288,6 +304,8 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       caption: caption,
       shareToDiary: child == null ? ref.read(shareToDiaryPrefsProvider) : false,
       childId: child?.childId,
+      optimisticId: optimisticId,
+      batchId: batchId,
     );
 
     if (!mounted) return;

@@ -12,6 +12,7 @@ import '../../../core/media/gallery_media_export.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/gallery_photo_date.dart';
 import '../../../core/media/media_incoming_sync.dart';
+import '../../../core/media/media_upload_limits.dart';
 import '../../../core/media/image_upload_pipeline.dart';
 import '../../../core/network/offline_ui.dart';
 import '../../../core/widgets/app_skeletons.dart';
@@ -95,7 +96,7 @@ class _ProfileGalleryAlbumScreenState
   bool _bulkActionRunning = false;
   int? _currentUserId;
   static const _pageSize = 60;
-  static const _maxUploadCount = 500;
+  static const _maxUploadCount = kMaxAlbumUploadCount;
   static const _galleryAddChunkSize = 50;
   static const _uploadPollInterval = Duration(seconds: 3);
 
@@ -852,6 +853,7 @@ class _ProfileGalleryAlbumScreenState
       style: ChatAttachSheetStyle.albumMedia,
       familyGalleryUserId: widget.userId,
       excludeFamilyAttachmentIds: _currentPhotoIds,
+      maxSelection: _maxUploadCount,
       onSendMedia: (caption, items) async {
         await _uploadAttachItems(albumPk: pk, items: items);
       },

@@ -281,6 +281,7 @@ class _BirthdayScheduledCongratulationDialogState
     await ChatAttachSheet.show(
       context,
       style: ChatAttachSheetStyle.phoneMedia,
+      maxSelection: _maxAttachments - _attachments.length,
       onSendMedia: (caption, items) async {
         if (items.isEmpty) return;
         final room = _maxAttachments - _attachments.length;
