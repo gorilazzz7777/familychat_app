@@ -18,7 +18,6 @@ xcuserdata
 
 # Local Mac / Xcode (signing, capabilities) — не коммитить с Windows.
 Podfile.lock
-Runner/Runner.entitlements
 Runner.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 Runner.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 Flutter/App.framework
