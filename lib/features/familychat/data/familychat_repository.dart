@@ -2245,6 +2245,13 @@ class FamilyChatRepository {
     return res.data ?? {};
   }
 
+  Future<Map<String, dynamic>> deleteFeedEvent(int eventId) async {
+    final res = await _dio.delete<Map<String, dynamic>>(
+      'familychat/feed/events/$eventId/',
+    );
+    return res.data ?? {'deleted': true, 'event_id': eventId};
+  }
+
   Future<Map<String, dynamic>> submitAppRating(int stars) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/app-rating/',

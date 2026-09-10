@@ -918,6 +918,13 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             onOpenPhotoBatch: (batchEvent, {initialIndex = 0}) =>
                 _openPhotoBatch(batchEvent, initialIndex: initialIndex),
             onEngagementChanged: () => unawaited(_persistCache()),
+            onDeleted: () {
+              final id = _eventId(event);
+              setState(() {
+                _events.removeWhere((e) => _eventId(e) == id);
+              });
+              unawaited(_persistCache());
+            },
             onOpenMedia: (photo) async {
               final status = await ref.read(familychatRepositoryProvider).status();
               final currentUserId =

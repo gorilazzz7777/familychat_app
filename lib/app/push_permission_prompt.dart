@@ -43,7 +43,7 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
         client: ref.read(apiClientProvider),
         repository: ref.read(familychatRepositoryProvider),
       );
-      if (!ok && mounted) {
+      if (!ok && mounted && kDebugMode) {
         final err = PushRegistrationService.lastWebPushError;
         ScaffoldMessenger.maybeOf(context)?.showSnackBar(
           SnackBar(
@@ -127,6 +127,8 @@ class _PushPermissionPromptState extends ConsumerState<PushPermissionPrompt> {
       );
       return;
     }
+    // В релизе не пугаем техническими ошибками FCM/APNs.
+    if (kReleaseMode) return;
     if (result == WebPushRegistrationResult.notConfigured) {
       messenger?.showSnackBar(
         SnackBar(

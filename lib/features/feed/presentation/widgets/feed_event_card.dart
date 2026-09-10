@@ -23,6 +23,7 @@ class FeedEventCard extends ConsumerStatefulWidget {
     this.onOpenMedia,
     this.onOpenPhotoBatch,
     this.onEngagementChanged,
+    this.onDeleted,
   });
 
   final Map<String, dynamic> event;
@@ -31,6 +32,7 @@ class FeedEventCard extends ConsumerStatefulWidget {
   final void Function(Map<String, dynamic> photo)? onOpenMedia;
   final void Function(Map<String, dynamic> event, {int initialIndex})? onOpenPhotoBatch;
   final VoidCallback? onEngagementChanged;
+  final VoidCallback? onDeleted;
 
   @override
   ConsumerState<FeedEventCard> createState() => _FeedEventCardState();
@@ -387,6 +389,77 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     );
   }
 
+  bool get _canDelete => _event['can_delete'] == true;
+
+  Future<void> _openPostMenu() async {
+    if (!_canDelete || _eventId == null) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: Icon(
+                  Icons.delete_outline,
+                  color: Theme.of(ctx).colorScheme.error,
+                ),
+                title: Text(
+                  'Удалить',
+                  style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+                ),
+                onTap: () => Navigator.pop(ctx, 'delete'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || choice != 'delete') return;
+    await _confirmAndDeletePost();
+  }
+
+  Future<void> _confirmAndDeletePost() async {
+    final eventId = _eventId;
+    if (eventId == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить пост?'),
+        content: const Text(
+          'Пост и все фото из него будут удалены из ленты и из всех альбомов.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(
+              'Удалить',
+              style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ref.read(familychatRepositoryProvider).deleteFeedEvent(eventId);
+      if (!mounted) return;
+      widget.onDeleted?.call();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось удалить пост')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final createdAt = DateTime.tryParse(_event['created_at']?.toString() ?? '');
@@ -483,6 +556,13 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                      if (_canDelete)
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          tooltip: 'Ещё',
+                          icon: const Icon(Icons.more_vert),
+                          onPressed: _openPostMenu,
+                        ),
                     ],
                   ),
                 ),
