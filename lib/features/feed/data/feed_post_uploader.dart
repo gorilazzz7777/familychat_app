@@ -21,6 +21,8 @@ class FeedPostPhoto {
     this.localPath,
     this.thumbnailBytes,
     this.cacheId,
+    this.assetId,
+    this.assetFingerprint,
     this.uploadReady = false,
   });
 
@@ -32,6 +34,8 @@ class FeedPostPhoto {
   final String? localPath;
   final Uint8List? thumbnailBytes;
   final String? cacheId;
+  final String? assetId;
+  final String? assetFingerprint;
 
   /// Уже сжато для upload — повторный prepare можно упростить.
   final bool uploadReady;
@@ -141,6 +145,8 @@ abstract final class FeedPostUploader {
         localPath: photo.localPath,
         thumbnailBytes: thumb,
         cacheId: photo.cacheId,
+        assetId: photo.assetId,
+        assetFingerprint: photo.assetFingerprint,
         uploadReady: false,
       );
     }
@@ -181,6 +187,8 @@ abstract final class FeedPostUploader {
       localPath: photo.localPath,
       thumbnailBytes: thumb,
       cacheId: photo.cacheId,
+      assetId: photo.assetId,
+      assetFingerprint: photo.assetFingerprint,
       uploadReady: true,
     );
   }
@@ -214,6 +222,8 @@ abstract final class FeedPostUploader {
         cacheId: photo.cacheId,
         uploadReady: true,
         localPath: photo.localPath,
+        assetId: photo.assetId,
+        assetFingerprint: photo.assetFingerprint,
       );
     }
     if (photo.uploadReady) {
@@ -226,6 +236,8 @@ abstract final class FeedPostUploader {
         cacheId: photo.cacheId,
         uploadReady: true,
         localPath: photo.localPath,
+        assetId: photo.assetId,
+        assetFingerprint: photo.assetFingerprint,
       );
     }
     final draft = await prepareImageUploadDraft(
@@ -245,6 +257,8 @@ abstract final class FeedPostUploader {
       cacheId: photo.cacheId,
       uploadReady: true,
       localPath: photo.localPath,
+      assetId: photo.assetId,
+      assetFingerprint: photo.assetFingerprint,
     );
   }
 

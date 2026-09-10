@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../../core/media/gallery_media_utils.dart';
+import '../../../core/media/media_local_index.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
@@ -133,10 +134,24 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
           localPath: item.localPath,
           thumbnailBytes: item.thumbnailBytes,
           cacheId: item.id,
+          assetId: item.assetId,
+          assetFingerprint: item.assetFingerprint,
         ),
       );
     }
     if (raw.isEmpty) return;
+    for (final item in items) {
+      if (item.kind != 'image' && item.kind != 'video') continue;
+      unawaited(
+        MediaLocalIndex.rememberPickerAsset(
+          filename: item.filename,
+          kind: item.kind,
+          assetId: item.assetId,
+          fingerprint: item.assetFingerprint,
+          localPath: item.localPath,
+        ),
+      );
+    }
     final photos = await FeedPostUploader.normalizePhotos(raw);
     if (!mounted || photos.isEmpty) return;
     for (final photo in photos) {

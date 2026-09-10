@@ -263,6 +263,50 @@ abstract final class MediaLocalIndex {
         isOutgoing: true,
       ),
     );
+    if (kDebugMode) {
+      debugPrint(
+        '[MediaLocalIndex] saveOutgoing id=$attachmentId asset=$asset '
+        'fp=${fp.isEmpty ? '-' : fp} name=$name',
+      );
+    }
+  }
+
+  /// Запомнить ассет телефона сразу при выборе (ещё до server attachment id).
+  static Future<void> rememberPickerAsset({
+    required String filename,
+    String kind = 'image',
+    String? assetId,
+    String? fingerprint,
+    String? localPath,
+  }) async {
+    final asset = assetId?.trim() ?? '';
+    final fp = fingerprint?.trim() ?? '';
+    final name = filename.trim();
+    final path = localPath?.trim() ?? '';
+    if (asset.isEmpty && fp.isEmpty && name.isEmpty) return;
+    final key = asset.isNotEmpty
+        ? 'asset:$asset'
+        : (keyForFilename(name).isNotEmpty
+            ? keyForFilename(name)
+            : 'fp:${fp.isEmpty ? path : fp}');
+    if (key.isEmpty) return;
+    await upsert(
+      MediaLocalRecord(
+        key: key,
+        path: path.isEmpty ? null : path,
+        assetId: asset.isEmpty ? null : asset,
+        fingerprint: fp.isEmpty ? null : fp,
+        kind: kind,
+        filename: name,
+        isOutgoing: true,
+      ),
+    );
+    if (kDebugMode) {
+      debugPrint(
+        '[MediaLocalIndex] rememberPicker asset=$asset fp=${fp.isEmpty ? '-' : fp} '
+        'name=$name key=$key',
+      );
+    }
   }
 
   static Future<void> markSkipPhoneAlbum(String key) async {

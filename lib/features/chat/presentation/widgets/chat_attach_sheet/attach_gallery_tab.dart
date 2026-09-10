@@ -74,6 +74,13 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     if (!mounted) return;
     var hints = MediaLocalIndex.knownHints();
     setState(() => _knownHints = hints);
+    if (kDebugMode) {
+      debugPrint(
+        '[AttachGallery] knownHints index '
+        'assets=${hints.assetIds.length} fp=${hints.fingerprints.length} '
+        'names=${hints.filenames.length}',
+      );
+    }
     if (kIsWeb) return;
     final album = await GalleryMediaExport.appAlbumKnownHints();
     if (!mounted) return;
@@ -85,6 +92,13 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       ),
     );
     setState(() => _knownHints = hints);
+    if (kDebugMode) {
+      debugPrint(
+        '[AttachGallery] knownHints+album '
+        'assets=${hints.assetIds.length} fp=${hints.fingerprints.length} '
+        'names=${hints.filenames.length}',
+      );
+    }
   }
 
   @override
@@ -261,9 +275,11 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   Future<List<AssetPathEntity>> _loadAllAlbums() async {
     final filter = FilterOptionGroup(
       imageOption: const FilterOption(
+        needTitle: true,
         sizeConstraint: SizeConstraint(ignoreSize: true),
       ),
       videoOption: const FilterOption(
+        needTitle: true,
         sizeConstraint: SizeConstraint(ignoreSize: true),
       ),
       orders: [
@@ -399,6 +415,15 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
         _hasMore = next.length >= _pageSize;
         _loadingMore = false;
       });
+      if (kDebugMode &&
+          widget.highlightKnownAssets &&
+          _assets.length <= next.length) {
+        for (final asset in next.take(12)) {
+          debugPrint(
+            '[AttachGallery] match ${_knownHints.debugMatchReason(asset)}',
+          );
+        }
+      }
     } catch (_) {
       if (mounted) setState(() => _loadingMore = false);
     }
@@ -495,6 +520,17 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       assetFingerprint: galleryAssetFingerprint(asset),
       kind: kind,
     );
+    if (widget.highlightKnownAssets) {
+      unawaited(
+        MediaLocalIndex.rememberPickerAsset(
+          filename: filename,
+          kind: kind,
+          assetId: asset.id,
+          fingerprint: item.assetFingerprint,
+          localPath: filePath,
+        ),
+      );
+    }
     widget.onSelectedChanged([...widget.selected, item]);
   }
 

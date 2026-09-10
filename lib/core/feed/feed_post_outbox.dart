@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../app/shell_refresh.dart';
 import '../../features/familychat/data/familychat_repository.dart';
 import '../../features/feed/data/feed_post_uploader.dart';
+import '../media/gallery_photo_local_state.dart';
 import '../media/media_upload_foreground.dart';
 import 'feed_post_local_store.dart';
 
@@ -57,6 +58,8 @@ class FeedPostOutbox {
           localPath: photo.localPath,
           storagePath: path,
           photoExif: photo.photoExif,
+          assetId: photo.assetId,
+          assetFingerprint: photo.assetFingerprint,
         ),
       );
     }
@@ -166,6 +169,16 @@ class FeedPostOutbox {
           uploaded[photo.cacheId] = id;
           current = current.copyWith(uploadedAttachmentIds: uploaded);
           await _upsert(current);
+          unawaited(
+            GalleryPhotoLocalState.persistOutgoing(
+              uploaded: res,
+              filename: photo.filename,
+              kind: photo.kind,
+              localPath: photo.localPath,
+              assetId: photo.assetId,
+              assetFingerprint: photo.assetFingerprint,
+            ),
+          );
         }
       }
 
@@ -265,6 +278,8 @@ class FeedPostOutboxPhoto {
     this.localPath,
     this.storagePath,
     this.photoExif,
+    this.assetId,
+    this.assetFingerprint,
   });
 
   final String cacheId;
@@ -274,6 +289,8 @@ class FeedPostOutboxPhoto {
   final String? localPath;
   final String? storagePath;
   final Map<String, dynamic>? photoExif;
+  final String? assetId;
+  final String? assetFingerprint;
 
   Map<String, dynamic> toJson() => {
         'cacheId': cacheId,
@@ -283,6 +300,8 @@ class FeedPostOutboxPhoto {
         if (localPath != null) 'localPath': localPath,
         if (storagePath != null) 'storagePath': storagePath,
         if (photoExif != null) 'photoExif': photoExif,
+        if (assetId != null) 'assetId': assetId,
+        if (assetFingerprint != null) 'assetFingerprint': assetFingerprint,
       };
 
   factory FeedPostOutboxPhoto.fromJson(Map<String, dynamic> json) {
@@ -296,6 +315,8 @@ class FeedPostOutboxPhoto {
       photoExif: json['photoExif'] is Map
           ? Map<String, dynamic>.from(json['photoExif'] as Map)
           : null,
+      assetId: json['assetId']?.toString(),
+      assetFingerprint: json['assetFingerprint']?.toString(),
     );
   }
 }
