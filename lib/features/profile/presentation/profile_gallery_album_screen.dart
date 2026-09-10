@@ -824,6 +824,7 @@ class _ProfileGalleryAlbumScreenState
           kind: item.kind,
           localPath: item.localPath,
           assetId: item.assetId,
+          assetFingerprint: item.assetFingerprint,
           thumbnailBytes: item.thumbnailBytes ?? preview,
           optimisticKey: key,
         ),

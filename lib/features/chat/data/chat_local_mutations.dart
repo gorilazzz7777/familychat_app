@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/notifications/chat_push_thread_preview.dart';
+import 'chat_hub_last_message.dart';
 import 'chat_message_preview.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_unread_providers.dart';
@@ -131,5 +132,10 @@ abstract final class ChatLocalMutations {
     if (!ChatLocalStore.isSupported) return;
     if (messageIds.isEmpty) return;
     await ChatLocalStore.instance.deleteMessages(threadId, messageIds);
+    await ChatHubLastMessage.recompute(threadId);
+  }
+
+  static Future<void> recomputeThreadLastMessage(int threadId) {
+    return ChatHubLastMessage.recompute(threadId);
   }
 }

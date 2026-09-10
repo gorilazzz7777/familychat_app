@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../familychat/data/familychat_repository.dart';
+import 'chat_hub_last_message.dart';
 import 'chat_local_mutations.dart';
 import 'chat_media_upload_tracker.dart';
 import 'chat_realtime_utils.dart';
@@ -545,6 +546,7 @@ class ChatOfflineOutbox {
             await cancelMessage(threadId: threadId, tempMessageId: tempId);
             if (ChatLocalStore.isSupported) {
               await ChatLocalStore.instance.deleteMessages(threadId, [tempId]);
+              await ChatHubLastMessage.recompute(threadId);
             }
             await _removeItemById(itemId);
             ChatMediaUploadTracker.shared?.complete(tempId);
@@ -911,6 +913,7 @@ class ChatOfflineOutbox {
     final deleted = await repo.deleteMessages(threadId, ids);
     if (ChatLocalStore.isSupported) {
       await ChatLocalStore.instance.deleteMessages(threadId, deleted);
+      await ChatHubLastMessage.recompute(threadId);
     }
     clearMessagesPendingRemoval(threadId, deleted);
     return ChatOutboxDelivery(
@@ -929,6 +932,7 @@ class ChatOfflineOutbox {
     final hidden = await repo.hideMessagesForMe(threadId, ids);
     if (ChatLocalStore.isSupported) {
       await ChatLocalStore.instance.deleteMessages(threadId, hidden);
+      await ChatHubLastMessage.recompute(threadId);
     }
     clearMessagesPendingRemoval(threadId, hidden);
     return ChatOutboxDelivery(

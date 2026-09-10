@@ -95,6 +95,37 @@ String chatMessagePreviewText(Map<String, dynamic>? message) {
   return _genericMediaPreviewLabel(atts.length);
 }
 
+/// Whether hub sync should keep a local tip over the HTTP `last_message`.
+///
+/// Pending optimistic sends win only while the row still exists and the outbox
+/// still queues them. Confirmed local tips may win briefly when realtime is
+/// ahead of HTTP, but only while the message is still in SQLite, not
+/// tombstoned, and freshly created — otherwise stale/deleted previews ("ghost"
+/// list rows) stick forever across refresh.
+bool chatShouldKeepLocalHubLast({
+  required Map<String, dynamic>? localLast,
+  required int? serverLastId,
+  required bool localMessageExists,
+  required bool pendingRemoval,
+  required bool pendingStillQueued,
+  DateTime? now,
+  Duration freshWindow = const Duration(minutes: 5),
+}) {
+  if (localLast == null) return false;
+  final localId = chatAsInt(localLast['id']);
+  if (chatMessageIsPending(localLast)) {
+    return localMessageExists && !pendingRemoval && pendingStillQueued;
+  }
+  if (localId == null || localId <= 0) return false;
+  if (pendingRemoval || !localMessageExists) return false;
+  if (serverLastId != null && localId <= serverLastId) return false;
+  final created = DateTime.tryParse(localLast['created_at']?.toString() ?? '');
+  if (created == null) return false;
+  final clock = now ?? DateTime.now().toUtc();
+  final age = clock.difference(created.toUtc());
+  return !age.isNegative && age <= freshWindow;
+}
+
 /// Hub `last_message` often omits attachments; keep the richer local copy.
 Map<String, dynamic> chatPreferRicherLastMessage(
   Map<String, dynamic>? server,

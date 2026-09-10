@@ -163,6 +163,7 @@ abstract final class GalleryPhotoLocalState {
     required String kind,
     String? localPath,
     String? assetId,
+    String? assetFingerprint,
     Uint8List? previewBytes,
   }) async {
     final id = photoId(uploaded);
@@ -170,13 +171,15 @@ abstract final class GalleryPhotoLocalState {
 
     final path = localPath?.trim() ?? '';
     final asset = assetId?.trim() ?? '';
-    if (path.isNotEmpty || asset.isNotEmpty) {
+    final fingerprint = assetFingerprint?.trim() ?? '';
+    if (path.isNotEmpty || asset.isNotEmpty || fingerprint.isNotEmpty) {
       await MediaLocalIndex.saveOutgoing(
         attachmentId: id,
         localPath: path,
         filename: filename,
         kind: kind,
         assetId: asset.isEmpty ? null : asset,
+        fingerprint: fingerprint.isEmpty ? null : fingerprint,
       );
     }
 

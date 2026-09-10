@@ -90,4 +90,94 @@ void main() {
     );
     expect(chatMessagePreviewText(richer), 'Фото');
   });
+
+  test('hub keeps queued pending tip over server', () {
+    expect(
+      chatShouldKeepLocalHubLast(
+        localLast: {
+          'id': -100,
+          'body': 'ок',
+          '_pending': true,
+          'created_at': '2026-09-10T01:50:00.000Z',
+        },
+        serverLastId: 2178,
+        localMessageExists: true,
+        pendingRemoval: false,
+        pendingStillQueued: true,
+      ),
+      isTrue,
+    );
+  });
+
+  test('hub drops ghost pending tip not in outbox', () {
+    expect(
+      chatShouldKeepLocalHubLast(
+        localLast: {
+          'id': -100,
+          'body': 'ок',
+          '_pending': true,
+          'created_at': '2026-09-10T01:50:00.000Z',
+        },
+        serverLastId: 2178,
+        localMessageExists: true,
+        pendingRemoval: false,
+        pendingStillQueued: false,
+      ),
+      isFalse,
+    );
+  });
+
+  test('hub drops missing local tip even if id is newer', () {
+    expect(
+      chatShouldKeepLocalHubLast(
+        localLast: {
+          'id': 9999,
+          'body': 'ок',
+          'created_at': '2026-09-10T01:50:00.000Z',
+        },
+        serverLastId: 2178,
+        localMessageExists: false,
+        pendingRemoval: false,
+        pendingStillQueued: false,
+        now: DateTime.parse('2026-09-10T01:51:00.000Z'),
+      ),
+      isFalse,
+    );
+  });
+
+  test('hub drops stale confirmed local tip ahead of server', () {
+    expect(
+      chatShouldKeepLocalHubLast(
+        localLast: {
+          'id': 9999,
+          'body': 'ок',
+          'created_at': '2026-09-10T01:50:00.000Z',
+        },
+        serverLastId: 2178,
+        localMessageExists: true,
+        pendingRemoval: false,
+        pendingStillQueued: false,
+        now: DateTime.parse('2026-09-10T12:00:00.000Z'),
+      ),
+      isFalse,
+    );
+  });
+
+  test('hub keeps fresh realtime tip ahead of server', () {
+    expect(
+      chatShouldKeepLocalHubLast(
+        localLast: {
+          'id': 9999,
+          'body': 'привет',
+          'created_at': '2026-09-10T11:58:00.000Z',
+        },
+        serverLastId: 2178,
+        localMessageExists: true,
+        pendingRemoval: false,
+        pendingStillQueued: false,
+        now: DateTime.parse('2026-09-10T12:00:00.000Z'),
+      ),
+      isTrue,
+    );
+  });
 }

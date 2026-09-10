@@ -331,6 +331,7 @@ class _ChildMilestoneDetailScreenState
                 uploaded: last,
                 localPath: item.localPath,
                 assetId: item.assetId,
+                assetFingerprint: item.assetFingerprint,
                 filename: item.filename,
                 kind: item.kind,
                 previewBytes:

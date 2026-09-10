@@ -21,6 +21,7 @@ class AlbumUploadPhoto {
     this.kind = 'image',
     this.localPath,
     this.assetId,
+    this.assetFingerprint,
     this.thumbnailBytes,
     this.optimisticKey,
   });
@@ -32,6 +33,7 @@ class AlbumUploadPhoto {
   final String kind;
   final String? localPath;
   final String? assetId;
+  final String? assetFingerprint;
   final Uint8List? thumbnailBytes;
   /// Ключ optimistic-превью в UI альбома (заменяется после upload).
   final String? optimisticKey;
@@ -198,6 +200,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
                   uploaded: uploaded,
                   localPath: localPath.isEmpty ? null : localPath,
                   assetId: photo.assetId,
+                  assetFingerprint: photo.assetFingerprint,
                   filename: photo.filename,
                   kind: photo.kind,
                   previewBytes: photo.thumbnailBytes ??
@@ -275,6 +278,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
         optimisticKey: photo.optimisticKey,
         localPath: photo.localPath,
         assetId: photo.assetId,
+        assetFingerprint: photo.assetFingerprint,
         thumbnailBytes: photo.thumbnailBytes,
       );
     }
@@ -295,6 +299,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
       optimisticKey: photo.optimisticKey,
       localPath: photo.localPath,
       assetId: photo.assetId,
+      assetFingerprint: photo.assetFingerprint,
       thumbnailBytes: photo.thumbnailBytes ?? draft.thumbnailBytes,
     );
   }

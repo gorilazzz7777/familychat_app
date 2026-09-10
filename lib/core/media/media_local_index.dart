@@ -1,9 +1,8 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 
 import '../cache/familychat_local_cache.dart';
 import '../local_db/chat_local_store.dart';
+import 'gallery_asset_fingerprint.dart';
 import 'gallery_media_export.dart';
 import 'gallery_media_utils.dart';
 import 'local_device_file.dart';
@@ -14,6 +13,7 @@ class MediaLocalRecord {
     this.attachmentId,
     this.path,
     this.assetId,
+    this.fingerprint,
     this.kind = 'image',
     this.serverUrl = '',
     this.filename = '',
@@ -25,6 +25,8 @@ class MediaLocalRecord {
   final int? attachmentId;
   final String? path;
   final String? assetId;
+  /// Лёгкий отпечаток ассета телефона (дата/размер/имя) — для матча на iOS.
+  final String? fingerprint;
   final String kind;
   final String serverUrl;
   final String filename;
@@ -36,6 +38,7 @@ class MediaLocalRecord {
         if (attachmentId != null) 'id': attachmentId,
         if (path != null && path!.isNotEmpty) 'path': path,
         if (assetId != null && assetId!.isNotEmpty) 'asset': assetId,
+        if (fingerprint != null && fingerprint!.isNotEmpty) 'fp': fingerprint,
         'kind': kind,
         if (serverUrl.isNotEmpty) 'url': serverUrl,
         if (filename.isNotEmpty) 'name': filename,
@@ -52,6 +55,7 @@ class MediaLocalRecord {
       attachmentId: rawId is int ? rawId : int.tryParse('$rawId'),
       path: json['path']?.toString(),
       assetId: json['asset']?.toString(),
+      fingerprint: json['fp']?.toString(),
       kind: json['kind']?.toString() ?? 'image',
       serverUrl: json['url']?.toString() ?? '',
       filename: json['name']?.toString() ?? '',
@@ -63,6 +67,7 @@ class MediaLocalRecord {
   MediaLocalRecord copyWith({
     String? path,
     String? assetId,
+    String? fingerprint,
     String? serverUrl,
     String? filename,
     bool? skipPhoneAlbum,
@@ -74,6 +79,7 @@ class MediaLocalRecord {
       attachmentId: attachmentId ?? this.attachmentId,
       path: path ?? this.path,
       assetId: assetId ?? this.assetId,
+      fingerprint: fingerprint ?? this.fingerprint,
       kind: kind,
       serverUrl: serverUrl ?? this.serverUrl,
       filename: filename ?? this.filename,
@@ -186,6 +192,26 @@ abstract final class MediaLocalIndex {
     };
   }
 
+  /// Подсказки для подсветки «уже добавляли» в пикере телефона.
+  static GalleryKnownMediaHints knownHints() {
+    final assetIds = <String>{};
+    final fingerprints = <String>{};
+    final filenames = <String>{};
+    for (final rec in _mem.values) {
+      final assetId = (rec.assetId ?? '').trim();
+      if (assetId.isNotEmpty) assetIds.add(assetId);
+      final fp = (rec.fingerprint ?? '').trim();
+      if (fp.isNotEmpty) fingerprints.add(fp);
+      final base = GalleryMediaExport.normalizeAlbumBasename(rec.filename);
+      if (base.isNotEmpty) filenames.add(base);
+    }
+    return GalleryKnownMediaHints(
+      assetIds: assetIds,
+      fingerprints: fingerprints,
+      filenames: filenames,
+    );
+  }
+
   static Future<void> upsert(MediaLocalRecord record) async {
     await ensureLoaded();
     _mem[record.key] = record;
@@ -199,6 +225,7 @@ abstract final class MediaLocalIndex {
         attachmentId: named.attachmentId,
         path: named.path,
         assetId: named.assetId,
+        fingerprint: named.fingerprint,
         kind: named.kind,
         serverUrl: named.serverUrl,
         filename: named.filename,
@@ -212,20 +239,27 @@ abstract final class MediaLocalIndex {
 
   static Future<void> saveOutgoing({
     required int attachmentId,
-    required String localPath,
     required String filename,
+    String localPath = '',
     String kind = 'image',
     String? assetId,
+    String? fingerprint,
   }) async {
-    if (localPath.trim().isEmpty) return;
+    final path = localPath.trim();
+    final asset = assetId?.trim() ?? '';
+    final fp = fingerprint?.trim() ?? '';
+    final name = filename.trim();
+    // На iOS путь к tmp часто пустой/временный — assetId/fingerprint всё равно нужны.
+    if (path.isEmpty && asset.isEmpty && fp.isEmpty && name.isEmpty) return;
     await upsert(
       MediaLocalRecord(
         key: keyForAttachmentId(attachmentId),
         attachmentId: attachmentId,
-        path: localPath.trim(),
-        assetId: assetId,
+        path: path.isEmpty ? null : path,
+        assetId: asset.isEmpty ? null : asset,
+        fingerprint: fp.isEmpty ? null : fp,
         kind: kind,
-        filename: filename,
+        filename: name,
         isOutgoing: true,
       ),
     );

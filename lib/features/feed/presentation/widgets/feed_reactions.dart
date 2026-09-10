@@ -102,6 +102,15 @@ int mediaReactionsTotalCount(List<Map<String, dynamic>> reactions) {
 bool mediaReactionsHasMine(List<Map<String, dynamic>> reactions) =>
     reactions.any((r) => r['reacted_by_me'] == true);
 
+String? mediaReactionsMyEmoji(List<Map<String, dynamic>> reactions) {
+  for (final reaction in reactions) {
+    if (reaction['reacted_by_me'] != true) continue;
+    final emoji = reaction['emoji']?.toString().trim() ?? '';
+    if (emoji.isNotEmpty) return emoji;
+  }
+  return null;
+}
+
 int _asCommentsCount(dynamic raw) {
   if (raw is int) return raw;
   return int.tryParse('$raw') ?? 0;
@@ -186,6 +195,84 @@ void writeFeedEngagementToEvent(
     row['reactions'] = reactions;
     row['comments_count'] = commentsCount;
     attachments[i] = row;
+  }
+}
+
+/// Пачка эмодзи реакций «друг на друге» (без счётчиков по видам).
+class FeedReactionsStack extends StatelessWidget {
+  const FeedReactionsStack({
+    super.key,
+    required this.reactions,
+    this.onTap,
+    this.emojiSize = 18,
+    this.overlap = 10,
+  });
+
+  final List<Map<String, dynamic>> reactions;
+  final VoidCallback? onTap;
+  final double emojiSize;
+  final double overlap;
+
+  List<String> get _emojis {
+    final out = <String>[];
+    for (final reaction in reactions) {
+      final emoji = reaction['emoji']?.toString().trim() ?? '';
+      if (emoji.isEmpty) continue;
+      out.add(emoji);
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final emojis = _emojis;
+    if (emojis.isEmpty) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final diameter = emojiSize + 6;
+    final width = diameter + (emojis.length - 1) * (diameter - overlap);
+
+    return Tooltip(
+      message: 'Реакция',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(diameter),
+          child: SizedBox(
+            width: width,
+            height: diameter,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                for (var i = 0; i < emojis.length; i++)
+                  Positioned(
+                    left: i * (diameter - overlap),
+                    child: Container(
+                      width: diameter,
+                      height: diameter,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: cs.surface,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: cs.surfaceContainerHighest,
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Text(
+                        emojis[i],
+                        style: TextStyle(fontSize: emojiSize, height: 1),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

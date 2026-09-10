@@ -11,6 +11,7 @@ import 'package:photo_manager/photo_manager.dart';
 
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
 import '../../../../profile/presentation/read_picked_image_bytes.dart';
+import '../../../../../core/media/gallery_asset_fingerprint.dart';
 import '../../../../../core/media/gallery_media_export.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
 import '../../../../../core/media/image_upload_pipeline.dart';
@@ -57,26 +58,33 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   static const _pageSize = 60;
 
   final Map<String, int> _selectionOrder = {};
-  Set<String> _knownAssetIds = {};
+  GalleryKnownMediaHints _knownHints = const GalleryKnownMediaHints();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _bootstrap();
-    unawaited(_loadKnownAssetIds());
+    unawaited(_loadKnownHints());
   }
 
-  Future<void> _loadKnownAssetIds() async {
+  Future<void> _loadKnownHints() async {
     if (!widget.highlightKnownAssets) return;
     await MediaLocalIndex.ensureLoaded();
     if (!mounted) return;
-    final ids = MediaLocalIndex.knownAssetIds();
-    setState(() => _knownAssetIds = ids);
+    var hints = MediaLocalIndex.knownHints();
+    setState(() => _knownHints = hints);
     if (kIsWeb) return;
-    final extra = await GalleryMediaExport.appAlbumAssetIds();
-    if (!mounted || extra.isEmpty) return;
-    setState(() => _knownAssetIds = {...ids, ...extra});
+    final album = await GalleryMediaExport.appAlbumKnownHints();
+    if (!mounted) return;
+    hints = hints.merge(
+      GalleryKnownMediaHints(
+        assetIds: album.assetIds,
+        fingerprints: album.fingerprints,
+        filenames: album.filenames,
+      ),
+    );
+    setState(() => _knownHints = hints);
   }
 
   @override
@@ -484,6 +492,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       contentType: contentTypeForFilename(filename),
       localPath: filePath,
       assetId: asset.id,
+      assetFingerprint: galleryAssetFingerprint(asset),
       kind: kind,
     );
     widget.onSelectedChanged([...widget.selected, item]);
@@ -757,7 +766,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                   selected: selected,
                   order: order,
                   alreadyInAlbum: widget.highlightKnownAssets &&
-                      _knownAssetIds.contains(asset.id),
+                      _knownHints.matchesAsset(asset),
                   onTap: () => _toggleAsset(asset),
                 );
               },

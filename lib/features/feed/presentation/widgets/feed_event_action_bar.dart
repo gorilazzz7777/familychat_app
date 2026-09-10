@@ -255,92 +255,92 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
     final dateText = widget.createdAt != null
         ? formatFeedEventDate(widget.createdAt!)
         : '';
-    final reacted = _hasMyReaction;
+    final myEmoji = mediaReactionsMyEmoji(_reactions);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Row(
         children: [
-          if (hasMedia && _reactions.isNotEmpty) ...[
-            FeedReactionsRow(
-              reactions: _reactions,
-              onReactionTap: _reactBusy ? null : _toggleReaction,
+          if (hasMedia) ...[
+            IconButton(
+              tooltip: 'Реакция',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              onPressed: _reactBusy ? null : _openReactionSheet,
+              icon: myEmoji != null
+                  ? Text(
+                      myEmoji,
+                      style: const TextStyle(fontSize: 22, height: 1),
+                    )
+                  : Icon(
+                      Icons.favorite_border,
+                      size: 24,
+                      color: cs.onSurfaceVariant,
+                    ),
             ),
-            const SizedBox(height: 4),
-          ],
-          Row(
-            children: [
-              if (hasMedia) ...[
-                IconButton(
-                  tooltip: 'Реакция',
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                  onPressed: _reactBusy ? null : _openReactionSheet,
-                  icon: Icon(
-                    reacted ? Icons.favorite : Icons.favorite_border,
-                    size: 24,
-                    color: reacted ? Colors.red : cs.onSurfaceVariant,
-                  ),
-                ),
-                if (_reactionsTotal > 0)
-                  Tooltip(
-                    message: 'Кто поставил реакцию',
-                    child: Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        onTap: _openReactionPeople,
-                        borderRadius: BorderRadius.circular(8),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(2, 6, 8, 6),
-                          child: Text(
-                            '$_reactionsTotal',
-                            style: feedTappableCountStyle(theme),
-                          ),
-                        ),
+            if (_reactions.isNotEmpty) ...[
+              FeedReactionsStack(
+                reactions: _reactions,
+                onTap: _reactBusy ? null : _openReactionSheet,
+              ),
+              const SizedBox(width: 4),
+            ],
+            if (_reactionsTotal > 0)
+              Tooltip(
+                message: 'Кто поставил реакцию',
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: _openReactionPeople,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(2, 6, 8, 6),
+                      child: Text(
+                        '$_reactionsTotal',
+                        style: feedTappableCountStyle(theme),
                       ),
                     ),
                   ),
-                IconButton(
-                  tooltip: 'Комментарии',
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                  onPressed: _openComments,
-                  icon: Icon(
-                    Icons.chat_bubble_outline,
-                    size: 22,
-                    color: cs.onSurfaceVariant,
-                  ),
                 ),
-                if (_commentsCount > 0)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 4),
-                    child: Text(
-                      '$_commentsCount',
-                      style: theme.textTheme.labelLarge,
-                    ),
-                  ),
-              ],
-              IconButton(
-                tooltip: widget.navigateTooltip,
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                onPressed: widget.onNavigate,
-                icon: Icon(Icons.open_in_new, size: 22, color: cs.primary),
               ),
-              const Spacer(),
-              if (dateText.isNotEmpty)
-                Text(
-                  dateText,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
+            IconButton(
+              tooltip: 'Комментарии',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              onPressed: _openComments,
+              icon: Icon(
+                Icons.chat_bubble_outline,
+                size: 22,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+            if (_commentsCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Text(
+                  '$_commentsCount',
+                  style: theme.textTheme.labelLarge,
                 ),
-            ],
+              ),
+          ],
+          IconButton(
+            tooltip: widget.navigateTooltip,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            onPressed: widget.onNavigate,
+            icon: Icon(Icons.open_in_new, size: 22, color: cs.primary),
           ),
+          const Spacer(),
+          if (dateText.isNotEmpty)
+            Text(
+              dateText,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            ),
         ],
       ),
     );

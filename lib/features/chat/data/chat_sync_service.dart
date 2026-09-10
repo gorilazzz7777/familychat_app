@@ -115,7 +115,7 @@ class ChatSyncService {
       final threadId = chatAsInt(event['thread_id']);
       final ids = chatAsIntList(event['message_ids']);
       if (threadId == null || ids.isEmpty) return;
-      unawaited(ChatLocalStore.instance.deleteMessages(threadId, ids));
+      unawaited(ChatLocalMutations.removeMessagesLocal(threadId, ids));
       return;
     }
 
@@ -369,10 +369,15 @@ class ChatSyncService {
         for (final t in localThreads)
           if (chatAsInt(t['id']) != null) chatAsInt(t['id'])!: t,
       };
-      final threads = [
-        for (final server in remoteThreads)
-          _mergeHubThread(server, localById[chatAsInt(server['id'])]),
-      ];
+      final threads = <Map<String, dynamic>>[];
+      for (final server in remoteThreads) {
+        threads.add(
+          await _mergeHubThread(
+            server,
+            localById[chatAsInt(server['id'])],
+          ),
+        );
+      }
       final enriched = await enrichChatThreadsLastMessages(threads);
       await ChatLocalStore.instance.replaceThreads(enriched);
       await ChatLocalStore.instance.replaceMembers(members);
@@ -394,11 +399,11 @@ class ChatSyncService {
     }
   }
 
-  /// Keep optimistic WS unread/preview when HTTP hub snapshot is slightly stale.
-  Map<String, dynamic> _mergeHubThread(
+  /// Keep optimistic / fresh realtime preview when HTTP hub snapshot is stale.
+  Future<Map<String, dynamic>> _mergeHubThread(
     Map<String, dynamic> server,
     Map<String, dynamic>? local,
-  ) {
+  ) async {
     if (local == null) return server;
     final threadId = chatAsInt(server['id']);
     final serverUnread = chatAsInt(server['unread_count']) ?? 0;
@@ -416,6 +421,11 @@ class ChatSyncService {
     final localLastId =
         localLastMap == null ? null : chatAsInt(localLastMap['id']);
     final readThrough = chatAsInt(local['local_read_through_id']);
+    final keepLocalLast = await _shouldKeepLocalHubLast(
+      threadId: threadId,
+      localLast: localLastMap,
+      serverLastId: serverLastId,
+    );
 
     int mergedUnread() {
       if (threadId != null &&
@@ -429,8 +439,7 @@ class ChatSyncService {
           serverLastId <= readThrough) {
         return 0;
       }
-      if (localLastId != null &&
-          (serverLastId == null || localLastId > serverLastId)) {
+      if (keepLocalLast) {
         return math.max(serverUnread, localUnread);
       }
       if (localLastId != null && localLastId == serverLastId) {
@@ -442,8 +451,7 @@ class ChatSyncService {
 
     final unread = mergedUnread();
 
-    if (localLastId != null &&
-        (serverLastId == null || localLastId > serverLastId)) {
+    if (keepLocalLast) {
       return {
         ...server,
         'last_message': localLastMap,
@@ -465,6 +473,40 @@ class ChatSyncService {
       'unread_count': unread,
       if (readThrough != null) 'local_read_through_id': readThrough,
     };
+  }
+
+  Future<bool> _shouldKeepLocalHubLast({
+    required int? threadId,
+    required Map<String, dynamic>? localLast,
+    required int? serverLastId,
+  }) async {
+    if (localLast == null) return false;
+    final localId = chatAsInt(localLast['id']);
+    var exists = false;
+    if (threadId != null && localId != null) {
+      exists =
+          await ChatLocalStore.instance.readMessage(threadId, localId) != null;
+    }
+    final pendingRemoval = threadId != null &&
+        localId != null &&
+        localId > 0 &&
+        ChatOfflineOutbox.isMessagePendingRemoval(threadId, localId);
+    var pendingQueued = false;
+    if (chatMessageIsPending(localLast) &&
+        threadId != null &&
+        localId != null) {
+      final active = await ChatOfflineOutbox.activeTempMessageIds(
+        threadId: threadId,
+      );
+      pendingQueued = active.contains(localId);
+    }
+    return chatShouldKeepLocalHubLast(
+      localLast: localLast,
+      serverLastId: serverLastId,
+      localMessageExists: exists,
+      pendingRemoval: pendingRemoval,
+      pendingStillQueued: pendingQueued,
+    );
   }
 
   Future<void> _patchHubLastMessageFromSynced(
@@ -492,7 +534,11 @@ class ChatSyncService {
       final lastMap =
           last is Map ? Map<String, dynamic>.from(last) : null;
       final lastId = lastMap == null ? null : chatAsInt(lastMap['id']);
-      if (lastId != null && lastId > newestId) {
+      if (lastId != null &&
+          lastId > newestId &&
+          lastMap != null &&
+          chatMessageIsPending(lastMap)) {
+        // Optimistic outbound still ahead of the synced server tip.
         if (clearUnread) {
           await ChatLocalMutations.markThreadReadLocal(
             threadId,
@@ -541,7 +587,9 @@ class ChatSyncService {
           break;
         }
       }
-      await ChatLocalStore.instance.upsertThread(_mergeHubThread(match, local));
+      await ChatLocalStore.instance.upsertThread(
+        await _mergeHubThread(match, local),
+      );
       _notifyUnreadChanged();
     } catch (e, st) {
       debugPrint('[ChatSyncService] hub row refresh failed: $e\n$st');

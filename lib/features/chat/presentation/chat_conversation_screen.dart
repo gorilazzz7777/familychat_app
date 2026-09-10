@@ -103,6 +103,8 @@ class _OutgoingAttachment {
     this.photoExif,
     this.kind = 'file',
     this.localPath,
+    this.assetId,
+    this.assetFingerprint,
     this.thumbnailBytes,
   });
 
@@ -112,6 +114,8 @@ class _OutgoingAttachment {
   final Map<String, dynamic>? photoExif;
   final String kind;
   final String? localPath;
+  final String? assetId;
+  final String? assetFingerprint;
   final Uint8List? thumbnailBytes;
 }
 
@@ -1612,6 +1616,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       extra: {'ids': safe.join(',')},
     );
     await ChatLocalStore.instance.deleteMessages(widget.threadId, safe);
+    await ChatLocalMutations.recomputeThreadLastMessage(widget.threadId);
   }
 
   /// Не показываем кэш, если он отстаёт от last_message в списке чатов
@@ -2715,7 +2720,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       }
     });
     if (_localFirst) {
-      unawaited(ChatLocalStore.instance.deleteMessages(widget.threadId, ids));
+      unawaited(ChatLocalMutations.removeMessagesLocal(widget.threadId, ids));
     } else {
       unawaited(_persistMessageCache());
     }
@@ -4174,7 +4179,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           unawaited(_pollFaceTaggingPrompt(ids[i]));
         }
         final localPath = att.localPath?.trim() ?? '';
-        if (localPath.isNotEmpty &&
+        final assetId = att.assetId?.trim() ?? '';
+        final fingerprint = att.assetFingerprint?.trim() ?? '';
+        if ((localPath.isNotEmpty ||
+                assetId.isNotEmpty ||
+                fingerprint.isNotEmpty) &&
             (att.kind == 'image' || att.kind == 'video')) {
           unawaited(
             MediaLocalIndex.saveOutgoing(
@@ -4182,6 +4191,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               localPath: localPath,
               filename: att.filename,
               kind: att.kind,
+              assetId: assetId.isEmpty ? null : assetId,
+              fingerprint: fingerprint.isEmpty ? null : fingerprint,
             ),
           );
         }
@@ -4621,6 +4632,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
     try {
       final drafts = <MediaUploadDraft>[];
+      final draftItems = <ChatAttachSelectionItem>[];
       for (final item in items) {
         if (item.kind == 'video') {
           drafts.add(
@@ -4684,9 +4696,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             ),
           );
         }
+        draftItems.add(item);
       }
 
-      final uploadable = drafts.where((d) => d.canUpload).toList();
+      final uploadable = <({MediaUploadDraft draft, ChatAttachSelectionItem item})>[
+        for (var i = 0; i < drafts.length; i++)
+          if (drafts[i].canUpload) (draft: drafts[i], item: draftItems[i]),
+      ];
       if (uploadable.isEmpty) {
         if (!mounted) return;
         _markOptimisticFailed(tempId);
@@ -4702,15 +4718,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         tempId,
         caption: caption,
         attachments: [
-          for (final d in uploadable)
+          for (final e in uploadable)
             _OutgoingAttachment(
-              bytes: d.bytesForUpload,
-              filename: d.filename,
-              contentType: d.contentType,
-              photoExif: d.geo?.toPhotoExif(),
-              kind: d.isVideo ? 'video' : (d.isImage ? 'image' : 'file'),
-              localPath: d.localPath,
-              thumbnailBytes: d.thumbnailBytes,
+              bytes: e.draft.bytesForUpload,
+              filename: e.draft.filename,
+              contentType: e.draft.contentType,
+              photoExif: e.draft.geo?.toPhotoExif(),
+              kind: e.draft.isVideo
+                  ? 'video'
+                  : (e.draft.isImage ? 'image' : 'file'),
+              localPath: e.draft.localPath ?? e.item.localPath,
+              assetId: e.item.assetId,
+              assetFingerprint: e.item.assetFingerprint,
+              thumbnailBytes: e.draft.thumbnailBytes,
             ),
         ],
         replyToMessageId: replyId,
@@ -5226,7 +5246,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _messages = _messages.where((m) => chatAsInt(m['id']) != tempId).toList();
     });
     if (_localFirst) {
-      await ChatLocalStore.instance.deleteMessages(widget.threadId, [tempId]);
+      await ChatLocalMutations.removeMessagesLocal(widget.threadId, [tempId]);
     } else {
       await _persistMessageCache();
     }

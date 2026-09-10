@@ -59,6 +59,15 @@ abstract final class GalleryMediaExport {
     return base.replaceAll(RegExp(r'\s*\(\d+\)(?=\.[^.]+$)'), '');
   }
 
+  /// Имя без расширения: `IMG_1.HEIC` и `IMG_1.jpg` считаются одним файлом.
+  static String normalizeAlbumBasename(String name) {
+    final n = normalizeAlbumFilename(name);
+    if (n.isEmpty) return '';
+    final dot = n.lastIndexOf('.');
+    if (dot <= 0) return n;
+    return n.substring(0, dot);
+  }
+
   static void rememberAppAlbumAsset(String filename, String assetId) {
     final key = normalizeAlbumFilename(filename);
     if (key.isEmpty || assetId.isEmpty) return;
@@ -67,10 +76,34 @@ abstract final class GalleryMediaExport {
 
   /// Id ассетов в альбомах FamilyChat / LittleOne на телефоне (копии уже сохранённых фото).
   static Future<Set<String>> appAlbumAssetIds({int maxAssets = 2000}) async {
-    if (kIsWeb) return {};
+    final hints = await appAlbumKnownHints(maxAssets: maxAssets);
+    return hints.assetIds;
+  }
+
+  /// Подсказки «уже на телефоне в альбоме приложения» для подсветки в пикере.
+  static Future<
+      ({
+        Set<String> assetIds,
+        Set<String> fingerprints,
+        Set<String> filenames,
+      })> appAlbumKnownHints({
+    int maxAssets = 2000,
+  }) async {
+    if (kIsWeb) {
+      return (
+        assetIds: <String>{},
+        fingerprints: <String>{},
+        filenames: <String>{},
+      );
+    }
     final ids = <String>{
       for (final id in _knownAppAlbumAssetIds.values)
         if (id.trim().isNotEmpty) id.trim(),
+    };
+    final fingerprints = <String>{};
+    final filenames = <String>{
+      for (final key in _knownAppAlbumAssetIds.keys)
+        if (key.isNotEmpty) normalizeAlbumBasename(key),
     };
     try {
       final filter = FilterOptionGroup(
@@ -101,14 +134,28 @@ abstract final class GalleryMediaExport {
             final title = asset.title?.trim() ?? '';
             if (title.isNotEmpty) {
               rememberAppAlbumAsset(title, asset.id);
+              final base = normalizeAlbumBasename(title);
+              if (base.isNotEmpty) filenames.add(base);
+            }
+            // Inline fingerprint — avoid circular import with gallery_asset_fingerprint.dart
+            final createdMs = asset.createDateTime.millisecondsSinceEpoch;
+            if (createdMs > 0 || asset.width > 0 || asset.height > 0) {
+              final base = normalizeAlbumBasename(asset.title ?? '');
+              fingerprints.add(
+                '${createdMs}_${asset.width}x${asset.height}_${asset.duration}_$base',
+              );
             }
           }
         }
       }
     } catch (e) {
-      debugPrint('[GalleryMediaExport] appAlbumAssetIds failed: $e');
+      debugPrint('[GalleryMediaExport] appAlbumKnownHints failed: $e');
     }
-    return ids;
+    return (
+      assetIds: ids,
+      fingerprints: fingerprints,
+      filenames: filenames,
+    );
   }
 
   /// Найти уже сохранённый файл в FamilyChat или LittleOne с тем же именем.

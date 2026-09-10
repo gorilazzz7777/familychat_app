@@ -197,6 +197,7 @@ class _ChildGalleryAlbumScreenState
               uploaded: uploaded,
               localPath: localPath.isEmpty ? null : localPath,
               assetId: assetId.isEmpty ? null : assetId,
+              assetFingerprint: item.assetFingerprint,
               filename: item.filename,
               kind: item.kind,
               previewBytes: item.previewBytes.isEmpty ? null : item.previewBytes,

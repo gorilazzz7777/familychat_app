@@ -15,6 +15,7 @@ class ChatAttachSelectionItem {
     this.thumbnailBytes,
     this.localPath,
     this.assetId,
+    this.assetFingerprint,
   });
 
   final String id;
@@ -24,6 +25,8 @@ class ChatAttachSelectionItem {
   final String? contentType;
   final String? localPath;
   final String? assetId;
+  /// Отпечаток ассета телефона для подсветки «уже добавляли» (особенно iOS).
+  final String? assetFingerprint;
 
   /// image | video | file
   final String kind;
