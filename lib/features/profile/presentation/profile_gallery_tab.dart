@@ -39,6 +39,8 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab>
     _load();
   }
 
+  Future<void> refresh({bool silent = false}) => _load(silent: silent);
+
   Future<void> _load({bool silent = false}) async {
     if (_loadInFlight != null) {
       return _loadInFlight!;

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../app/shell_refresh.dart';
 import '../../features/familychat/data/familychat_repository.dart';
 import '../../features/feed/data/feed_post_uploader.dart';
+import '../cache/familychat_local_cache.dart';
 import '../media/gallery_photo_local_state.dart';
 import '../media/media_upload_foreground.dart';
 import 'feed_post_local_store.dart';
@@ -202,6 +203,21 @@ class FeedPostOutbox {
         }
         if (created || already) {
           await markSynced(localId: current.localId, serverEventId: eventId);
+          int? memberUserId;
+          if (event is Map) {
+            final map = Map<String, dynamic>.from(event);
+            final actor = map['actor'];
+            if (actor is Map) {
+              final raw = actor['user_id'];
+              memberUserId =
+                  raw is int ? raw : int.tryParse('$raw');
+            }
+            ShellRefresh.instance.applyFeedEvent(map);
+          }
+          await FamilyChatLocalCache.invalidateGalleryCaches(
+            memberUserId: memberUserId,
+          );
+          await ShellRefresh.instance.refreshMainTabs();
           return true;
         }
         await Future<void>.delayed(Duration(milliseconds: 400 * (attempt + 1)));

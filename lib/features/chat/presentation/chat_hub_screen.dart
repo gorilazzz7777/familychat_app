@@ -2,13 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 
+import '../../../app/shell_nav_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../data/chat_hub_last_message_time.dart';
 import '../data/chat_hub_tab_order_storage.dart';
 import '../data/chat_local_reads.dart';
 import '../data/chat_message_preview.dart';
@@ -611,8 +612,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   Widget _buildThreadList(_ChatFilter filter) {
-    final timeFmt = DateFormat('dd.MM HH:mm');
     final filtered = _filteredBy(filter);
+    final listPadding = EdgeInsets.only(
+      top: _ChatFilterTabBar.overlayExtent,
+      bottom: ShellNavBar.contentBottomInset(context),
+    );
 
     if (_loading) {
       return const DeferredPlaceholder(child: ChatHubListSkeleton());
@@ -623,6 +627,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       child: filtered.isEmpty
           ? ListView(
               physics: const AlwaysScrollableScrollPhysics(),
+              padding: listPadding,
               children: [
                 const SizedBox(height: 120),
                 Center(child: Text(_emptyLabel(filter))),
@@ -631,6 +636,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           : ListView.builder(
               key: PageStorageKey<String>('chat-hub-${filter.name}'),
               physics: const AlwaysScrollableScrollPhysics(),
+              padding: listPadding,
               itemCount: filtered.length,
               itemBuilder: (context, i) {
                 final t = filtered[i];
@@ -704,7 +710,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                         if (created != null) ...[
                           const SizedBox(width: 8),
                           Text(
-                            timeFmt.format(created.toLocal()),
+                            formatChatHubLastMessageTime(created),
                             style: timeStyle,
                           ),
                         ],
@@ -738,7 +744,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
 
     return Scaffold(
       appBar: FamilyAppBar.build(
@@ -788,24 +793,31 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 onChanged: (v) => setState(() => _searchQuery = v),
               ),
             ),
-          Material(
-            color: scheme.surface,
-            child: _ChatFilterTabBar(
-              filters: _filters,
-              controller: _tabController,
-              labelOf: _filterLabel,
-              onReorder: _onReorderTabs,
-              labelStyle: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-              unselectedLabelStyle: theme.textTheme.titleSmall,
-              dividerColor: scheme.outlineVariant.withValues(alpha: 0.45),
-            ),
-          ),
           Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: _filters.map(_buildThreadList).toList(),
+            child: Stack(
+              children: [
+                TabBarView(
+                  controller: _tabController,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: _filters.map((filter) {
+                    return ColoredBox(
+                      color: theme.scaffoldBackgroundColor,
+                      child: _buildThreadList(filter),
+                    );
+                  }).toList(),
+                ),
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: _ChatFilterTabBar(
+                    filters: _filters,
+                    controller: _tabController,
+                    labelOf: _filterLabel,
+                    onReorder: _onReorderTabs,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -820,114 +832,159 @@ class _ChatFilterTabBar extends StatelessWidget {
     required this.controller,
     required this.labelOf,
     required this.onReorder,
-    this.labelStyle,
-    this.unselectedLabelStyle,
-    this.dividerColor,
   });
 
   final List<_ChatFilter> filters;
   final TabController controller;
   final String Function(_ChatFilter filter) labelOf;
   final void Function(int oldIndex, int newIndex) onReorder;
-  final TextStyle? labelStyle;
-  final TextStyle? unselectedLabelStyle;
-  final Color? dividerColor;
+
+  static const double _pillHeight = 40;
+  static const EdgeInsets _outerPadding = EdgeInsets.fromLTRB(14, 8, 14, 8);
+
+  /// Высота оверлея (отступы + таблетка), чтобы список не прятался под ней.
+  static const double overlayExtent = 8 + _pillHeight + 8;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final background = Color.alphaBlend(
+      scheme.onSurface.withValues(
+        alpha: theme.brightness == Brightness.dark ? 0.16 : 0.09,
+      ),
+      scheme.surface,
+    );
+    final indicatorColor = scheme.secondaryContainer;
     final selectedColor = scheme.primary;
     final unselectedColor = scheme.onSurfaceVariant;
+    final count = filters.length;
+    if (count == 0) return const SizedBox.shrink();
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SizedBox(
-          height: 46,
+    return Padding(
+      padding: _outerPadding,
+      child: Material(
+        type: MaterialType.transparency,
+        child: Material(
+          color: background,
+          elevation: 8,
+          shadowColor: Colors.black.withValues(alpha: 0.18),
+          shape: StadiumBorder(
+            side: BorderSide(
+              color: scheme.outlineVariant.withValues(alpha: 0.55),
+            ),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: SizedBox(
+          height: _pillHeight,
           child: AnimatedBuilder(
             animation: Listenable.merge([
               controller,
               if (controller.animation != null) controller.animation!,
             ]),
-            builder: (context, _) {
-              final animValue =
-                  controller.animation?.value ?? controller.index.toDouble();
-              return ReorderableListView.builder(
-                scrollDirection: Axis.horizontal,
-                buildDefaultDragHandles: false,
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                proxyDecorator: (child, index, animation) {
-                  return AnimatedBuilder(
-                    animation: animation,
-                    builder: (context, _) {
-                      final t = Curves.easeInOut.transform(animation.value);
-                      return Material(
-                        elevation: 2 + 4 * t,
-                        color: scheme.surface,
-                        shadowColor: scheme.shadow.withValues(alpha: 0.28),
-                        borderRadius: BorderRadius.circular(10),
-                        child: child,
-                      );
-                    },
-                  );
-                },
-                onReorder: onReorder,
-                itemCount: filters.length,
-                itemBuilder: (context, index) {
-                  final filter = filters[index];
-                  final selected = animValue.round() == index;
-                  return ReorderableDelayedDragStartListener(
-                    key: ValueKey(filter),
-                    index: index,
-                    child: IntrinsicWidth(
-                      child: InkWell(
-                        onTap: () {
-                          if (controller.index != index) {
-                            controller.animateTo(index);
-                          }
+              builder: (context, _) {
+                  final selectedIndex = controller.index;
+                  return LayoutBuilder(
+                    builder: (context, constraints) {
+                      final slotWidth = constraints.maxWidth / count;
+                      return ReorderableListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        buildDefaultDragHandles: false,
+                        physics: const NeverScrollableScrollPhysics(),
+                        padding: EdgeInsets.zero,
+                        clipBehavior: Clip.hardEdge,
+                        proxyDecorator: (child, index, animation) {
+                          return AnimatedBuilder(
+                            animation: animation,
+                            builder: (context, _) {
+                              final t =
+                                  Curves.easeInOut.transform(animation.value);
+                              return Material(
+                                elevation: 2 + 4 * t,
+                                color: Colors.transparent,
+                                shadowColor:
+                                    scheme.shadow.withValues(alpha: 0.28),
+                                borderRadius: BorderRadius.circular(20),
+                                child: child,
+                              );
+                            },
+                          );
                         },
-                        borderRadius: BorderRadius.circular(8),
-                        child: Container(
-                          alignment: Alignment.center,
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
-                          decoration: BoxDecoration(
-                            border: Border(
-                              bottom: BorderSide(
-                                width: 3,
-                                color: selected
-                                    ? selectedColor
-                                    : Colors.transparent,
+                        onReorder: onReorder,
+                        itemCount: count,
+                        itemBuilder: (context, index) {
+                          final filter = filters[index];
+                          final selected = selectedIndex == index;
+                      return ReorderableDelayedDragStartListener(
+                        key: ValueKey(filter),
+                        index: index,
+                        child: SizedBox(
+                          width: slotWidth,
+                          child: InkWell(
+                            onTap: () {
+                              if (controller.index != index) {
+                                controller.index = index;
+                              }
+                            },
+                            splashColor: Colors.transparent,
+                            highlightColor: Colors.transparent,
+                            overlayColor: const WidgetStatePropertyAll(
+                              Colors.transparent,
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 2,
+                                vertical: 4,
+                              ),
+                              child: AnimatedContainer(
+                                duration: selected
+                                    ? const Duration(milliseconds: 180)
+                                    : Duration.zero,
+                                curve: Curves.easeOut,
+                                alignment: Alignment.center,
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 4),
+                                decoration: ShapeDecoration(
+                                  color: selected
+                                      ? indicatorColor
+                                      : Colors.transparent,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(18),
+                                  ),
+                                ),
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(
+                                    labelOf(filter),
+                                    maxLines: 1,
+                                    softWrap: false,
+                                    textAlign: TextAlign.center,
+                                    style:
+                                        theme.textTheme.labelLarge?.copyWith(
+                                      fontSize: 13,
+                                      fontWeight: selected
+                                          ? FontWeight.w600
+                                          : FontWeight.w500,
+                                      color: selected
+                                          ? selectedColor
+                                          : unselectedColor,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                          child: Text(
-                            labelOf(filter),
-                            softWrap: false,
-                            overflow: TextOverflow.visible,
-                            style: (selected
-                                    ? labelStyle
-                                    : unselectedLabelStyle)
-                                ?.copyWith(
-                              color: selected
-                                  ? selectedColor
-                                  : unselectedColor,
-                            ),
-                          ),
                         ),
-                      ),
-                    ),
+                      );
+                    },
                   );
                 },
               );
             },
           ),
         ),
-        Divider(
-          height: 1,
-          thickness: 1,
-          color: dividerColor,
         ),
-      ],
+      ),
     );
   }
 }

@@ -25,6 +25,9 @@ class MediaGeo {
   Map<String, dynamic> toPhotoExif() => {
         'gps_latitude': latitude,
         'gps_longitude': longitude,
+        // FamilyChat place-tagging читает latitude/longitude (как Diary).
+        'latitude': latitude,
+        'longitude': longitude,
       };
 }
 

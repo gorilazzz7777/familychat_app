@@ -16,12 +16,19 @@ class GalleryMenuScreen extends StatefulWidget {
   final int currentUserId;
 
   @override
-  State<GalleryMenuScreen> createState() => _GalleryMenuScreenState();
+  State<GalleryMenuScreen> createState() => GalleryMenuScreenState();
 }
 
-class _GalleryMenuScreenState extends State<GalleryMenuScreen> {
+class GalleryMenuScreenState extends State<GalleryMenuScreen> {
   final _mineKey = GlobalKey<ProfileGalleryTabState>();
   final _familyKey = GlobalKey<FamilyGalleryTabState>();
+
+  Future<void> refresh({bool silent = true}) async {
+    await Future.wait([
+      _mineKey.currentState?.refresh(silent: silent) ?? Future<void>.value(),
+      _familyKey.currentState?.refresh(silent: silent) ?? Future<void>.value(),
+    ]);
+  }
 
   Future<void> _createAlbum() async {
     final created = await _mineKey.currentState?.createAlbum();

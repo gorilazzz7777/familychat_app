@@ -105,6 +105,64 @@ abstract final class FamilyChatLocalCache {
     }
   }
 
+  static Future<void> deleteJson(String key) async {
+    if (kIsWeb) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('fc_cache_$key');
+      return;
+    }
+    final file = await _file('$key.json');
+    if (file != null && file.existsSync()) {
+      try {
+        await file.delete();
+      } catch (_) {}
+    }
+  }
+
+  /// После загрузки в ленту/галерею — сбросить кэши альбомов и первой страницы «Все фото».
+  static Future<void> invalidateGalleryCaches({int? memberUserId}) async {
+    await deleteJson('gallery/family_albums');
+    if (memberUserId != null) {
+      await deleteJson('gallery/member_albums_$memberUserId');
+    }
+    // Первые страницы «Все фото» (member + family).
+    final keys = <String>[
+      if (memberUserId != null)
+        albumPhotosCacheKey(
+          isFamilyGallery: false,
+          userId: memberUserId,
+          albumId: 'all',
+        ),
+      albumPhotosCacheKey(
+        isFamilyGallery: true,
+        userId: memberUserId ?? 0,
+        albumId: 'all',
+      ),
+    ];
+    for (final key in keys) {
+      await deleteJson(key);
+    }
+    // На диске могли остаться старые варианты с query/person — чистим каталог photos.
+    if (!kIsWeb) {
+      final root = await _cacheRoot();
+      if (root != null) {
+        final dir = Directory('${root.path}/gallery/photos');
+        if (dir.existsSync()) {
+          try {
+            await for (final entity in dir.list()) {
+              if (entity is File && entity.path.endsWith('.json')) {
+                final name = entity.uri.pathSegments.last;
+                if (name.contains('_all_') || name.contains('_all.')) {
+                  await entity.delete();
+                }
+              }
+            }
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
   /// Оставляет не больше [maxCachedMessagesPerThread] самых новых + pending.
   static List<Map<String, dynamic>> newestCacheWindow(
     List<Map<String, dynamic>> messages,

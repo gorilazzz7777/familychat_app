@@ -312,15 +312,21 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       });
       if (_events.length != before) changed = true;
     }
-    // Убираем optimistic-дубликаты, когда пришёл реальный пост.
-    final hasRealPhotoBatch = incoming.any(
-      (e) =>
-          e['_optimistic'] != true &&
-          e['kind']?.toString() == 'photo_batch_uploaded',
-    );
-    if (hasRealPhotoBatch) {
+    // Убираем только optimistic с тем же batch_id, что у реального поста.
+    final incomingBatchIds = <String>{};
+    for (final e in incoming) {
+      if (e['_optimistic'] == true) continue;
+      if (e['kind']?.toString() != 'photo_batch_uploaded') continue;
+      final batchId = _eventBatchId(e);
+      if (batchId != null && batchId.isNotEmpty) incomingBatchIds.add(batchId);
+    }
+    if (incomingBatchIds.isNotEmpty) {
       final before = _events.length;
-      _events.removeWhere((existing) => existing['_optimistic'] == true);
+      _events.removeWhere((existing) {
+        if (existing['_optimistic'] != true) return false;
+        final batchId = _eventBatchId(existing);
+        return batchId != null && incomingBatchIds.contains(batchId);
+      });
       if (_events.length != before) changed = true;
     }
     final ids = _events.map(_eventId).whereType<int>().toSet();
@@ -333,10 +339,52 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     return true;
   }
 
+  String? _eventBatchId(Map<String, dynamic> event) {
+    final payload = event['payload'];
+    if (payload is! Map) return null;
+    final raw = payload['batch_id']?.toString().trim() ?? '';
+    return raw.isEmpty ? null : raw;
+  }
+
+  /// Подставляет серверный event вместо optimistic (по batch_id) или prepend.
+  void upsertServerFeedEvent(Map<String, dynamic> event) {
+    if (!mounted) return;
+    final prepared = _visibleFeedEvents([event]);
+    if (prepared.isEmpty) return;
+    final server = Map<String, dynamic>.from(prepared.first);
+    server.remove('_optimistic');
+    final batchId = _eventBatchId(server);
+    final serverId = _eventId(server);
+    setState(() {
+      _events.removeWhere((existing) {
+        if (existing['_optimistic'] == true) {
+          final existingBatch = _eventBatchId(existing);
+          return batchId != null &&
+              existingBatch != null &&
+              existingBatch == batchId;
+        }
+        final id = _eventId(existing);
+        return serverId != null && id == serverId;
+      });
+      final ids = _events.map(_eventId).whereType<int>().toSet();
+      if (serverId == null || !ids.contains(serverId)) {
+        _events.insert(0, server);
+      }
+      _loading = false;
+      _error = null;
+    });
+    unawaited(_persistCache());
+  }
+
   void prependOptimisticEvent(Map<String, dynamic> event) {
     if (!mounted) return;
+    final batchId = _eventBatchId(event);
     setState(() {
-      _events.removeWhere((e) => e['_optimistic'] == true);
+      _events.removeWhere((e) {
+        if (e['_optimistic'] != true) return false;
+        if (batchId == null) return true;
+        return _eventBatchId(e) == batchId;
+      });
       _events.insert(0, event);
       _loading = false;
       _error = null;
@@ -421,13 +469,47 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           batch.isNotEmpty &&
           _feedEventsSameIds(_events.take(batch.length).toList(), batch);
 
+      // Не теряем локальные серверные id новее головы ответа и unmatched optimistic.
+      final batchIds = batch.map(_eventId).whereType<int>().toSet();
+      final batchMaxId = batchIds.isEmpty
+          ? null
+          : batchIds.reduce((a, b) => a > b ? a : b);
+      final keepLocal = <Map<String, dynamic>>[];
+      for (final existing in _events) {
+        if (existing['_optimistic'] == true) {
+          final batchId = _eventBatchId(existing);
+          final matched = batch.any((e) => _eventBatchId(e) == batchId);
+          if (!matched) keepLocal.add(existing);
+          continue;
+        }
+        final id = _eventId(existing);
+        if (id == null || id <= 0) continue;
+        if (batchIds.contains(id)) continue;
+        if (batchMaxId != null && id > batchMaxId) {
+          keepLocal.add(existing);
+        }
+      }
+
       if (canKeepTail) {
         _events.replaceRange(0, batch.length, batch);
         await hydrateFeedEventsPeople(_events.skip(batch.length));
       } else {
         _events
           ..clear()
-          ..addAll(batch);
+          ..addAll([
+            ...keepLocal,
+            ...batch,
+          ]);
+        // keepLocal уже отсортированы сверху как «новее»; batch — первая страница.
+        // Убедимся, что нет дублей id.
+        final seen = <int>{};
+        _events.retainWhere((e) {
+          final id = _eventId(e);
+          if (id == null) return e['_optimistic'] == true;
+          if (seen.contains(id)) return false;
+          seen.add(id);
+          return true;
+        });
       }
       if (!mounted || gen != _feedLoadGen) return;
 

@@ -20,12 +20,16 @@ class AppTheme {
       seedColor: normalizeSeedColor(seedColor),
       brightness: Brightness.light,
     );
+    // Единый «холст» разделов: светло-серый фон, карточки/таблетки — surface.
+    final canvas = colorScheme.surfaceContainerLowest;
     return ThemeData(
       colorScheme: colorScheme,
       useMaterial3: true,
-      appBarTheme: const AppBarTheme(
-        backgroundColor: Colors.white,
-        foregroundColor: Color(0xFF1C1B1F),
+      scaffoldBackgroundColor: canvas,
+      canvasColor: canvas,
+      appBarTheme: AppBarTheme(
+        backgroundColor: canvas,
+        foregroundColor: colorScheme.onSurface,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,

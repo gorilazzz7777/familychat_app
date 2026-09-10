@@ -664,7 +664,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
           : Column(
               children: [
                 Material(
-                  color: Theme.of(context).colorScheme.surface,
+                  color: Theme.of(context).scaffoldBackgroundColor,
                   child: tabBar,
                 ),
                 Expanded(child: bodyView),

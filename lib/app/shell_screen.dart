@@ -86,7 +86,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   late Map<String, dynamic> _status;
   final _feedKey = GlobalKey<FeedScreenState>();
   final _chatHubKey = GlobalKey<ChatHubScreenState>();
-  final _galleryMenuKey = GlobalKey<State<GalleryMenuScreen>>();
+  final _galleryMenuKey = GlobalKey<GalleryMenuScreenState>();
   final _tabRefreshedAt = <int, DateTime>{};
   /// Чат (главная) + лента сразу; остальные — при первом заходе.
   final _visitedTabs = <int>{_chatTabIndex, _feedTabIndex};
@@ -150,7 +150,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     ChatUnreadRefresh.onInvalidate = _onUnreadInvalidate;
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
     _lastKnownOnline = ChatOfflineSync.instance.isOnline;
-    ShellRefresh.instance.register(_refreshMainTabs);
+    ShellRefresh.instance.register(
+      _refreshMainTabs,
+      applyFeedEvent: (event) {
+        _feedKey.currentState?.upsertServerFeedEvent(event);
+      },
+    );
     ChatUiConnectivity.instance.start(
       ref.read(familychatRepositoryProvider),
       syncApiOnline: ChatOfflineSync.instance.setOnline,
@@ -218,6 +223,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     await _refreshTab(_chatTabIndex, silent: silent);
     await _refreshTab(_feedTabIndex, silent: silent);
     await _refreshTab(_familyTabIndex, silent: silent);
+    await _refreshTab(_galleryTabIndex, silent: silent);
   }
 
   void _onUnreadInvalidate() {
@@ -407,6 +413,11 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         await _chatHubKey.currentState?.refresh(silent: silent);
       case _feedTabIndex:
         await _feedKey.currentState?.refresh(silent: silent);
+      case _galleryTabIndex:
+        final galleryState = _galleryMenuKey.currentState;
+        if (galleryState is GalleryMenuScreenState) {
+          await galleryState.refresh(silent: silent);
+        }
       default:
         break;
     }
@@ -714,7 +725,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         ? barIndex
         : (layout.showMore ? layout.barSections.length : 0);
 
+    final showNavBar =
+        layout.showBar && layout.barSections.isNotEmpty;
+
     return Scaffold(
+      // Контент рисуется под меню — зона вокруг таблетки прозрачная.
+      extendBody: showNavBar,
       appBar: showingNestedScreen
           ? null
           : FamilyAppBar.build(
@@ -758,23 +774,38 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           ),
         ],
       ),
-      bottomNavigationBar: layout.showBar && layout.barSections.isNotEmpty
-          ? _ShellNavBarWithUnread(
-              layout: layout,
-              selectedIndex: selectedIndex.clamp(0, layout.barSections.length),
-              onDestinationSelected: (i) =>
-                  _onBarDestinationSelected(i, layout),
-              onBarReorder: (oldIndex, newIndex) {
-                final next = ShellNavLayout.orderKeysAfterMove(
-                  currentKeys: ref.read(appSettingsProvider).menuOrder,
-                  enabled: layout.barSections,
-                  oldIndex: oldIndex,
-                  newIndex: newIndex,
-                );
-                unawaited(
-                  ref.read(appSettingsProvider.notifier).setMenuOrder(next),
-                );
-              },
+      bottomNavigationBar: showNavBar
+          ? Theme(
+              data: Theme.of(context).copyWith(
+                // Иначе Scaffold/M3 может подложить непрозрачный фон слоту.
+                bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+                  backgroundColor: Colors.transparent,
+                  elevation: 0,
+                ),
+                navigationBarTheme: NavigationBarTheme.of(context).copyWith(
+                  backgroundColor: Colors.transparent,
+                  elevation: 0,
+                  height: ShellNavBar.pillHeight,
+                ),
+              ),
+              child: _ShellNavBarWithUnread(
+                layout: layout,
+                selectedIndex:
+                    selectedIndex.clamp(0, layout.barSections.length),
+                onDestinationSelected: (i) =>
+                    _onBarDestinationSelected(i, layout),
+                onBarReorder: (oldIndex, newIndex) {
+                  final next = ShellNavLayout.orderKeysAfterMove(
+                    currentKeys: ref.read(appSettingsProvider).menuOrder,
+                    enabled: layout.barSections,
+                    oldIndex: oldIndex,
+                    newIndex: newIndex,
+                  );
+                  unawaited(
+                    ref.read(appSettingsProvider.notifier).setMenuOrder(next),
+                  );
+                },
+              ),
             )
           : null,
     );

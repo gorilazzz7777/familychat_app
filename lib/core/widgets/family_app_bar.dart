@@ -166,7 +166,7 @@ abstract final class FamilyAppBar {
       automaticallyImplyLeading: hasProfile ? false : automaticallyImplyLeading,
       leadingWidth: hasProfile ? 54 : null,
       titleSpacing: hasProfile ? 0 : null,
-      backgroundColor: backgroundColor ?? Colors.white,
+      backgroundColor: backgroundColor,
       foregroundColor: foregroundColor,
       surfaceTintColor: Colors.transparent,
       elevation: 0,
@@ -191,7 +191,7 @@ abstract final class FamilyAppBar {
     return AppBar(
       leading: leading,
       automaticallyImplyLeading: automaticallyImplyLeading,
-      backgroundColor: backgroundColor ?? Colors.white,
+      backgroundColor: backgroundColor,
       foregroundColor: foregroundColor,
       surfaceTintColor: Colors.transparent,
       elevation: 0,

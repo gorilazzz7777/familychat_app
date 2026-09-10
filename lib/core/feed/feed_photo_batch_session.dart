@@ -2,6 +2,7 @@ import 'dart:math';
 
 import '../../app/shell_refresh.dart';
 import '../../features/familychat/data/familychat_repository.dart';
+import '../cache/familychat_local_cache.dart';
 
 String createFeedPhotoBatchId() {
   final random = Random.secure();
@@ -44,6 +45,20 @@ class FeedPhotoBatchSession {
         if (created || already || attempt == 3) {
           _completed = true;
           if (created || already) {
+            final event = result['event'];
+            int? memberUserId;
+            if (event is Map) {
+              final map = Map<String, dynamic>.from(event);
+              final actor = map['actor'];
+              if (actor is Map) {
+                final raw = actor['user_id'];
+                memberUserId = raw is int ? raw : int.tryParse('$raw');
+              }
+              ShellRefresh.instance.applyFeedEvent(map);
+            }
+            await FamilyChatLocalCache.invalidateGalleryCaches(
+              memberUserId: memberUserId,
+            );
             await ShellRefresh.instance.refreshMainTabs();
           }
           return;
