@@ -11,6 +11,7 @@ import 'package:photo_manager/photo_manager.dart';
 
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
 import '../../../../profile/presentation/read_picked_image_bytes.dart';
+import '../../../../../core/debug/upload_image_exif_log.dart';
 import '../../../../../core/media/gallery_asset_fingerprint.dart';
 import '../../../../../core/media/gallery_media_export.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
@@ -498,6 +499,20 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     }
     final bytes = loaded.bytes;
     final filePath = loaded.path;
+
+    // GEO diag: PhotoManager location + EXIF в file/originBytes/originFile.
+    unawaited(logAssetGeoSourceDiagnostics(asset));
+    unawaited(
+      logUploadImageExifDiagnostics(
+        bytes: bytes,
+        filename: await asset.titleAsync,
+        sourcePath: filePath,
+        readVia: !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS
+            ? 'picked_ios_prefer_asset.file'
+            : 'picked_prefer_origin',
+        stage: 'attach_selected_bytes',
+      ),
+    );
 
     final title = await asset.titleAsync;
     final filename = title.isNotEmpty

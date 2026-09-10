@@ -2,6 +2,7 @@ import 'package:exif/exif.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 
+import '../debug/upload_image_exif_log.dart';
 import 'video_upload_pipeline.dart';
 
 /// Максимальная длинная сторона после сжатия.
@@ -128,6 +129,18 @@ Future<MediaUploadDraft> prepareImageUploadDraft({
   MediaGeo? geoHint,
 }) async {
   final id = 'i_${DateTime.now().microsecondsSinceEpoch}';
+  await logUploadImageExifDiagnostics(
+    bytes: originalBytes,
+    filename: filename,
+    sourcePath: localPath,
+    readVia: 'prepareImageUploadDraft.original',
+    stage: 'before_geo_extract',
+  );
+  await logFilePathExifIfExists(
+    path: localPath,
+    filename: filename,
+    stage: 'before_geo_extract_path',
+  );
   // Гео берём из оригинала до сжатия — иначе GPS в EXIF пропадает.
   final geo = geoHint ?? await extractMediaGeoFromImageBytes(originalBytes);
   final thumb = previewBytes ??
@@ -144,6 +157,23 @@ Future<MediaUploadDraft> prepareImageUploadDraft({
     localPath: localPath,
   );
   final outName = _jpegFilename(filename);
+  final photoExif = geo?.toPhotoExif();
+  logPreparedImageGeo(
+    filename: outName,
+    originalBytes: originalBytes.length,
+    preparedBytes: prepared.length,
+    localPath: localPath,
+    photoExif: photoExif,
+    usedGeoHint: geoHint != null,
+  );
+  await logUploadImageExifDiagnostics(
+    bytes: prepared,
+    filename: outName,
+    sourcePath: localPath,
+    readVia: 'prepareImageUploadDraft.prepared',
+    stage: 'after_compress',
+    outgoingPhotoExif: photoExif,
+  );
   return MediaUploadDraft(
     id: id,
     kind: MediaDraftKind.image,

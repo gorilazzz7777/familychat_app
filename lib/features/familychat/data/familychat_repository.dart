@@ -2171,6 +2171,13 @@ class FamilyChatRepository {
     Map<String, dynamic>? photoExif,
     void Function(int sent, int total)? onSendProgress,
   }) async {
+    await logUploadImageExifDiagnostics(
+      bytes: bytes,
+      filename: filename,
+      readVia: 'familyGalleryUpload',
+      stage: 'upload_request',
+      outgoingPhotoExif: photoExif,
+    );
     final form = FormData.fromMap({
       'file': MultipartFile.fromBytes(
         bytes,
