@@ -13,6 +13,8 @@ import '../../gallery/presentation/gallery_media_thumbnail.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
 import '../../profile/presentation/photo_slideshow_screen.dart';
 import 'child_milestone_detail_screen.dart';
+import 'scrapbook/utils/milestone_gallery_viewer.dart';
+import 'scrapbook/widgets/scrapbook_milestone_media_viewer.dart';
 
 /// Просмотр заполненной вехи (только чтение), как в Dairy.
 class ChildMilestoneViewScreen extends ConsumerStatefulWidget {
@@ -59,8 +61,9 @@ class _ChildMilestoneViewScreenState
           .diaryMilestoneDetail(widget.code);
       if (!mounted) return;
       final photos = _photosOf(m);
-      MediaLocalIndex.hydrateAttachments(photos);
-      unawaited(MediaIncomingSync.ensureGalleryPhotos(photos));
+      final galleryPhotos = milestonePhotosForGalleryViewer(photos);
+      MediaLocalIndex.hydrateAttachments(galleryPhotos);
+      unawaited(MediaIncomingSync.ensureGalleryPhotos(galleryPhotos));
       setState(() {
         _milestone = m;
         _loading = false;
@@ -92,21 +95,8 @@ class _ChildMilestoneViewScreenState
 
   List<Map<String, dynamic>> get _photos => _photosOf(_milestone);
 
-  List<Map<String, dynamic>> get _galleryPhotos {
-    final out = <Map<String, dynamic>>[];
-    for (final photo in _photos) {
-      final id = photo['attachment_id'] ?? photo['id'];
-      final aid = id is int ? id : int.tryParse('$id');
-      final url = (photo['file_url'] ?? photo['url'] ?? '').toString();
-      if (aid == null && url.isEmpty) continue;
-      out.add({
-        ...photo,
-        if (aid != null) 'id': aid,
-        if (url.isNotEmpty) 'file_url': url,
-      });
-    }
-    return out;
-  }
+  List<Map<String, dynamic>> get _galleryPhotos =>
+      milestonePhotosForGalleryViewer(_photos);
 
   List<_MilestoneFieldRow> get _filledFields {
     final m = _milestone;
@@ -176,33 +166,42 @@ class _ChildMilestoneViewScreenState
 
   Future<void> _openPhoto(int index) async {
     final galleryPhotos = _galleryPhotos;
-    if (galleryPhotos.isEmpty) return;
-    int? currentUserId;
-    try {
-      final status = await ref.read(familychatRepositoryProvider).status();
-      final uid = status['user_id'];
-      currentUserId = uid is int ? uid : int.tryParse('$uid');
-    } catch (_) {}
-    if (currentUserId == null || !mounted) return;
+    if (galleryPhotos.isNotEmpty) {
+      int? currentUserId;
+      try {
+        final status = await ref.read(familychatRepositoryProvider).status();
+        final uid = status['user_id'];
+        currentUserId = uid is int ? uid : int.tryParse('$uid');
+      } catch (_) {}
+      if (currentUserId != null && mounted) {
+        final source = _photos[index.clamp(0, _photos.length - 1)];
+        final identity = milestoneFamilyChatIdentity(source);
+        var initial = index.clamp(0, galleryPhotos.length - 1);
+        if (identity != null) {
+          final found = galleryPhotos.indexWhere(
+            (p) => p['id'] == identity.attachmentId,
+          );
+          if (found >= 0) initial = found;
+        }
 
-    final source = _photos[index.clamp(0, _photos.length - 1)];
-    final rawAtt = source['attachment_id'] ?? source['id'];
-    final attId = rawAtt is int ? rawAtt : int.tryParse('$rawAtt');
-    var initial = 0;
-    if (attId != null) {
-      final found = galleryPhotos.indexWhere((p) => p['id'] == attId);
-      if (found >= 0) initial = found;
-    } else {
-      initial = index.clamp(0, galleryPhotos.length - 1);
+        await GalleryPhotoViewerScreen.open(
+          context,
+          profileUserId: currentUserId,
+          photo: galleryPhotos[initial],
+          currentUserId: currentUserId,
+          photos: galleryPhotos,
+          initialIndex: initial,
+        );
+        return;
+      }
     }
 
-    await GalleryPhotoViewerScreen.open(
+    if (!mounted) return;
+    await ScrapbookMilestoneMediaViewer.open(
       context,
-      profileUserId: currentUserId,
-      photo: galleryPhotos[initial],
-      currentUserId: currentUserId,
-      photos: galleryPhotos,
-      initialIndex: initial,
+      title: _title,
+      media: _photos.map(milestonePhotoForUrlViewer).toList(),
+      initialIndex: index,
     );
   }
 
@@ -346,17 +345,25 @@ class _ChildMilestoneViewScreenState
                             delegate: SliverChildBuilderDelegate(
                               (context, index) {
                                 final photo = photos[index];
-                                final canOpen = _galleryPhotos.isNotEmpty;
+                                final identity =
+                                    milestoneFamilyChatIdentity(photo);
+                                final thumb = identity == null
+                                    ? milestonePhotoForUrlViewer(photo)
+                                    : {
+                                        ...photo,
+                                        'id': identity.attachmentId,
+                                        'attachment_id': identity.attachmentId,
+                                        'thread_id': identity.threadId,
+                                      };
                                 return GestureDetector(
                                   behavior: HitTestBehavior.opaque,
-                                  onTap: canOpen
-                                      ? () => _openPhoto(index)
-                                      : null,
+                                  onTap: () => _openPhoto(index),
                                   child: Stack(
                                     fit: StackFit.expand,
                                     children: [
                                       GalleryMediaThumbnail(
-                                        attachment: photo,
+                                        attachment: thumb,
+                                        threadId: identity?.threadId,
                                         fit: BoxFit.cover,
                                       ),
                                       if (isVideoAttachment(photo))

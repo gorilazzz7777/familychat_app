@@ -399,11 +399,12 @@ class _MilestoneScrapbookScreenState
       final currentUserId = raw is int ? raw : int.tryParse('$raw');
       if (currentUserId != null && mounted) {
         final source = media[initialIndex.clamp(0, media.length - 1)];
-        final rawAtt = source['attachment_id'];
-        final attId = rawAtt is int ? rawAtt : int.tryParse('$rawAtt');
+        final identity = milestoneFamilyChatIdentity(source);
         var initial = initialIndex.clamp(0, galleryPhotos.length - 1);
-        if (attId != null) {
-          final found = galleryPhotos.indexWhere((p) => p['id'] == attId);
+        if (identity != null) {
+          final found = galleryPhotos.indexWhere(
+            (p) => p['id'] == identity.attachmentId,
+          );
           if (found >= 0) initial = found;
         }
         await GalleryPhotoViewerScreen.open(
@@ -422,7 +423,7 @@ class _MilestoneScrapbookScreenState
     await ScrapbookMilestoneMediaViewer.open(
       context,
       title: milestone['title']?.toString() ?? 'Веха',
-      media: media,
+      media: media.map(milestonePhotoForUrlViewer).toList(),
       initialIndex: initialIndex,
     );
   }

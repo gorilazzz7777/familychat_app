@@ -13,6 +13,7 @@ import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart
 import '../../gallery/presentation/gallery_media_thumbnail.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
 import 'scrapbook/utils/milestone_gallery_viewer.dart';
+import 'scrapbook/widgets/scrapbook_milestone_media_viewer.dart';
 import 'utils/milestone_photo_add_trace.dart';
 
 /// Деталка вехи в стиле Dairy (просмотр + правки для опекунов).
@@ -449,40 +450,53 @@ class _ChildMilestoneDetailScreenState
 
   Future<void> _openPhoto(int index) async {
     final galleryPhotos = milestonePhotosForGalleryViewer(_photos);
-    if (galleryPhotos.isEmpty) return;
     final userId = _currentUserId;
-    if (userId == null) return;
+    if (galleryPhotos.isNotEmpty && userId != null) {
+      final source = _photos[index.clamp(0, _photos.length - 1)];
+      final identity = milestoneFamilyChatIdentity(source);
+      var initial = index.clamp(0, galleryPhotos.length - 1);
+      if (identity != null) {
+        final found = galleryPhotos.indexWhere(
+          (p) => p['id'] == identity.attachmentId,
+        );
+        if (found >= 0) initial = found;
+      }
 
-    final source = _photos[index.clamp(0, _photos.length - 1)];
-    final rawAtt = source['attachment_id'];
-    final attId = rawAtt is int ? rawAtt : int.tryParse('$rawAtt');
-    var initial = index.clamp(0, galleryPhotos.length - 1);
-    if (attId != null) {
-      final found = galleryPhotos.indexWhere((p) => p['id'] == attId);
-      if (found >= 0) initial = found;
+      await GalleryPhotoViewerScreen.open(
+        context,
+        profileUserId: userId,
+        photo: galleryPhotos[initial],
+        currentUserId: userId,
+        photos: galleryPhotos,
+        initialIndex: initial,
+      );
+      return;
     }
 
-    await GalleryPhotoViewerScreen.open(
+    if (!mounted) return;
+    await ScrapbookMilestoneMediaViewer.open(
       context,
-      profileUserId: userId,
-      photo: galleryPhotos[initial],
-      currentUserId: userId,
-      photos: galleryPhotos,
-      initialIndex: initial,
+      title: widget.initial?['title']?.toString() ?? 'Веха',
+      media: _photos.map(milestonePhotoForUrlViewer).toList(),
+      initialIndex: index,
     );
   }
 
   Widget _photoTile(Map<String, dynamic> photo, int index) {
     final url =
         (photo['file_url'] ?? photo['url'] ?? '').toString();
-    final threadId = photo['thread_id'];
-    final thread = threadId is int ? threadId : int.tryParse('$threadId');
+    final identity = milestoneFamilyChatIdentity(photo);
 
     Widget image;
-    if (thread != null && url.isNotEmpty) {
+    if (identity != null && url.isNotEmpty) {
       image = GalleryMediaThumbnail(
-        attachment: photo,
-        threadId: thread,
+        attachment: {
+          ...photo,
+          'id': identity.attachmentId,
+          'attachment_id': identity.attachmentId,
+          'thread_id': identity.threadId,
+        },
+        threadId: identity.threadId,
         fit: BoxFit.cover,
       );
     } else if (url.isNotEmpty) {

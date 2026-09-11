@@ -341,6 +341,37 @@ abstract final class MediaLocalIndex {
     }
   }
 
+  static String _urlFileTail(String value) {
+    final noQuery = value.trim().split('?').first;
+    if (noQuery.isEmpty) return '';
+    final slash = noQuery.replaceAll('\\', '/');
+    final name = slash.split('/').last.trim().toLowerCase();
+    return name;
+  }
+
+  /// Diary and FamilyChat share numeric attachment ids for different files.
+  /// If the payload already has a remote URL, do not overlay another file.
+  static bool _recordMatchesRemote(
+    MediaLocalRecord rec,
+    Map<String, dynamic> attachment,
+  ) {
+    final incoming = galleryAttachmentUrl(attachment).trim();
+    if (incoming.isEmpty) return true;
+    final incomingTail = _urlFileTail(incoming);
+    if (incomingTail.isEmpty) return true;
+    if (rec.serverUrl.isNotEmpty) {
+      final storedTail = _urlFileTail(rec.serverUrl);
+      if (storedTail.isNotEmpty) return storedTail == incomingTail;
+    }
+    if (rec.filename.isNotEmpty) {
+      final nameTail = _urlFileTail(rec.filename);
+      if (nameTail.isNotEmpty && nameTail == incomingTail) return true;
+    }
+    // Numeric id hits without a matching URL are unsafe: Diary and FamilyChat
+    // ChatAttachment tables reuse the same integers for different files.
+    return false;
+  }
+
   /// Накладывает локальный путь на payload. Не ходит в сеть.
   static void hydrateAttachment(Map<String, dynamic> attachment) {
     final id = attachment['id'] is int
@@ -349,6 +380,7 @@ abstract final class MediaLocalIndex {
     var rec = peekByAttachmentId(id);
     rec ??= peekByFilename(attachment['filename']?.toString());
     if (rec == null) return;
+    if (!_recordMatchesRemote(rec, attachment)) return;
 
     attachment['skip_phone_album'] = rec.skipPhoneAlbum;
     if (rec.serverUrl.isNotEmpty && galleryAttachmentUrl(attachment).isEmpty) {
