@@ -187,6 +187,7 @@ class _ChildGalleryAlbumScreenState
             filename: item.filename,
             contentType: item.contentType,
             albumPk: widget.customAlbumPk,
+            photoExif: item.geo?.toPhotoExif(),
           );
           final id = uploaded['id'];
           final attachmentId = id is int ? id : int.tryParse('$id');

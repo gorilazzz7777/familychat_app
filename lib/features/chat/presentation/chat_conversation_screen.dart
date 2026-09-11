@@ -4641,6 +4641,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               filename: item.filename,
               contentType: item.contentType,
               localPath: item.localPath,
+              geoHint: item.geo,
             ),
           );
         } else if (item.kind == 'image') {
@@ -4651,6 +4652,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               contentType: item.contentType,
               previewBytes: item.thumbnailBytes,
               localPath: item.localPath,
+              geoHint: item.geo,
             ),
           );
         } else {

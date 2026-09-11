@@ -301,6 +301,7 @@ class _BirthdayScheduledCongratulationDialogState
               bytes: item.bytes,
               filename: item.filename,
               contentType: item.contentType,
+              photoExif: item.geo?.toPhotoExif(),
             );
             final id = uploaded['id'];
             final aid = id is int ? id : int.tryParse('$id');

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
+import '../../../../../core/media/image_upload_pipeline.dart';
 import '../../../data/chat_attach_local_cache.dart';
 import '../../../data/chat_recent_files.dart';
 import 'chat_attach_models.dart';
@@ -60,6 +61,9 @@ class _AttachFileTabState extends State<AttachFileTab> {
       final kind = ct.startsWith('image/')
           ? 'image'
           : (ct.startsWith('video/') ? 'video' : 'file');
+      final geo = kind == 'image'
+          ? await extractMediaGeoFromImageBytes(bytes)
+          : null;
       next.add(
         ChatAttachSelectionItem(
           id: 'file_${f.name}_${bytes.length}_${DateTime.now().microsecondsSinceEpoch}',
@@ -68,6 +72,7 @@ class _AttachFileTabState extends State<AttachFileTab> {
           contentType: ct,
           localPath: f.path,
           kind: kind,
+          geo: geo,
         ),
       );
       if (!kIsWeb && kind == 'file') {

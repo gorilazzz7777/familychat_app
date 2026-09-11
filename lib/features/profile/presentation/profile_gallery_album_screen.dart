@@ -821,6 +821,7 @@ class _ProfileGalleryAlbumScreenState
           filename: item.filename,
           contentType:
               item.contentType ?? _imageContentTypeForFilename(item.filename),
+          photoExif: item.geo?.toPhotoExif(),
           kind: item.kind,
           localPath: item.localPath,
           assetId: item.assetId,

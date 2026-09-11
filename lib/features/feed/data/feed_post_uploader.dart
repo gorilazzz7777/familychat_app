@@ -163,6 +163,7 @@ abstract final class FeedPostUploader {
       contentType: photo.contentType,
       previewBytes: photo.thumbnailBytes,
       localPath: photo.localPath,
+      geoHint: mediaGeoFromPhotoExif(photo.photoExif),
     );
     if (!draft.canUpload) {
       return photo;
@@ -211,6 +212,7 @@ abstract final class FeedPostUploader {
         contentType:
             photo.contentType ?? contentTypeForFilename(photo.filename),
         localPath: photo.localPath,
+        geoHint: mediaGeoFromPhotoExif(photo.photoExif),
       );
       if (!draft.canUpload) return null;
       return FeedPostPhoto(
@@ -246,6 +248,7 @@ abstract final class FeedPostUploader {
       contentType: photo.contentType,
       previewBytes: photo.thumbnailBytes,
       localPath: photo.localPath,
+      geoHint: mediaGeoFromPhotoExif(photo.photoExif),
     );
     if (!draft.canUpload) return null;
     return FeedPostPhoto(

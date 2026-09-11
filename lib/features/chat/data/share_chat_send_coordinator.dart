@@ -264,6 +264,7 @@ class ShareChatSendCoordinator {
         }
       }
 
+      Map<String, dynamic>? photoExif;
       if (att.isImage && bytes.isNotEmpty) {
         try {
           final draft = await prepareImageUploadDraft(
@@ -275,6 +276,7 @@ class ShareChatSendCoordinator {
           bytes = draft.bytesForUpload;
           filename = draft.filename;
           contentType = draft.contentType;
+          photoExif = draft.geo?.toPhotoExif();
         } catch (_) {}
       } else if (att.isVideo && bytes.isNotEmpty) {
         try {
@@ -288,6 +290,7 @@ class ShareChatSendCoordinator {
             bytes = draft.bytesForUpload;
             filename = draft.filename;
             contentType = draft.contentType;
+            photoExif = draft.geo?.toPhotoExif();
           }
         } catch (_) {}
       }
@@ -297,6 +300,7 @@ class ShareChatSendCoordinator {
         bytes: bytes,
         filename: filename,
         contentType: contentType,
+        photoExif: photoExif,
       );
       final id = chatAsInt(uploaded['id']);
       if (id == null) continue;

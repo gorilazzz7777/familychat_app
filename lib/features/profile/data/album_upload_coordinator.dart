@@ -267,6 +267,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
         filename: photo.filename,
         contentType: photo.contentType ?? contentTypeForFilename(photo.filename),
         localPath: photo.localPath,
+        geoHint: mediaGeoFromPhotoExif(photo.photoExif),
       );
       if (!draft.canUpload) return null;
       return AlbumUploadPhoto(
@@ -288,6 +289,7 @@ class AlbumUploadCoordinator extends ChangeNotifier {
       contentType: photo.contentType,
       previewBytes: photo.thumbnailBytes,
       localPath: photo.localPath,
+      geoHint: mediaGeoFromPhotoExif(photo.photoExif),
     );
     if (!draft.canUpload) return null;
     return AlbumUploadPhoto(

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../../../../../core/media/gallery_media_utils.dart';
+import '../../../../../core/media/video_upload_pipeline.dart';
 
 enum ChatAttachMode { gallery, file, location, familyGallery }
 
@@ -16,6 +17,7 @@ class ChatAttachSelectionItem {
     this.localPath,
     this.assetId,
     this.assetFingerprint,
+    this.geo,
   });
 
   final String id;
@@ -27,6 +29,8 @@ class ChatAttachSelectionItem {
   final String? assetId;
   /// Отпечаток ассета телефона для подсветки «уже добавляли» (особенно iOS).
   final String? assetFingerprint;
+  /// GPS с телефона (PhotoKit / оригинал HEIC). iOS JPEG из `asset.file` GPS не содержит.
+  final MediaGeo? geo;
 
   /// image | video | file
   final String kind;

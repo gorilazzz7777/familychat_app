@@ -12,6 +12,7 @@ import 'package:photo_manager/photo_manager.dart';
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
 import '../../../../profile/presentation/read_picked_image_bytes.dart';
 import '../../../../../core/debug/upload_image_exif_log.dart';
+import '../../../../../core/media/asset_media_geo.dart';
 import '../../../../../core/media/gallery_asset_fingerprint.dart';
 import '../../../../../core/media/gallery_media_export.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
@@ -524,6 +525,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     final kind = asset.type == AssetType.video
         ? 'video'
         : (asset.type == AssetType.image ? 'image' : 'file');
+    final geo = await extractMediaGeoFromAsset(asset);
     final item = ChatAttachSelectionItem(
       id: id,
       filename: filename,
@@ -534,6 +536,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       assetId: asset.id,
       assetFingerprint: galleryAssetFingerprint(asset),
       kind: kind,
+      geo: geo,
     );
     if (widget.highlightKnownAssets) {
       unawaited(
@@ -583,6 +586,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       contentType: picked.mimeType ?? contentTypeForFilename(picked.name),
       localPath: picked.path,
       kind: 'image',
+      geo: await extractMediaGeoFromImageBytes(bytes),
     );
     widget.onSelectedChanged([...widget.selected, item]);
   }
@@ -638,6 +642,9 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
               : null,
           contentType: ct,
           kind: kind,
+          geo: kind == 'image'
+              ? await extractMediaGeoFromImageBytes(bytes)
+              : null,
         ),
       );
     }

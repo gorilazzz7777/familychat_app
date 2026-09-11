@@ -629,6 +629,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
               filename: item.filename,
               contentType:
                   item.contentType ?? contentTypeForFilename(item.filename),
+              photoExif: item.geo?.toPhotoExif(),
               kind: item.kind,
               localPath: item.localPath,
               thumbnailBytes: item.thumbnailBytes,

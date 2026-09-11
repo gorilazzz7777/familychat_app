@@ -31,6 +31,27 @@ class MediaGeo {
       };
 }
 
+MediaGeo? mediaGeoFromCoordinates(double? latitude, double? longitude) {
+  if (latitude == null || longitude == null) return null;
+  if (latitude.abs() < 1e-8 && longitude.abs() < 1e-8) return null;
+  if (latitude < -90 || latitude > 90) return null;
+  if (longitude < -180 || longitude > 180) return null;
+  return MediaGeo(latitude: latitude, longitude: longitude);
+}
+
+MediaGeo? mediaGeoFromPhotoExif(Map<String, dynamic>? exif) {
+  if (exif == null || exif.isEmpty) return null;
+  double? asDouble(Object? value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse('$value');
+  }
+
+  return mediaGeoFromCoordinates(
+    asDouble(exif['gps_latitude'] ?? exif['latitude']),
+    asDouble(exif['gps_longitude'] ?? exif['longitude']),
+  );
+}
+
 /// Один элемент перед отправкой (фото/видео), с превью и валидацией.
 class MediaUploadDraft {
   MediaUploadDraft({

@@ -4,6 +4,7 @@ import 'package:exif/exif.dart';
 import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 
+import '../media/video_upload_pipeline.dart';
 import 'upload_image_exif_path.dart';
 
 /// Временно включено по умолчанию для отладки GEO на iPhone.
@@ -203,6 +204,22 @@ Future<void> logAssetGeoSourceDiagnostics(AssetEntity asset) async {
     if (f == null) return null;
     return f.readAsBytes();
   });
+}
+
+void logAssetGeoHint({
+  required String assetId,
+  required String source,
+  MediaGeo? geo,
+}) {
+  if (!_enableUploadExifLog) return;
+  if (geo == null) {
+    _exifLog('asset_geo_hint id=$assetId source=$source geo=null');
+    return;
+  }
+  _exifLog(
+    'asset_geo_hint id=$assetId source=$source '
+    'lat=${geo.latitude} lon=${geo.longitude}',
+  );
 }
 
 /// Лог результата извлечения geo + что уйдёт на бэкенд.
