@@ -1100,8 +1100,8 @@ class FamilyChatRepository {
         cancelToken: cancelToken,
       );
       final data = res.data;
-      if (data == null || data.isEmpty) {
-        throw StateError('Пустой файл');
+      if (res.statusCode == 204 || data == null || data.isEmpty) {
+        throw StateError('Файл недоступен');
       }
       return data is Uint8List ? data : Uint8List.fromList(data);
     } finally {
@@ -2221,6 +2221,16 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> mediaEngagement(int attachmentId) async {
+    if (attachmentId <= 0) {
+      return {
+        'reactions': <dynamic>[],
+        'my_reaction': '',
+        'likes_count': 0,
+        'liked_by_me': false,
+        'comments_count': 0,
+        'comments': <dynamic>[],
+      };
+    }
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/media/$attachmentId/engagement/',
     );
@@ -2228,6 +2238,9 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> toggleMediaLike(int attachmentId) async {
+    if (attachmentId <= 0) {
+      return mediaEngagement(attachmentId);
+    }
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/media/$attachmentId/engagement/',
     );
@@ -2238,6 +2251,9 @@ class FamilyChatRepository {
     int attachmentId, {
     required String emoji,
   }) async {
+    if (attachmentId <= 0) {
+      return mediaEngagement(attachmentId);
+    }
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/media/$attachmentId/engagement/',
       data: {'emoji': emoji},
@@ -2246,6 +2262,9 @@ class FamilyChatRepository {
   }
 
   Future<Map<String, dynamic>> markFeedEventViewed(int eventId) async {
+    if (eventId <= 0) {
+      return {'viewed_by': <dynamic>[], 'viewed_count': 0};
+    }
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/feed/events/$eventId/view/',
     );

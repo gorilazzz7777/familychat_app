@@ -37,7 +37,9 @@ Future<void> openFeedReactionPeople({
 
   var nextReactions = reactions;
   var nextComments = commentsCount;
-  if (feedPeopleHaveUnresolvedNames(people) && attachmentId != null) {
+  if (feedPeopleHaveUnresolvedNames(people) &&
+      attachmentId != null &&
+      attachmentId > 0) {
     showDialog<void>(
       context: context,
       barrierDismissible: false,

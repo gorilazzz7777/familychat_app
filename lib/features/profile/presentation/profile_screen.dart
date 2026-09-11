@@ -139,6 +139,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   }
 
   Future<void> _saveProfile() async {
+    if (_firstName.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Укажите имя')),
+      );
+      return;
+    }
     if (_birthDate == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Укажите день рождения')),
@@ -562,7 +568,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ),
         const SizedBox(height: 16),
         FilledButton(
-          onPressed: _saving ? null : _saveProfile,
+          onPressed: _saving || _firstName.text.trim().isEmpty
+              ? null
+              : _saveProfile,
           child: _saving
               ? const SizedBox(
                   width: 22,

@@ -294,12 +294,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       ChatOfflineSync.instance.setOnline(true);
       unawaited(FamilyChatLocalCache.saveStatus(status));
     }
-    unawaited(
-      ChatSyncService.instance.start(
-        ref.read(familychatRepositoryProvider),
-        currentUserId: chatAsInt(status['user_id']),
-      ),
-    );
+    _maybeStartChatSync(status);
     LinkPreviewService.instance.bindBackend(
       ref.read(familychatRepositoryProvider).fetchLinkPreview,
     );
@@ -309,6 +304,18 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       unawaited(_maybeHandleFriendInvite());
       unawaited(_maybeHandleFamilyTransfer());
     }
+  }
+
+  void _maybeStartChatSync(Map<String, dynamic> status) {
+    final ready =
+        status['onboarding_complete'] == true && status['has_family'] == true;
+    if (!ready) return;
+    unawaited(
+      ChatSyncService.instance.start(
+        ref.read(familychatRepositoryProvider),
+        currentUserId: chatAsInt(status['user_id']),
+      ),
+    );
   }
 
   /// Background status refresh after cache-first entry (no spinner).
@@ -330,6 +337,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     unawaited(ref.read(themeSeedProvider.notifier).syncFromStatus(status));
     _syncAppActions();
     if (ready && !wasReady) {
+      _maybeStartChatSync(status);
       unawaited(ref.read(appSettingsProvider.notifier).syncFromServer());
       unawaited(_maybeHandleFriendInvite());
       unawaited(_maybeHandleFamilyTransfer());

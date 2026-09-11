@@ -18,7 +18,8 @@ Future<void> openFeedViewedByPeople({
   if (!context.mounted) return;
 
   if ((feedPeopleHaveUnresolvedNames(people) || people.isEmpty) &&
-      eventId != null) {
+      eventId != null &&
+      eventId > 0) {
     showDialog<void>(
       context: context,
       barrierDismissible: false,

@@ -77,7 +77,9 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     if (_viewMarked || !mounted) return;
     final eventId = _event['id'];
     final id = eventId is int ? eventId : int.tryParse('$eventId');
-    if (id == null) return;
+    // Optimistic / локальные id (<0) на сервер не отправляем — URL не матчится.
+    if (id == null || id <= 0) return;
+    if (_event['_optimistic'] == true) return;
     _viewMarked = true;
     try {
       final data =

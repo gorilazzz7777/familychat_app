@@ -249,6 +249,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   Future<void> _saveProfile() async {
+    if (_firstName.text.trim().isEmpty) {
+      setState(() => _error = 'Укажите имя');
+      return;
+    }
     if (_birthDate == null) {
       setState(() => _error = 'Укажите день рождения');
       return;
@@ -558,6 +562,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             TextField(
               controller: _firstName,
               decoration: const InputDecoration(labelText: 'Имя'),
+              textCapitalization: TextCapitalization.words,
+              onChanged: (_) {
+                if (_error != null) setState(() => _error = null);
+              },
             ),
             const SizedBox(height: 12),
             TextField(
@@ -598,7 +606,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
             const SizedBox(height: 24),
             FilledButton(
-              onPressed: _loading ? null : _saveProfile,
+              onPressed: _loading || _firstName.text.trim().isEmpty
+                  ? null
+                  : _saveProfile,
               child: const Text('Продолжить'),
             ),
           ],
