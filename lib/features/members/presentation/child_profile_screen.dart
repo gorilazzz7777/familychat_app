@@ -758,6 +758,8 @@ IconData _milestoneIconFor(Map<String, dynamic> milestone) {
       return Icons.directions_walk_outlined;
     case 'first_birthday':
       return Icons.celebration_outlined;
+    case 'age_year_1':
+      return Icons.cake_outlined;
   }
   final title = (milestone['title']?.toString() ?? '').toLowerCase();
   if (title.contains('улыб')) return Icons.sentiment_satisfied_alt_outlined;
@@ -765,7 +767,10 @@ IconData _milestoneIconFor(Map<String, dynamic> milestone) {
   if (title.contains('звук') || title.contains('голос')) {
     return Icons.record_voice_over_outlined;
   }
-  if (title.contains('роддом') || title.contains('выезд') || title.contains('дом')) {
+  if (title.contains('роддом') ||
+      title.contains('выпис') ||
+      title.contains('выезд') ||
+      title.contains('дом')) {
     return Icons.home_outlined;
   }
   return Icons.flag_outlined;
