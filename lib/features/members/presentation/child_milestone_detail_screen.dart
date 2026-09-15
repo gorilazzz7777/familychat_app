@@ -186,6 +186,7 @@ class _ChildMilestoneDetailScreenState
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Сохранено')),
       );
+      Navigator.of(context).pop(true);
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);

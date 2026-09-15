@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/local_db/chat_local_store.dart';
+import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'chat_network_status.dart';
 import 'chat_offline_outbox.dart';
@@ -24,11 +25,16 @@ class ChatOfflineSync extends ChangeNotifier {
   FamilyChatRepository? _pendingRepo;
   List<ChatOutboxDelivery> _recentDeliveries = const [];
   Timer? _retryTimer;
+  Timer? _pendingWatchdog;
   DateTime? _lastOnlineCheckAt;
   DateTime? _syncStartedAt;
 
   /// Skip /status ping when we recently confirmed online (send path latency).
   static const _onlineCheckTtl = Duration(seconds: 10);
+
+  /// While foreground + outbox not empty, periodically kick sync so HTTP
+  /// fallback cannot sit idle if a one-shot scheduleSync was missed (iOS).
+  static const _pendingWatchdogInterval = Duration(seconds: 12);
 
   bool get isOnline => _online;
   bool get isSyncing => _syncing;
@@ -167,6 +173,7 @@ class ChatOfflineSync extends ChangeNotifier {
           debugPrint('[ChatOfflineSync] run done passes=$passes');
         }
         if (again != null) {
+          unawaited(_armPendingWatchdog(again));
           if (_online) {
             unawaited(ChatScheduledSendService.instance.dispatchDue());
           }
@@ -176,6 +183,34 @@ class ChatOfflineSync extends ChangeNotifier {
         }
       }
     }
+  }
+
+  Future<void> _armPendingWatchdog(FamilyChatRepository repo) async {
+    final pending = await ChatOfflineOutbox.pendingCount();
+    if (pending <= 0) {
+      _pendingWatchdog?.cancel();
+      _pendingWatchdog = null;
+      return;
+    }
+    if (_pendingWatchdog?.isActive == true) return;
+    _pendingWatchdog = Timer.periodic(_pendingWatchdogInterval, (_) {
+      unawaited(_pendingWatchdogTick(repo));
+    });
+  }
+
+  Future<void> _pendingWatchdogTick(FamilyChatRepository repo) async {
+    if (!FamilyChatForegroundBridge.isAppInForeground()) return;
+    final pending = await ChatOfflineOutbox.pendingCount();
+    if (pending <= 0) {
+      _pendingWatchdog?.cancel();
+      _pendingWatchdog = null;
+      return;
+    }
+    if (_syncing) return;
+    if (kDebugMode) {
+      debugPrint('[ChatOfflineSync] pending_watchdog kick pending=$pending');
+    }
+    unawaited(run(repo));
   }
 
   Future<void> _runPrefetch(FamilyChatRepository repo) async {

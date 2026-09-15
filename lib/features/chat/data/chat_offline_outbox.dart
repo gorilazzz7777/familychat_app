@@ -464,85 +464,58 @@ class ChatOfflineOutbox {
 
   static Future<ChatOutboxSyncResult> sync(FamilyChatRepository repo) async {
     final delivered = <ChatOutboxDelivery>[];
-    final skippedIds = <String>{};
+    // Claimed = in-flight or finished-for-this-pass (skip / failed / removed).
+    final claimedIds = <String>{};
     DateTime? nextRetryAt;
+    var stopForOffline = false;
+    var nonTextLaneActive = true;
 
-    while (true) {
-      final items = await _readItems();
-      // Prefer text messages (and over mark_read/mute) so typing isn't blocked
-      // behind media uploads or lower-priority outbox work.
-      final textBatch = _pickReadyTextMessages(
-        items,
-        skippedIds: skippedIds,
-        limit: 3,
-        onMessageDeferred: (retryAt) {
-          final current = nextRetryAt;
-          if (current == null || retryAt.isBefore(current)) {
-            nextRetryAt = retryAt;
-          }
-        },
-      );
-      if (textBatch.isNotEmpty) {
-        // Parallel HTTP for plain text — rapid typing no longer waits FIFO.
-        final batchSkipped = <String>{};
-        var stopForOffline = false;
-        await Future.wait(
-          textBatch.map((item) async {
-            final itemId = item['id']?.toString() ?? '';
-            if (itemId.isEmpty) return;
-            try {
-              final result = await _deliverMessage(repo, item);
-              if (result == null) {
-                batchSkipped.add(itemId);
-                debugPrint(
-                  '[ChatOutbox] skip message without delivery id=$itemId',
-                );
-                return;
-              }
-              delivered.add(result);
-              await _removeItemById(itemId);
-            } catch (error, st) {
-              batchSkipped.add(itemId);
-              debugPrint('[ChatOutbox] fail id=$itemId error=$error\n$st');
-              await _handleMessageDeliverError(
-                item: item,
-                itemId: itemId,
-                error: error,
-                delivered: delivered,
-                onRetryScheduled: (retryAt) {
-                  final current = nextRetryAt;
-                  if (current == null || retryAt.isBefore(current)) {
-                    nextRetryAt = retryAt;
-                  }
-                },
-              );
-              if (ChatNetworkStatus.looksOffline(error)) {
-                stopForOffline = true;
-              }
-            }
-          }),
-        );
-        skippedIds.addAll(batchSkipped);
-        if (stopForOffline) break;
-        continue;
+    void noteRetry(DateTime retryAt) {
+      final current = nextRetryAt;
+      if (current == null || retryAt.isBefore(current)) {
+        nextRetryAt = retryAt;
       }
+    }
 
-      final item = _pickNextOutboxItem(
-        items,
-        skippedIds: skippedIds,
-        onMessageDeferred: (retryAt) {
-          final current = nextRetryAt;
-          if (current == null || retryAt.isBefore(current)) {
-            nextRetryAt = retryAt;
+    Future<void> deliverTextBatch(List<Map<String, dynamic>> batch) async {
+      await Future.wait(
+        batch.map((item) async {
+          final itemId = item['id']?.toString() ?? '';
+          if (itemId.isEmpty) return;
+          try {
+            final result = await _deliverMessage(repo, item);
+            if (result == null) {
+              debugPrint(
+                '[ChatOutbox] skip message without delivery id=$itemId',
+              );
+              return;
+            }
+            delivered.add(result);
+            await _removeItemById(itemId);
+          } catch (error, st) {
+            debugPrint('[ChatOutbox] fail id=$itemId error=$error\n$st');
+            await _handleMessageDeliverError(
+              item: item,
+              itemId: itemId,
+              error: error,
+              delivered: delivered,
+              onRetryScheduled: noteRetry,
+            );
+            // Allow re-pick after next_retry_at while the media lane is busy.
+            claimedIds.remove(itemId);
+            if (ChatNetworkStatus.looksOffline(error)) {
+              stopForOffline = true;
+            }
           }
-        },
+        }),
       );
-      if (item == null) break;
+    }
 
+    Future<void> deliverNonTextItem(Map<String, dynamic> item) async {
       final itemId = item['id']?.toString() ?? '';
       if (itemId.isEmpty) {
         debugPrint('[ChatOutbox] skip item without id kind=${item['kind']}');
-        break;
+        return;
       }
       try {
         final kind = item['kind']?.toString();
@@ -552,7 +525,6 @@ class ChatOfflineOutbox {
           result = await _deliverMessage(repo, item);
           if (result == null) {
             removeFromQueue = false;
-            if (itemId.isNotEmpty) skippedIds.add(itemId);
             debugPrint('[ChatOutbox] skip message without delivery id=$itemId');
           }
         } else if (kind == 'reaction') {
@@ -583,14 +555,13 @@ class ChatOfflineOutbox {
           await _deliverClearQuietHours(repo, item);
         } else {
           await _removeItemById(itemId);
-          continue;
+          return;
         }
         if (result != null) delivered.add(result);
         if (removeFromQueue) {
           await _removeItemById(itemId);
         }
       } catch (error, st) {
-        if (itemId.isNotEmpty) skippedIds.add(itemId);
         debugPrint('[ChatOutbox] fail id=$itemId error=$error\n$st');
         if (item['kind']?.toString() == 'message') {
           await _handleMessageDeliverError(
@@ -598,17 +569,65 @@ class ChatOfflineOutbox {
             itemId: itemId,
             error: error,
             delivered: delivered,
-            onRetryScheduled: (retryAt) {
-              final current = nextRetryAt;
-              if (current == null || retryAt.isBefore(current)) {
-                nextRetryAt = retryAt;
-              }
-            },
+            onRetryScheduled: noteRetry,
           );
+          claimedIds.remove(itemId);
         }
-        if (ChatNetworkStatus.looksOffline(error)) break;
+        if (ChatNetworkStatus.looksOffline(error)) {
+          stopForOffline = true;
+        }
       }
     }
+
+    // Text HTTP runs in its own lane and keeps polling while media uploads,
+    // so typing never waits for a stuck photo/video POST.
+    Future<void> textLane() async {
+      while (!stopForOffline) {
+        final items = await _readItems();
+        final textBatch = _pickReadyTextMessages(
+          items,
+          skippedIds: claimedIds,
+          limit: 3,
+          onMessageDeferred: noteRetry,
+        );
+        if (textBatch.isEmpty) {
+          if (!nonTextLaneActive) break;
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+          continue;
+        }
+        for (final item in textBatch) {
+          final id = item['id']?.toString() ?? '';
+          if (id.isNotEmpty) claimedIds.add(id);
+        }
+        ChatSendTrace.log(
+          'http_outbox_text_batch',
+          source: 'outbox',
+          detail: 'n=${textBatch.length} mediaLane=$nonTextLaneActive',
+        );
+        await deliverTextBatch(textBatch);
+      }
+    }
+
+    Future<void> nonTextLane() async {
+      try {
+        while (!stopForOffline) {
+          final items = await _readItems();
+          final item = _pickNextNonTextItem(
+            items,
+            skippedIds: claimedIds,
+            onMessageDeferred: noteRetry,
+          );
+          if (item == null) break;
+          final itemId = item['id']?.toString() ?? '';
+          if (itemId.isNotEmpty) claimedIds.add(itemId);
+          await deliverNonTextItem(item);
+        }
+      } finally {
+        nonTextLaneActive = false;
+      }
+    }
+
+    await Future.wait([textLane(), nonTextLane()]);
 
     return ChatOutboxSyncResult(
       deliveries: delivered,
@@ -616,9 +635,8 @@ class ChatOfflineOutbox {
     );
   }
 
-  /// Ready messages first (FIFO among messages), then other kinds in queue order.
-  /// Text-only messages jump ahead of media so a stuck upload cannot clog typing.
-  static Map<String, dynamic>? _pickNextOutboxItem(
+  /// Media messages and non-message kinds only (plain text has its own lane).
+  static Map<String, dynamic>? _pickNextNonTextItem(
     List<Map<String, dynamic>> items, {
     required Set<String> skippedIds,
     required void Function(DateTime retryAt) onMessageDeferred,
@@ -629,6 +647,7 @@ class ChatOfflineOutbox {
       final id = candidate['id']?.toString() ?? '';
       if (id.isEmpty || skippedIds.contains(id)) continue;
       if (candidate['kind']?.toString() == 'message') {
+        if (!_messageHasAttachments(candidate)) continue;
         final attempts = chatAsInt(candidate['attempts']) ?? 0;
         if (attempts >= maxAttempts || candidate['paused'] == true) {
           skippedIds.add(id);
@@ -638,15 +657,11 @@ class ChatOfflineOutbox {
           candidate['next_retry_at']?.toString() ?? '',
         );
         if (retryAt != null && retryAt.isAfter(DateTime.now().toUtc())) {
-          skippedIds.add(id);
           onMessageDeferred(retryAt);
           continue;
         }
-        if (_messageHasAttachments(candidate)) {
-          firstMediaMessage ??= candidate;
-          continue;
-        }
-        return candidate;
+        firstMediaMessage ??= candidate;
+        continue;
       }
       firstOther ??= candidate;
     }
@@ -680,7 +695,7 @@ class ChatOfflineOutbox {
         candidate['next_retry_at']?.toString() ?? '',
       );
       if (retryAt != null && retryAt.isAfter(DateTime.now().toUtc())) {
-        skippedIds.add(id);
+        // Do not claim — text lane must retry after next_retry_at while media runs.
         onMessageDeferred(retryAt);
         continue;
       }
