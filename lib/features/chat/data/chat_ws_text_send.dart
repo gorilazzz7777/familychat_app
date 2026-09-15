@@ -6,6 +6,14 @@ import 'familychat_realtime.dart';
 abstract final class ChatWsTextSend {
   static const ackTimeout = Duration(seconds: 2);
 
+  /// After consecutive WS ack failures, skip WS and use HTTP outbox for a while.
+  /// Avoids stacking 2s timeouts on every rapid send when the socket is half-dead.
+  static const int _circuitFailThreshold = 2;
+  static const Duration _circuitOpenFor = Duration(seconds: 45);
+
+  static int _consecutiveFailures = 0;
+  static DateTime? _circuitOpenUntil;
+
   static bool isEligible({
     required List<dynamic> attachments,
     int? voiceDurationMs,
@@ -21,6 +29,31 @@ abstract final class ChatWsTextSend {
     return true;
   }
 
+  static bool get _circuitOpen {
+    final until = _circuitOpenUntil;
+    if (until == null) return false;
+    if (DateTime.now().isBefore(until)) return true;
+    _circuitOpenUntil = null;
+    return false;
+  }
+
+  static void _noteSuccess() {
+    _consecutiveFailures = 0;
+    _circuitOpenUntil = null;
+  }
+
+  static void _noteFailure() {
+    _consecutiveFailures += 1;
+    if (_consecutiveFailures >= _circuitFailThreshold) {
+      _circuitOpenUntil = DateTime.now().add(_circuitOpenFor);
+      ChatSendTrace.log(
+        'ws_circuit_open',
+        source: 'ws',
+        detail: 'failures=$_consecutiveFailures openFor=${_circuitOpenFor.inSeconds}s',
+      );
+    }
+  }
+
   static Future<Map<String, dynamic>?> trySend({
     required int threadId,
     required int clientMsgId,
@@ -31,6 +64,15 @@ abstract final class ChatWsTextSend {
   }) async {
     final trimmed = body.trim();
     if (trimmed.isEmpty) return null;
+    if (_circuitOpen) {
+      ChatSendTrace.log(
+        'ws_circuit_skip',
+        threadId: threadId,
+        tempId: clientMsgId,
+        source: 'ws',
+      );
+      return null;
+    }
     final realtime = FamilyChatRealtime.instance;
     if (!realtime.isConnected) {
       ChatSendTrace.log(
@@ -39,6 +81,7 @@ abstract final class ChatWsTextSend {
         tempId: clientMsgId,
         source: 'ws',
       );
+      _noteFailure();
       return null;
     }
     try {
@@ -51,13 +94,24 @@ abstract final class ChatWsTextSend {
         notifySilent: notifySilent,
         timeout: ackTimeout,
       );
+      if (ack == null) {
+        ChatSendTrace.log(
+          'ws_ack_timeout',
+          threadId: threadId,
+          tempId: clientMsgId,
+          source: 'ws',
+        );
+        _noteFailure();
+        return null;
+      }
       ChatSendTrace.log(
-        ack == null ? 'ws_ack_timeout' : 'ws_ack_ok',
+        'ws_ack_ok',
         threadId: threadId,
         tempId: clientMsgId,
-        serverId: ack == null ? null : chatAsInt(ack['id']),
+        serverId: chatAsInt(ack['id']),
         source: 'ws',
       );
+      _noteSuccess();
       return ack;
     } catch (e) {
       ChatSendTrace.log(
@@ -67,13 +121,17 @@ abstract final class ChatWsTextSend {
         source: 'ws',
         detail: '$e',
       );
+      _noteFailure();
       return null;
     }
   }
 
+  /// Best-effort reconnect; never block the send path for long.
   static Future<void> ensureConnection() async {
     final realtime = FamilyChatRealtime.instance;
     if (realtime.isConnected) return;
-    await realtime.reconnectAndRefresh();
+    try {
+      await realtime.reconnectAndRefresh().timeout(const Duration(seconds: 2));
+    } catch (_) {}
   }
 }

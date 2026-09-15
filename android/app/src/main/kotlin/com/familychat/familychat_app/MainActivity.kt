@@ -34,6 +34,7 @@ class MainActivity : FlutterActivity() {
 
     private var proximityWakeLock: PowerManager.WakeLock? = null
     private val rustoreReviewPlugin = RustoreReviewPlugin()
+    private val playReviewPlugin = PlayReviewPlugin()
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +57,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         flutterEngine.plugins.add(rustoreReviewPlugin)
+        flutterEngine.plugins.add(playReviewPlugin)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "com.familychat/lifecycle",

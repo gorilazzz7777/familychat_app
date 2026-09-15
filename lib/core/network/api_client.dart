@@ -95,6 +95,8 @@ class _AuthInterceptor extends Interceptor {
   @override
   void onRequest(
       RequestOptions options, RequestInterceptorHandler handler) async {
+    // Keep X-Client-App / X-Install-Store current (store may resolve after Dio init).
+    options.headers.addAll(AppClient.extraHeaders);
     if (!_isAnonymousApiAuthPath(options.path)) {
       final token = await _refresher.ensureAccess();
       if (token != null && token.isNotEmpty) {

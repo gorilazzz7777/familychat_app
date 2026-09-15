@@ -2278,12 +2278,15 @@ class FamilyChatRepository {
     return res.data ?? {'deleted': true, 'event_id': eventId};
   }
 
-  Future<Map<String, dynamic>> submitAppRating(int stars) async {
+  Future<Map<String, dynamic>> submitAppRating(
+    int stars, {
+    String source = 'rustore_prompt',
+  }) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/app-rating/',
       data: {
         'stars': stars,
-        'source': 'rustore_prompt',
+        'source': source,
         'app_name': 'familychat',
       },
     );

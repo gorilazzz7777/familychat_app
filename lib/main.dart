@@ -10,6 +10,8 @@ import 'package:intl/date_symbol_data_local.dart';
 
 import 'app/bootstrap_screen.dart';
 import 'core/call/callkit_incoming_service.dart';
+import 'core/client/app_client.dart';
+import 'core/client/install_store.dart';
 import 'core/media/media_upload_foreground.dart';
 import 'core/notifications/familychat_notifications.dart';
 import 'core/push/push_message_handler.dart';
@@ -27,6 +29,13 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Не блокируем первый кадр: даты и Firebase догружаются параллельно.
   unawaited(initializeDateFormatting('ru', null));
+  if (!kIsWeb) {
+    try {
+      await InstallStore.resolve().timeout(const Duration(seconds: 3));
+    } catch (_) {
+      AppClient.setInstallStore(InstallStore.unknown);
+    }
+  }
   if (kIsWeb) {
     usePathUrlStrategy();
   } else {

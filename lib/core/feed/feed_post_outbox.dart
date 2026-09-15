@@ -106,20 +106,29 @@ class FeedPostOutbox {
   Future<void> flush(FamilyChatRepository repo) async {
     if (_flushing) return;
     _flushing = true;
-    await MediaUploadForeground.enter(MediaUploadForeground.scopeFeed);
     try {
       final pending = await listPending();
-      var anySynced = false;
-      for (final entry in pending) {
-        final ok = await _syncOne(repo, entry);
-        if (ok) anySynced = true;
+      if (pending.isEmpty) {
+        // Resume/bootstrap always flush — do not flash iOS "Отправка медиа"
+        // when there is nothing to send; clear a stale FGS if any.
+        await MediaUploadForeground.stopIfIdle();
+        return;
       }
-      if (anySynced) {
-        await ShellRefresh.instance.refreshMainTabs();
+      await MediaUploadForeground.enter(MediaUploadForeground.scopeFeed);
+      try {
+        var anySynced = false;
+        for (final entry in pending) {
+          final ok = await _syncOne(repo, entry);
+          if (ok) anySynced = true;
+        }
+        if (anySynced) {
+          await ShellRefresh.instance.refreshMainTabs();
+        }
+      } finally {
+        await MediaUploadForeground.leave(MediaUploadForeground.scopeFeed);
       }
     } finally {
       _flushing = false;
-      await MediaUploadForeground.leave(MediaUploadForeground.scopeFeed);
     }
   }
 

@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/cache/familychat_local_cache.dart';
@@ -21,6 +22,7 @@ import '../features/auth/presentation/login_screen.dart';
 import '../features/auth/utils/guest_status.dart';
 import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_realtime_utils.dart';
+import '../features/chat/data/chat_send_trace.dart';
 import '../features/chat/data/chat_sync_service.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
@@ -71,6 +73,14 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       unawaited(initWebFcmForeground());
     }
     _accessSub = AuthSessionBus.instance.onAccessRefreshed.listen((access) {
+      ChatSendTrace.log(
+        'ws_connect_token_refresh',
+        source: 'auth_bus',
+        extra: {
+          'tokenLen': access.length,
+          'connectedBefore': FamilyChatRealtime.instance.isConnected,
+        },
+      );
       unawaited(FamilyChatRealtime.instance.connect(access));
     });
     _invalidSub = AuthSessionBus.instance.onSessionInvalidated.listen((_) {
@@ -348,7 +358,34 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     final client = ref.read(apiClientProvider);
     final token = await client.authRefresher.startWatching();
     if (token != null && token.isNotEmpty) {
+      try {
+        final info = await PackageInfo.fromPlatform();
+        ChatSendTrace.log(
+          'ws_connect_boot',
+          source: 'bootstrap',
+          extra: {
+            'app': '${info.version}+${info.buildNumber}',
+            'pkg': info.packageName,
+            'platform': defaultTargetPlatform.name,
+            'connectedBefore': FamilyChatRealtime.instance.isConnected,
+            'tokenLen': token.length,
+          },
+        );
+      } catch (e) {
+        ChatSendTrace.log(
+          'ws_connect_boot',
+          source: 'bootstrap',
+          detail: 'package_info_failed:$e',
+          extra: {'tokenLen': token.length},
+        );
+      }
       unawaited(FamilyChatRealtime.instance.connect(token));
+    } else {
+      ChatSendTrace.log(
+        'ws_connect_boot_skipped',
+        source: 'bootstrap',
+        detail: 'no_access_token',
+      );
     }
     unawaited(PushRegistrationService.registerIfPossible(
       client: ref.read(apiClientProvider),

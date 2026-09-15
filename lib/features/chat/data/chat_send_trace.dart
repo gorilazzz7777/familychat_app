@@ -1,9 +1,17 @@
+import 'dart:developer' as developer;
+
 import 'package:flutter/foundation.dart';
 
 import 'chat_realtime_utils.dart';
 
-/// Debug trace for chat send races (optimistic UI ↔ SQLite ↔ WS ↔ outbox).
+/// Trace for chat send + WS (optimistic UI ↔ SQLite ↔ WS ↔ outbox).
+///
+/// Always prints (including release/profile) so iOS Xcode/Console.app can
+/// verify whether WS connects and whether sends go via WS or HTTP outbox.
+/// Filter: `FamilyChatWS` / `ChatSendTrace`.
 abstract final class ChatSendTrace {
+  static const logName = 'ChatSendTrace';
+
   static void log(
     String phase, {
     int? threadId,
@@ -13,8 +21,7 @@ abstract final class ChatSendTrace {
     String? detail,
     Map<String, Object?> extra = const {},
   }) {
-    if (!kDebugMode) return;
-    final parts = <String>['[ChatSendTrace]', 'phase=$phase'];
+    final parts = <String>['[$logName]', 'phase=$phase'];
     if (threadId != null) parts.add('thread=$threadId');
     if (tempId != null) parts.add('temp=$tempId');
     if (serverId != null) parts.add('server=$serverId');
@@ -23,7 +30,13 @@ abstract final class ChatSendTrace {
     for (final entry in extra.entries) {
       parts.add('${entry.key}=${entry.value}');
     }
-    debugPrint(parts.join(' '));
+    final line = parts.join(' ');
+    // ignore: avoid_print — intentional always-on diagnostics for store builds
+    print(line);
+    developer.log(line, name: logName);
+    if (kDebugMode) {
+      debugPrint(line);
+    }
   }
 
   static String idsSummary(

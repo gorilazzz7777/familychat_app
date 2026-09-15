@@ -79,6 +79,15 @@ abstract final class MediaUploadForeground {
     await _stopService();
   }
 
+  /// Stop a leftover OS notification when Dart scopes are empty
+  /// (e.g. process killed mid-upload, then cold start with empty outbox).
+  static Future<void> stopIfIdle() async {
+    if (kIsWeb) return;
+    if (!(Platform.isAndroid || Platform.isIOS)) return;
+    if (_scopes.isNotEmpty) return;
+    await _stopService();
+  }
+
   static Future<void> _startService() async {
     try {
       if (await FlutterForegroundTask.isRunningService) return;

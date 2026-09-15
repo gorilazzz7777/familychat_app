@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -41,6 +42,28 @@ class GorilaChatRealtime {
 
   bool get isConnected => _connected && _channel != null;
 
+  void _log(String message, {Object? error, StackTrace? stackTrace}) {
+    final line = '[$debugName] $message';
+    // ignore: avoid_print — always-on WS diagnostics (iOS Console / Xcode)
+    print(line);
+    developer.log(
+      message,
+      name: debugName,
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
+
+  static String redactWsUri(Uri uri) {
+    final params = Map<String, String>.from(uri.queryParameters);
+    if (params.containsKey('token')) {
+      final raw = params['token'] ?? '';
+      params['token'] =
+          raw.isEmpty ? '***' : '***len=${raw.length}';
+    }
+    return uri.replace(queryParameters: params).toString();
+  }
+
   void addListener(GorilaChatRealtimeHandler handler) => _listeners.add(handler);
 
   void removeListener(GorilaChatRealtimeHandler handler) =>
@@ -51,19 +74,26 @@ class GorilaChatRealtime {
   }
 
   Future<void> connect(String accessToken) async {
-    if (accessToken.isEmpty) return;
+    if (accessToken.isEmpty) {
+      _log('ws connect skipped: empty access token');
+      return;
+    }
     _accessToken = accessToken;
     _reconnectTimer?.cancel();
-    if (_connecting) return;
+    if (_connecting) {
+      _log('ws connect skipped: already connecting');
+      return;
+    }
     _connecting = true;
     try {
       _intentionalClose = true;
       await _closeChannel();
       _intentionalClose = false;
       final uri = uriForToken(accessToken);
-      if (kDebugMode) {
-        debugPrint('$debugName ws connect: $uri');
-      }
+      _log(
+        'ws connecting attempt=$_reconnectAttempt '
+        'uri=${redactWsUri(uri)}',
+      );
       _channel = WebSocketChannel.connect(uri);
       _sub = _channel!.stream.listen(
         (data) {
@@ -75,16 +105,16 @@ class GorilaChatRealtime {
             if (_handleSendControlEvent(event)) return;
             if (_handleMarkReadAckEvent(event)) return;
             _dispatch(event);
-          } catch (e) {
-            debugPrint('$debugName ws decode error: $e');
+          } catch (e, st) {
+            _log('ws decode error: $e', error: e, stackTrace: st);
           }
         },
-        onError: (Object error) {
-          debugPrint('$debugName ws error: $error');
+        onError: (Object error, StackTrace stackTrace) {
+          _log('ws stream error: $error', error: error, stackTrace: stackTrace);
           _handleTransportLost();
         },
         onDone: () {
-          debugPrint('$debugName ws closed');
+          _log('ws stream done (closed by peer or local)');
           _handleTransportLost();
         },
         cancelOnError: false,
@@ -93,19 +123,20 @@ class GorilaChatRealtime {
         await _channel!.ready.timeout(const Duration(seconds: 20));
         _connected = true;
         _reconnectAttempt = 0;
+        _log('ws connected OK');
         emitSyntheticEvent({'event': 'ws_connected'});
         if (_refreshAfterConnect) {
           _refreshAfterConnect = false;
           emitSyntheticEvent({'event': 'chat_refresh', 'force': true});
         }
-      } catch (e) {
-        debugPrint('$debugName ws connect error: $e');
+      } catch (e, st) {
+        _log('ws ready/connect failed: $e', error: e, stackTrace: st);
         _connected = false;
         await _closeChannel();
         _scheduleReconnect();
       }
-    } catch (e) {
-      debugPrint('$debugName ws connect error: $e');
+    } catch (e, st) {
+      _log('ws connect error: $e', error: e, stackTrace: st);
       _connected = false;
       _scheduleReconnect();
     } finally {
@@ -120,6 +151,7 @@ class GorilaChatRealtime {
     _failPendingTextSends();
     _failPendingMarkReads();
     if (wasConnected && !_intentionalClose) {
+      _log('ws transport lost → schedule reconnect');
       emitSyntheticEvent({'event': 'ws_disconnected'});
     }
     _scheduleReconnect();
@@ -138,12 +170,14 @@ class GorilaChatRealtime {
     _reconnectTimer?.cancel();
     final seconds = math.min(30, math.pow(2, _reconnectAttempt).toInt());
     _reconnectAttempt++;
+    _log('ws reconnect scheduled in ${seconds}s attempt=$_reconnectAttempt');
     _reconnectTimer = Timer(Duration(seconds: seconds), () {
       unawaited(connect(token));
     });
   }
 
   Future<void> disconnect() async {
+    _log('ws disconnect requested');
     _accessToken = null;
     _reconnectAttempt = 0;
     _connected = false;
@@ -167,6 +201,9 @@ class GorilaChatRealtime {
   /// Reconnect + tell open screens to HTTP-resync.
   Future<void> reconnectAndRefresh() async {
     final token = _accessToken;
+    _log(
+      'ws reconnectAndRefresh hasToken=${token != null && token.isNotEmpty}',
+    );
     if (token != null && token.isNotEmpty) {
       await connect(token);
     }
@@ -175,11 +212,16 @@ class GorilaChatRealtime {
 
   void sendJson(Map<String, dynamic> payload) {
     final channel = _channel;
-    if (!_connected || channel == null) return;
+    if (!_connected || channel == null) {
+      _log(
+        'ws sendJson dropped (not connected) event=${payload['event']}',
+      );
+      return;
+    }
     try {
       channel.sink.add(jsonEncode(payload));
-    } catch (e) {
-      debugPrint('$debugName ws send error: $e');
+    } catch (e, st) {
+      _log('ws sendJson error: $e', error: e, stackTrace: st);
     }
   }
 
@@ -241,10 +283,20 @@ class GorilaChatRealtime {
     bool notifySilent = false,
     Duration timeout = _defaultSendAckTimeout,
   }) async {
-    if (!isConnected) return null;
+    if (!isConnected) {
+      _log(
+        'ws sendText skipped: not connected '
+        'thread=$threadId clientMsgId=$clientMsgId',
+      );
+      return null;
+    }
     final trimmed = body?.trim() ?? '';
     if (trimmed.isEmpty) return null;
 
+    _log(
+      'ws sendText → thread=$threadId clientMsgId=$clientMsgId '
+      'bodyLen=${trimmed.length} timeoutMs=${timeout.inMilliseconds}',
+    );
     final completer = Completer<Map<String, dynamic>>();
     _pendingTextSends[clientMsgId] = _PendingWsTextSend(completer: completer);
 
@@ -260,9 +312,17 @@ class GorilaChatRealtime {
     });
 
     try {
-      return await completer.future.timeout(timeout);
-    } catch (_) {
+      final ack = await completer.future.timeout(timeout);
+      _log(
+        'ws sendText ack OK thread=$threadId clientMsgId=$clientMsgId '
+        'serverId=${chatAsInt(ack['id'])}',
+      );
+      return ack;
+    } catch (e) {
       _pendingTextSends.remove(clientMsgId);
+      _log(
+        'ws sendText ack FAIL thread=$threadId clientMsgId=$clientMsgId err=$e',
+      );
       return null;
     }
   }
@@ -279,6 +339,11 @@ class GorilaChatRealtime {
           message is Map) {
         pending.completer.complete(
           Map<String, dynamic>.from(message),
+        );
+      } else {
+        _log(
+          'ws chat_send_ack unmatched clientMsgId=$clientMsgId '
+          'hadPending=${pending != null}',
         );
       }
       return true;
@@ -320,6 +385,10 @@ class GorilaChatRealtime {
   }
 
   void _failPendingTextSends() {
+    final n = _pendingTextSends.length;
+    if (n > 0) {
+      _log('ws fail $n pending text sends (disconnect)');
+    }
     for (final entry in _pendingTextSends.entries) {
       if (!entry.value.completer.isCompleted) {
         entry.value.completer.completeError(

@@ -3940,8 +3940,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
   }) async {
-    await ChatWsTextSend.ensureConnection();
-    final connected = FamilyChatRealtime.instance.isConnected;
+    // Never block send on a slow WS reconnect (can take up to ~20s).
+    // Kick reconnect in background and fall through to HTTP outbox.
+    var connected = FamilyChatRealtime.instance.isConnected;
+    if (!connected) {
+      unawaited(ChatWsTextSend.ensureConnection());
+    }
     ChatSendTrace.log(
       'ws_try',
       threadId: widget.threadId,

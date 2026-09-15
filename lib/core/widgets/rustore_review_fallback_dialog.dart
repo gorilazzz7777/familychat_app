@@ -7,18 +7,26 @@ const Color _starInactive = Color(0xFF9E9E9E);
 Future<void> showRustoreReviewFallbackDialog(
   BuildContext context, {
   required Future<void> Function(int stars) onSubmit,
+  String storeCatalogName = 'RuStore',
 }) {
   return showDialog<void>(
     context: context,
     barrierDismissible: true,
-    builder: (ctx) => _RustoreReviewFallbackDialog(onSubmit: onSubmit),
+    builder: (ctx) => _RustoreReviewFallbackDialog(
+      onSubmit: onSubmit,
+      storeCatalogName: storeCatalogName,
+    ),
   );
 }
 
 class _RustoreReviewFallbackDialog extends StatefulWidget {
-  const _RustoreReviewFallbackDialog({required this.onSubmit});
+  const _RustoreReviewFallbackDialog({
+    required this.onSubmit,
+    required this.storeCatalogName,
+  });
 
   final Future<void> Function(int stars) onSubmit;
+  final String storeCatalogName;
 
   @override
   State<_RustoreReviewFallbackDialog> createState() =>
@@ -57,7 +65,8 @@ class _RustoreReviewFallbackDialogState
         children: [
           Text(
             'Вам нравится Family Space? '
-            'Выберите оценку — после отправки откроется RuStore.',
+            'Выберите оценку — после отправки откроется '
+            '${widget.storeCatalogName}.',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 20),

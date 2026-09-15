@@ -8,19 +8,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../features/familychat/data/familychat_repository.dart';
+import '../client/install_store.dart';
 import '../config/env.dart';
 import '../storage/app_rating_storage.dart';
 import '../widgets/rustore_review_fallback_dialog.dart';
 
-/// RuStore: просьба оценить приложение.
+/// Оценка приложения: Play / RuStore In-App Review + запасной диалог.
 ///
-/// Триггеры: 10-я сессия и первая реакция в ленте.
-/// Если пользователь уже оценил — больше не просим.
+/// Триггеры (как раньше): 10-я сессия и первая реакция в ленте.
+/// Выбор SDK по installer (как в Remont): Play → Play Review, RuStore → RuStore,
+/// иначе — сразу fallback (каталог Play, если установлен, иначе RuStore).
 class RuStoreReviewPromptService {
-  static const String _logName = 'RuStoreReviewPrompt';
+  static const String _logName = 'StoreReviewPrompt';
 
-  static const MethodChannel _androidReviewChannel =
+  static const MethodChannel _rustoreReviewChannel =
       MethodChannel('com.familychat.familychat_app/rustore_review');
+  static const MethodChannel _playReviewChannel =
+      MethodChannel('com.familychat.familychat_app/play_review');
 
   static const int _sessionTriggerCount = 10;
 
@@ -42,6 +46,7 @@ class RuStoreReviewPromptService {
   static const Duration _minSessionGap = Duration(seconds: 30);
 
   static final Uri _ruStoreAppUri = Uri.parse(Env.rustoreAppUrl);
+  static final Uri _playStoreAppUri = Uri.parse(Env.playStoreAppUrl);
 
   static void _log(String message, {Object? error, StackTrace? stackTrace}) {
     debugPrint('[$_logName] $message');
@@ -91,18 +96,67 @@ class RuStoreReviewPromptService {
     );
   }
 
-  static Future<_SdkReviewOutcome> _tryRustoreInAppReview(
+  static bool _isAlreadyReviewedError(Map native) {
+    final code = '${native['error_code'] ?? ''}'.toLowerCase();
+    final message = '${native['error_message'] ?? ''}'.toLowerCase();
+    final combined = '$code $message';
+    return combined.contains('reviewexists') ||
+        combined.contains('review_exists') ||
+        combined.contains('already reviewed') ||
+        combined.contains('already_rated');
+  }
+
+  static Future<_InstallStoreKind> _detectInstallStore() async {
+    final store = await InstallStore.resolve();
+    switch (store) {
+      case InstallStore.play:
+        return _InstallStoreKind.play;
+      case InstallStore.rustore:
+        return _InstallStoreKind.rustore;
+      default:
+        return _InstallStoreKind.unknown;
+    }
+  }
+
+  /// Для unknown installer: Play если приложение Play установлено, иначе RuStore.
+  static Future<_CatalogTarget> _resolveFallbackCatalog(
+    _InstallStoreKind preferred,
+  ) async {
+    if (preferred == _InstallStoreKind.play) {
+      return _CatalogTarget.play;
+    }
+    if (preferred == _InstallStoreKind.rustore) {
+      return _CatalogTarget.rustore;
+    }
+    try {
+      final native = await _playReviewChannel
+          .invokeMethod<dynamic>('getReviewDiagnostics')
+          .timeout(const Duration(seconds: 3));
+      if (native is Map) {
+        final diag = native['diagnostics'];
+        if (diag is Map && diag['play_installed'] == true) {
+          return _CatalogTarget.play;
+        }
+      }
+    } catch (_) {}
+    return _CatalogTarget.rustore;
+  }
+
+  static Future<_SdkReviewOutcome> _tryStoreInAppReview(
     FamilyChatRepository repository, {
     required String reason,
+    required String storeSdk,
+    required MethodChannel channel,
+    required String launchMethod,
   }) async {
     final sw = Stopwatch()..start();
     try {
-      final dynamic native = await _androidReviewChannel
-          .invokeMethod('launchRuStoreReview')
+      final dynamic native = await channel
+          .invokeMethod(launchMethod)
           .timeout(_sdkCallTimeout);
       sw.stop();
       _log(
-        'RuStore SDK invokeMethod result: $native (${native.runtimeType}) '
+        '$storeSdk SDK invokeMethod result: $native (${native.runtimeType}) '
         'elapsedMs=${sw.elapsedMilliseconds}',
       );
 
@@ -111,7 +165,7 @@ class RuStoreReviewPromptService {
         if (!uiAppeared && sw.elapsed < _minPlausibleReviewDuration) {
           await _reportSdkFailure(
             repository,
-            stage: 'launchReviewFlow',
+            stage: '$storeSdk/launchReviewFlow',
             errorCode: 'suspiciously_fast_success',
             errorMessage:
                 'SDK returned ok in ${sw.elapsedMilliseconds}ms — UI likely skipped',
@@ -124,9 +178,20 @@ class RuStoreReviewPromptService {
       }
 
       if (native is Map) {
+        if (_isAlreadyReviewedError(native)) {
+          await _reportSdkFailure(
+            repository,
+            stage: '$storeSdk/${native['stage'] ?? 'unknown'}',
+            errorCode: '${native['error_code'] ?? 'ReviewExists'}',
+            errorMessage: native['error_message']?.toString(),
+            reason: reason,
+            details: '$native',
+          );
+          return _SdkReviewOutcome.alreadyReviewed;
+        }
         await _reportSdkFailure(
           repository,
-          stage: '${native['stage'] ?? 'unknown'}',
+          stage: '$storeSdk/${native['stage'] ?? 'unknown'}',
           errorCode: '${native['error_code'] ?? 'unknown'}',
           errorMessage: native['error_message']?.toString(),
           reason: reason,
@@ -140,7 +205,7 @@ class RuStoreReviewPromptService {
 
       await _reportSdkFailure(
         repository,
-        stage: 'invoke',
+        stage: '$storeSdk/invoke',
         errorCode: 'unexpected_result',
         errorMessage: '${native.runtimeType}: $native',
         reason: reason,
@@ -150,7 +215,7 @@ class RuStoreReviewPromptService {
       sw.stop();
       await _reportSdkFailure(
         repository,
-        stage: 'timeout',
+        stage: '$storeSdk/timeout',
         errorCode: 'TimeoutException',
         errorMessage:
             'No SDK response within ${_sdkCallTimeout.inMinutes}min: $e',
@@ -160,7 +225,7 @@ class RuStoreReviewPromptService {
     } on MissingPluginException catch (e) {
       await _reportSdkFailure(
         repository,
-        stage: 'plugin',
+        stage: '$storeSdk/plugin',
         errorCode: 'MissingPluginException',
         errorMessage: '$e',
         reason: reason,
@@ -168,13 +233,13 @@ class RuStoreReviewPromptService {
       return _SdkReviewOutcome.silentOrFailed;
     } on PlatformException catch (e, st) {
       _log(
-        'RuStore SDK PlatformException code=${e.code} message=${e.message}',
+        '$storeSdk SDK PlatformException code=${e.code} message=${e.message}',
         error: e,
         stackTrace: st,
       );
       await _reportSdkFailure(
         repository,
-        stage: 'platform',
+        stage: '$storeSdk/platform',
         errorCode: e.code,
         errorMessage: e.message,
         reason: reason,
@@ -184,7 +249,7 @@ class RuStoreReviewPromptService {
     } catch (e) {
       await _reportSdkFailure(
         repository,
-        stage: 'dart',
+        stage: '$storeSdk/dart',
         errorCode: e.runtimeType.toString(),
         errorMessage: '$e',
         reason: reason,
@@ -193,20 +258,20 @@ class RuStoreReviewPromptService {
     }
   }
 
-  static Future<void> _openRuStoreCatalog() async {
-    if (Env.rustoreAppUrl.trim().isEmpty) {
-      _log('fallback: rustoreAppUrl empty');
+  static Future<void> _openCatalog(Uri uri, String label) async {
+    if (uri.toString().trim().isEmpty) {
+      _log('fallback: $label url empty');
       return;
     }
-    if (!await canLaunchUrl(_ruStoreAppUri)) {
-      _log('fallback: canLaunchUrl=false for $_ruStoreAppUri');
+    if (!await canLaunchUrl(uri)) {
+      _log('fallback: canLaunchUrl=false for $uri');
       return;
     }
     final ok = await launchUrl(
-      _ruStoreAppUri,
+      uri,
       mode: LaunchMode.externalApplication,
     );
-    _log('RuStore catalog launch: ok=$ok');
+    _log('$label catalog launch: ok=$ok');
   }
 
   static Future<void> _submitRatingAndRedirect({
@@ -214,14 +279,18 @@ class RuStoreReviewPromptService {
     required SharedPreferences prefs,
     required int stars,
     required BuildContext context,
+    required _CatalogTarget catalog,
   }) async {
-    await repository.submitAppRating(stars);
+    final source = catalog == _CatalogTarget.play
+        ? 'play_prompt'
+        : 'rustore_prompt';
+    await repository.submitAppRating(stars, source: source);
     await AppRatingStorage.saveSubmitted(stars);
     await _markCompleted(prefs);
-    _log('rating submitted: $stars stars');
+    _log('rating submitted: $stars stars → ${catalog.label}');
     if (!context.mounted) return;
-    _snack(context, 'Спасибо! Открываем RuStore…');
-    await _openRuStoreCatalog();
+    _snack(context, 'Спасибо! Открываем ${catalog.label}…');
+    await _openCatalog(catalog.uri, catalog.label);
   }
 
   static Future<void> maybePrompt(
@@ -247,36 +316,76 @@ class RuStoreReviewPromptService {
     _promptInFlight = true;
     try {
       if (!context.mounted) return;
-      _snack(context, 'Сейчас откроется оценка приложения в RuStore.');
 
-      final outcome = await _tryRustoreInAppReview(
-        repository,
-        reason: reason,
-      );
+      final installStore = await _detectInstallStore();
+      final catalog = await _resolveFallbackCatalog(installStore);
+
+      _SdkReviewOutcome outcome;
+      String? successChannel;
+
+      switch (installStore) {
+        case _InstallStoreKind.play:
+          _snack(context, 'Сейчас откроется оценка приложения в Google Play.');
+          outcome = await _tryStoreInAppReview(
+            repository,
+            reason: reason,
+            storeSdk: 'play',
+            channel: _playReviewChannel,
+            launchMethod: 'launchPlayReview',
+          );
+          successChannel = 'play';
+          break;
+        case _InstallStoreKind.rustore:
+          _snack(context, 'Сейчас откроется оценка приложения в RuStore.');
+          outcome = await _tryStoreInAppReview(
+            repository,
+            reason: reason,
+            storeSdk: 'rustore',
+            channel: _rustoreReviewChannel,
+            launchMethod: 'launchRuStoreReview',
+          );
+          successChannel = 'rustore';
+          break;
+        case _InstallStoreKind.unknown:
+          _log('unknown installer — skip store SDK, show fallback');
+          outcome = _SdkReviewOutcome.silentOrFailed;
+          break;
+      }
+
       if (outcome == _SdkReviewOutcome.completedWithUi) {
-        await repository.reportAppRatingPromptShown('rustore');
+        await repository.reportAppRatingPromptShown(successChannel ?? 'fallback');
         await _markCompleted(prefs);
-        _log('marked completed (RuStore In-App review) reason=$reason');
+        _log(
+          'marked completed (${successChannel ?? 'store'} In-App review) '
+          'reason=$reason',
+        );
+        return;
+      }
+      if (outcome == _SdkReviewOutcome.alreadyReviewed) {
+        await _markCompleted(prefs);
+        _log('already reviewed in store — completed, skip fallback reason=$reason');
         return;
       }
       if (outcome == _SdkReviewOutcome.abortedNoFallback) {
         _log(
-          'RuStore In-App flow still in progress or UI was shown — '
+          'In-App flow still in progress or UI was shown — '
           'skip fallback reason=$reason',
         );
         return;
       }
 
-      _log('RuStore In-App SDK did not complete — showing stars dialog');
+      _log('In-App SDK did not complete — showing stars dialog → ${catalog.label}');
       if (!context.mounted) return;
       await repository.reportAppRatingPromptShown('fallback');
       await showRustoreReviewFallbackDialog(
         context,
+        storeCatalogName: catalog.label,
         onSubmit: (stars) => _submitRatingAndRedirect(
           repository: repository,
           prefs: prefs,
           stars: stars,
           context: context,
+          catalog: catalog,
         ),
       );
     } finally {
@@ -348,8 +457,26 @@ class RuStoreReviewPromptService {
   }
 }
 
+enum _InstallStoreKind { play, rustore, unknown }
+
 enum _SdkReviewOutcome {
   completedWithUi,
   silentOrFailed,
   abortedNoFallback,
+  alreadyReviewed,
+}
+
+enum _CatalogTarget {
+  play,
+  rustore;
+
+  String get label => switch (this) {
+        play => 'Google Play',
+        rustore => 'RuStore',
+      };
+
+  Uri get uri => switch (this) {
+        play => RuStoreReviewPromptService._playStoreAppUri,
+        rustore => RuStoreReviewPromptService._ruStoreAppUri,
+      };
 }
