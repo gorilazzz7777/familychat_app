@@ -16,6 +16,7 @@ import '../../../../core/providers/app_providers.dart';
 import '../../../../core/settings/app_settings_controller.dart';
 import '../../../../core/widgets/family_public_image.dart';
 import '../../data/chat_media_auto_download.dart';
+import '../../data/chat_media_flicker_trace.dart';
 import '../../data/chat_media_providers.dart';
 import '../../data/chat_realtime_utils.dart';
 import 'chat_media_transfer_overlay.dart';
@@ -119,12 +120,17 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
   @override
   void didUpdateWidget(covariant ChatVideoNotePlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final oldUrl = oldWidget.attachment['file_url']?.toString() ?? '';
+    final newUrl = widget.attachment['file_url']?.toString() ?? '';
+    final oldThumb = oldWidget.attachment['thumbnail_url']?.toString() ?? '';
+    final newThumb = widget.attachment['thumbnail_url']?.toString() ?? '';
+    final urlIdentityChanged =
+        chatMediaUrlIdentity(oldUrl) != chatMediaUrlIdentity(newUrl) ||
+        chatMediaUrlIdentity(oldThumb) != chatMediaUrlIdentity(newThumb);
     if (oldWidget.attachment['id'] != widget.attachment['id'] ||
-        oldWidget.attachment['file_url'] != widget.attachment['file_url'] ||
+        urlIdentityChanged ||
         oldWidget.attachment['local_device_path'] !=
             widget.attachment['local_device_path'] ||
-        oldWidget.attachment['thumbnail_url'] !=
-            widget.attachment['thumbnail_url'] ||
         oldWidget.attachment['local_bytes'] !=
             widget.attachment['local_bytes']) {
       _resetPlayback();

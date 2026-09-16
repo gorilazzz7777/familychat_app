@@ -18,12 +18,31 @@ import '../../../familychat/data/familychat_repository.dart';
 import '../../data/chat_attachment_download_manager.dart';
 import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_media_display_policy.dart';
+import '../../data/chat_media_flicker_trace.dart';
 import '../../data/chat_media_providers.dart';
 import '../../data/chat_realtime_utils.dart';
 import 'chat_attachment_thumb.dart';
 import 'chat_media_transfer_overlay.dart';
 
 final _attachmentBytesCache = <String, Uint8List>{};
+
+/// Last good Bearer for API `/content` — avoids placeholder flash on remount.
+String? _sharedChatImageBearer;
+
+/// Decoded providers survive ListView remount (history_page_rebuild).
+final Map<String, ImageProvider> _sessionDecodedProviders = {};
+const _sessionDecodedProvidersMax = 120;
+
+void _rememberSessionProvider(String key, ImageProvider provider) {
+  _sessionDecodedProviders[key] = provider;
+  if (_sessionDecodedProviders.length <= _sessionDecodedProvidersMax) return;
+  final excess =
+      _sessionDecodedProviders.length - _sessionDecodedProvidersMax;
+  final keys = _sessionDecodedProviders.keys.take(excess).toList();
+  for (final k in keys) {
+    _sessionDecodedProviders.remove(k);
+  }
+}
 
 String _attachmentCacheKey(int threadId, int attachmentId) =>
     '$threadId:$attachmentId';
@@ -74,6 +93,10 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   bool _sizeReported = false;
   bool _sizeListenAttached = false;
   bool _urlLoadAllowed = false;
+  /// Keep first working presigned URL so sync re-sign does not touch [CachedNetworkImage].
+  String? _pinnedDisplayUrl;
+  String? _pinnedUrlIdentity;
+  bool _unpinOnNextError = false;
 
   int? get _attachmentId => chatAsInt(widget.attachment['id']);
 
@@ -90,7 +113,12 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     if (_useBytesPath) {
       _scheduleAutoDownload();
     } else {
-      _loadHeaders();
+      final url = _imageUrl(ref.read(familychatRepositoryProvider));
+      _pinDisplayUrl(url);
+      if (_looksLikeAuthenticatedAttachmentUrl(url)) {
+        _seedHeadersFromCache();
+        unawaited(_loadHeaders());
+      }
     }
   }
 
@@ -99,23 +127,97 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     super.didUpdateWidget(oldWidget);
     final oldId = chatAsInt(oldWidget.attachment['id']);
     final newId = _attachmentId;
-    final urlChanged =
-        oldWidget.attachment['file_url'] != widget.attachment['file_url'];
+    final repo = ref.read(familychatRepositoryProvider);
+    final oldUrl = chatAttachmentImageUrl(
+      repo: repo,
+      threadId: oldWidget.threadId,
+      attachment: oldWidget.attachment,
+    );
+    final newUrl = chatAttachmentImageUrl(
+      repo: repo,
+      threadId: widget.threadId,
+      attachment: widget.attachment,
+    );
+    final identityChanged =
+        chatMediaUrlIdentity(oldUrl) != chatMediaUrlIdentity(newUrl);
+    final rawUrlChanged = oldUrl != newUrl;
     final ageChanged =
         oldWidget.messageCreatedAt != widget.messageCreatedAt;
-    if (oldId != newId ||
-        oldWidget.threadId != widget.threadId ||
-        urlChanged ||
-        ageChanged) {
+    final idOrThreadChanged =
+        oldId != newId || oldWidget.threadId != widget.threadId;
+
+    if (rawUrlChanged && !identityChanged && !idOrThreadChanged) {
+      // Presigned query refresh — keep pinned URL so CachedNetworkImage is stable.
+      ChatMediaFlickerTrace.log(
+        'url_resign',
+        threadId: widget.threadId,
+        attachmentId: newId,
+        detail: 'pinned_keep',
+        extra: {
+          'id': chatMediaUrlIdentity(oldUrl),
+          'newQ': newUrl.length,
+        },
+      );
+      return;
+    }
+
+    if (idOrThreadChanged || identityChanged || ageChanged) {
+      ChatMediaFlickerTrace.log(
+        'reset',
+        threadId: widget.threadId,
+        attachmentId: newId,
+        detail: idOrThreadChanged
+            ? 'id_or_thread'
+            : (identityChanged ? 'url_identity' : 'age'),
+        extra: {
+          if (identityChanged) 'from': chatMediaUrlIdentity(oldUrl),
+          if (identityChanged) 'to': chatMediaUrlIdentity(newUrl),
+        },
+      );
       _sizeReported = false;
       _sizeListenAttached = false;
+      _clearPinnedUrl();
+      _pinDisplayUrl(newUrl);
       _urlLoadAllowed = !_deferFullDecode && _shouldAutoLoadUrl();
       if (_useBytesPath) {
         _scheduleAutoDownload();
+      } else if (_looksLikeAuthenticatedAttachmentUrl(newUrl)) {
+        _seedHeadersFromCache();
+        unawaited(_loadHeaders());
       } else {
-        _loadHeaders();
+        _headers = null;
       }
     }
+  }
+
+  void _clearPinnedUrl() {
+    _pinnedDisplayUrl = null;
+    _pinnedUrlIdentity = null;
+    _unpinOnNextError = false;
+  }
+
+  void _pinDisplayUrl(String url) {
+    if (url.isEmpty) return;
+    _pinnedDisplayUrl = url;
+    _pinnedUrlIdentity = chatMediaUrlIdentity(url);
+  }
+
+  String _displayUrl(String latest) {
+    if (latest.isEmpty) return latest;
+    final identity = chatMediaUrlIdentity(latest);
+    if (_pinnedDisplayUrl != null &&
+        _pinnedUrlIdentity == identity &&
+        _pinnedDisplayUrl!.isNotEmpty) {
+      return _pinnedDisplayUrl!;
+    }
+    _pinDisplayUrl(latest);
+    return latest;
+  }
+
+  void _seedHeadersFromCache() {
+    final token = _sharedChatImageBearer;
+    if (token == null || token.isEmpty) return;
+    _headers = {'Authorization': 'Bearer $token'};
   }
 
   bool _shouldAutoLoadUrl() {
@@ -152,10 +254,21 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   Future<void> _loadHeaders() async {
+    final url = _imageUrl(ref.read(familychatRepositoryProvider));
+    if (!_looksLikeAuthenticatedAttachmentUrl(url)) return;
     // CacheManager uses dart:io (not Cronet Dio) — must refresh before Bearer.
     final token = await ref.read(apiClientProvider).authRefresher.ensureAccess();
     if (!mounted || token == null || token.isEmpty) return;
-    setState(() => _headers = {'Authorization': 'Bearer $token'});
+    _sharedChatImageBearer = token;
+    final next = {'Authorization': 'Bearer $token'};
+    if (_headers?['Authorization'] == next['Authorization']) return;
+    ChatMediaFlickerTrace.log(
+      'headers',
+      threadId: widget.threadId,
+      attachmentId: _attachmentId,
+      detail: 'bearer_set',
+    );
+    setState(() => _headers = next);
   }
 
   void _reportSize(int width, int height) {
@@ -290,15 +403,6 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     );
   }
 
-  Map<String, String>? get _networkHeaders {
-    if (_attachmentId == null) return null;
-    final url = _imageUrl(ref.read(familychatRepositoryProvider));
-    if (url.isEmpty) return _headers;
-    // CDN-превью (Klipy GIF до сохранения на сервере) — без Bearer.
-    if (!_looksLikeAuthenticatedAttachmentUrl(url)) return null;
-    return _headers;
-  }
-
   bool _looksLikeAuthenticatedAttachmentUrl(String url) {
     return url.contains('/attachments/') && url.contains('/content');
   }
@@ -349,10 +453,12 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     );
   }
 
-  Widget _buildUrlImage(String url) {
+  Widget _buildUrlImage(String latestUrl) {
     if (!_urlLoadAllowed) {
       return _wrapOverlay(_thumbPlaceholder());
     }
+
+    final url = _displayUrl(latestUrl);
 
     if (_looksLikeAuthenticatedAttachmentUrl(url) &&
         (_headers == null || _headers!.isEmpty)) {
@@ -360,19 +466,40 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       return _wrapOverlay(_thumbPlaceholder());
     }
 
+    final stableKey = chatAttachmentStableCacheKey(
+          threadId: widget.threadId,
+          attachmentId: _attachmentId,
+        ) ??
+        'fc_path_${chatMediaUrlIdentity(url)}';
+    final sessionProvider = _sessionDecodedProviders[stableKey];
+
     return _wrapOverlay(
       CachedNetworkImage(
-        key: ValueKey('net:$url'),
+        // Identity without query — remounting on every S3 resign caused flicker.
+        key: ValueKey('net:$stableKey'),
         imageUrl: url,
-        httpHeaders: _networkHeaders,
+        cacheKey: stableKey,
+        httpHeaders: _networkHeadersFor(url),
         cacheManager: FamilyChatMediaCache.preview,
         useOldImageOnUrlChange: true,
+        fadeInDuration: Duration.zero,
+        fadeOutDuration: Duration.zero,
         height: widget.height,
         width: widget.width,
         fit: widget.fit,
         memCacheWidth: _memCacheWidth,
         memCacheHeight: null,
         progressIndicatorBuilder: (context, _, progress) {
+          // Keep last decoded frame across ListView remount / brief reloads.
+          if (sessionProvider != null) {
+            return Image(
+              image: sessionProvider,
+              width: widget.width,
+              height: widget.height,
+              fit: widget.fit,
+              gaplessPlayback: true,
+            );
+          }
           final total = progress.totalSize;
           final downloaded = progress.downloaded;
           final value = total != null && total > 0 ? downloaded / total : null;
@@ -403,8 +530,31 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
             ),
           );
         },
-        errorWidget: (_, __, ___) => _wrapOverlay(_thumbPlaceholder()),
+        errorWidget: (_, __, ___) {
+          // Pinned URL may be expired — drop pin once and retry with latest.
+          if (!_unpinOnNextError) {
+            _unpinOnNextError = true;
+            final latest = _imageUrl(ref.read(familychatRepositoryProvider));
+            ChatMediaFlickerTrace.log(
+              'url_error_retry',
+              threadId: widget.threadId,
+              attachmentId: _attachmentId,
+              detail: 'unpin',
+            );
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              _clearPinnedUrl();
+              _pinDisplayUrl(latest);
+              if (_looksLikeAuthenticatedAttachmentUrl(latest)) {
+                unawaited(_loadHeaders());
+              }
+              setState(() {});
+            });
+          }
+          return _wrapOverlay(_thumbPlaceholder());
+        },
         imageBuilder: (context, imageProvider) {
+          _rememberSessionProvider(stableKey, imageProvider);
           unawaited(FamilyChatMediaCache.trimIfNeeded());
           // Provider already constrained via memCacheWidth on CachedNetworkImage.
           _listenProviderSize(imageProvider);
@@ -418,6 +568,13 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
         },
       ),
     );
+  }
+
+  Map<String, String>? _networkHeadersFor(String url) {
+    if (_attachmentId == null) return null;
+    if (url.isEmpty) return _headers;
+    if (!_looksLikeAuthenticatedAttachmentUrl(url)) return null;
+    return _headers;
   }
 
   @override

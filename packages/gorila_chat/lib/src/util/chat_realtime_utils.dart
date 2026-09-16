@@ -485,7 +485,16 @@ Object? _stableJsonFingerprint(dynamic value) {
 
 Object? _chatMessageDisplayFingerprint(Map<String, dynamic> message) {
   final attachments = chatAttachmentsOf(message)
-      .map((a) => [chatAsInt(a['id']), a['kind'], a['file_url'], a['filename']])
+      .map(
+        (a) => [
+          chatAsInt(a['id']),
+          a['kind'],
+          // Ignore presign query churn (X-Amz-*) — same object, new signature.
+          _chatMediaUrlIdentity(a['file_url']),
+          _chatMediaUrlIdentity(a['thumbnail_url']),
+          a['filename'],
+        ],
+      )
       .toList();
   return [
     chatAsInt(message['id']),
@@ -506,6 +515,15 @@ Object? _chatMessageDisplayFingerprint(Map<String, dynamic> message) {
     message['_scheduled'] == true,
     message['schedule_id']?.toString() ?? '',
   ];
+}
+
+/// Host+path without query so S3 re-sign does not look like a UI change.
+String _chatMediaUrlIdentity(Object? raw) {
+  final url = raw?.toString().trim() ?? '';
+  if (url.isEmpty) return '';
+  final uri = Uri.tryParse(url);
+  if (uri == null || !uri.hasScheme) return url;
+  return '${uri.scheme}://${uri.host}${uri.path}';
 }
 
 bool chatMessageDisplayEquals(

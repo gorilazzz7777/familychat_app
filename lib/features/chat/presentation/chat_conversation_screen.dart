@@ -6489,8 +6489,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               key: ValueKey('chat-hist-$_historyListEpoch'),
                               controller: _scrollController,
                               reverse: true,
-                              // Меньше оффскрин-префетча медиа — видимые грузятся первыми.
-                              cacheExtent: _seekingMessageId != null ? 2400 : 180,
+                              // Keep nearby media mounted so scroll/history
+                              // rebuilds do not flash placeholders.
+                              cacheExtent: _seekingMessageId != null ? 2400 : 1200,
                               physics: const AlwaysScrollableScrollPhysics(),
                               keyboardDismissBehavior:
                                   ScrollViewKeyboardDismissBehavior.onDrag,

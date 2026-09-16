@@ -1,7 +1,5 @@
 import 'dart:developer' as developer;
 
-import 'package:flutter/foundation.dart';
-
 import 'chat_realtime_utils.dart';
 
 /// Trace for chat send + WS (optimistic UI ↔ SQLite ↔ WS ↔ outbox).
@@ -31,12 +29,10 @@ abstract final class ChatSendTrace {
       parts.add('${entry.key}=${entry.value}');
     }
     final line = parts.join(' ');
-    // ignore: avoid_print — intentional always-on diagnostics for store builds
-    print(line);
     developer.log(line, name: logName);
-    if (kDebugMode) {
-      debugPrint(line);
-    }
+    // ignore: avoid_print — intentional always-on diagnostics for store builds
+    // Single sink: print+debugPrint both appear as I/flutter and look like dupes.
+    print(line);
   }
 
   static String idsSummary(

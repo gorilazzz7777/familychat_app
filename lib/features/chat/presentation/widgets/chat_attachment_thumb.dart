@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/media/gallery_media_utils.dart';
 import '../../data/chat_media_display_policy.dart';
+import '../../data/chat_media_flicker_trace.dart';
+import '../../data/chat_realtime_utils.dart';
 
 /// Лёгкое превью вложения (thumbnail_url / tiny bytes) до полной загрузки.
 class ChatAttachmentThumb extends StatelessWidget {
@@ -75,9 +77,17 @@ class ChatAttachmentThumb extends StatelessWidget {
 
     final thumbUrl = attachment['thumbnail_url']?.toString().trim() ?? '';
     if (thumbUrl.isNotEmpty) {
+      final attId = chatAsInt(attachment['id']);
+      final cacheKey = attId != null && attId > 0
+          ? 'fc_thumb_$attId'
+          : 'fc_path_${chatMediaUrlIdentity(thumbUrl)}';
       final image = CachedNetworkImage(
         imageUrl: thumbUrl,
+        cacheKey: cacheKey,
         cacheManager: FamilyChatMediaCache.preview,
+        useOldImageOnUrlChange: true,
+        fadeInDuration: Duration.zero,
+        fadeOutDuration: Duration.zero,
         width: width,
         height: height,
         fit: fit,
@@ -93,10 +103,18 @@ class ChatAttachmentThumb extends StatelessWidget {
     if (!lightOnly) {
       final fileUrl = attachment['file_url']?.toString().trim() ?? '';
       if (fileUrl.isNotEmpty) {
+        final attId = chatAsInt(attachment['id']);
+        final cacheKey = attId != null && attId > 0
+            ? 'fc_att_file_$attId'
+            : 'fc_path_${chatMediaUrlIdentity(fileUrl)}';
         return _wrap(
           CachedNetworkImage(
             imageUrl: fileUrl,
+            cacheKey: cacheKey,
             cacheManager: FamilyChatMediaCache.preview,
+            useOldImageOnUrlChange: true,
+            fadeInDuration: Duration.zero,
+            fadeOutDuration: Duration.zero,
             width: width,
             height: height,
             fit: fit,
