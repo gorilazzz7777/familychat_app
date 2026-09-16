@@ -57,5 +57,13 @@ bool dioErrorNeedsAuthRestore(DioException err) {
   if (dioErrorIsExpiredJwtAccess(err)) return true;
   if (status != 403) return false;
   if (_authorizationHeaderIsEmpty(err.requestOptions)) return true;
-  return _detailLooksLikeMissingCredentials(err.response?.data);
+  if (_detailLooksLikeMissingCredentials(err.response?.data)) return true;
+  // Attachment/content proxy often returns bare 403 HTML/JSON when JWT is stale
+  // while Cronet already refreshed — still worth one force-refresh retry.
+  final path = err.requestOptions.path;
+  if (path.contains('/attachments/') && path.contains('/content')) {
+    return true;
+  }
+  if (path.contains('/avatar/content')) return true;
+  return false;
 }

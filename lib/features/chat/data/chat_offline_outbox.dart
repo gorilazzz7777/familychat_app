@@ -92,6 +92,31 @@ class ChatOfflineOutbox {
     };
   }
 
+  /// Drop outbox message rows after they were reconciled to a server message.
+  static Future<void> removeMessagesByTempIds({
+    required int threadId,
+    required Iterable<int> tempMessageIds,
+  }) async {
+    final wanted = tempMessageIds.toSet();
+    if (wanted.isEmpty) return;
+    await _serialized(() async {
+      final items = await _readItems();
+      final remaining = items
+          .where((item) {
+            if (item['kind']?.toString() != 'message') return true;
+            if (chatAsInt(item['thread_id']) != threadId) return true;
+            final tempId = chatAsInt(item['temp_message_id']);
+            return tempId == null || !wanted.contains(tempId);
+          })
+          .toList(growable: false);
+      if (remaining.length == items.length) return;
+      await _writeItems(remaining);
+    });
+    for (final tempId in wanted) {
+      ChatMediaUploadTracker.shared?.complete(tempId);
+    }
+  }
+
   static Future<void> enqueueMessage({
     required int threadId,
     required int tempMessageId,
@@ -824,6 +849,38 @@ class ChatOfflineOutbox {
     });
   }
 
+  /// After an aborted POST, find the message the server already created.
+  static Future<Map<String, dynamic>?> _recoverMessageAlreadyOnServer({
+    required FamilyChatRepository repo,
+    required int threadId,
+    required int clientMsgId,
+    required List<int> attachmentIds,
+  }) async {
+    try {
+      final page = await repo.threadMessages(threadId, limit: 40);
+      for (final raw in page.messages) {
+        final message = Map<String, dynamic>.from(raw);
+        if (chatClientMsgIdOf(message) == clientMsgId) {
+          return message;
+        }
+        if (attachmentIds.isEmpty) continue;
+        final atts = chatAttachmentsOf(message);
+        if (atts.length != attachmentIds.length) continue;
+        final ids = [
+          for (final a in atts)
+            if (chatAsInt(a['id']) != null) chatAsInt(a['id'])!,
+        ];
+        if (ids.length == attachmentIds.length &&
+            ids.toSet().containsAll(attachmentIds)) {
+          return message;
+        }
+      }
+    } catch (e, st) {
+      debugPrint('[ChatOutbox] recover after post failed: $e\n$st');
+    }
+    return null;
+  }
+
   static Future<ChatOutboxDelivery?> _deliverMessage(
     FamilyChatRepository repo,
     Map<String, dynamic> item,
@@ -923,20 +980,44 @@ class ChatOfflineOutbox {
     final body = item['body']?.toString();
     final replyTo = chatAsInt(item['reply_to_message_id']);
     final mentioned = chatAsIntList(item['mentioned_user_ids']);
+    final clientMsgId = chatAsInt(item['client_msg_id']) ?? tempMessageId;
 
     final httpSw = Stopwatch()..start();
-    final msg = await repo.sendThreadMessage(
-      threadId,
-      body: body,
-      attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
-      replyToMessageId: replyTo,
-      mentionedUserIds: mentioned.isEmpty ? null : mentioned,
-      notifySilent: item['notify_silent'] == true,
-      clientMsgId: chatAsInt(item['client_msg_id']) ?? tempMessageId,
-      voiceDurationMs: chatAsInt(item['voice_duration_ms']),
-      voiceTranscript: item['voice_transcript']?.toString(),
-      videoNoteDurationMs: chatAsInt(item['video_note_duration_ms']),
-    );
+    Map<String, dynamic> msg;
+    try {
+      msg = await repo.sendThreadMessage(
+        threadId,
+        body: body,
+        attachmentIds: attachmentIds.isEmpty ? null : attachmentIds,
+        replyToMessageId: replyTo,
+        mentionedUserIds: mentioned.isEmpty ? null : mentioned,
+        notifySilent: item['notify_silent'] == true,
+        clientMsgId: clientMsgId,
+        voiceDurationMs: chatAsInt(item['voice_duration_ms']),
+        voiceTranscript: item['voice_transcript']?.toString(),
+        videoNoteDurationMs: chatAsInt(item['video_note_duration_ms']),
+      );
+    } catch (error) {
+      // POST aborted (nginx 499 / connection drop) after the server already
+      // created the message — reclaim by client_msg_id instead of leaving
+      // the bubble stuck on "sending".
+      final recovered = await _recoverMessageAlreadyOnServer(
+        repo: repo,
+        threadId: threadId,
+        clientMsgId: clientMsgId,
+        attachmentIds: attachmentIds,
+      );
+      if (recovered == null) rethrow;
+      ChatSendTrace.log(
+        'http_outbox_recovered_after_post_error',
+        threadId: threadId,
+        tempId: tempMessageId,
+        serverId: chatAsInt(recovered['id']),
+        source: 'outbox',
+        extra: {'error': error.runtimeType.toString()},
+      );
+      msg = recovered;
+    }
     httpMs = httpSw.elapsedMilliseconds;
     // Only drop local blobs after the message POST succeeded.
     for (final key in uploadedStorageKeys) {

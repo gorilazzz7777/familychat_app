@@ -162,6 +162,33 @@ void main() {
     expect(merged.any(chatMessageIsPending), isTrue);
   });
 
+  test('chatPendingMatchesServer matches authoritative client_msg_id', () {
+    final pending = {
+      'id': -1789384129388,
+      '_pending': true,
+      'body': '',
+      'sender_user_id': 1180,
+      'read_status': 'sending',
+      'attachments': [
+        {'kind': 'image', 'filename': 'IMG_4783.jpg', '_pending': true},
+      ],
+    };
+    final server = {
+      'id': 2324,
+      'body': '',
+      'sender_user_id': 1180,
+      'read_status': 'sent',
+      'metadata': {'client_msg_id': -1789384129388},
+      'attachments': [
+        {'id': 1964, 'kind': 'image', 'filename': 'IMG_4783.jpg'},
+      ],
+    };
+    expect(
+      chatPendingMatchesServer(pending, server, currentUserId: 1180),
+      isTrue,
+    );
+  });
+
   test('chatPendingMatchesServer requires same reply target', () {
     final pending = {
       'id': -2,

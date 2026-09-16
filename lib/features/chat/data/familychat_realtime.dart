@@ -16,7 +16,9 @@ class FamilyChatRealtime {
 
   /// Wire JWT proactive refresh into WS connect/reconnect (once per process).
   static void bindAuthRefresher(AuthTokenRefresher refresher) {
-    instance.setAccessTokenResolver(() => refresher.ensureAccess());
+    instance.setAccessTokenResolver(
+      ({bool force = false}) => refresher.ensureAccess(force: force),
+    );
     _resolverBound = true;
   }
 

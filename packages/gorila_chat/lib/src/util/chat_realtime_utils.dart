@@ -159,6 +159,15 @@ Map<String, dynamic> chatEnsureMessageOwnership(
 const int kChatPendingMatchMaxFutureSkewMs = 90 * 1000;
 const int kChatPendingMatchMaxPastSkewMs = 2 * 1000;
 
+/// Negative local/outbox id echoed by the server as `metadata.client_msg_id`.
+int? chatClientMsgIdOf(Map<String, dynamic> message) {
+  final top = chatAsInt(message['client_msg_id']);
+  if (top != null) return top;
+  final meta = message['metadata'];
+  if (meta is Map) return chatAsInt(meta['client_msg_id']);
+  return null;
+}
+
 bool chatPendingMatchesServer(
   Map<String, dynamic> pending,
   Map<String, dynamic> server, {
@@ -168,6 +177,23 @@ bool chatPendingMatchesServer(
     return false;
   }
   if (pending['_scheduled'] == true) return false;
+
+  // Authoritative: server stored our optimistic temp id as client_msg_id.
+  // Covers HTTP 499 / aborted POST where the message already exists on server.
+  final pendingId = chatAsInt(pending['id']);
+  final serverClientMsgId = chatClientMsgIdOf(server);
+  if (pendingId != null &&
+      pendingId < 0 &&
+      serverClientMsgId != null &&
+      serverClientMsgId == pendingId) {
+    return true;
+  }
+  final pendingClientMsgId = chatClientMsgIdOf(pending);
+  if (pendingClientMsgId != null &&
+      serverClientMsgId != null &&
+      pendingClientMsgId == serverClientMsgId) {
+    return true;
+  }
 
   final serverSender = chatSenderUserIdOf(server);
   if (currentUserId != null &&

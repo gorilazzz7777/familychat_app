@@ -33,6 +33,8 @@ abstract final class CallKitIncomingService {
   static StreamSubscription<CallEvent?>? _eventSub;
   static bool _initialized = false;
   static final Set<int> _shownCallIds = {};
+  /// Dedupe CallKit double-fire / reconcile → one accept POST per session.
+  static final Set<int> _acceptPostedCallIds = {};
 
   static String callUuid(int callId) => 'familychat_call_$callId';
 
@@ -72,32 +74,7 @@ abstract final class CallKitIncomingService {
       await endCall(callId);
     };
     onAccepted ??= (extra, callId) async {
-      try {
-        final repo = FamilyChatRepository(ApiClient());
-        unawaited(CallFlowLog.action(
-          callId: callId,
-          role: 'callee',
-          event: 'action_accept',
-          data: {'via': 'callkit_bg'},
-          repository: repo,
-        ));
-        await repo.callAction(callId, 'accept');
-        unawaited(CallFlowLog.action(
-          callId: callId,
-          role: 'callee',
-          event: 'action_http_ok',
-          data: {'action': 'accept', 'via': 'callkit_bg'},
-          repository: repo,
-        ));
-      } catch (e, st) {
-        debugPrint('[CallKit] background accept failed: $e\n$st');
-        unawaited(CallFlowLog.action(
-          callId: callId,
-          role: 'callee',
-          event: 'action_http_fail',
-          data: {'action': 'accept', 'via': 'callkit_bg', 'msg': '$e'},
-        ));
-      }
+      // Navigation/UI only — HTTP accept is owned by [_onAccepted].
       try {
         await FlutterCallkitIncoming.setCallConnected(callUuid(callId));
       } catch (_) {}
@@ -291,33 +268,37 @@ abstract final class CallKitIncomingService {
       await Future<void>.delayed(const Duration(milliseconds: 300));
     }
 
-    try {
-      final repo = FamilyChatRepository(ApiClient());
-      unawaited(CallFlowLog.action(
-        callId: callId,
-        role: 'callee',
-        event: 'action_accept',
-        data: {'via': 'callkit'},
-        repository: repo,
-      ));
-      await repo.callAction(callId, 'accept');
-      unawaited(CallFlowLog.action(
-        callId: callId,
-        role: 'callee',
-        event: 'action_http_ok',
-        data: {'action': 'accept', 'via': 'callkit'},
-        repository: repo,
-      ));
-    } catch (e, st) {
-      debugPrint('[CallKit] accept API failed: $e\n$st');
-      unawaited(CallFlowLog.action(
-        callId: callId,
-        role: 'callee',
-        event: 'action_http_fail',
-        data: {'action': 'accept', 'via': 'callkit', 'msg': '$e'},
-      ));
-      await endCall(callId);
-      return;
+    final alreadyPosted = !_acceptPostedCallIds.add(callId);
+    if (!alreadyPosted) {
+      try {
+        final repo = FamilyChatRepository(ApiClient());
+        unawaited(CallFlowLog.action(
+          callId: callId,
+          role: 'callee',
+          event: 'action_accept',
+          data: {'via': 'callkit'},
+          repository: repo,
+        ));
+        await repo.callAction(callId, 'accept');
+        unawaited(CallFlowLog.action(
+          callId: callId,
+          role: 'callee',
+          event: 'action_http_ok',
+          data: {'action': 'accept', 'via': 'callkit'},
+          repository: repo,
+        ));
+      } catch (e, st) {
+        debugPrint('[CallKit] accept API failed: $e\n$st');
+        _acceptPostedCallIds.remove(callId);
+        unawaited(CallFlowLog.action(
+          callId: callId,
+          role: 'callee',
+          event: 'action_http_fail',
+          data: {'action': 'accept', 'via': 'callkit', 'msg': '$e'},
+        ));
+        await endCall(callId);
+        return;
+      }
     }
 
     try {
@@ -351,6 +332,7 @@ abstract final class CallKitIncomingService {
 
   static Future<void> _onEnded(int callId) async {
     _shownCallIds.remove(callId);
+    _acceptPostedCallIds.remove(callId);
     final handler = onEnded;
     if (handler != null) {
       await handler(callId);

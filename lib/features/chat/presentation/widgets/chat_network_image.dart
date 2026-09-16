@@ -152,7 +152,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   }
 
   Future<void> _loadHeaders() async {
-    final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
+    // CacheManager uses dart:io (not Cronet Dio) — must refresh before Bearer.
+    final token = await ref.read(apiClientProvider).authRefresher.ensureAccess();
     if (!mounted || token == null || token.isEmpty) return;
     setState(() => _headers = {'Authorization': 'Bearer $token'});
   }
@@ -486,20 +487,39 @@ String chatAttachmentImageUrl({
 }) {
   final attachmentId = chatAsInt(attachment['id']);
   final fileUrl = attachment['file_url']?.toString().trim() ?? '';
+  final thumbUrl = attachment['thumbnail_url']?.toString().trim() ?? '';
   final altUrl = attachment['url']?.toString().trim() ?? '';
 
-  // Как на web: сохранённые вложения — через API content/ + Bearer.
+  // Prefer direct S3 / presigned HTTPS — no JWT, avoids dart:io 403 storms
+  // when Cronet already refreshed the access token.
+  if (_isDirectMediaHttps(fileUrl)) return fileUrl;
+  if (_isDirectMediaHttps(thumbUrl)) return thumbUrl;
+  if (_isDirectMediaHttps(altUrl)) return altUrl;
+
+  // Fallback: authenticated API proxy (needs fresh Bearer).
   if (attachmentId != null && attachmentId > 0) {
     return repo.chatAttachmentContentUrl(threadId, attachmentId);
   }
 
   if (fileUrl.isNotEmpty) return fileUrl;
+  if (thumbUrl.isNotEmpty) return thumbUrl;
   return altUrl;
+}
+
+bool _isDirectMediaHttps(String url) {
+  if (url.isEmpty) return false;
+  final uri = Uri.tryParse(url);
+  if (uri == null || uri.scheme != 'https') return false;
+  // API content proxy still needs Bearer — not "direct".
+  if (uri.path.contains('/attachments/') && uri.path.contains('/content')) {
+    return false;
+  }
+  return true;
 }
 
 Future<Map<String, String>?> chatImageAuthHeaders(WidgetRef ref) async {
   if (!kIsWeb) return null;
-  final token = await ref.read(apiClientProvider).tokenStorage.readAccess();
+  final token = await ref.read(apiClientProvider).authRefresher.ensureAccess();
   if (token == null || token.isEmpty) return null;
   return {'Authorization': 'Bearer $token'};
 }

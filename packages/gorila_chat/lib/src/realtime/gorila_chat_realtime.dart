@@ -11,7 +11,10 @@ import '../util/chat_realtime_utils.dart';
 typedef GorilaChatRealtimeHandler = void Function(Map<String, dynamic> event);
 
 /// Resolves a fresh access token before WS connect / reconnect.
-typedef GorilaChatAccessTokenResolver = Future<String?> Function();
+/// [force] — always hit refresh (used after disconnect / auth failure).
+typedef GorilaChatAccessTokenResolver = Future<String?> Function({
+  bool force,
+});
 
 /// Shared chat WebSocket client (Family Chat reference behaviour):
 /// reconnect with backoff, normalize payloads, synthetic `chat_refresh`.
@@ -85,32 +88,51 @@ class GorilaChatRealtime {
     _dispatch(chatNormalizeMap(Map<dynamic, dynamic>.from(event)));
   }
 
-  Future<String?> _freshAccessToken({String? preferred}) async {
+  Future<String?> _freshAccessToken({
+    String? preferred,
+    bool force = false,
+  }) async {
     final resolver = _resolveAccessToken;
     if (resolver != null) {
       try {
-        final resolved = await resolver();
+        final resolved = await resolver(force: force);
         if (resolved != null && resolved.isNotEmpty) return resolved;
       } catch (e, st) {
         _log('ws token resolve failed: $e', error: e, stackTrace: st);
       }
     }
-    if (preferred != null && preferred.isNotEmpty) return preferred;
-    final cached = _accessToken;
-    if (cached != null && cached.isNotEmpty) return cached;
+    if (!force && preferred != null && preferred.isNotEmpty) return preferred;
+    if (!force) {
+      final cached = _accessToken;
+      if (cached != null && cached.isNotEmpty) return cached;
+    }
     return null;
   }
 
   Future<void> connect(String accessToken) async {
-    if (accessToken.isEmpty) {
+    // Always re-resolve when possible so callers with a stale string still
+    // open WS with a valid JWT.
+    final resolved = await _freshAccessToken(preferred: accessToken);
+    final token = (resolved != null && resolved.isNotEmpty)
+        ? resolved
+        : accessToken;
+    if (token.isEmpty) {
       _log('ws connect skipped: empty access token');
       return;
     }
-    _accessToken = accessToken;
+    // Anti-flap: ignore rapid reconnects while already connected with same token.
+    if (_connected &&
+        _accessToken == token &&
+        _reconnectAttempt == 0 &&
+        !_refreshAfterConnect) {
+      _log('ws connect skipped: already connected');
+      return;
+    }
+    _accessToken = token;
     _reconnectTimer?.cancel();
     if (_connecting) {
       // Latest token wins once the in-flight connect finishes.
-      _queuedConnectToken = accessToken;
+      _queuedConnectToken = token;
       _log('ws connect queued: already connecting');
       return;
     }
@@ -120,7 +142,7 @@ class GorilaChatRealtime {
       _intentionalClose = true;
       await _closeChannel();
       _intentionalClose = false;
-      final uri = uriForToken(accessToken);
+      final uri = uriForToken(token);
       _log(
         'ws connecting attempt=$_reconnectAttempt '
         'uri=${redactWsUri(uri)}',
@@ -212,7 +234,8 @@ class GorilaChatRealtime {
     _log('ws reconnect scheduled in ${seconds}s attempt=$_reconnectAttempt');
     _reconnectTimer = Timer(Duration(seconds: seconds), () {
       unawaited(() async {
-        final token = await _freshAccessToken();
+        // Force refresh after drop — cached JWT often already rejected (WS 403).
+        final token = await _freshAccessToken(force: true);
         if (token == null || token.isEmpty) {
           _log('ws reconnect skipped: no access token');
           return;
@@ -250,7 +273,7 @@ class GorilaChatRealtime {
   /// Always prefers a freshly resolved JWT when [setAccessTokenResolver] is set,
   /// so background reconnects do not reuse an expired in-memory token.
   Future<void> reconnectAndRefresh() async {
-    final token = await _freshAccessToken();
+    final token = await _freshAccessToken(force: true);
     _log(
       'ws reconnectAndRefresh hasToken=${token != null && token.isNotEmpty}',
     );

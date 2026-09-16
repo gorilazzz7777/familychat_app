@@ -1569,13 +1569,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (chatMessageIsPending(m) &&
           m['_scheduled'] != true &&
           !keptIds.contains(id)) {
-        final status = m['read_status']?.toString();
-        if (status == 'sending' ||
-            status == 'queued' ||
-            status == 'sent' ||
-            status == 'failed') {
-          continue;
-        }
+        // Matched to a server row (incl. client_msg_id) — drop even if still
+        // "sending" after an aborted POST that actually landed on the server.
         dropped.add(id);
       }
     }
@@ -1596,27 +1591,25 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _dropReconciledPendingMessages(List<int> ids) async {
     if (!_localFirst || ids.isEmpty) return;
-    final outboxIds = await ChatOfflineOutbox.activeTempMessageIds(
+    await ChatOfflineOutbox.removeMessagesByTempIds(
       threadId: widget.threadId,
+      tempMessageIds: ids,
     );
-    final safe = ids.where((id) => !outboxIds.contains(id)).toList();
-    if (safe.isEmpty) {
-      ChatSendTrace.log(
-        'drop_pending_blocked',
-        threadId: widget.threadId,
-        source: 'ui',
-        extra: {'ids': ids.join(','), 'outbox': outboxIds.join(',')},
-      );
-      return;
-    }
     ChatSendTrace.log(
       'sqlite_delete_pending',
       threadId: widget.threadId,
       source: 'ui',
-      extra: {'ids': safe.join(',')},
+      extra: {'ids': ids.join(',')},
     );
-    await ChatLocalStore.instance.deleteMessages(widget.threadId, safe);
+    await ChatLocalStore.instance.deleteMessages(widget.threadId, ids);
     await ChatLocalMutations.recomputeThreadLastMessage(widget.threadId);
+    if (!mounted) return;
+    setState(() {
+      _messages = [
+        for (final m in _messages)
+          if (!ids.contains(chatAsInt(m['id']))) m,
+      ];
+    });
   }
 
   /// Не показываем кэш, если он отстаёт от last_message в списке чатов
@@ -4104,11 +4097,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       );
       return true;
     }
+    final ids = <int>[];
     try {
       final tracker = ref.read(chatMediaUploadTrackerProvider);
       tracker.resetCancellation(tempId);
       final cancelToken = tracker.begin(tempId);
-      final ids = <int>[];
       var uploadedBytes = 0;
       var totalBytes = 0;
       for (final att in attachments) {
@@ -4155,6 +4148,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         mentionedUserIds:
             mentionedUserIds.isEmpty ? null : mentionedUserIds,
         notifySilent: notifySilent,
+        clientMsgId: tempId,
         voiceDurationMs: voiceDurationMs,
         voiceTranscript: voiceTranscript,
         videoNoteDurationMs: videoNoteDurationMs,
@@ -4212,7 +4206,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         await _cancelPendingMessage({'id': tempId});
         return false;
       }
-      if (ChatNetworkStatus.looksOffline(error)) {
+      // Upload finished but POST aborted — message may already exist.
+      if (ids.isNotEmpty) {
+        try {
+          final page = await repo.threadMessages(widget.threadId, limit: 40);
+          for (final raw in page.messages) {
+            final message = Map<String, dynamic>.from(raw);
+            if (chatClientMsgIdOf(message) == tempId) {
+              _replaceOptimisticMessage(tempId, message);
+              await _persistMessageCache();
+              return true;
+            }
+          }
+        } catch (_) {}
+      }
+      if (ChatNetworkStatus.looksOffline(error) ||
+          ChatNetworkStatus.isRetryable(error)) {
         await _enqueueOfflineMessage(
           tempId: tempId,
           caption: caption,

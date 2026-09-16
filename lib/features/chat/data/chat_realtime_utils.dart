@@ -8,6 +8,7 @@ export 'package:gorila_chat/gorila_chat.dart'
         chatNormalizeMap,
         chatNormalizeValue,
         chatAttachmentsOf,
+        chatClientMsgIdOf,
         chatMessageIsPending,
         chatMessageIsMine,
         chatSenderUserIdOf,

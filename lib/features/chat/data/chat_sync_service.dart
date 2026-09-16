@@ -287,12 +287,19 @@ class ChatSyncService {
       extra: {'deltaMs': candidates.first.delta},
     );
     await ChatLocalStore.instance.deleteMessages(threadId, [candidates.first.id]);
+    await ChatOfflineOutbox.removeMessagesByTempIds(
+      threadId: threadId,
+      tempMessageIds: [candidates.first.id],
+    );
   }
 
   /// Reconcile stuck pending after a full thread window upsert.
   Future<void> _reconcileThreadPending(int threadId) async {
     final rows = await ChatLocalStore.instance.readMessages(threadId);
-    final reconciled = chatReconcilePendingDuplicates(rows);
+    final reconciled = chatReconcilePendingDuplicates(
+      rows,
+      currentUserId: _currentUserId,
+    );
     if (reconciled.length == rows.length) return;
     final keptIds = <int>{
       for (final m in reconciled)
@@ -305,14 +312,8 @@ class ChatSyncService {
       if (chatMessageIsPending(row) &&
           row['_scheduled'] != true &&
           !keptIds.contains(id)) {
-        final status = row['read_status']?.toString();
-        // Активный outbox / незавершённая отправка — не удаляем по слабому матчу.
-        if (status == 'sending' ||
-            status == 'queued' ||
-            status == 'sent' ||
-            status == 'failed') {
-          continue;
-        }
+        // Dropped by reconcile = already matched to a server row (incl.
+        // client_msg_id). Remove even while status is still "sending".
         toDelete.add(id);
       }
     }
@@ -324,6 +325,10 @@ class ChatSyncService {
         extra: {'ids': toDelete.join(',')},
       );
       await ChatLocalStore.instance.deleteMessages(threadId, toDelete);
+      await ChatOfflineOutbox.removeMessagesByTempIds(
+        threadId: threadId,
+        tempMessageIds: toDelete,
+      );
     }
   }
 
