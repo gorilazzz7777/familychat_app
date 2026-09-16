@@ -12,7 +12,8 @@ import '../data/incoming_call_coordinator.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'chat_call_screen.dart';
 import 'package:flutter/foundation.dart';
-import 'package:gorila_chat/gorila_chat.dart';
+import 'package:gorila_chat/gorila_chat.dart'
+    hide IncomingCallCoordinator, ChatCallScreen, ChatAvatar, IncomingCallScreen;
 
 class IncomingCallScreen extends ConsumerStatefulWidget {
   const IncomingCallScreen({

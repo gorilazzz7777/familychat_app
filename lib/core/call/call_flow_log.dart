@@ -9,7 +9,7 @@ abstract final class CallFlowLog {
   static Future<void> action({
     required int callId,
     required String role,
-    required String event, {
+    required String event,
     Map<String, dynamic>? data,
     FamilyChatRepository? repository,
   }) async {
