@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
@@ -73,13 +73,23 @@ class _LocationSharingSettingsScreenState
     try {
       if (next.isNotEmpty) {
         final ok = await LocationShareCoordinator.ensurePermission(
-          requestAlways: true,
+          requireAlways: true,
+          openSettingsIfDenied: false,
         );
-        if (!ok && mounted) {
+        if (!ok) {
+          final permanently =
+              await Permission.locationAlways.isPermanentlyDenied;
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
+            SnackBar(
               content: Text(
-                'Разрешите доступ к геолокации, чтобы семья видела, где вы',
+                permanently
+                    ? 'Нужен доступ «Всегда». Откройте настройки и разрешите геолокацию постоянно.'
+                    : 'Чтобы семья видела вас на карте в фоне, нужен доступ к геолокации «Всегда».',
+              ),
+              action: SnackBarAction(
+                label: 'Настройки',
+                onPressed: () => openAppSettings(),
               ),
             ),
           );
@@ -106,12 +116,12 @@ class _LocationSharingSettingsScreenState
         _granted = granted;
         _saving = false;
       });
-      if (granted.isNotEmpty) {
-        LocationShareCoordinator.instance.attach(
-          ref.read(familychatRepositoryProvider),
-        );
-        unawaited(LocationShareCoordinator.instance.pingIfNeeded(force: true));
-      }
+      LocationShareCoordinator.instance.attach(
+        ref.read(familychatRepositoryProvider),
+      );
+      unawaited(
+        LocationShareCoordinator.instance.refreshTracking(forcePing: true),
+      );
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -194,8 +204,8 @@ class _LocationSharingSettingsScreenState
                       subtitle: Text(
                         kIsWeb
                             ? 'На web шаринг недоступен — откройте приложение'
-                            : 'Обновляется примерно раз в 10–15 минут. '
-                                'Можно выключить в любой момент.',
+                            : 'Нужен доступ «Всегда». Обновление ~раз в 10–15 минут '
+                                'и при перемещении; на Android в шторке будет уведомление.',
                       ),
                     ),
                     if (enabled) ...[
@@ -208,27 +218,51 @@ class _LocationSharingSettingsScreenState
                       ),
                       if (!kIsWeb) ...[
                         const SizedBox(height: 8),
-                        TextButton.icon(
-                          onPressed: _saving
-                              ? null
-                              : () async {
-                                  final ok = await LocationShareCoordinator
-                                      .ensurePermission(requestAlways: true);
-                                  if (!mounted) return;
-                                  if (!ok) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text(
-                                          'Разрешите геолокацию в настройках системы',
-                                        ),
-                                      ),
-                                    );
-                                    return;
-                                  }
-                                  await Geolocator.openAppSettings();
-                                },
-                          icon: const Icon(Icons.my_location_outlined),
-                          label: const Text('Разрешить доступ «Всегда»'),
+                        FutureBuilder<bool>(
+                          future: LocationShareCoordinator.hasAlwaysPermission(),
+                          builder: (context, snap) {
+                            final always = snap.data == true;
+                            if (always) {
+                              return Text(
+                                'Фоновое обновление включено',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.primary,
+                                ),
+                              );
+                            }
+                            return TextButton.icon(
+                              onPressed: _saving
+                                  ? null
+                                  : () async {
+                                      final ok = await LocationShareCoordinator
+                                          .ensurePermission(
+                                        requireAlways: true,
+                                        openSettingsIfDenied: true,
+                                      );
+                                      if (!mounted) return;
+                                      if (!ok) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'В настройках выберите геолокацию «Всегда»',
+                                            ),
+                                          ),
+                                        );
+                                        return;
+                                      }
+                                      unawaited(
+                                        LocationShareCoordinator.instance
+                                            .refreshTracking(forcePing: true),
+                                      );
+                                      setState(() {});
+                                    },
+                              icon: const Icon(Icons.my_location_outlined),
+                              label: const Text(
+                                'Разрешить доступ «Всегда»',
+                              ),
+                            );
+                          },
                         ),
                       ],
                       const SizedBox(height: 16),

@@ -109,9 +109,9 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Нужен доступ к геолокации, чтобы отправлять место в чате и делиться им с семьёй.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Family Space обновляет вашу геолокацию примерно раз в 10–15 минут, чтобы близкие видели, где вы — только если вы это разрешили.</string>
+	<string>Family Space обновляет вашу геолокацию примерно раз в 10–15 минут и при перемещении, чтобы близкие видели вас на карте — только если вы включили шаринг и разрешили доступ «Всегда».</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>Family Space обновляет вашу геолокацию примерно раз в 10–15 минут, чтобы близкие видели, где вы — только если вы это разрешили.</string>
+	<string>Family Space обновляет вашу геолокацию примерно раз в 10–15 минут и при перемещении, чтобы близкие видели вас на карте — только если вы включили шаринг и разрешили доступ «Всегда».</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Нужен доступ к микрофону, чтобы записывать голосовые сообщения и совершать звонки.</string>
 	<key>NSCameraUsageDescription</key>

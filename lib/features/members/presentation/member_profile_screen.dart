@@ -532,13 +532,14 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                       if (v) {
                         final ok =
                             await LocationShareCoordinator.ensurePermission(
-                          requestAlways: true,
+                          requireAlways: true,
+                          openSettingsIfDenied: true,
                         );
                         if (!ok && mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text(
-                                'Нужен доступ к геолокации',
+                                'Нужен доступ к геолокации «Всегда»',
                               ),
                             ),
                           );
@@ -559,7 +560,11 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                         );
                         unawaited(
                           LocationShareCoordinator.instance
-                              .pingIfNeeded(force: true),
+                              .refreshTracking(forcePing: true),
+                        );
+                      } else {
+                        unawaited(
+                          LocationShareCoordinator.instance.refreshTracking(),
                         );
                       }
                     } catch (_) {
@@ -574,7 +579,9 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                     }
                   },
             title: const Text('Разрешить видеть мою геолокацию'),
-            subtitle: const Text('Обновляется раз в 10–15 минут'),
+            subtitle: const Text(
+              'Нужен доступ «Всегда». Обновление ~10–15 мин и при перемещении',
+            ),
           ),
           if (_theyShareWithMe)
             ListTile(
