@@ -195,7 +195,7 @@ class ChildGalleryTabState extends ConsumerState<ChildGalleryTab> {
           albumId: album['id']?.toString() ?? 'all',
           title: album['title']?.toString() ?? 'Альбом',
           canManage: album['can_manage'] == true,
-          canAddPhotos: album['can_add'] == true || widget.isCustodian,
+          canAddPhotos: album['can_add'] == true,
         ),
       ),
     );
