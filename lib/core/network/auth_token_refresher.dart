@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 
 import '../impersonation/impersonation_storage.dart';
 import '../session/auth_session_bus.dart';
+import '../storage/android_ssaid.dart';
 import '../storage/device_id_storage.dart';
 import '../storage/token_storage.dart';
 import 'jwt_access_token.dart';
@@ -144,7 +145,10 @@ class AuthTokenRefresher {
     try {
       final response = await _refreshDio.post<Map<String, dynamic>>(
         kAuthDeviceAuthPath,
-        data: {'device_id': deviceId},
+        data: {
+          'device_id': deviceId,
+          ...await AndroidSsaid.authFields(),
+        },
       );
       return _applyRefreshResponse(response.data);
     } catch (_) {

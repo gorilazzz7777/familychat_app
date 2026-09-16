@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.provider.Settings
 import android.provider.MediaStore
 import android.util.Log
 import android.view.WindowManager
@@ -58,6 +59,26 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         flutterEngine.plugins.add(rustoreReviewPlugin)
         flutterEngine.plugins.add(playReviewPlugin)
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.familychat/ssaid",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getAndroidId" -> {
+                    try {
+                        val id = Settings.Secure.getString(
+                            contentResolver,
+                            Settings.Secure.ANDROID_ID,
+                        )
+                        result.success(id)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "getAndroidId failed", e)
+                        result.success(null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "com.familychat/lifecycle",

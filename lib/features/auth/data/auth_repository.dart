@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../../../core/config/env.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/session/auth_session_bus.dart';
+import '../../../core/storage/android_ssaid.dart';
 import '../../../core/storage/device_id_storage.dart';
 import '../../../core/storage/guest_session_storage.dart';
 
@@ -23,11 +24,18 @@ class AuthRepository {
     AuthSessionBus.instance.emitAccessRefreshed(access);
   }
 
+  Future<Map<String, dynamic>> _deviceAuthBody(String deviceId) async {
+    return {
+      'device_id': deviceId,
+      ...await AndroidSsaid.authFields(),
+    };
+  }
+
   Future<void> guestLogin() async {
     final deviceId = await DeviceIdStorage.getOrCreate();
     final res = await _client.dio.post<Map<String, dynamic>>(
       'auth/guest/',
-      data: {'device_id': deviceId},
+      data: await _deviceAuthBody(deviceId),
     );
     await _saveAuthTokens(res.data!);
     await GuestSessionStorage.markActive();
@@ -39,7 +47,7 @@ class AuthRepository {
     try {
       final res = await _client.dio.post<Map<String, dynamic>>(
         'auth/device-auth/',
-        data: {'device_id': existing},
+        data: await _deviceAuthBody(existing),
       );
       await _saveAuthTokens(res.data!);
       return true;
@@ -66,7 +74,7 @@ class AuthRepository {
     try {
       await _client.dio.post<void>(
         'auth/ensure-device/',
-        data: {'device_id': deviceId},
+        data: await _deviceAuthBody(deviceId),
         options: Options(
           validateStatus: (status) =>
               status != null && status >= 200 && status < 300,
@@ -129,6 +137,7 @@ class AuthRepository {
       data: {
         'session_code': sessionCode,
         'device_id': deviceId,
+        ...await AndroidSsaid.authFields(),
       },
     );
     await _saveAuthTokens(res.data!);
