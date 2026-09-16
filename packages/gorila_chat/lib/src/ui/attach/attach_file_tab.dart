@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'attach_media_utils.dart';
+import 'chat_attach_l10n.dart';
 import 'chat_attach_models.dart';
 
 class AttachFileTab extends StatefulWidget {
@@ -66,11 +67,11 @@ class _AttachFileTabState extends State<AttachFileTab> {
             backgroundColor: scheme.primaryContainer,
             child: Icon(Icons.folder_open_outlined, color: scheme.primary),
           ),
-          title: const Text('Выбрать файл'),
+          title: Text(ChatAttachL10n.of(context).pickFile),
           subtitle: Text(
             kIsWeb
-                ? 'Документы и медиа с устройства'
-                : 'Документы, фото и видео',
+                ? ChatAttachL10n.of(context).pickFileSubtitle
+                : ChatAttachL10n.of(context).pickFileSubtitleMedia,
           ),
           trailing: _picking
               ? const SizedBox(
@@ -84,7 +85,7 @@ class _AttachFileTabState extends State<AttachFileTab> {
         if (widget.selected.isNotEmpty) ...[
           const SizedBox(height: 12),
           Text(
-            'Выбрано: ${widget.selected.length}',
+            ChatAttachL10n.of(context).selected(widget.selected.length),
             style: Theme.of(context).textTheme.titleSmall,
           ),
         ],

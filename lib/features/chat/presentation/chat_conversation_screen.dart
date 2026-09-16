@@ -3940,82 +3940,81 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
   }) async {
-    // Never block send on a slow WS reconnect (can take up to ~20s).
-    // Kick reconnect in background and fall through to HTTP outbox.
-    var connected = FamilyChatRealtime.instance.isConnected;
-    if (!connected) {
-      unawaited(ChatWsTextSend.ensureConnection());
-    }
-    ChatSendTrace.log(
-      'ws_try',
-      threadId: widget.threadId,
-      tempId: tempId,
-      source: 'ui',
-      extra: {'connected': connected, 'bodyLen': body.length},
-    );
-    if (!connected) return false;
-
     if (_localFirst) {
       await _persistMessageCache();
     }
-
-    final ack = await ChatWsTextSend.trySend(
-      threadId: widget.threadId,
-      clientMsgId: tempId,
-      body: body,
-      replyToMessageId: replyToMessageId,
-      mentionedUserIds: mentionedUserIds,
-      notifySilent: notifySilent,
-    );
-    if (!mounted) return true;
-    if (ack != null) {
-      if (!_isPlausibleWsSendAck(
-        sentBody: body,
-        ack: ack,
-        messages: _messages,
-      )) {
-        ChatSendTrace.log(
-          'ws_ack_fallback_outbox',
+    // Kick shared reconnect now; serialize WS/outbox so rapid taps keep order.
+    final reconnect = ChatWsTextSend.ensureConnection();
+    return ChatWsTextSend.runExclusive(() async {
+      final connected = await reconnect;
+      ChatSendTrace.log(
+        'ws_try_ordered',
+        threadId: widget.threadId,
+        tempId: tempId,
+        source: 'ui',
+        extra: {'connected': connected, 'bodyLen': body.length},
+      );
+      Map<String, dynamic>? ack;
+      if (connected) {
+        ack = await ChatWsTextSend.trySend(
           threadId: widget.threadId,
-          tempId: tempId,
-          serverId: chatAsInt(ack['id']),
-          source: 'ui',
+          clientMsgId: tempId,
+          body: body,
+          replyToMessageId: replyToMessageId,
+          mentionedUserIds: mentionedUserIds,
+          notifySilent: notifySilent,
         );
-      } else {
-        ChatSendTrace.log(
-          'ws_ack',
-          threadId: widget.threadId,
-          tempId: tempId,
-          serverId: chatAsInt(ack['id']),
-          source: 'ui',
-        );
-        _replaceOptimisticMessage(tempId, ack);
-        _scrollToBottom();
-        await _persistMessageCache();
-        return true;
       }
-    }
+      if (!mounted) return true;
+      if (ack != null) {
+        if (!_isPlausibleWsSendAck(
+          sentBody: body,
+          ack: ack,
+          messages: _messages,
+        )) {
+          ChatSendTrace.log(
+            'ws_ack_fallback_outbox',
+            threadId: widget.threadId,
+            tempId: tempId,
+            serverId: chatAsInt(ack['id']),
+            source: 'ui',
+          );
+        } else {
+          ChatSendTrace.log(
+            'ws_ack',
+            threadId: widget.threadId,
+            tempId: tempId,
+            serverId: chatAsInt(ack['id']),
+            source: 'ui',
+          );
+          _replaceOptimisticMessage(tempId, ack);
+          _scrollToBottom();
+          await _persistMessageCache();
+          return true;
+        }
+      }
 
-    ChatSendTrace.log(
-      'ws_fallback_outbox',
-      threadId: widget.threadId,
-      tempId: tempId,
-      source: 'ui',
-    );
-    await _enqueueOfflineMessage(
-      tempId: tempId,
-      caption: body,
-      attachments: const [],
-      replyToMessageId: replyToMessageId,
-      mentionedUserIds: mentionedUserIds,
-      notifySilent: notifySilent,
-      clientMsgId: tempId,
-      markQueued: true,
-    );
-    ChatMutationCoordinator.scheduleSync(
-      ref.read(familychatRepositoryProvider),
-    );
-    return true;
+      ChatSendTrace.log(
+        'ws_fallback_outbox',
+        threadId: widget.threadId,
+        tempId: tempId,
+        source: 'ui',
+      );
+      await _enqueueOfflineMessage(
+        tempId: tempId,
+        caption: body,
+        attachments: const [],
+        replyToMessageId: replyToMessageId,
+        mentionedUserIds: mentionedUserIds,
+        notifySilent: notifySilent,
+        clientMsgId: tempId,
+        markQueued: true,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
+      );
+      return true;
+    });
   }
 
   Future<void> _retryFailedMessage(Map<String, dynamic> message) async {

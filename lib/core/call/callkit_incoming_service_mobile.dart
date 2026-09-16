@@ -13,6 +13,7 @@ import '../network/api_client.dart';
 import '../notifications/familychat_foreground_bridge.dart';
 import '../notifications/notification_call_actions.dart';
 import '../push/web_push_bridge.dart';
+import 'call_flow_log.dart';
 
 typedef CallKitAcceptedHandler = Future<void> Function(Map<String, dynamic> extra, int callId);
 typedef CallKitEndedHandler = Future<void> Function(int callId);
@@ -73,9 +74,29 @@ abstract final class CallKitIncomingService {
     onAccepted ??= (extra, callId) async {
       try {
         final repo = FamilyChatRepository(ApiClient());
+        unawaited(CallFlowLog.action(
+          callId: callId,
+          role: 'callee',
+          event: 'action_accept',
+          data: {'via': 'callkit_bg'},
+          repository: repo,
+        ));
         await repo.callAction(callId, 'accept');
+        unawaited(CallFlowLog.action(
+          callId: callId,
+          role: 'callee',
+          event: 'action_http_ok',
+          data: {'action': 'accept', 'via': 'callkit_bg'},
+          repository: repo,
+        ));
       } catch (e, st) {
         debugPrint('[CallKit] background accept failed: $e\n$st');
+        unawaited(CallFlowLog.action(
+          callId: callId,
+          role: 'callee',
+          event: 'action_http_fail',
+          data: {'action': 'accept', 'via': 'callkit_bg', 'msg': '$e'},
+        ));
       }
       try {
         await FlutterCallkitIncoming.setCallConnected(callUuid(callId));
@@ -272,9 +293,29 @@ abstract final class CallKitIncomingService {
 
     try {
       final repo = FamilyChatRepository(ApiClient());
+      unawaited(CallFlowLog.action(
+        callId: callId,
+        role: 'callee',
+        event: 'action_accept',
+        data: {'via': 'callkit'},
+        repository: repo,
+      ));
       await repo.callAction(callId, 'accept');
+      unawaited(CallFlowLog.action(
+        callId: callId,
+        role: 'callee',
+        event: 'action_http_ok',
+        data: {'action': 'accept', 'via': 'callkit'},
+        repository: repo,
+      ));
     } catch (e, st) {
       debugPrint('[CallKit] accept API failed: $e\n$st');
+      unawaited(CallFlowLog.action(
+        callId: callId,
+        role: 'callee',
+        event: 'action_http_fail',
+        data: {'action': 'accept', 'via': 'callkit', 'msg': '$e'},
+      ));
       await endCall(callId);
       return;
     }

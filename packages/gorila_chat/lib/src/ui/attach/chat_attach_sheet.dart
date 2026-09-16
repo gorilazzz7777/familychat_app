@@ -3,19 +3,24 @@ import 'package:flutter/material.dart';
 import 'attach_file_tab.dart';
 import 'attach_gallery_tab.dart';
 import 'attach_selection_bar.dart';
+import 'chat_attach_l10n.dart';
 import 'chat_attach_models.dart';
+
+export 'chat_attach_l10n.dart';
 
 /// Gallery + File attach sheet (Family Chat look, without location/albums).
 class ChatAttachSheet extends StatefulWidget {
   const ChatAttachSheet({
     super.key,
     required this.onSendMedia,
+    this.l10n = ChatAttachL10n.russian,
   });
 
   final Future<void> Function(
     String caption,
     List<ChatAttachSelectionItem> items,
   ) onSendMedia;
+  final ChatAttachL10n l10n;
 
   static Future<void> show(
     BuildContext context, {
@@ -23,13 +28,14 @@ class ChatAttachSheet extends StatefulWidget {
       String caption,
       List<ChatAttachSelectionItem> items,
     ) onSendMedia,
+    ChatAttachL10n l10n = ChatAttachL10n.russian,
   }) {
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => ChatAttachSheet(onSendMedia: onSendMedia),
+      builder: (_) => ChatAttachSheet(onSendMedia: onSendMedia, l10n: l10n),
     );
   }
 
@@ -107,52 +113,56 @@ class _ChatAttachSheetState extends State<ChatAttachSheet> {
     final scheme = Theme.of(context).colorScheme;
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
 
-    return Padding(
-      padding: EdgeInsets.only(bottom: bottomInset),
-      child: DraggableScrollableSheet(
-        controller: _sheetCtrl,
-        expand: false,
-        initialChildSize: 0.67,
-        minChildSize: 0.40,
-        maxChildSize: 0.95,
-        builder: (context, scrollController) {
-          return Material(
-            color: scheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-            clipBehavior: Clip.antiAlias,
-            child: Column(
-              children: [
-                const SizedBox(height: 8),
-                Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: scheme.outlineVariant,
-                    borderRadius: BorderRadius.circular(999),
+    return ChatAttachL10nScope(
+      l10n: widget.l10n,
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: DraggableScrollableSheet(
+          controller: _sheetCtrl,
+          expand: false,
+          initialChildSize: 0.67,
+          minChildSize: 0.40,
+          maxChildSize: 0.95,
+          builder: (context, scrollController) {
+            return Material(
+              color: scheme.surface,
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(16)),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                children: [
+                  const SizedBox(height: 8),
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: scheme.outlineVariant,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: switch (_mode) {
-                    ChatAttachMode.gallery => AttachGalleryTab(
-                        selected: _selected,
-                        onSelectedChanged: _setSelected,
-                        scrollController: scrollController,
-                        expanded: _expanded,
-                      ),
-                    ChatAttachMode.file => AttachFileTab(
-                        selected: _selected,
-                        onSelectedChanged: _setSelected,
-                        scrollController: scrollController,
-                      ),
-                    _ => const SizedBox.shrink(),
-                  },
-                ),
-                _buildBottomChrome(scheme),
-              ],
-            ),
-          );
-        },
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: switch (_mode) {
+                      ChatAttachMode.gallery => AttachGalleryTab(
+                          selected: _selected,
+                          onSelectedChanged: _setSelected,
+                          scrollController: scrollController,
+                          expanded: _expanded,
+                        ),
+                      ChatAttachMode.file => AttachFileTab(
+                          selected: _selected,
+                          onSelectedChanged: _setSelected,
+                          scrollController: scrollController,
+                        ),
+                      _ => const SizedBox.shrink(),
+                    },
+                  ),
+                  _buildBottomChrome(scheme),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -204,9 +214,10 @@ class _ModeBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    const chips = [
-      (ChatAttachMode.gallery, 'Галерея', Icons.photo_outlined),
-      (ChatAttachMode.file, 'Файл', Icons.insert_drive_file_outlined),
+    final l10n = ChatAttachL10n.of(context);
+    final chips = [
+      (ChatAttachMode.gallery, l10n.gallery, Icons.photo_outlined),
+      (ChatAttachMode.file, l10n.file, Icons.insert_drive_file_outlined),
     ];
 
     return SizedBox.expand(

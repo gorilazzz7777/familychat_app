@@ -3,11 +3,16 @@ import UIKit
 import UserNotifications
 import CallKit
 import AVFAudio
+import BackgroundTasks
 import flutter_callkit_incoming
 import Intents
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate, CallkitIncomingAppDelegate {
+  private static let outboxTaskId = "com.familychat.familychat_app.outboxRefresh"
+  private var outboxChannel: FlutterMethodChannel?
+  private var outboxBgTaskId: UIBackgroundTaskIdentifier = .invalid
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -18,12 +23,62 @@ import Intents
       registerChatReplyCategory()
     }
     application.registerForRemoteNotifications()
+    registerOutboxBgTasks()
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   override func applicationDidEnterBackground(_ application: UIApplication) {
     UIDevice.current.isProximityMonitoringEnabled = false
+    scheduleOutboxRefresh()
     super.applicationDidEnterBackground(application)
+  }
+
+  private func registerOutboxBgTasks() {
+    if #available(iOS 13.0, *) {
+      BGTaskScheduler.shared.register(
+        forTaskWithIdentifier: Self.outboxTaskId,
+        using: nil
+      ) { task in
+        self.handleOutboxRefresh(task: task as! BGAppRefreshTask)
+      }
+    }
+  }
+
+  private func scheduleOutboxRefresh() {
+    if #available(iOS 13.0, *) {
+      let request = BGAppRefreshTaskRequest(identifier: Self.outboxTaskId)
+      request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+      do {
+        try BGTaskScheduler.shared.submit(request)
+      } catch {
+        // Best-effort; system may deny under budget.
+      }
+    }
+  }
+
+  @available(iOS 13.0, *)
+  private func handleOutboxRefresh(task: BGAppRefreshTask) {
+    scheduleOutboxRefresh()
+    var finished = false
+    let finish: (Bool) -> Void = { success in
+      guard !finished else { return }
+      finished = true
+      task.setTaskCompleted(success: success)
+    }
+    task.expirationHandler = {
+      finish(false)
+    }
+    guard let channel = outboxChannel else {
+      finish(false)
+      return
+    }
+    channel.invokeMethod("flushOutbox", arguments: nil) { result in
+      if result is FlutterError {
+        finish(false)
+      } else {
+        finish(true)
+      }
+    }
   }
 
   private func registerChatReplyCategory() {
@@ -124,6 +179,47 @@ import Intents
         }
         result(nil)
       case "takePendingDirectShare":
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
+    let outboxRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "FamilyChatOutboxBackground")!
+    let outboxChannel = FlutterMethodChannel(
+      name: "com.familychat/outbox_background",
+      binaryMessenger: outboxRegistrar.messenger()
+    )
+    self.outboxChannel = outboxChannel
+    outboxChannel.setMethodCallHandler { [weak self] call, result in
+      guard let self else {
+        result(FlutterError(code: "gone", message: nil, details: nil))
+        return
+      }
+      switch call.method {
+      case "register":
+        self.registerOutboxBgTasks()
+        result(nil)
+      case "scheduleRefresh":
+        self.scheduleOutboxRefresh()
+        result(nil)
+      case "begin":
+        if self.outboxBgTaskId != .invalid {
+          result(nil)
+          return
+        }
+        self.outboxBgTaskId = UIApplication.shared.beginBackgroundTask(withName: "familychat.outbox") {
+          if self.outboxBgTaskId != .invalid {
+            UIApplication.shared.endBackgroundTask(self.outboxBgTaskId)
+            self.outboxBgTaskId = .invalid
+          }
+        }
+        result(nil)
+      case "end":
+        if self.outboxBgTaskId != .invalid {
+          UIApplication.shared.endBackgroundTask(self.outboxBgTaskId)
+          self.outboxBgTaskId = .invalid
+        }
         result(nil)
       default:
         result(FlutterMethodNotImplemented)

@@ -356,6 +356,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
   Future<void> _startSessionServices() async {
     final client = ref.read(apiClientProvider);
+    FamilyChatRealtime.bindAuthRefresher(client.authRefresher);
     final token = await client.authRefresher.startWatching();
     if (token != null && token.isNotEmpty) {
       try {

@@ -1,18 +1,31 @@
+import 'dart:async';
+
 import 'chat_realtime_utils.dart';
 import 'chat_send_trace.dart';
 import 'familychat_realtime.dart';
 
 /// Plain-text send eligibility and WS transport helpers.
 abstract final class ChatWsTextSend {
-  static const ackTimeout = Duration(seconds: 2);
+  /// Wait this long for WS ack before falling back to HTTP outbox.
+  static const ackTimeout = Duration(seconds: 5);
+
+  /// Await reconnect this long before deciding the socket is unavailable.
+  static const reconnectTimeout = Duration(seconds: 5);
 
   /// After consecutive WS ack failures, skip WS and use HTTP outbox for a while.
-  /// Avoids stacking 2s timeouts on every rapid send when the socket is half-dead.
+  /// Avoids stacking timeouts on every rapid send when the socket is half-dead.
   static const int _circuitFailThreshold = 2;
-  static const Duration _circuitOpenFor = Duration(seconds: 45);
+  static const Duration _circuitOpenFor = Duration(seconds: 20);
 
   static int _consecutiveFailures = 0;
   static DateTime? _circuitOpenUntil;
+  static bool _listeningRealtime = false;
+
+  /// One shared reconnect attempt — parallel Send share this Future.
+  static Future<bool>? _inFlightReconnect;
+
+  /// Serialize plain-text sends so rapid taps keep order (WS or outbox).
+  static Future<void> _sendGate = Future<void>.value();
 
   static bool isEligible({
     required List<dynamic> attachments,
@@ -37,6 +50,16 @@ abstract final class ChatWsTextSend {
     return false;
   }
 
+  static void _ensureRealtimeListener() {
+    if (_listeningRealtime) return;
+    _listeningRealtime = true;
+    FamilyChatRealtime.instance.addListener((event) {
+      if (event['event']?.toString() == 'ws_connected') {
+        _noteSuccess();
+      }
+    });
+  }
+
   static void _noteSuccess() {
     _consecutiveFailures = 0;
     _circuitOpenUntil = null;
@@ -49,9 +72,25 @@ abstract final class ChatWsTextSend {
       ChatSendTrace.log(
         'ws_circuit_open',
         source: 'ws',
-        detail: 'failures=$_consecutiveFailures openFor=${_circuitOpenFor.inSeconds}s',
+        detail:
+            'failures=$_consecutiveFailures openFor=${_circuitOpenFor.inSeconds}s',
       );
     }
+  }
+
+  /// Run [action] after previous plain-text sends finish (FIFO).
+  static Future<T> runExclusive<T>(Future<T> Function() action) {
+    final done = Completer<T>();
+    _sendGate = _sendGate.then((_) async {
+      try {
+        done.complete(await action());
+      } catch (e, st) {
+        done.completeError(e, st);
+      }
+    });
+    // Keep the gate alive even if [action] threw.
+    _sendGate = _sendGate.catchError((_) {});
+    return done.future;
   }
 
   static Future<Map<String, dynamic>?> trySend({
@@ -62,6 +101,7 @@ abstract final class ChatWsTextSend {
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
   }) async {
+    _ensureRealtimeListener();
     final trimmed = body.trim();
     if (trimmed.isEmpty) return null;
     if (_circuitOpen) {
@@ -81,7 +121,7 @@ abstract final class ChatWsTextSend {
         tempId: clientMsgId,
         source: 'ws',
       );
-      _noteFailure();
+      // Soft skip — do not open the circuit for a down socket.
       return null;
     }
     try {
@@ -126,12 +166,62 @@ abstract final class ChatWsTextSend {
     }
   }
 
-  /// Best-effort reconnect; never block the send path for long.
-  static Future<void> ensureConnection() async {
+  /// Await a short reconnect window. Parallel callers share one attempt.
+  ///
+  /// Also waits for an in-flight `connect` (auto-reconnect) via `ws_connected`,
+  /// so we do not bail early when `_connecting` caused `connect()` to no-op.
+  static Future<bool> ensureConnection({
+    Duration timeout = reconnectTimeout,
+  }) async {
+    _ensureRealtimeListener();
     final realtime = FamilyChatRealtime.instance;
-    if (realtime.isConnected) return;
+    if (realtime.isConnected) return true;
+
+    final existing = _inFlightReconnect;
+    if (existing != null) {
+      try {
+        return await existing.timeout(
+          timeout,
+          onTimeout: () => realtime.isConnected,
+        );
+      } catch (_) {
+        return realtime.isConnected;
+      }
+    }
+
+    late final Future<bool> future;
+    future = _reconnectOnce(timeout).whenComplete(() {
+      if (identical(_inFlightReconnect, future)) {
+        _inFlightReconnect = null;
+      }
+    });
+    _inFlightReconnect = future;
+    return future;
+  }
+
+  static Future<bool> _reconnectOnce(Duration timeout) async {
+    final realtime = FamilyChatRealtime.instance;
+    if (realtime.isConnected) return true;
+
+    final connected = Completer<bool>();
+    void onEvent(Map<String, dynamic> event) {
+      if (event['event']?.toString() != 'ws_connected') return;
+      if (!connected.isCompleted) connected.complete(true);
+    }
+
+    realtime.addListener(onEvent);
     try {
-      await realtime.reconnectAndRefresh().timeout(const Duration(seconds: 2));
-    } catch (_) {}
+      // Kick refresh+connect (may no-op if already connecting — then we wait).
+      unawaited(realtime.reconnectAndRefresh());
+      if (realtime.isConnected) return true;
+
+      final result = await Future.any<bool>([
+        connected.future,
+        Future<bool>.delayed(timeout, () => realtime.isConnected),
+      ]);
+      return result || realtime.isConnected;
+    } finally {
+      realtime.removeListener(onEvent);
+    }
   }
 }

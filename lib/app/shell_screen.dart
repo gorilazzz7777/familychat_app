@@ -36,7 +36,9 @@ import '../features/chat/data/familychat_presence_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/presentation/chat_hub_screen.dart';
 import '../features/chat/data/chat_offline_prefetch.dart';
+import '../features/chat/data/chat_offline_outbox.dart';
 import '../features/chat/data/chat_offline_sync.dart';
+import '../features/chat/data/chat_outbox_background.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/chat_sync_service.dart';
 import '../features/chat/data/chat_ui_connectivity.dart';
@@ -122,6 +124,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       unawaited(
         ChatOfflineSync.instance.run(ref.read(familychatRepositoryProvider)),
       );
+      ChatOutboxBackground.install(ref.read(familychatRepositoryProvider));
       unawaited(
         ChatOfflinePrefetch.scheduleSecondary(
           ref.read(familychatRepositoryProvider),
@@ -309,19 +312,11 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     FamilyChatPresenceService.onLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
-      unawaited(ref.read(apiClientProvider).authRefresher.startWatching());
       IncomingCallCoordinator.instance.flushPendingIfAny();
       unawaited(CallKitIncomingService.reconcileActiveCalls());
       unawaited(FamilyChatNotifications.consumeLaunchNotification());
       unawaited(FamilyChatNotifications.clearMessageNotificationsOnAppOpen());
       ChatSyncService.instance.beginResumeCatchUp();
-      unawaited(() async {
-        await FamilyChatRealtime.instance.reconnectAndRefresh();
-        final openId = ActiveChatContext.instance.openThreadId;
-        if (openId != null) {
-          await ChatSyncService.instance.syncThread(openId);
-        }
-      }());
       ChatUiConnectivity.instance.onAppResumed();
       unawaited(_refreshTab(_index, silent: true));
       unawaited(
@@ -331,9 +326,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         ),
       );
       unawaited(
-        ChatOfflineSync.instance.run(ref.read(familychatRepositoryProvider)),
-      );
-      unawaited(
         FeedPostOutbox.instance.flush(ref.read(familychatRepositoryProvider)),
       );
       unawaited(ChatScheduledSendService.instance.dispatchDue());
@@ -341,6 +333,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       if (userId != null) {
         unawaited(_runCalendarSyncAndMaybeReview(userId));
       }
+      // Serialize: fresh JWT → WS connect → outbox flush (avoid stale-token race).
+      unawaited(_onAppResumedNetwork());
       unawaited(
         RuStoreReviewPromptService.onAppSessionOpened(
           context,
@@ -354,8 +348,35 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       if (state == AppLifecycleState.paused ||
           state == AppLifecycleState.hidden) {
         RuStoreReviewPromptService.onAppPaused();
+        unawaited(
+          ChatOutboxBackground.flushWhileBackgrounded(
+            ref.read(familychatRepositoryProvider),
+          ),
+        );
       }
       unawaited(_reportAppBackground());
+    }
+  }
+
+  Future<void> _onAppResumedNetwork() async {
+    final client = ref.read(apiClientProvider);
+    final repo = ref.read(familychatRepositoryProvider);
+    FamilyChatRealtime.bindAuthRefresher(client.authRefresher);
+    final token = await client.authRefresher.startWatching();
+    if (token != null && token.isNotEmpty) {
+      await FamilyChatRealtime.instance.connect(token);
+      FamilyChatRealtime.instance.emitSyntheticEvent({
+        'event': 'chat_refresh',
+        'force': true,
+      });
+    } else {
+      await FamilyChatRealtime.instance.reconnectAndRefresh();
+    }
+    await ChatOfflineOutbox.resumePausedForNetworkRecovery();
+    await ChatOfflineSync.instance.run(repo);
+    final openId = ActiveChatContext.instance.openThreadId;
+    if (openId != null) {
+      await ChatSyncService.instance.syncThread(openId);
     }
   }
 

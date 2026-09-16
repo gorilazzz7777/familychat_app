@@ -403,7 +403,30 @@ class ChatOfflineOutbox {
     return false;
   }
 
-  static const maxAttempts = 5;
+  static const maxAttempts = 8;
+
+  /// Clear pause after network comes back (resume / WS up / BG flush).
+  /// Does not wipe `next_retry_at` so normal backoff still applies.
+  static Future<int> resumePausedForNetworkRecovery() async {
+    var cleared = 0;
+    await _serialized(() async {
+      final items = await _readItems();
+      var changed = false;
+      for (final item in items) {
+        if (item['paused'] != true) continue;
+        item.remove('paused');
+        final attempts = chatAsInt(item['attempts']) ?? 0;
+        if (attempts >= maxAttempts) {
+          item['attempts'] = maxAttempts - 1;
+        }
+        item.remove('next_retry_at');
+        changed = true;
+        cleared++;
+      }
+      if (changed) await _writeItems(items);
+    });
+    return cleared;
+  }
 
   static Future<void> resumeMessage({
     required int threadId,
@@ -445,8 +468,9 @@ class ChatOfflineOutbox {
   }
 
   static DateTime _nextRetryAt(int attempts) {
-    final shift = (attempts - 1).clamp(0, 4);
-    final seconds = 1 << shift; // 1, 2, 4, 8, 16
+    // 2, 4, 8, 16, 32, 60, 60...
+    final shift = (attempts - 1).clamp(0, 5);
+    final seconds = (1 << (shift + 1)).clamp(2, 60);
     return DateTime.now().toUtc().add(Duration(seconds: seconds));
   }
 
@@ -486,8 +510,16 @@ class ChatOfflineOutbox {
             final result = await _deliverMessage(repo, item);
             if (result == null) {
               debugPrint(
-                '[ChatOutbox] skip message without delivery id=$itemId',
+                '[ChatOutbox] malformed message id=$itemId — pause',
               );
+              await _handleMessageDeliverError(
+                item: item,
+                itemId: itemId,
+                error: StateError('malformed outbox message'),
+                delivered: delivered,
+                onRetryScheduled: noteRetry,
+              );
+              claimedIds.remove(itemId);
               return;
             }
             delivered.add(result);
@@ -525,7 +557,16 @@ class ChatOfflineOutbox {
           result = await _deliverMessage(repo, item);
           if (result == null) {
             removeFromQueue = false;
-            debugPrint('[ChatOutbox] skip message without delivery id=$itemId');
+            debugPrint('[ChatOutbox] malformed message id=$itemId — pause');
+            await _handleMessageDeliverError(
+              item: item,
+              itemId: itemId,
+              error: StateError('malformed outbox message'),
+              delivered: delivered,
+              onRetryScheduled: noteRetry,
+            );
+            claimedIds.remove(itemId);
+            return;
           }
         } else if (kind == 'reaction') {
           result = await _deliverReaction(repo, item);
@@ -554,6 +595,7 @@ class ChatOfflineOutbox {
         } else if (kind == 'clear_quiet_hours') {
           await _deliverClearQuietHours(repo, item);
         } else {
+          debugPrint('[ChatOutbox] unknown kind=$kind id=$itemId — drop');
           await _removeItemById(itemId);
           return;
         }
@@ -563,16 +605,14 @@ class ChatOfflineOutbox {
         }
       } catch (error, st) {
         debugPrint('[ChatOutbox] fail id=$itemId error=$error\n$st');
-        if (item['kind']?.toString() == 'message') {
-          await _handleMessageDeliverError(
-            item: item,
-            itemId: itemId,
-            error: error,
-            delivered: delivered,
-            onRetryScheduled: noteRetry,
-          );
-          claimedIds.remove(itemId);
-        }
+        await _handleMessageDeliverError(
+          item: item,
+          itemId: itemId,
+          error: error,
+          delivered: delivered,
+          onRetryScheduled: noteRetry,
+        );
+        claimedIds.remove(itemId);
         if (ChatNetworkStatus.looksOffline(error)) {
           stopForOffline = true;
         }
@@ -812,8 +852,12 @@ class ChatOfflineOutbox {
         : DateTime.now().toUtc().difference(enqueuedAt.toUtc()).inMilliseconds;
 
     final attachmentIds = <int>[];
+    final existingIds = chatAsIntList(item['attachment_ids']);
     final rawAttachments = item['attachments'];
-    if (rawAttachments is List) {
+    final uploadedStorageKeys = <String>[];
+    if (existingIds.isNotEmpty) {
+      attachmentIds.addAll(existingIds);
+    } else if (rawAttachments is List) {
       final uploadSw = Stopwatch()..start();
       var totalBytes = 0;
       final payloads = <({Uint8List bytes, String filename, String? contentType, String storageKey})>[];
@@ -863,7 +907,15 @@ class ChatOfflineOutbox {
         );
         final id = chatAsInt(uploaded['id']);
         if (id != null) attachmentIds.add(id);
-        await _deleteBytes(payload.storageKey);
+        uploadedStorageKeys.add(payload.storageKey);
+      }
+      // Persist ids before POST so a failed send can retry without re-upload.
+      final itemId = item['id']?.toString();
+      if (itemId != null &&
+          itemId.isNotEmpty &&
+          attachmentIds.isNotEmpty) {
+        await _patchItem(itemId, {'attachment_ids': attachmentIds});
+        item['attachment_ids'] = attachmentIds;
       }
       uploadMs = uploadSw.elapsedMilliseconds;
     }
@@ -886,6 +938,19 @@ class ChatOfflineOutbox {
       videoNoteDurationMs: chatAsInt(item['video_note_duration_ms']),
     );
     httpMs = httpSw.elapsedMilliseconds;
+    // Only drop local blobs after the message POST succeeded.
+    for (final key in uploadedStorageKeys) {
+      await _deleteBytes(key);
+    }
+    if (rawAttachments is List) {
+      for (final raw in rawAttachments) {
+        if (raw is! Map) continue;
+        final storageKey = raw['storage_key']?.toString();
+        if (storageKey != null && storageKey.isNotEmpty) {
+          await _deleteBytes(storageKey);
+        }
+      }
+    }
     ChatSendTrace.log(
       'http_outbox_post_ok',
       threadId: threadId,

@@ -129,6 +129,9 @@ class ChatOfflineSync extends ChangeNotifier {
               '[ChatOfflineSync] /status offline — still attempting outbox',
             );
           }
+          if (online) {
+            await ChatOfflineOutbox.resumePausedForNetworkRecovery();
+          }
         }
 
         if (await ChatOfflineOutbox.hasPendingMediaUploads()) {

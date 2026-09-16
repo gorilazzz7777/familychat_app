@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../calls/call_flow_reporter.dart';
 import '../../contract/chat_call_repository.dart';
 import '../../realtime/gorila_chat_realtime.dart';
 import '../widgets/chat_avatar.dart';
@@ -40,16 +42,25 @@ class IncomingCallScreen extends StatefulWidget {
 class _IncomingCallScreenState extends State<IncomingCallScreen> {
   bool _busy = false;
   bool _closed = false;
+  CallFlowReporter? _flow;
 
   @override
   void initState() {
     super.initState();
     widget.realtime.addListener(_onRealtime);
+    _flow = CallFlowReporter(
+      platform: kIsWeb ? 'web' : defaultTargetPlatform.name,
+      upload: (id, body) => widget.callRepository.uploadCallReport(id, body),
+    );
+    _flow!.start(callId: widget.callId, role: 'callee');
+    _flow!.log('ring_shown', data: {'is_video': widget.isVideo});
   }
 
   @override
   void dispose() {
     widget.realtime.removeListener(_onRealtime);
+    _flow?.dispose();
+    _flow = null;
     widget.onHandled?.call();
     super.dispose();
   }
@@ -64,6 +75,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     if (ev != 'chat_call_state') return;
     final status = event['status']?.toString() ?? '';
     if (status == 'ended' || status == 'declined' || status == 'missed') {
+      _flow?.log('action_end', data: {'via': 'remote', 'status': status});
       unawaited(_close());
     }
   }
@@ -71,21 +83,30 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   Future<void> _close() async {
     if (_closed || !mounted) return;
     _closed = true;
+    await _flow?.end();
+    if (!mounted) return;
     Navigator.of(context).maybePop();
   }
 
   Future<void> _decline() async {
     if (_busy) return;
     setState(() => _busy = true);
+    _flow?.log('action_decline');
     try {
       await widget.callRepository.callAction(widget.callId, 'decline');
-    } catch (_) {}
+      _flow?.log('action_http_ok', data: {'action': 'decline'});
+    } catch (e) {
+      _flow?.log('action_http_fail', data: {'action': 'decline', 'msg': '$e'});
+    }
     await _close();
   }
 
   Future<void> _accept() async {
     if (_busy) return;
     setState(() => _busy = true);
+    _flow?.log('action_accept');
+    await _flow?.end();
+    if (!mounted) return;
     final nav = Navigator.of(context);
     nav.pop();
     await nav.push<void>(

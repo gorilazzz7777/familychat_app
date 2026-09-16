@@ -11,6 +11,8 @@ import '../data/familychat_realtime.dart';
 import '../data/incoming_call_coordinator.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'chat_call_screen.dart';
+import 'package:flutter/foundation.dart';
+import 'package:gorila_chat/gorila_chat.dart';
 
 class IncomingCallScreen extends ConsumerStatefulWidget {
   const IncomingCallScreen({
@@ -36,6 +38,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
   Map<String, dynamic>? _profile;
   bool _busy = false;
   bool _closed = false;
+  CallFlowReporter? _flow;
 
   @override
   void initState() {
@@ -44,11 +47,24 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
     unawaited(CallLockScreen.acquire());
     unawaited(_loadProfile());
     unawaited(CallRingtoneController.instance.startIncomingCall());
+    // Reporter started after first frame so ref is ready.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _flow != null) return;
+      final repo = ref.read(familychatRepositoryProvider);
+      _flow = CallFlowReporter(
+        platform: kIsWeb ? 'web' : defaultTargetPlatform.name,
+        upload: (id, body) => repo.uploadCallReport(id, body),
+      );
+      _flow!.start(callId: widget.callId, role: 'callee');
+      _flow!.log('ring_shown', data: {'is_video': widget.isVideo});
+    });
   }
 
   @override
   void dispose() {
     FamilyChatRealtime.instance.removeListener(_onRealtime);
+    _flow?.dispose();
+    _flow = null;
     unawaited(CallRingtoneController.instance.stop());
     unawaited(FamilyChatNotifications.cancelCallNotification(widget.callId));
     IncomingCallCoordinator.instance.markHandled(widget.callId);
@@ -79,6 +95,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
     if (status == 'ended' ||
         status == 'declined' ||
         status == 'missed') {
+      _flow?.log('action_end', data: {'via': 'remote', 'status': status});
       unawaited(_close());
     }
   }
@@ -104,6 +121,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
   Future<void> _close() async {
     if (_closed || !mounted) return;
     _closed = true;
+    await _flow?.end();
     await CallRingtoneController.instance.stop();
     await FamilyChatNotifications.cancelCallNotification(widget.callId);
     IncomingCallCoordinator.instance.markHandled(widget.callId);
@@ -115,27 +133,35 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
   Future<void> _decline() async {
     if (_busy || _closed) return;
     setState(() => _busy = true);
+    _flow?.log('action_decline');
     try {
       await ref
           .read(familychatRepositoryProvider)
           .callAction(widget.callId, 'decline');
-    } catch (_) {}
+      _flow?.log('action_http_ok', data: {'action': 'decline'});
+    } catch (e) {
+      _flow?.log('action_http_fail', data: {'action': 'decline', 'msg': '$e'});
+    }
     await _close();
   }
 
   Future<void> _answer() async {
     if (_busy || _closed) return;
     setState(() => _busy = true);
+    _flow?.log('action_accept');
     try {
       await ref
           .read(familychatRepositoryProvider)
           .callAction(widget.callId, 'accept');
-    } catch (_) {
+      _flow?.log('action_http_ok', data: {'action': 'accept'});
+    } catch (e) {
+      _flow?.log('action_http_fail', data: {'action': 'accept', 'msg': '$e'});
       if (mounted) setState(() => _busy = false);
       return;
     }
     if (!mounted) return;
     _closed = true;
+    await _flow?.end();
     await CallRingtoneController.instance.stop();
     await FamilyChatNotifications.cancelCallNotification(widget.callId);
     IncomingCallCoordinator.instance.markHandled(widget.callId);

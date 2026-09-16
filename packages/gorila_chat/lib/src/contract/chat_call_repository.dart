@@ -21,4 +21,8 @@ abstract class ChatCallRepository {
     int callId, {
     int afterId = 0,
   });
+
+  /// Best-effort call-flow timeline upload. Implementations must swallow
+  /// network/server errors (or the caller will). Never required for call UX.
+  Future<void> uploadCallReport(int callId, Map<String, dynamic> body);
 }

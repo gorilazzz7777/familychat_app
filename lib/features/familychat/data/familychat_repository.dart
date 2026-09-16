@@ -1231,6 +1231,18 @@ class FamilyChatRepository {
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
+  /// Best-effort call-flow timeline. Never throws to callers.
+  Future<void> uploadCallReport(int callId, Map<String, dynamic> body) async {
+    try {
+      await _dio.post(
+        'familychat/chat/calls/$callId/report/',
+        data: body,
+      );
+    } catch (_) {
+      // Swallow — diagnostics must not affect call UX.
+    }
+  }
+
   Future<void> forwardMessages({
     required int sourceThreadId,
     required List<int> messageIds,

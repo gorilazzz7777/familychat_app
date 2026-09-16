@@ -3,6 +3,7 @@
 /// Apps implement [ChatRepository] / [ChatCallRepository] / [ChatHost].
 library;
 
+export 'src/calls/call_flow_reporter.dart';
 export 'src/contract/chat_call_repository.dart';
 export 'src/contract/chat_capabilities.dart';
 export 'src/contract/chat_host.dart';

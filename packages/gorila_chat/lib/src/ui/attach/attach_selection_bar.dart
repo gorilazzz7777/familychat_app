@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'chat_attach_l10n.dart';
 import 'chat_attach_models.dart';
 
 /// Общая высота нижней панели шторки (режимы ↔ отправка), без safe-area.
@@ -116,7 +117,7 @@ class AttachSelectionBar extends StatelessWidget {
                             maxLines: 2,
                             textCapitalization: TextCapitalization.sentences,
                             decoration: InputDecoration(
-                              hintText: 'Подпись…',
+                              hintText: ChatAttachL10n.of(context).captionHint,
                               filled: true,
                               fillColor: scheme.surfaceContainerHighest
                                   .withValues(alpha: 0.55),
@@ -162,7 +163,11 @@ class AttachSelectionBar extends StatelessWidget {
                                 child: CircularProgressIndicator(strokeWidth: 2),
                               )
                             : Icon(sendIcon),
-                        label: Text(sending ? 'Добавляем…' : 'Добавить'),
+                        label: Text(
+                          sending
+                              ? ChatAttachL10n.of(context).adding
+                              : ChatAttachL10n.of(context).add,
+                        ),
                       ),
                     ),
             ),

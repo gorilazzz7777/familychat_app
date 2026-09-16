@@ -10,6 +10,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'attach_camera_tile.dart';
 import 'attach_media_utils.dart';
 import 'attach_pick_bytes.dart';
+import 'chat_attach_l10n.dart';
 import 'chat_attach_models.dart';
 
 typedef AttachItemsChanged = void Function(List<ChatAttachSelectionItem> items);
@@ -313,7 +314,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
                   child: Text(
-                    'Альбомы',
+                    ChatAttachL10n.of(context).albums,
                     style: theme.textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
@@ -602,7 +603,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
             children: [
               Text(_error!, textAlign: TextAlign.center),
               const SizedBox(height: 12),
-              FilledButton(onPressed: _bootstrap, child: const Text('Повторить')),
+              FilledButton(onPressed: _bootstrap, child: Text(ChatAttachL10n.of(context).retry)),
             ],
           ),
         ),
@@ -620,15 +621,15 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                 icon: const Icon(Icons.arrow_drop_down),
                 label: Text(
                   _album == null
-                      ? 'Галерея'
-                      : localizeGalleryAlbumName(_album!),
+                      ? ChatAttachL10n.of(context).gallery
+                      : localizeGalleryAlbumName(_album!, context),
                 ),
               ),
               const Spacer(),
               if (_limitedAccess)
                 TextButton(
                   onPressed: _openFullAccessSettings,
-                  child: const Text('Все фото'),
+                  child: Text(ChatAttachL10n.of(context).allPhotos),
                 ),
             ],
           ),
@@ -827,39 +828,67 @@ class _AssetThumbState extends State<_AssetThumb> {
   }
 }
 
-/// Русские названия системных альбомов Android/iOS.
-String localizeGalleryAlbumName(AssetPathEntity album) {
+/// Localized system album titles for Android/iOS.
+String localizeGalleryAlbumName(AssetPathEntity album, [BuildContext? context]) {
+  final l10n = context != null
+      ? ChatAttachL10n.of(context)
+      : ChatAttachL10n.russian;
   if (album.isAll) {
     final n = album.name.trim();
-    if (n.isEmpty) return 'Все фото';
-    final localized = localizeGalleryAlbumTitle(n);
-    // «Recent» как isAll → «Все фото» понятнее в шапке выбора.
-    if (localized == 'Недавние') return 'Все фото';
+    if (n.isEmpty) return l10n.allPhotos;
+    final localized = localizeGalleryAlbumTitle(n, l10n);
+    // «Recent» as isAll → all photos is clearer in the picker header.
+    if (localized == l10n.recent) return l10n.allPhotos;
+    // Device may already return a localized "All photos" / «Все фото».
+    final lower = n.toLowerCase();
+    if (lower == 'все фото' ||
+        lower == 'all photos' ||
+        lower == 'all' ||
+        lower == 'semua foto' ||
+        lower == 'todas las fotos' ||
+        lower == 'toutes les photos' ||
+        lower == 'todas as fotos') {
+      return l10n.allPhotos;
+    }
     return localized;
   }
-  return localizeGalleryAlbumTitle(album.name);
+  return localizeGalleryAlbumTitle(album.name, l10n);
 }
 
-String localizeGalleryAlbumTitle(String raw) {
+String localizeGalleryAlbumTitle(String raw, [ChatAttachL10n? labels]) {
+  final l10n = labels ?? ChatAttachL10n.russian;
   final n = raw.trim();
   switch (n.toLowerCase()) {
     case 'recent':
     case 'recents':
-      return 'Недавние';
+    case 'недавние':
+    case 'недавнее':
+    case 'последние':
+      return l10n.recent;
     case 'pictures':
     case 'picture':
-      return 'Изображения';
+    case 'изображения':
+    case 'картинки':
+      return l10n.images;
     case 'camera':
-      return 'Камера';
+    case 'камера':
+      return l10n.camera;
     case 'screenshots':
     case 'screenshot':
-      return 'Скриншоты';
+    case 'скриншоты':
+      return l10n.screenshots;
     case 'download':
     case 'downloads':
-      return 'Загрузки';
+    case 'загрузки':
+      return l10n.downloads;
     case 'videos':
     case 'video':
-      return 'Видео';
+    case 'видео':
+      return l10n.videos;
+    case 'все фото':
+    case 'all photos':
+    case 'all':
+      return l10n.allPhotos;
     default:
       return n;
   }
@@ -895,7 +924,7 @@ class _AlbumPickerTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final title = localizeGalleryAlbumName(album);
+    final title = localizeGalleryAlbumName(album, context);
 
     return InkWell(
       onTap: onTap,

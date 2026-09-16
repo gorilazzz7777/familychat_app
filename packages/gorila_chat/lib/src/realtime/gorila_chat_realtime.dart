@@ -10,21 +10,33 @@ import '../util/chat_realtime_utils.dart';
 
 typedef GorilaChatRealtimeHandler = void Function(Map<String, dynamic> event);
 
+/// Resolves a fresh access token before WS connect / reconnect.
+typedef GorilaChatAccessTokenResolver = Future<String?> Function();
+
 /// Shared chat WebSocket client (Family Chat reference behaviour):
 /// reconnect with backoff, normalize payloads, synthetic `chat_refresh`.
 class GorilaChatRealtime {
   GorilaChatRealtime({
     required this.debugName,
     required this.uriForToken,
-  });
+    GorilaChatAccessTokenResolver? resolveAccessToken,
+  }) : _resolveAccessToken = resolveAccessToken;
 
   final String debugName;
   final Uri Function(String accessToken) uriForToken;
+  GorilaChatAccessTokenResolver? _resolveAccessToken;
+
+  /// Bind / replace the JWT resolver (app wires AuthTokenRefresher here).
+  void setAccessTokenResolver(GorilaChatAccessTokenResolver? resolver) {
+    _resolveAccessToken = resolver;
+  }
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
   final _listeners = <GorilaChatRealtimeHandler>{};
   String? _accessToken;
+  /// Latest token requested while a connect was already in flight.
+  String? _queuedConnectToken;
   Timer? _reconnectTimer;
   int _reconnectAttempt = 0;
   bool _connecting = false;
@@ -37,7 +49,7 @@ class GorilaChatRealtime {
   final Map<int, _PendingWsTextSend> _pendingTextSends = {};
   final Map<int, Completer<bool>> _pendingMarkReads = {};
 
-  static const _defaultSendAckTimeout = Duration(seconds: 2);
+  static const _defaultSendAckTimeout = Duration(seconds: 5);
   static const _defaultMarkReadAckTimeout = Duration(seconds: 3);
 
   bool get isConnected => _connected && _channel != null;
@@ -73,6 +85,22 @@ class GorilaChatRealtime {
     _dispatch(chatNormalizeMap(Map<dynamic, dynamic>.from(event)));
   }
 
+  Future<String?> _freshAccessToken({String? preferred}) async {
+    final resolver = _resolveAccessToken;
+    if (resolver != null) {
+      try {
+        final resolved = await resolver();
+        if (resolved != null && resolved.isNotEmpty) return resolved;
+      } catch (e, st) {
+        _log('ws token resolve failed: $e', error: e, stackTrace: st);
+      }
+    }
+    if (preferred != null && preferred.isNotEmpty) return preferred;
+    final cached = _accessToken;
+    if (cached != null && cached.isNotEmpty) return cached;
+    return null;
+  }
+
   Future<void> connect(String accessToken) async {
     if (accessToken.isEmpty) {
       _log('ws connect skipped: empty access token');
@@ -81,10 +109,13 @@ class GorilaChatRealtime {
     _accessToken = accessToken;
     _reconnectTimer?.cancel();
     if (_connecting) {
-      _log('ws connect skipped: already connecting');
+      // Latest token wins once the in-flight connect finishes.
+      _queuedConnectToken = accessToken;
+      _log('ws connect queued: already connecting');
       return;
     }
     _connecting = true;
+    _queuedConnectToken = null;
     try {
       _intentionalClose = true;
       await _closeChannel();
@@ -142,6 +173,13 @@ class GorilaChatRealtime {
     } finally {
       _intentionalClose = false;
       _connecting = false;
+      final queued = _queuedConnectToken;
+      _queuedConnectToken = null;
+      if (queued != null && queued.isNotEmpty) {
+        if (!isConnected || queued != _accessToken) {
+          unawaited(connect(queued));
+        }
+      }
     }
   }
 
@@ -164,21 +202,30 @@ class GorilaChatRealtime {
   }
 
   void _scheduleReconnect() {
-    final token = _accessToken;
-    if (token == null || token.isEmpty) return;
+    final hasCached = _accessToken != null && _accessToken!.isNotEmpty;
+    final hasResolver = _resolveAccessToken != null;
+    if (!hasCached && !hasResolver) return;
     _refreshAfterConnect = true;
     _reconnectTimer?.cancel();
     final seconds = math.min(30, math.pow(2, _reconnectAttempt).toInt());
     _reconnectAttempt++;
     _log('ws reconnect scheduled in ${seconds}s attempt=$_reconnectAttempt');
     _reconnectTimer = Timer(Duration(seconds: seconds), () {
-      unawaited(connect(token));
+      unawaited(() async {
+        final token = await _freshAccessToken();
+        if (token == null || token.isEmpty) {
+          _log('ws reconnect skipped: no access token');
+          return;
+        }
+        await connect(token);
+      }());
     });
   }
 
   Future<void> disconnect() async {
     _log('ws disconnect requested');
     _accessToken = null;
+    _queuedConnectToken = null;
     _reconnectAttempt = 0;
     _connected = false;
     _failPendingTextSends();
@@ -199,8 +246,11 @@ class GorilaChatRealtime {
   }
 
   /// Reconnect + tell open screens to HTTP-resync.
+  ///
+  /// Always prefers a freshly resolved JWT when [setAccessTokenResolver] is set,
+  /// so background reconnects do not reuse an expired in-memory token.
   Future<void> reconnectAndRefresh() async {
-    final token = _accessToken;
+    final token = await _freshAccessToken();
     _log(
       'ws reconnectAndRefresh hasToken=${token != null && token.isNotEmpty}',
     );

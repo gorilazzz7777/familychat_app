@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../calls/call_flow_reporter.dart';
 import '../../contract/chat_call_repository.dart';
 import '../../realtime/gorila_chat_realtime.dart';
 import '../../util/call_signal_utils.dart';
@@ -63,8 +64,43 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
   bool _remoteHasVideo = false;
   bool _renderersReady = false;
   Timer? _signalPollTimer;
+  CallFlowReporter? _flow;
+  int _iceSent = 0;
+  int _iceRecv = 0;
+  int _signalsRecv = 0;
+  bool _connectedLogged = false;
 
   ChatCallRepository get _repo => widget.callRepository;
+
+  void _ensureFlow(int callId) {
+    if (_flow != null) {
+      if (_flow!.callId != callId) {
+        _flow!.start(
+          callId: callId,
+          role: widget.isCaller ? 'caller' : 'callee',
+        );
+      }
+      return;
+    }
+    _flow = CallFlowReporter(
+      platform: kIsWeb ? 'web' : defaultTargetPlatform.name,
+      upload: (id, body) => _repo.uploadCallReport(id, body),
+    );
+    _flow!.start(
+      callId: callId,
+      role: widget.isCaller ? 'caller' : 'callee',
+    );
+  }
+
+  void _logConnectedOnce() {
+    if (_connectedLogged) return;
+    _connectedLogged = true;
+    _flow?.log('connected', data: {
+      'ice_sent': _iceSent,
+      'ice_recv': _iceRecv,
+      'signals_recv': _signalsRecv,
+    });
+  }
 
   bool _shouldAcceptSignal(String type, {int? fromUserId}) {
     return shouldAcceptCallSignal(
@@ -98,6 +134,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
     _localVideoEnabled = widget.isVideo;
     if (!widget.isCaller && widget.callId != null) {
       _callId = widget.callId;
+      _ensureFlow(widget.callId!);
     }
     widget.realtime.addListener(_onRealtime);
     _signalPollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
@@ -110,6 +147,8 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
   void dispose() {
     _signalPollTimer?.cancel();
     widget.realtime.removeListener(_onRealtime);
+    _flow?.dispose();
+    _flow = null;
     unawaited(_cleanup());
     super.dispose();
   }
@@ -135,6 +174,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
       final micPermission = await _ensureMicrophonePermission();
       if (!micPermission.granted) {
         if (!mounted) return;
+        _flow?.log('error', data: {'code': 'mic_denied'});
         setState(() {
           _stateText = 'Нет доступа к микрофону';
           _busy = false;
@@ -148,6 +188,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
         final cam = await _ensureCameraPermission();
         if (!cam.granted) {
           if (!mounted) return;
+          _flow?.log('error', data: {'code': 'cam_denied'});
           setState(() {
             _stateText = 'Нет доступа к камере';
             _busy = false;
@@ -161,6 +202,16 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
       }
       final ice = await _repo.iceServers(widget.threadId);
       _peer = await createPeerConnection({'iceServers': ice});
+      _peer!.onIceConnectionState = (state) {
+        _flow?.log('pc_state', data: {'ice': '$state'});
+      };
+      _peer!.onConnectionState = (state) {
+        _flow?.log('pc_state', data: {'pc': '$state'});
+        if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          _logConnectedOnce();
+        }
+      };
       _peer!.onTrack = (event) {
         try {
           event.track.enabled = true;
@@ -176,6 +227,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
             }
             _stateText = 'Разговор идет';
           });
+          _logConnectedOnce();
         }
       };
       _localStream = await navigator.mediaDevices.getUserMedia({
@@ -199,8 +251,16 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
             '${payload['candidate']}:${payload['sdpMid']}:${payload['sdpMLineIndex']}';
         if (_sentIce.contains(key)) return;
         _sentIce.add(key);
+        _iceSent += 1;
+        if (_iceSent == 1 || _iceSent % 5 == 0) {
+          _flow?.log('ice_gathering', data: {'sent': _iceSent});
+        }
         unawaited(
-          _repo.sendSignal(cid, signalType: 'ice', payload: payload),
+          _repo.sendSignal(cid, signalType: 'ice', payload: payload).then((_) {
+            _flow?.log('signal_send', data: {'type': 'ice', 'n': _iceSent});
+          }).catchError((Object e) {
+            _flow?.log('error', data: {'code': 'signal_ice_fail', 'msg': '$e'});
+          }),
         );
       };
 
@@ -210,6 +270,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
         if (_callId == null) {
           throw StateError('Сервер не вернул id звонка');
         }
+        _ensureFlow(_callId!);
         final offer = await _peer!.createOffer();
         await _peer!.setLocalDescription(offer);
         _localOffer = offer;
@@ -218,6 +279,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
           signalType: 'offer',
           payload: {'sdp': offer.sdp, 'type': offer.type},
         );
+        _flow?.log('signal_send', data: {'type': 'offer'});
         if (!mounted) return;
         setState(() {
           _stateText = widget.isVideo ? 'Видеозвонок...' : 'Звоним...';
@@ -226,8 +288,16 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
       } else {
         _callId ??= widget.callId;
         if (_callId == null) throw StateError('Не передан callId');
+        _ensureFlow(_callId!);
         if (widget.autoAccept) {
-          await _repo.callAction(_callId!, 'accept');
+          _flow?.log('action_accept');
+          try {
+            await _repo.callAction(_callId!, 'accept');
+            _flow?.log('action_http_ok', data: {'action': 'accept'});
+          } catch (e) {
+            _flow?.log('action_http_fail', data: {'action': 'accept', 'msg': '$e'});
+            rethrow;
+          }
         }
         if (!mounted) return;
         setState(() {
@@ -237,6 +307,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
       }
       await _syncCallSignals();
     } catch (e) {
+      _flow?.log('error', data: {'code': 'init_fail', 'msg': '$e'});
       if (!mounted) return;
       setState(() {
         _stateText = _friendlyCallError(e);
@@ -496,9 +567,11 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
           setState(() => _stateText = 'Разговор идет');
         }
       } else if (status == 'declined') {
+        _flow?.log('action_decline', data: {'via': 'remote'});
         setState(() => _stateText = 'Звонок отклонен');
         unawaited(_hangup(localOnly: true));
       } else if (status == 'ended' || status == 'missed') {
+        _flow?.log('action_end', data: {'via': 'remote', 'status': status});
         setState(() => _stateText = 'Звонок завершен');
         unawaited(_hangup(localOnly: true));
       }
@@ -509,6 +582,11 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
     final payload = event['payload'] is Map
         ? Map<String, dynamic>.from(event['payload'] as Map)
         : <String, dynamic>{};
+    _signalsRecv += 1;
+    if (type == 'ice') {
+      _iceRecv += 1;
+    }
+    _flow?.log('signal_recv', data: {'type': type, 'n': _signalsRecv});
     _enqueueSignal(type, payload, fromUserId: _parseId(event['from_user_id']));
   }
 
@@ -592,10 +670,15 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
     _ended = true;
     final cid = _callId;
     if (!localOnly && cid != null) {
+      _flow?.log('action_end');
       try {
         await _repo.callAction(cid, 'end');
-      } catch (_) {}
+        _flow?.log('action_http_ok', data: {'action': 'end'});
+      } catch (e) {
+        _flow?.log('action_http_fail', data: {'action': 'end', 'msg': '$e'});
+      }
     }
+    await _flow?.end();
     await _cleanup();
     if (!mounted) return;
     Navigator.of(context).maybePop();
