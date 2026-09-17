@@ -45,12 +45,12 @@ class ApiClient {
         dio = dio ?? _newDio(),
         sendDio = sendDio ?? dio ?? _newDio() {
     final storage = this.tokenStorage;
-    final refreshDio = _newDio();
-    configureNativeHttpAdapter(refreshDio);
+    _refreshDio = _newDio();
+    configureNativeHttpAdapter(_refreshDio);
     configureNativeHttpAdapter(this.dio);
     authRefresher = AuthTokenRefresher(
       tokenStorage: storage,
-      refreshDio: refreshDio,
+      refreshDio: _refreshDio,
     );
     this.dio.interceptors.add(
           _AuthInterceptor(authRefresher, this.dio),
@@ -77,11 +77,17 @@ class ApiClient {
 
   /// Dedicated connection pool for chat send / outbox mutations.
   final Dio sendDio;
+  late final Dio _refreshDio;
 
   late final AuthTokenRefresher authRefresher;
 
   /// Превентивный refresh (таймер / возврат в приложение / перед пачкой запросов).
   Future<String?> ensureFreshAccess() => authRefresher.ensureAccess();
+
+  /// Cronet transport failures → dart:io for this process.
+  void forceDartIoTransport() {
+    forceDartIoHttpAdapters([dio, sendDio, _refreshDio]);
+  }
 }
 
 class _AuthInterceptor extends Interceptor {

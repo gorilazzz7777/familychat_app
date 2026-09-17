@@ -5,3 +5,9 @@ import 'native_http_adapter_stub.dart'
 
 /// Mobile/desktop: Cronet (Android) / URLSession (Apple). Web: no-op.
 void configureNativeHttpAdapter(Dio dio) => impl.configureNativeHttpAdapter(dio);
+
+void forceDartIoHttpAdapters(Iterable<Dio> dios) =>
+    impl.forceDartIoHttpAdapters(dios);
+
+bool isLikelyCronetTransportFailure(Object? error) =>
+    impl.isLikelyCronetTransportFailure(error);

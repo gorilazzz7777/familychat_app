@@ -110,6 +110,10 @@ class CallFlowReporter with WidgetsBindingObserver {
 
   Future<void> end() async {
     log('flush', data: {'reason': 'end'});
+    // Wait out an in-flight timer/lifecycle flush so end events are not dropped.
+    for (var i = 0; i < 40 && _flushing; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
     await flush(reason: 'end');
   }
 

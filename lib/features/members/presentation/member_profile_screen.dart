@@ -535,14 +535,18 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                           requireAlways: true,
                           openSettingsIfDenied: true,
                         );
-                        if (!ok && mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Нужен доступ к геолокации «Всегда»',
+                        final always = ok &&
+                            await LocationShareCoordinator.hasAlwaysPermission();
+                        if (!always) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Без доступа «Всегда» нельзя включить передачу гео',
+                                ),
                               ),
-                            ),
-                          );
+                            );
+                          }
                           return;
                         }
                       }

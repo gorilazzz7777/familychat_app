@@ -74,6 +74,9 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
   int _iceRecv = 0;
   int _signalsRecv = 0;
   bool _connectedLogged = false;
+  bool _uiDismissed = false;
+  Timer? _iceFailTimer;
+  final Set<String> _loggedIceKinds = <String>{};
 
   void _ensureFlow(int callId) {
     if (_flow != null) {
@@ -164,6 +167,8 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     FamilyChatRealtime.instance.removeListener(_onRealtime);
+    _iceFailTimer?.cancel();
+    _iceFailTimer = null;
     _flow?.dispose();
     _flow = null;
     unawaited(CallLockScreen.release());
@@ -233,15 +238,28 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
       }
       final repo = ref.read(familychatRepositoryProvider);
       final ice = await repo.threadCallIceServers(widget.threadId);
-      _peer = await createPeerConnection({'iceServers': ice});
+      _peer = await createPeerConnection({
+        'iceServers': ice,
+        'iceCandidatePoolSize': 4,
+        'bundlePolicy': 'max-bundle',
+        'rtcpMuxPolicy': 'require',
+      });
+      // Ice config logged after flow starts (needs call id).
+      void logIceWhenReady() => _logIceConfig(ice);
       _peer!.onIceConnectionState = (state) {
         _flow?.log('pc_state', data: {'ice': '$state'});
+        _onIceConnectionState(state);
       };
       _peer!.onConnectionState = (state) {
         _flow?.log('pc_state', data: {'pc': '$state'});
         if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           _logConnectedOnce();
+          _iceFailTimer?.cancel();
+          _iceFailTimer = null;
+        } else if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+          _scheduleIceFailureHangup('pc_failed', grace: const Duration(seconds: 2));
         }
       };
       _peer!.onAddStream = (stream) {
@@ -280,6 +298,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
         if (_sentIce.contains(key)) return;
         _sentIce.add(key);
         _iceSent += 1;
+        _logIceCandidateKind(candidate.candidate);
         if (_iceSent == 1 || _iceSent % 5 == 0) {
           _flow?.log('ice_gathering', data: {'sent': _iceSent});
         }
@@ -302,6 +321,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
           throw StateError('Сервер не вернул id звонка');
         }
         _ensureFlow(_callId!);
+        logIceWhenReady();
         final offer = await _peer!.createOffer();
         await _peer!.setLocalDescription(offer);
         _localOffer = offer;
@@ -322,6 +342,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
           throw StateError('Не передан callId');
         }
         _ensureFlow(_callId!);
+        logIceWhenReady();
         if (widget.autoAccept) {
           _flow?.log('action_accept');
           try {
@@ -831,12 +852,10 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
         }
       } else if (status == 'declined') {
         _flow?.log('action_decline', data: {'via': 'remote'});
-        setState(() => _stateText = 'Звонок отклонен');
-        unawaited(_hangup(localOnly: true));
+        unawaited(_hangup(localOnly: true, reason: 'remote_declined'));
       } else if (status == 'ended' || status == 'missed') {
         _flow?.log('action_end', data: {'via': 'remote', 'status': status});
-        setState(() => _stateText = 'Звонок завершен');
-        unawaited(_hangup(localOnly: true));
+        unawaited(_hangup(localOnly: true, reason: 'remote_$status'));
       }
       return;
     }
@@ -938,10 +957,45 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
     );
   }
 
-  Future<void> _hangup({bool localOnly = false}) async {
+  Future<void> _hangup({
+    bool localOnly = false,
+    String reason = 'local',
+  }) async {
     if (_ended) return;
     _ended = true;
+    _iceFailTimer?.cancel();
+    _iceFailTimer = null;
+    _busy = false;
     final cid = _callId;
+    _flow?.log('hangup', data: {
+      'localOnly': localOnly,
+      'reason': reason,
+      'connected': _connectedLogged,
+    });
+    // Pop immediately — never block UI on report upload / media teardown.
+    if (!_uiDismissed) {
+      _dismissCallUi();
+    }
+    unawaited(_finishHangupSideEffects(cid: cid, localOnly: localOnly));
+  }
+
+  void _dismissCallUi() {
+    if (_uiDismissed) return;
+    _uiDismissed = true;
+    _flow?.log('ui_dismiss');
+    if (!mounted) return;
+    final nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.pop();
+    } else {
+      unawaited(nav.maybePop());
+    }
+  }
+
+  Future<void> _finishHangupSideEffects({
+    required int? cid,
+    required bool localOnly,
+  }) async {
     if (!localOnly && cid != null) {
       _flow?.log('action_end');
       try {
@@ -952,10 +1006,79 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
       }
       unawaited(CallKitIncomingService.endCall(cid));
     }
-    await _flow?.end();
+    try {
+      await _flow?.end();
+    } catch (_) {}
     await _cleanup();
-    if (!mounted) return;
-    Navigator.of(context).maybePop();
+  }
+
+  void _logIceConfig(List<Map<String, dynamic>> ice) {
+    var hasTurn = false;
+    for (final server in ice) {
+      final urls = server['urls'];
+      final list = urls is List
+          ? urls.map((e) => '$e').toList()
+          : urls != null
+              ? <String>['$urls']
+              : const <String>[];
+      if (list.any((u) => u.toLowerCase().startsWith('turn:'))) {
+        hasTurn = true;
+        break;
+      }
+    }
+    _flow?.log('ice_config', data: {
+      'servers': ice.length,
+      'has_turn': hasTurn,
+    });
+  }
+
+  void _logIceCandidateKind(String? candidate) {
+    final raw = candidate ?? '';
+    final kind = raw.contains(' typ relay ')
+        ? 'relay'
+        : raw.contains(' typ srflx ')
+            ? 'srflx'
+            : raw.contains(' typ host ')
+                ? 'host'
+                : raw.contains(' typ prflx ')
+                    ? 'prflx'
+                    : 'other';
+    if (!_loggedIceKinds.add(kind)) return;
+    _flow?.log('ice_candidate_kind', data: {'kind': kind});
+  }
+
+  void _onIceConnectionState(RTCIceConnectionState state) {
+    if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+        state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+      _iceFailTimer?.cancel();
+      _iceFailTimer = null;
+      _logConnectedOnce();
+      return;
+    }
+    if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+      _scheduleIceFailureHangup('ice_failed', grace: const Duration(seconds: 2));
+      return;
+    }
+    if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+      // Brief blips are common on cellular; give ICE a chance to recover.
+      _scheduleIceFailureHangup(
+        'ice_disconnected',
+        grace: const Duration(seconds: 8),
+      );
+    }
+  }
+
+  void _scheduleIceFailureHangup(String reason, {required Duration grace}) {
+    if (_ended) return;
+    _iceFailTimer?.cancel();
+    _iceFailTimer = Timer(grace, () {
+      if (_ended) return;
+      _flow?.log('ice_fail_hangup', data: {'reason': reason});
+      if (mounted) {
+        setState(() => _stateText = 'Нет соединения');
+      }
+      unawaited(_hangup(reason: reason));
+    });
   }
 
   Widget _buildVideoStage(BuildContext context) {
@@ -1103,9 +1226,18 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
       ],
     );
     return PopScope(
-      canPop: !_busy,
+      canPop: !_busy || _ended,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) unawaited(_hangup());
+        if (didPop) {
+          _uiDismissed = true;
+        }
+        if (!_ended) {
+          unawaited(
+            _hangup(
+              reason: didPop ? 'route_pop' : 'pop_blocked',
+            ),
+          );
+        }
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF0F1419),

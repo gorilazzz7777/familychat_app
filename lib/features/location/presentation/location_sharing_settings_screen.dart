@@ -74,23 +74,34 @@ class _LocationSharingSettingsScreenState
       if (next.isNotEmpty) {
         final ok = await LocationShareCoordinator.ensurePermission(
           requireAlways: true,
-          openSettingsIfDenied: false,
+          openSettingsIfDenied: true,
         );
-        if (!ok) {
-          final permanently =
-              await Permission.locationAlways.isPermanentlyDenied;
+        final always = ok && await LocationShareCoordinator.hasAlwaysPermission();
+        if (!always) {
           if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                permanently
-                    ? 'Нужен доступ «Всегда». Откройте настройки и разрешите геолокацию постоянно.'
-                    : 'Чтобы семья видела вас на карте в фоне, нужен доступ к геолокации «Всегда».',
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Нужен доступ «Всегда»'),
+              content: const Text(
+                'Чтобы семья видела вас на карте, в настройках телефона '
+                'для Family Space выберите геолокацию «Всегда» / '
+                '«Разрешить в любом режиме».\n\n'
+                'Без этого включить передачу гео нельзя.',
               ),
-              action: SnackBarAction(
-                label: 'Настройки',
-                onPressed: () => openAppSettings(),
-              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Понятно'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    openAppSettings();
+                  },
+                  child: const Text('Открыть настройки'),
+                ),
+              ],
             ),
           );
           setState(() => _saving = false);
@@ -110,18 +121,31 @@ class _LocationSharingSettingsScreenState
           if (uid != null) granted.add(uid);
         }
       }
+      final own = data['own_location'];
       if (!mounted) return;
       setState(() {
         _members = members;
         _granted = granted;
+        _ownUpdatedAt = own is Map ? own['updated_at']?.toString() : null;
         _saving = false;
       });
       LocationShareCoordinator.instance.attach(
         ref.read(familychatRepositoryProvider),
       );
-      unawaited(
-        LocationShareCoordinator.instance.refreshTracking(forcePing: true),
-      );
+      await LocationShareCoordinator.instance.refreshTracking(forcePing: true);
+      if (!mounted) return;
+      try {
+        final refreshed = await ref
+            .read(familychatRepositoryProvider)
+            .locationSharingSettings();
+        final own = refreshed['own_location'];
+        if (mounted) {
+          setState(() {
+            _ownUpdatedAt =
+                own is Map ? own['updated_at']?.toString() : _ownUpdatedAt;
+          });
+        }
+      } catch (_) {}
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -204,7 +228,8 @@ class _LocationSharingSettingsScreenState
                       subtitle: Text(
                         kIsWeb
                             ? 'На web шаринг недоступен — откройте приложение'
-                            : 'Нужен доступ «Всегда». Обновление ~раз в 10–15 минут '
+                            : 'Обязателен доступ «Всегда». Без него галку включить нельзя. '
+                                'Обновление при открытии приложения, ~раз в 10–15 минут '
                                 'и при перемещении; на Android в шторке будет уведомление.',
                       ),
                     ),
@@ -224,43 +249,58 @@ class _LocationSharingSettingsScreenState
                             final always = snap.data == true;
                             if (always) {
                               return Text(
-                                'Фоновое обновление включено',
+                                'Фоновое обновление включено (доступ «Всегда»)',
                                 style: theme.textTheme.bodySmall?.copyWith(
                                   color: theme.colorScheme.primary,
                                 ),
                               );
                             }
-                            return TextButton.icon(
-                              onPressed: _saving
-                                  ? null
-                                  : () async {
-                                      final ok = await LocationShareCoordinator
-                                          .ensurePermission(
-                                        requireAlways: true,
-                                        openSettingsIfDenied: true,
-                                      );
-                                      if (!mounted) return;
-                                      if (!ok) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          const SnackBar(
-                                            content: Text(
-                                              'В настройках выберите геолокацию «Всегда»',
-                                            ),
-                                          ),
-                                        );
-                                        return;
-                                      }
-                                      unawaited(
-                                        LocationShareCoordinator.instance
-                                            .refreshTracking(forcePing: true),
-                                      );
-                                      setState(() {});
-                                    },
-                              icon: const Icon(Icons.my_location_outlined),
-                              label: const Text(
-                                'Разрешить доступ «Всегда»',
-                              ),
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Нет доступа «Всегда»: в фоне гео не обновляется. '
+                                  'Пока приложение открыто — обновляем; для фона '
+                                  'выберите «Всегда» в настройках.',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.error,
+                                  ),
+                                ),
+                                TextButton.icon(
+                                  onPressed: _saving
+                                      ? null
+                                      : () async {
+                                          final ok = await LocationShareCoordinator
+                                              .ensurePermission(
+                                            requireAlways: true,
+                                            openSettingsIfDenied: true,
+                                          );
+                                          if (!mounted) return;
+                                          if (!ok ||
+                                              !await LocationShareCoordinator
+                                                  .hasAlwaysPermission()) {
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              const SnackBar(
+                                                content: Text(
+                                                  'В настройках выберите геолокацию «Всегда»',
+                                                ),
+                                              ),
+                                            );
+                                            return;
+                                          }
+                                          await LocationShareCoordinator
+                                              .instance
+                                              .refreshTracking(forcePing: true);
+                                          if (mounted) setState(() {});
+                                          await _load();
+                                        },
+                                  icon: const Icon(Icons.my_location_outlined),
+                                  label: const Text(
+                                    'Разрешить доступ «Всегда»',
+                                  ),
+                                ),
+                              ],
                             );
                           },
                         ),

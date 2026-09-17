@@ -11,11 +11,12 @@ import 'map_display_override_store.dart';
 
 /// Периодическая и фоновая отправка геолокации, пока пользователь кому-то шарит.
 ///
-/// Требует разрешение **Always**. На Android держит location FGS с постоянным
-/// уведомлением; на iOS — background location updates + индикатор в статус-баре.
+/// Включение шаринга требует разрешение **Always**.
+/// Пока приложение открыто, пинги идут и при whileInUse (чтобы карта не «замирала»).
+/// Фоновый stream / FGS — только при Always.
 ///
-/// Обновления: ~раз в 12 минут и при смещении ≥ [moveThresholdM] (не чаще
-/// чем раз в [minPingGap]).
+/// Обновления: при открытии приложения, ~раз в [interval] и при смещении
+/// ≥ [moveThresholdM] (не чаще чем раз в [minPingGap]).
 class LocationShareCoordinator with WidgetsBindingObserver {
   LocationShareCoordinator._();
   static final LocationShareCoordinator instance = LocationShareCoordinator._();
@@ -62,8 +63,9 @@ class LocationShareCoordinator with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(refreshTracking());
-      unawaited(pingIfNeeded());
+      // Force ping on every resume so the map updates when the app is opened,
+      // even if background tracking was blocked (no Always yet).
+      unawaited(refreshTracking(forcePing: true));
     }
   }
 
@@ -80,7 +82,10 @@ class LocationShareCoordinator with WidgetsBindingObserver {
       sharing = settings['sharing_enabled'] == true;
     } catch (_) {
       // Keep previous stream if network fails briefly.
-      if (_positionSub != null) return;
+      if (_positionSub != null) {
+        if (forcePing) await pingIfNeeded(force: true);
+        return;
+      }
       return;
     }
     _trackingDesired = sharing;
@@ -88,12 +93,15 @@ class LocationShareCoordinator with WidgetsBindingObserver {
       await _stopPositionStream();
       return;
     }
+
     final always = await hasAlwaysPermission();
-    if (!always) {
+    if (always) {
+      await _startPositionStream();
+    } else {
+      // Without Always we still ping while the app is open (foreground).
       await _stopPositionStream();
-      return;
     }
-    await _startPositionStream();
+
     if (forcePing) {
       await pingIfNeeded(force: true);
     }
@@ -108,9 +116,11 @@ class LocationShareCoordinator with WidgetsBindingObserver {
       if (!force) {
         final prefs = await SharedPreferences.getInstance();
         final lastMs = prefs.getInt(_prefsLastPing) ?? 0;
-        final last = DateTime.fromMillisecondsSinceEpoch(lastMs);
-        if (DateTime.now().difference(last) < staleAfter) {
-          return;
+        if (lastMs > 0) {
+          final last = DateTime.fromMillisecondsSinceEpoch(lastMs);
+          if (DateTime.now().difference(last) < staleAfter) {
+            return;
+          }
         }
       }
 
@@ -125,8 +135,9 @@ class LocationShareCoordinator with WidgetsBindingObserver {
         return;
       }
 
-      if (!await hasAlwaysPermission()) {
-        await _stopPositionStream();
+      // Foreground (app open): whileInUse is enough.
+      // Background stream is gated separately via hasAlwaysPermission.
+      if (!await hasForegroundPermission()) {
         return;
       }
       final enabled = await Geolocator.isLocationServiceEnabled();
@@ -295,16 +306,22 @@ class LocationShareCoordinator with WidgetsBindingObserver {
     );
   }
 
+  /// Enough to ping while the app is in the foreground.
+  static Future<bool> hasForegroundPermission() async {
+    if (kIsWeb) return false;
+    final geo = await Geolocator.checkPermission();
+    return geo == LocationPermission.whileInUse ||
+        geo == LocationPermission.always;
+  }
+
+  /// Geolocator "always" is the source of truth for background updates.
   static Future<bool> hasAlwaysPermission() async {
     if (kIsWeb) return false;
     final geo = await Geolocator.checkPermission();
-    if (geo == LocationPermission.always) return true;
-    // Android 10+: permission_handler may report Always separately.
-    final always = await Permission.locationAlways.status;
-    return always.isGranted;
+    return geo == LocationPermission.always;
   }
 
-  /// [requireAlways] — для семейного шаринга (политика A).
+  /// [requireAlways] — для включения семейного шаринга (обязательно «Всегда»).
   /// Без флага достаточно whileInUse (чат / разовые сценарии).
   static Future<bool> ensurePermission({
     bool requireAlways = false,
@@ -325,32 +342,41 @@ class LocationShareCoordinator with WidgetsBindingObserver {
       whenInUse = await Permission.locationWhenInUse.request();
     }
     if (!whenInUse.isGranted) {
-      if (openSettingsIfDenied && whenInUse.isPermanentlyDenied) {
-        await openAppSettings();
+      // Also try Geolocator request (covers some OEMs).
+      var geo = await Geolocator.checkPermission();
+      if (geo == LocationPermission.denied) {
+        geo = await Geolocator.requestPermission();
       }
-      return false;
+      if (geo != LocationPermission.whileInUse &&
+          geo != LocationPermission.always) {
+        if (openSettingsIfDenied &&
+            (whenInUse.isPermanentlyDenied ||
+                geo == LocationPermission.deniedForever)) {
+          await openAppSettings();
+        }
+        return false;
+      }
     }
 
     if (!requireAlways) {
-      final geo = await Geolocator.checkPermission();
-      return geo == LocationPermission.whileInUse ||
-          geo == LocationPermission.always;
+      return hasForegroundPermission();
     }
 
     // Step 2: Always (separate system UI on Android 10+ / iOS upgrade).
+    if (await hasAlwaysPermission()) return true;
+
     var always = await Permission.locationAlways.status;
     if (!always.isGranted) {
       always = await Permission.locationAlways.request();
     }
 
-    // Geolocator may still report whileInUse until process refreshes status.
+    // Geolocator may lag; request again to upgrade whileInUse → always (iOS).
     var geo = await Geolocator.checkPermission();
-    if (geo == LocationPermission.whileInUse) {
-      // Second geolocator request sometimes upgrades on iOS.
+    if (geo != LocationPermission.always) {
       geo = await Geolocator.requestPermission();
     }
 
-    final ok = geo == LocationPermission.always || always.isGranted;
+    final ok = await hasAlwaysPermission();
     if (!ok && openSettingsIfDenied) {
       await openAppSettings();
     }

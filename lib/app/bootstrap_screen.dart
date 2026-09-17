@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/cache/familychat_local_cache.dart';
 import '../core/feed/feed_post_outbox.dart';
+import '../core/network/native_http_adapter.dart';
 import '../core/platform/app_foreground.dart';
 import '../core/providers/app_providers.dart';
 import '../core/impersonation/admin_enter.dart';
@@ -35,9 +36,10 @@ import '../core/theme/theme_seed_controller.dart';
 import '../core/settings/app_settings_controller.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import '../features/onboarding/presentation/family_transfer_flow.dart';
-import 'shell_screen.dart';
-import 'push_permission_prompt.dart';
 import 'app_actions_scope.dart';
+import 'chat_boot_trace.dart';
+import 'push_permission_prompt.dart';
+import 'shell_screen.dart';
 
 class BootstrapScreen extends ConsumerStatefulWidget {
   const BootstrapScreen({super.key});
@@ -101,8 +103,16 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   }
 
   Future<void> _listenInvites() async {
-    final initial = await _appLinks.getInitialLink();
-    if (initial != null) await _handleInviteUri(initial);
+    try {
+      final initial = await _appLinks.getInitialLink().timeout(
+        const Duration(seconds: 3),
+      );
+      if (initial != null) await _handleInviteUri(initial);
+    } on TimeoutException {
+      ChatBootTrace.log('invite_initial_link_timeout');
+    } catch (e) {
+      ChatBootTrace.log('invite_initial_link_error', detail: '$e');
+    }
     _appLinks.uriLinkStream.listen(_handleInviteUri);
   }
 
@@ -261,7 +271,23 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
   /// OAuth return: consume session (нужен спиннер).
   Future<void> _consumeOAuthIfNeeded() async {
-    final Uri? uri = kIsWeb ? Uri.base : await _appLinks.getInitialLink();
+    Uri? uri;
+    if (kIsWeb) {
+      uri = Uri.base;
+    } else {
+      try {
+        // app_links getInitialLink can hang on some iOS cold starts.
+        uri = await _appLinks.getInitialLink().timeout(
+          const Duration(seconds: 3),
+        );
+      } on TimeoutException {
+        ChatBootTrace.log('oauth_initial_link_timeout');
+        return;
+      } catch (e) {
+        ChatBootTrace.log('oauth_initial_link_error', detail: '$e');
+        return;
+      }
+    }
     if (uri == null) return;
     final oauth = parseOAuthCallback(uri);
     if (oauth == null || !oauth.isOk || oauth.sessionCode == null) return;
@@ -403,14 +429,29 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     Map<String, dynamic>? st;
     Object? statusError;
     try {
-      st = await ref.read(familychatRepositoryProvider).status();
-      if (st != null) {
-        try {
-          await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
-        } catch (_) {}
-      }
+      st = await _loadStatusOnce();
     } catch (e) {
       statusError = e;
+      ChatBootTrace.log(
+        'status_error',
+        detail: '$e',
+        extra: {'bg': background},
+      );
+      if (isLikelyCronetTransportFailure(e)) {
+        _forceIoHttpTransport();
+        try {
+          ChatBootTrace.log('status_retry_dart_io');
+          st = await _loadStatusOnce();
+          statusError = null;
+        } catch (e2) {
+          statusError = e2;
+          ChatBootTrace.log(
+            'status_retry_failed',
+            detail: '$e2',
+            extra: {'bg': background},
+          );
+        }
+      }
     }
 
     if (!mounted) return;
@@ -420,7 +461,11 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       return;
     }
 
-    await _startSessionServices();
+    try {
+      await _startSessionServices().timeout(const Duration(seconds: 30));
+    } catch (e) {
+      ChatBootTrace.log('session_services_error', detail: '$e');
+    }
 
     if (!mounted) return;
 
@@ -437,12 +482,14 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       final auth = ref.read(authRepositoryProvider);
       if (await auth.tryDeviceAuth()) {
         try {
-          st = await ref.read(familychatRepositoryProvider).status();
+          st = await _loadStatusOnce();
         } catch (_) {
           st = null;
         }
         if (st != null && mounted) {
-          await _startSessionServices();
+          try {
+            await _startSessionServices().timeout(const Duration(seconds: 30));
+          } catch (_) {}
           if (!mounted) return;
           if (background) {
             _applyFreshStatus(st);
@@ -463,13 +510,51 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       return;
     }
 
+    // Soft fail: keep last good status instead of a hard splash error.
+    final cached = await FamilyChatLocalCache.readStatus();
+    if (cached != null && cached.isNotEmpty) {
+      ChatBootTrace.log(
+        'status_fail_use_cache',
+        detail: '$statusError',
+      );
+      try {
+        await ref.read(themeSeedProvider.notifier).syncFromStatus(cached);
+      } catch (_) {}
+      if (!mounted) return;
+      _enterWithStatus(cached, fromCache: true);
+      return;
+    }
+
+    final dioDetail = statusError is DioException
+        ? '${statusError.type.name}'
+            '${statusError.message != null && statusError.message!.isNotEmpty ? ':${statusError.message}' : ''}'
+        : '$statusError';
+    ChatBootTrace.log('status_fail_hard', detail: dioDetail);
     setState(() {
       _checking = false;
       _loggedIn = true;
-      _bootError = statusError is DioException
-          ? 'Ошибка загрузки (${statusError.response?.statusCode ?? 'сеть'})'
-          : 'Не удалось загрузить данные';
+      _bootError = statusError is TimeoutException
+          ? 'Таймаут загрузки. Проверьте интернет.'
+          : statusError is DioException
+              ? 'Ошибка загрузки (${statusError.response?.statusCode ?? statusError.type.name})'
+              : 'Не удалось загрузить данные';
     });
+  }
+
+  Future<Map<String, dynamic>> _loadStatusOnce() async {
+    final loaded = await ref
+        .read(familychatRepositoryProvider)
+        .status()
+        .timeout(const Duration(seconds: 20));
+    try {
+      await ref.read(themeSeedProvider.notifier).syncFromStatus(loaded);
+    } catch (_) {}
+    return loaded;
+  }
+
+  void _forceIoHttpTransport() {
+    ref.read(apiClientProvider).forceDartIoTransport();
+    ChatBootTrace.log('http_adapter_dart_io');
   }
 
   Future<void> _showLogin() async {
@@ -487,63 +572,116 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   }
 
   Future<void> _boot() async {
+    ChatBootTrace.log('boot_start');
     setState(() {
       _checking = true;
       _bootError = null;
     });
 
-    await _persistWebEntryLocal();
-    await _consumeOAuthIfNeeded();
+    try {
+      await _persistWebEntryLocal();
+      ChatBootTrace.log('boot_after_web_entry');
+      await _consumeOAuthIfNeeded();
+      ChatBootTrace.log('boot_after_oauth');
 
-    final auth = ref.read(authRepositoryProvider);
-    if (!await _hasSession()) {
-      try {
-        await auth.ensureSession();
-      } catch (e) {
-        if (!mounted) return;
-        setState(() {
-          _checking = false;
-          _loggedIn = false;
-          _bootError = e is DioException
-              ? 'Не удалось войти (${e.response?.statusCode ?? 'сеть'})'
-              : 'Не удалось войти. Проверьте интернет.';
-        });
-        return;
-      }
-    }
-
-    if (!await _hasSession()) {
-      await _showLogin();
-      return;
-    }
-
-    if (!await ImpersonationStorage().isActive()) {
-      unawaited(auth.ensureDeviceBound());
-    }
-    unawaited(auth.syncGuestSessionFlag());
-
-    // Cache-first: повторный запуск — Shell сразу, status в фоне.
-    final cached = await FamilyChatLocalCache.readStatus();
-    if (cached != null && cached.isNotEmpty) {
-      final me = await auth.fetchMe();
-      final meId = _userIdFromMe(me);
-      final cachedId = cached['user_id'] is int
-          ? cached['user_id'] as int
-          : int.tryParse('${cached['user_id']}');
-      if (meId != null && cachedId == meId) {
+      final auth = ref.read(authRepositoryProvider);
+      if (!await _hasSession()) {
+        ChatBootTrace.log('boot_ensure_session');
         try {
-          await ref.read(themeSeedProvider.notifier).syncFromStatus(cached);
-        } catch (_) {}
-        if (!mounted) return;
-        _enterWithStatus(cached, fromCache: true);
-        unawaited(_finishBootFromNetwork(background: true));
+          await auth.ensureSession().timeout(const Duration(seconds: 45));
+        } on TimeoutException {
+          if (!mounted) return;
+          setState(() {
+            _checking = false;
+            _loggedIn = false;
+            _bootError = 'Таймаут входа. Проверьте интернет.';
+          });
+          ChatBootTrace.log('boot_ensure_session_timeout');
+          return;
+        } catch (e) {
+          if (!mounted) return;
+          setState(() {
+            _checking = false;
+            _loggedIn = false;
+            _bootError = e is DioException
+                ? 'Не удалось войти (${e.response?.statusCode ?? 'сеть'})'
+                : 'Не удалось войти. Проверьте интернет.';
+          });
+          ChatBootTrace.log('boot_ensure_session_error', detail: '$e');
+          return;
+        }
+      }
+
+      if (!await _hasSession()) {
+        ChatBootTrace.log('boot_no_session_login');
+        await _showLogin();
         return;
       }
-      await FamilyChatLocalCache.clearStatus();
-    }
 
-    // Первый вход / нет кэша — ждём status (спиннер).
-    await _finishBootFromNetwork(background: false);
+      if (!await ImpersonationStorage().isActive()) {
+        unawaited(auth.ensureDeviceBound());
+      }
+      unawaited(auth.syncGuestSessionFlag());
+
+      // Cache-first: повторный запуск — Shell сразу, status в фоне.
+      final cached = await FamilyChatLocalCache.readStatus();
+      if (cached != null && cached.isNotEmpty) {
+        ChatBootTrace.log('boot_cache_hit');
+        Map<String, dynamic>? me;
+        Object? meError;
+        try {
+          me = await auth.fetchMe().timeout(const Duration(seconds: 12));
+        } on TimeoutException catch (e) {
+          meError = e;
+        } catch (e) {
+          meError = e;
+        }
+        final meId = _userIdFromMe(me);
+        final cachedId = cached['user_id'] is int
+            ? cached['user_id'] as int
+            : int.tryParse('${cached['user_id']}');
+        if (meId != null && cachedId != null && meId != cachedId) {
+          await FamilyChatLocalCache.clearStatus();
+          ChatBootTrace.log(
+            'boot_cache_stale',
+            detail: 'me=$meId cached=$cachedId',
+          );
+        } else {
+          // Network blip / Cronet timeout: keep cached shell instead of wipe.
+          if (meError != null) {
+            ChatBootTrace.log(
+              'boot_cache_offline',
+              detail: '$meError',
+            );
+            if (isLikelyCronetTransportFailure(meError)) {
+              _forceIoHttpTransport();
+            }
+          } else {
+            ChatBootTrace.log('boot_enter_cache');
+          }
+          try {
+            await ref.read(themeSeedProvider.notifier).syncFromStatus(cached);
+          } catch (_) {}
+          if (!mounted) return;
+          _enterWithStatus(cached, fromCache: true);
+          unawaited(_finishBootFromNetwork(background: true));
+          return;
+        }
+      }
+
+      // Первый вход / нет кэша — ждём status (спиннер).
+      ChatBootTrace.log('boot_network_status');
+      await _finishBootFromNetwork(background: false);
+      ChatBootTrace.log('boot_done');
+    } catch (e, st) {
+      ChatBootTrace.log('boot_fatal', detail: '$e');
+      debugPrint('[ChatBoot] fatal: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _bootError = 'Ошибка запуска. Попробуйте ещё раз.';
+      });
+    }
   }
 
   int? _userIdFromMe(Map<String, dynamic>? me) {
