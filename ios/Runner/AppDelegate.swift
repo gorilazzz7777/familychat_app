@@ -10,6 +10,8 @@ import Intents
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate, CallkitIncomingAppDelegate {
   private static let outboxTaskId = "com.familychat.familychat_app.outboxRefresh"
+  /// BGTaskScheduler allows only one launch-handler registration per id per process.
+  private static var outboxBgTasksRegistered = false
   private var outboxChannel: FlutterMethodChannel?
   private var outboxBgTaskId: UIBackgroundTaskIdentifier = .invalid
 
@@ -35,6 +37,8 @@ import Intents
 
   private func registerOutboxBgTasks() {
     if #available(iOS 13.0, *) {
+      guard !Self.outboxBgTasksRegistered else { return }
+      Self.outboxBgTasksRegistered = true
       BGTaskScheduler.shared.register(
         forTaskWithIdentifier: Self.outboxTaskId,
         using: nil
