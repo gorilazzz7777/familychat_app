@@ -1309,9 +1309,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       return;
     }
 
-    final next = await _buildMessagesFromSqliteRows(
-      clippedRows,
-      hydrateAttachments: false,
+    final next = _healSavedSendStatuses(
+      await _buildMessagesFromSqliteRows(
+        clippedRows,
+        hydrateAttachments: false,
+      ),
     );
     if (!mounted || gen != _messagesWatchGen) return;
     if (_loadingOlder || _loadingNewer || _restoringLiveTail) return;
@@ -3572,6 +3574,30 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   int _nextTempId() => _tempIdCounter--;
 
+  /// Saved Messages: server used to omit receipts; stuck «sending» must settle.
+  List<Map<String, dynamic>> _healSavedSendStatuses(
+    List<Map<String, dynamic>> messages,
+  ) {
+    if (!_isSaved) return messages;
+    var changed = false;
+    final out = <Map<String, dynamic>>[];
+    for (final m in messages) {
+      final id = chatAsInt(m['id']);
+      if (id == null || id <= 0 || m['_pending'] == true) {
+        out.add(m);
+        continue;
+      }
+      final status = m['read_status']?.toString().trim() ?? '';
+      if (status.isEmpty || status == 'sending' || status == 'queued') {
+        changed = true;
+        out.add({...m, 'read_status': 'sent'});
+      } else {
+        out.add(m);
+      }
+    }
+    return changed ? out : messages;
+  }
+
   /// Reject WS ack that points at an old row already shown in the thread.
   bool _isPlausibleWsSendAck({
     required String sentBody,
@@ -3741,6 +3767,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       );
       // Replacing our own optimistic send — never lose the owner.
       merged['is_mine'] = true;
+      merged.remove('_pending');
+      final serverId = chatAsInt(merged['id']);
+      final status = merged['read_status']?.toString().trim() ?? '';
+      if (serverId != null &&
+          serverId > 0 &&
+          (status.isEmpty || status == 'sending' || status == 'queued')) {
+        merged['read_status'] = 'sent';
+      }
       if (_currentUserId != null &&
           chatAsInt(merged['sender_user_id']) == null) {
         merged['sender_user_id'] = _currentUserId;
@@ -6615,7 +6649,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     canToggleVoiceTranscript:
                                         _viewerIndividualPremium,
                                     isGroupLike: _isGroupLike,
-                                    readStatus: isMine && !_isSaved
+                                    readStatus: isMine
                                         ? m['read_status']?.toString() ??
                                             (m['_scheduled'] == true
                                                 ? 'scheduled'

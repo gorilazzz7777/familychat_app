@@ -667,8 +667,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 final unread = chatAsInt(t['unread_count']) ?? 0;
                 final last = t['last_message'] as Map<String, dynamic>?;
                 final isSaved = isSavedMessagesThread(t['kind']?.toString());
-                final lastStatus =
-                    isSaved ? null : _lastMessageReadStatus(last);
+                final lastStatus = _lastMessageReadStatus(last);
                 final created = last != null
                     ? DateTime.tryParse(last['created_at']?.toString() ?? '')
                     : null;

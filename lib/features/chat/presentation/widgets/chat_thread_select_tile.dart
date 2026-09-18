@@ -74,7 +74,7 @@ class ChatThreadSelectTile extends StatelessWidget {
     final title = titleOf(thread, memberByUserId);
     final last = thread['last_message'] as Map<String, dynamic>?;
     final isSaved = isSavedMessagesThread(thread['kind']?.toString());
-    final lastStatus = isSaved ? null : lastMessageReadStatus(last);
+    final lastStatus = lastMessageReadStatus(last);
     final created = last != null
         ? DateTime.tryParse(last['created_at']?.toString() ?? '')
         : null;

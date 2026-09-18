@@ -125,12 +125,23 @@ Map<String, dynamic> chatEnsureMessageOwnership(
   }
 
   if (previous != null) {
+    final nextStatus = next['read_status']?.toString();
     final mergedStatus = chatMergeReadStatus(
       previous['read_status']?.toString(),
-      next['read_status']?.toString(),
+      nextStatus,
     );
     if (mergedStatus != null) {
       next['read_status'] = mergedStatus;
+    }
+    // Server row with positive id but empty receipt must not keep optimistic
+    // «sending» (e.g. Saved Messages used to omit read_status).
+    final nextId = chatAsInt(next['id']);
+    final status = next['read_status']?.toString().trim() ?? '';
+    if (nextId != null &&
+        nextId > 0 &&
+        (status.isEmpty || status == 'sending' || status == 'queued') &&
+        (nextStatus == null || nextStatus.trim().isEmpty)) {
+      next['read_status'] = 'sent';
     }
     for (final key in const [
       'sender_name',
