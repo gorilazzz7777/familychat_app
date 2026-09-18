@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'chat_attach_models.dart';
 
@@ -15,7 +16,7 @@ class AttachSelectionBar extends StatelessWidget {
     required this.onRemove,
     this.sending = false,
     this.showCaption = true,
-    this.sendIcon = Icons.send_rounded,
+    this.sendIcon = LucideIcons.send,
   });
 
   final List<ChatAttachSelectionItem> items;
@@ -56,7 +57,7 @@ class AttachSelectionBar extends StatelessWidget {
                               ? ColoredBox(
                                   color: scheme.surfaceContainerHighest,
                                   child: Icon(
-                                    Icons.insert_drive_file_outlined,
+                                    LucideIcons.file,
                                     color: scheme.primary,
                                   ),
                                 )
@@ -66,7 +67,7 @@ class AttachSelectionBar extends StatelessWidget {
                                   errorBuilder: (_, __, ___) => ColoredBox(
                                     color: scheme.surfaceContainerHighest,
                                     child: const Icon(
-                                      Icons.broken_image_outlined,
+                                      LucideIcons.image_off,
                                     ),
                                   ),
                                 ),
@@ -81,7 +82,7 @@ class AttachSelectionBar extends StatelessWidget {
                             radius: 10,
                             backgroundColor: scheme.error,
                             child: Icon(
-                              Icons.close,
+                              LucideIcons.x,
                               size: 12,
                               color: scheme.onError,
                             ),
@@ -92,7 +93,7 @@ class AttachSelectionBar extends StatelessWidget {
                         const Positioned.fill(
                           child: Center(
                             child: Icon(
-                              Icons.play_circle_fill,
+                              LucideIcons.circle_play,
                               color: Colors.white70,
                               size: 22,
                             ),

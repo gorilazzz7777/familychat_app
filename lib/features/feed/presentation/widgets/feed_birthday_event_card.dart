@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:intl/intl.dart';
 
 import '../../../profile/presentation/widgets/chat_avatar.dart';
@@ -68,7 +70,7 @@ class FeedBirthdayEventCard extends StatelessWidget {
             ),
             child: Row(
               children: [
-                Icon(Icons.cake_rounded, color: accent, size: 28),
+                Icon(LucideIcons.cake, color: accent, size: 28),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
@@ -139,7 +141,7 @@ class FeedBirthdayEventCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Icon(
-                        Icons.celebration_outlined,
+                        LucideIcons.party_popper,
                         size: 20,
                         color: accent,
                       ),
@@ -172,7 +174,7 @@ class FeedBirthdayEventCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
             child: FilledButton.icon(
               onPressed: onOpenChat,
-              icon: const Icon(Icons.chat_bubble_outline),
+              icon: const Icon(LucideIcons.message_circle),
               label: const Text('Поздравить в чате'),
             ),
           ),
@@ -186,7 +188,7 @@ class FeedBirthdayEventCard extends StatelessWidget {
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                   onPressed: onOpenChat,
-                  icon: Icon(Icons.open_in_new, size: 22, color: cs.primary),
+                  icon: Icon(LucideIcons.external_link, size: 22, color: cs.primary),
                 ),
                 const Spacer(),
                 if (dateText.isNotEmpty)

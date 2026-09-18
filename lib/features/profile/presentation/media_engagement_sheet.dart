@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
@@ -164,7 +166,7 @@ class _MediaEngagementSheetState extends ConsumerState<MediaEngagementSheet> {
                 ),
                 const Spacer(),
                 if (!commentsOnly) ...[
-                  const Icon(Icons.chat_bubble_outline, size: 20),
+                  const Icon(LucideIcons.message_circle, size: 20),
                   const SizedBox(width: 6),
                   Text('$_commentsCount'),
                 ],

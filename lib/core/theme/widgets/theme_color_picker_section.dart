@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../app_theme.dart';
 import '../appearance_prefs.dart';
+import '../../settings/shell_nav_layout.dart';
 import '../../widgets/family_input_styles.dart';
 
 /// Настройки оформления (без превью) — оттенок, шрифт, фон.
@@ -327,7 +329,7 @@ class _CollapsibleSettingsBlockState extends State<_CollapsibleSettingsBlock> {
                     turns: _expanded ? 0.5 : 0,
                     duration: const Duration(milliseconds: 200),
                     child: Icon(
-                      Icons.keyboard_arrow_down_rounded,
+                      LucideIcons.chevron_down,
                       color: cs.onSurfaceVariant,
                     ),
                   ),
@@ -487,7 +489,7 @@ class _ThemePreview extends StatelessWidget {
                         ),
                       ),
                     ),
-                    _PreviewBottomNav(scheme: scheme, theme: theme),
+                    _PreviewBottomNav(scheme: scheme),
                   ],
                 ),
               ),
@@ -520,9 +522,9 @@ class _PreviewAppBar extends StatelessWidget {
               ),
             ),
           ),
-          Icon(Icons.search, color: scheme.onSurfaceVariant, size: 20),
+          Icon(LucideIcons.search, color: scheme.onSurfaceVariant, size: 20),
           const SizedBox(width: 4),
-          Icon(Icons.more_vert, color: scheme.onSurfaceVariant, size: 20),
+          Icon(LucideIcons.ellipsis_vertical, color: scheme.onSurfaceVariant, size: 20),
         ],
       ),
     );
@@ -598,7 +600,7 @@ class _PreviewConversation extends StatelessWidget {
                     ),
                   ),
                 ),
-                Icon(Icons.send_rounded, color: scheme.primary, size: 20),
+                Icon(LucideIcons.send, color: scheme.primary, size: 20),
                 const SizedBox(width: 8),
               ],
             ),
@@ -610,10 +612,9 @@ class _PreviewConversation extends StatelessWidget {
 }
 
 class _PreviewBottomNav extends StatelessWidget {
-  const _PreviewBottomNav({required this.scheme, required this.theme});
+  const _PreviewBottomNav({required this.scheme});
 
   final ColorScheme scheme;
-  final ThemeData theme;
 
   @override
   Widget build(BuildContext context) {
@@ -629,35 +630,25 @@ class _PreviewBottomNav extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
           _PreviewNavItem(
-            icon: Icons.chat,
-            label: 'Чат',
+            icon: ShellNavLayout.icon(ShellSection.chat, selected: true),
             scheme: scheme,
-            theme: theme,
             selected: true,
           ),
           _PreviewNavItem(
-            icon: Icons.dynamic_feed_outlined,
-            label: 'Лента',
+            icon: ShellNavLayout.icon(ShellSection.feed),
             scheme: scheme,
-            theme: theme,
           ),
           _PreviewNavItem(
-            icon: Icons.people_outline,
-            label: 'Семья',
+            icon: ShellNavLayout.icon(ShellSection.family),
             scheme: scheme,
-            theme: theme,
           ),
           _PreviewNavItem(
-            icon: Icons.photo_library_outlined,
-            label: 'Галерея',
+            icon: ShellNavLayout.icon(ShellSection.gallery),
             scheme: scheme,
-            theme: theme,
           ),
           _PreviewNavItem(
-            icon: Icons.calendar_month_outlined,
-            label: 'Календарь',
+            icon: ShellNavLayout.icon(ShellSection.calendar),
             scheme: scheme,
-            theme: theme,
           ),
         ],
       ),
@@ -668,35 +659,17 @@ class _PreviewBottomNav extends StatelessWidget {
 class _PreviewNavItem extends StatelessWidget {
   const _PreviewNavItem({
     required this.icon,
-    required this.label,
     required this.scheme,
-    required this.theme,
     this.selected = false,
   });
 
   final IconData icon;
-  final String label;
   final ColorScheme scheme;
-  final ThemeData theme;
   final bool selected;
 
   @override
   Widget build(BuildContext context) {
     final color = selected ? scheme.primary : scheme.onSurfaceVariant;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 18, color: color),
-        const SizedBox(height: 2),
-        Text(
-          label,
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: color,
-            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            fontSize: 9,
-          ),
-        ),
-      ],
-    );
+    return Icon(icon, size: 22, color: color);
   }
 }

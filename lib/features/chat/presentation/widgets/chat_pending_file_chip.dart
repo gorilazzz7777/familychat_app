@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 /// Превью выбранного файла над полем ввода (до отправки).
 class ChatPendingFileChip extends StatelessWidget {
@@ -21,7 +22,7 @@ class ChatPendingFileChip extends StatelessWidget {
         child: Row(
           children: [
             Icon(
-              Icons.insert_drive_file_outlined,
+              LucideIcons.file,
               color: Theme.of(context).colorScheme.primary,
             ),
             const SizedBox(width: 8),
@@ -34,7 +35,7 @@ class ChatPendingFileChip extends StatelessWidget {
             ),
             IconButton(
               onPressed: onRemove,
-              icon: const Icon(Icons.close, size: 20),
+              icon: const Icon(LucideIcons.x, size: 20),
               visualDensity: VisualDensity.compact,
             ),
           ],

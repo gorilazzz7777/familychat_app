@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -830,8 +832,8 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
                           children: [
                             Icon(
                               widget.isVideo || _localVideoEnabled
-                                  ? Icons.videocam_outlined
-                                  : Icons.call,
+                                  ? LucideIcons.video
+                                  : LucideIcons.phone,
                               size: 56,
                               color: Colors.white54,
                             ),
@@ -880,7 +882,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
               children: [
                 FilledButton.tonalIcon(
                   onPressed: _busy ? null : _toggleMic,
-                  icon: Icon(_micMuted ? Icons.mic_off : Icons.mic),
+                  icon: Icon(_micMuted ? LucideIcons.mic_off : LucideIcons.mic),
                   label: Text(_micMuted ? 'Микрофон выкл.' : 'Микрофон'),
                 ),
                 if (!kIsWeb)
@@ -889,7 +891,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
                         ? null
                         : () => unawaited(_setSpeakerphone(!_speakerOn)),
                     icon: Icon(
-                      _speakerOn ? Icons.volume_up : Icons.phone_in_talk,
+                      _speakerOn ? LucideIcons.volume_2 : LucideIcons.phone_call,
                     ),
                     label: Text(
                       _speakerOn ? 'Громкая связь вкл.' : 'Громкая связь',
@@ -898,7 +900,7 @@ class _ChatCallScreenState extends State<ChatCallScreen> {
                 FilledButton.icon(
                   style: FilledButton.styleFrom(backgroundColor: Colors.red),
                   onPressed: _busy ? null : () => unawaited(_hangup()),
-                  icon: const Icon(Icons.call_end),
+                  icon: const Icon(LucideIcons.phone_off),
                   label: const Text('Завершить'),
                 ),
               ],

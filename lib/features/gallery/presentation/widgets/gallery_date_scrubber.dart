@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 
 import '../../../../core/media/gallery_photo_date.dart';
@@ -334,7 +336,7 @@ class _GalleryDateScrubberState extends State<GalleryDateScrubber> {
                             width: _handleWidth,
                             height: _handleHeight,
                             child: Icon(
-                              Icons.unfold_more,
+                              LucideIcons.chevrons_up_down,
                               color: Colors.white,
                               size: 22,
                             ),

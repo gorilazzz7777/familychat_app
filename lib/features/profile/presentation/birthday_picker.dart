@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 
 import 'birthday_format.dart';
@@ -157,7 +159,7 @@ class _BirthDatePickerDialogState extends State<_BirthDatePickerDialog> {
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
               onPressed: _pickFromCalendar,
-              icon: const Icon(Icons.calendar_month_outlined),
+              icon: const Icon(LucideIcons.calendar_days),
               label: const Text('Выбрать в календаре'),
             ),
           ),

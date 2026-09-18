@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -288,7 +290,7 @@ class _AttachCameraCaptureScreenState extends State<AttachCameraCaptureScreen> {
                     onPressed: _busy
                         ? null
                         : () => Navigator.of(context).maybePop(),
-                    icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                    icon: const Icon(LucideIcons.x, color: Colors.white, size: 28),
                   ),
                 ),
                 if (_recording)
@@ -310,7 +312,7 @@ class _AttachCameraCaptureScreenState extends State<AttachCameraCaptureScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             const Icon(
-                              Icons.fiber_manual_record,
+                              LucideIcons.circle,
                               color: Colors.redAccent,
                               size: 14,
                             ),
@@ -365,7 +367,7 @@ class _AttachCameraCaptureScreenState extends State<AttachCameraCaptureScreen> {
                                   ? () => unawaited(_flipCamera())
                                   : null,
                               icon: const Icon(
-                                Icons.cameraswitch,
+                                LucideIcons.switch_camera,
                                 color: Colors.white,
                                 size: 28,
                               ),

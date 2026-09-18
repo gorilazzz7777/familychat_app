@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -112,7 +114,7 @@ class _ChildMilestoneViewScreenState
         _MilestoneFieldRow(
           label: 'Когда',
           value: DateFormat('d MMMM yyyy', 'ru').format(achievedAt),
-          icon: Icons.event_outlined,
+          icon: LucideIcons.calendar,
         ),
       );
     }
@@ -123,7 +125,7 @@ class _ChildMilestoneViewScreenState
         _MilestoneFieldRow(
           label: 'Комментарий',
           value: note,
-          icon: Icons.notes_outlined,
+          icon: LucideIcons.sticky_note,
         ),
       );
     }
@@ -134,7 +136,7 @@ class _ChildMilestoneViewScreenState
         _MilestoneFieldRow(
           label: 'Вес',
           value: '$weight кг',
-          icon: Icons.monitor_weight_outlined,
+          icon: LucideIcons.weight,
         ),
       );
     }
@@ -145,7 +147,7 @@ class _ChildMilestoneViewScreenState
         _MilestoneFieldRow(
           label: 'Рост',
           value: '$height см',
-          icon: Icons.height_outlined,
+          icon: LucideIcons.ruler,
         ),
       );
     }
@@ -248,13 +250,13 @@ class _ChildMilestoneViewScreenState
             IconButton(
               tooltip: 'Редактировать',
               onPressed: _milestone == null ? null : _openEdit,
-              icon: const Icon(Icons.edit_outlined),
+              icon: const Icon(LucideIcons.pencil),
             ),
           if (canPlay)
             IconButton(
               tooltip: 'Диафильм',
               onPressed: _openSlideshow,
-              icon: const Icon(Icons.play_circle_outline),
+              icon: const Icon(LucideIcons.circle_play),
             ),
         ],
       ),
@@ -371,7 +373,7 @@ class _ChildMilestoneViewScreenState
                                           color: Color(0x33000000),
                                           child: Center(
                                             child: Icon(
-                                              Icons.play_circle_outline,
+                                              LucideIcons.circle_play,
                                               color: Colors.white70,
                                               size: 28,
                                             ),

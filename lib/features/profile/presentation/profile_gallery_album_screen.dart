@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/share/share_to_diary_prefs.dart';
@@ -1490,13 +1492,13 @@ class _ProfileGalleryAlbumScreenState
                       setState(() => _searchMode = true);
                     }
                   },
-                  icon: Icon(_searchMode ? Icons.close : Icons.search),
+                  icon: Icon(_searchMode ? LucideIcons.x : LucideIcons.search),
                 ),
               IconButton(
                 tooltip: _selectionMode ? 'Отменить выбор' : 'Выбрать',
                 onPressed: _toggleSelectionMode,
                 icon: Icon(
-                    _selectionMode ? Icons.close : Icons.checklist_outlined),
+                    _selectionMode ? LucideIcons.x : LucideIcons.list_checks),
               ),
               if (_selectionMode)
                 TextButton(
@@ -1551,7 +1553,7 @@ class _ProfileGalleryAlbumScreenState
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                         )
-                      : const Icon(Icons.more_vert),
+                      : const Icon(LucideIcons.ellipsis_vertical),
                 ),
               if (!_selectionMode && (canManageCustom || widget.isOwnGallery))
                 PopupMenuButton<String>(
@@ -1583,7 +1585,7 @@ class _ProfileGalleryAlbumScreenState
               ? FloatingActionButton.extended(
                   onPressed:
                       _selectedPhotoIds.isEmpty ? null : _showBulkTagDialog,
-                  icon: const Icon(Icons.sell_outlined),
+                  icon: const Icon(LucideIcons.tag),
                   label: Text('Тег (${_selectedPhotoIds.length})'),
                 )
               : canAddToCustom
@@ -1596,7 +1598,7 @@ class _ProfileGalleryAlbumScreenState
                               child: CircularProgressIndicator(
                                   strokeWidth: 2, color: Colors.white),
                             )
-                          : const Icon(Icons.add_photo_alternate_outlined),
+                          : const Icon(LucideIcons.image_plus),
                     )
                   : null,
           body: Column(
@@ -1725,7 +1727,7 @@ class _ProfileGalleryAlbumScreenState
                                                         .colorScheme
                                                         .surfaceContainerHighest,
                                                     child: Icon(
-                                                      Icons.face_retouching_off,
+                                                      LucideIcons.scan_face,
                                                       size: 20,
                                                       color: Theme.of(context)
                                                           .colorScheme
@@ -1859,8 +1861,8 @@ class _ProfileGalleryAlbumScreenState
                 padding: const EdgeInsets.all(6),
                 child: Icon(
                   selected
-                      ? Icons.check_circle
-                      : Icons.radio_button_unchecked,
+                      ? LucideIcons.circle_check
+                      : LucideIcons.circle,
                   color: selected
                       ? Colors.lightGreenAccent
                       : Colors.white70,

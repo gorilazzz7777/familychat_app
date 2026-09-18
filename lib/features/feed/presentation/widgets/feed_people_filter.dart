@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 
@@ -58,7 +59,7 @@ class FeedPeopleFilterBar extends StatelessWidget {
             child: CircleAvatar(
               radius: 18,
               backgroundColor: cs.surfaceContainerHighest,
-              child: Icon(Icons.people_outline, size: 20, color: cs.onSurfaceVariant),
+              child: Icon(LucideIcons.users, size: 20, color: cs.onSurfaceVariant),
             ),
           ),
           for (final person in people)

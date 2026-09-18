@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/offline_ui.dart';
@@ -160,7 +162,7 @@ class ChildGalleryTabState extends ConsumerState<ChildGalleryTab> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.edit_outlined),
+              leading: const Icon(LucideIcons.pencil),
               title: const Text('Редактировать'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -169,7 +171,7 @@ class ChildGalleryTabState extends ConsumerState<ChildGalleryTab> {
             ),
             ListTile(
               leading: Icon(
-                Icons.delete_outline,
+                LucideIcons.trash,
                 color: Theme.of(ctx).colorScheme.error,
               ),
               title: Text(

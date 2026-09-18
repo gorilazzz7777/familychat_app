@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 /// Панель закреплённых сообщений (как в Telegram): превью + листание по тапу.
 class ChatPinnedBar extends StatelessWidget {
@@ -76,11 +77,11 @@ class ChatPinnedBar extends StatelessWidget {
                         ],
                       ),
                     ),
-                    Icon(Icons.push_pin, size: 18, color: scheme.primary),
+                    Icon(LucideIcons.pin, size: 18, color: scheme.primary),
                     if (total > 1) ...[
                       const SizedBox(width: 4),
                       Icon(
-                        Icons.view_agenda_outlined,
+                        LucideIcons.layout_list,
                         size: 18,
                         color: scheme.onSurfaceVariant,
                       ),
@@ -94,7 +95,7 @@ class ChatPinnedBar extends StatelessWidget {
               tooltip: 'Открепить',
               onPressed: onClose,
               icon: Icon(
-                Icons.close,
+                LucideIcons.x,
                 size: 20,
                 color: scheme.onSurfaceVariant,
               ),

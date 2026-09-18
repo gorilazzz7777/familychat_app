@@ -4,6 +4,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/widgets/family_app_bar.dart';
@@ -551,13 +553,13 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
                     color: Colors.white,
                   ),
                 )
-              : const Icon(Icons.share_outlined),
+              : const Icon(LucideIcons.share),
         ),
         if (canForward)
           IconButton(
             tooltip: 'Переслать',
             onPressed: _forwarding ? null : _forward,
-            icon: const Icon(Icons.forward_outlined),
+            icon: const Icon(LucideIcons.forward),
           ),
         IconButton(
           tooltip: 'Скачать',
@@ -571,11 +573,11 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
                     color: Colors.white,
                   ),
                 )
-              : const Icon(Icons.download_outlined),
+              : const Icon(LucideIcons.download),
         ),
         if (canFaceTag || widget.onGoToMessage != null)
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
+            icon: const Icon(LucideIcons.ellipsis_vertical),
             onSelected: (value) {
               switch (value) {
                 case 'faces':

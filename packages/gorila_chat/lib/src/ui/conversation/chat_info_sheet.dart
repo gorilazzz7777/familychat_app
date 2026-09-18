@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../contract/chat_call_repository.dart';
@@ -170,8 +172,8 @@ class _ChatInfoSheetState extends State<ChatInfoSheet>
                       backgroundColor: scheme.primary,
                       child: Icon(
                         widget.kind == 'notifications'
-                            ? Icons.notifications_outlined
-                            : Icons.groups,
+                            ? LucideIcons.bell
+                            : LucideIcons.users,
                         color: scheme.onPrimary,
                       ),
                     ),
@@ -200,7 +202,7 @@ class _ChatInfoSheetState extends State<ChatInfoSheet>
                     IconButton(
                       tooltip: 'Позвонить',
                       onPressed: _startCall,
-                      icon: const Icon(Icons.call_outlined),
+                      icon: const Icon(LucideIcons.phone),
                     ),
                 ],
               ),
@@ -272,7 +274,7 @@ class _ChatInfoSheetState extends State<ChatInfoSheet>
         final link = _links[i];
         final url = link['url']?.toString() ?? '';
         return ListTile(
-          leading: const Icon(Icons.link),
+          leading: const Icon(LucideIcons.link),
           title: Text(url, maxLines: 2, overflow: TextOverflow.ellipsis),
           onTap: url.isEmpty
               ? null

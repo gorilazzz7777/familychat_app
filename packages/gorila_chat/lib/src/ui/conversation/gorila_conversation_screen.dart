@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
@@ -752,7 +754,7 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
         appBar: _selectionMode
             ? AppBar(
                 leading: IconButton(
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(LucideIcons.x),
                   onPressed: _exitSelection,
                 ),
                 title: Text('${_selectedIds.length} выбрано'),
@@ -776,7 +778,7 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
                               if (ordered.isEmpty) return;
                               unawaited(_speakMessageIds(ordered));
                             },
-                      icon: const Icon(Icons.record_voice_over_outlined),
+                      icon: const Icon(LucideIcons.audio_lines),
                     ),
                   if (_caps.supportsDelete || _caps.supportsDeleteForMe)
                     IconButton(
@@ -801,7 +803,7 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
                                 ),
                               );
                             },
-                      icon: const Icon(Icons.delete_outline),
+                      icon: const Icon(LucideIcons.trash),
                     ),
                 ],
               )
@@ -814,7 +816,7 @@ class _GorilaConversationScreenState extends State<GorilaConversationScreen> {
                     IconButton(
                       tooltip: 'Позвонить',
                       onPressed: _startCall,
-                      icon: const Icon(Icons.call_outlined),
+                      icon: const Icon(LucideIcons.phone),
                     ),
                 ],
               ),
@@ -969,7 +971,7 @@ class _MessageBubble extends StatelessWidget {
                       ),
                       onPressed: onTap,
                       icon: Icon(
-                        selected ? Icons.check_circle : Icons.circle_outlined,
+                        selected ? LucideIcons.circle_check : LucideIcons.circle,
                         color: selected ? scheme.primary : scheme.outline,
                       ),
                     ),
@@ -1059,7 +1061,7 @@ class _AttachmentPreview extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(Icons.insert_drive_file_outlined, size: 18),
+        const Icon(LucideIcons.file, size: 18),
         const SizedBox(width: 6),
         Flexible(child: Text(name, overflow: TextOverflow.ellipsis)),
       ],

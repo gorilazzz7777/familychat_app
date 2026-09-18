@@ -3,6 +3,7 @@ import 'dart:ui' show ImageFilter;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../../core/cache/familychat_media_cache.dart';
 import '../../../../core/media/gallery_media_utils.dart';
@@ -155,7 +156,7 @@ class ChatAttachmentThumb extends StatelessWidget {
           borderRadius: borderRadius,
         ),
         child: Icon(
-          Icons.image_outlined,
+          LucideIcons.image,
           size: 28,
           color: scheme.onSurfaceVariant.withValues(alpha: 0.45),
         ),

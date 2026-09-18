@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:intl/intl.dart';
 
 import '../../../../core/local_db/chat_local_store.dart';
@@ -90,7 +92,7 @@ class _ChatMessageSearchSheetState extends State<ChatMessageSearchSheet> {
                 autofocus: true,
                 decoration: InputDecoration(
                   hintText: 'Поиск по сообщениям',
-                  prefixIcon: const Icon(Icons.search),
+                  prefixIcon: const Icon(LucideIcons.search),
                   suffixIcon: _query.isNotEmpty
                       ? IconButton(
                           onPressed: () {
@@ -102,7 +104,7 @@ class _ChatMessageSearchSheetState extends State<ChatMessageSearchSheet> {
                               _results = const [];
                             });
                           },
-                          icon: const Icon(Icons.clear),
+                          icon: const Icon(LucideIcons.x),
                         )
                       : null,
                 ),

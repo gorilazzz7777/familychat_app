@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/cache/familychat_local_cache.dart';
@@ -433,7 +435,7 @@ class _RetryableGifPreviewState extends State<_RetryableGifPreview> {
     );
 
     if (_url.isEmpty) {
-      return Icon(Icons.broken_image_outlined, color: cs.onSurfaceVariant);
+      return Icon(LucideIcons.image_off, color: cs.onSurfaceVariant);
     }
 
     return CachedNetworkImage(
@@ -456,7 +458,7 @@ class _RetryableGifPreviewState extends State<_RetryableGifPreview> {
             });
           },
           child: Icon(
-            Icons.refresh_rounded,
+            LucideIcons.refresh_cw,
             color: cs.onSurfaceVariant,
           ),
         );

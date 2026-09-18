@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/platform/browser_info.dart';
@@ -54,7 +56,7 @@ class _IosSafariInstallHintState extends State<IosSafariInstallHint> {
           children: [
             Row(
               children: [
-                Icon(Icons.phone_iphone, color: theme.colorScheme.primary),
+                Icon(LucideIcons.smartphone, color: theme.colorScheme.primary),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(

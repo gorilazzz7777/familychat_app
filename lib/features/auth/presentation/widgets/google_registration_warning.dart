@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 class GoogleRegistrationWarning extends StatelessWidget {
   const GoogleRegistrationWarning({super.key});
@@ -22,7 +23,7 @@ class GoogleRegistrationWarning extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Icon(
-                Icons.warning_amber_rounded,
+                LucideIcons.triangle_alert,
                 color: Color(0xFFE65100),
                 size: 22,
               ),

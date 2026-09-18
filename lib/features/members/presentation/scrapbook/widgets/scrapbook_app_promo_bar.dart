@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -46,7 +48,7 @@ class ScrapbookAppPromoBar extends StatelessWidget {
                       color: const Color(0xFF4A3728),
                       alignment: Alignment.center,
                       child: const Icon(
-                        Icons.auto_stories_rounded,
+                        LucideIcons.book_open,
                         color: Color(0xFFE6D5BC),
                         size: 22,
                       ),

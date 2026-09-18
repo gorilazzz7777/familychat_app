@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -530,7 +532,7 @@ class _ChildMilestoneDetailScreenState
                   customBorder: const CircleBorder(),
                   child: const Padding(
                     padding: EdgeInsets.all(4),
-                    child: Icon(Icons.close, color: Colors.white, size: 16),
+                    child: Icon(LucideIcons.x, color: Colors.white, size: 16),
                   ),
                 ),
               ),
@@ -590,7 +592,7 @@ class _ChildMilestoneDetailScreenState
                         : DateFormat('dd.MM.yyyy').format(_achievedAt!),
                   ),
                   trailing: widget.canEdit
-                      ? const Icon(Icons.calendar_today_outlined)
+                      ? const Icon(LucideIcons.calendar)
                       : null,
                   onTap: widget.canEdit ? _pickDate : null,
                 ),
@@ -676,7 +678,7 @@ class _ChildMilestoneDetailScreenState
                             borderRadius: BorderRadius.circular(8),
                             onTap: _addingPhotos ? null : _addPhotos,
                             child: const Center(
-                              child: Icon(Icons.add_a_photo_outlined),
+                              child: Icon(LucideIcons.camera),
                             ),
                           ),
                         );

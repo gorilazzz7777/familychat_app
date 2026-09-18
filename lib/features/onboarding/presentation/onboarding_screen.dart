@@ -1,5 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -585,14 +587,14 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             const SizedBox(height: 12),
             ListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.cake_outlined),
+              leading: const Icon(LucideIcons.cake),
               title: const Text('День рождения'),
               subtitle: Text(
                 _birthDate == null
                     ? 'Не указан'
                     : formatBirthDateDisplay(_birthDate!, showYear: true),
               ),
-              trailing: const Icon(Icons.chevron_right),
+              trailing: const Icon(LucideIcons.chevron_right),
               onTap: _pickBirthDate,
             ),
             CheckboxListTile(

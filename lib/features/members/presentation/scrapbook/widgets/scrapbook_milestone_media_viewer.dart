@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../../../core/media/gallery_media_utils.dart';
 import '../../../../../core/widgets/family_public_image.dart';
@@ -80,7 +81,7 @@ class _ScrapbookMilestoneMediaViewerState
         fit: BoxFit.contain,
         placeholder: const Center(child: CircularProgressIndicator()),
         error: const Center(
-          child: Icon(Icons.broken_image_outlined, color: Colors.white54, size: 48),
+          child: Icon(LucideIcons.image_off, color: Colors.white54, size: 48),
         ),
       ),
     );
@@ -178,7 +179,7 @@ class _ScrapbookMilestoneMediaViewerState
                                     Container(
                                       color: Colors.black38,
                                       child: const Icon(
-                                        Icons.play_arrow_rounded,
+                                        LucideIcons.play,
                                         color: Colors.white,
                                       ),
                                     ),

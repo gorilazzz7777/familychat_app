@@ -130,7 +130,6 @@ Future<ShareAttachmentData> resolveLoadedShareAttachmentBytes(
 Future<void> finishLoadedShareAttachmentRead() =>
     clearPendingShareAttachmentUris();
 
-
 String _filenameFromPath(String path) {
   final parts = path.split(RegExp(r'[\\/]'));
   final name = parts.isNotEmpty ? parts.last : 'file';

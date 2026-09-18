@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:gorila_chat/gorila_chat.dart';
 
 List<Map<String, dynamic>> parseMediaReactions(dynamic raw) {
@@ -277,7 +278,7 @@ class FeedReactionsStack extends StatelessWidget {
         content = hasMine
             ? Text(mine, style: TextStyle(fontSize: emojiSize, height: 1))
             : Icon(
-                Icons.favorite_border,
+                LucideIcons.heart,
                 size: emojiSize,
                 color: cs.onSurfaceVariant,
               );
@@ -362,7 +363,7 @@ class FeedReactionsRow extends StatelessWidget {
                 ),
               ),
               child: Icon(
-                Icons.add_reaction_outlined,
+                LucideIcons.face_slightly_smiling_plus,
                 size: 18,
                 color: theme.colorScheme.onSurfaceVariant,
               ),

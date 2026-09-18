@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 
 import '../../data/chat_send_options.dart';
@@ -550,7 +552,7 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     if (_showSend && !_holdActive && !_locked) {
       return ChatComposeCircleButton(
         tooltip: 'Отправить',
-        icon: Icons.send_rounded,
+        icon: LucideIcons.send,
         onTap: () => widget.onSend(ChatSendOptions.normal),
         onLongPress: () async {
           final options = await ChatSendOptionsSheet.show(
@@ -566,7 +568,7 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     if (_locked) {
       return ChatComposeCircleButton(
         tooltip: 'Отправить',
-        icon: Icons.send_rounded,
+        icon: LucideIcons.send,
         iconColor: cs.onPrimary,
         backgroundColor: cs.primary,
         onTap: () => unawaited(_onLockedSend()),
@@ -574,7 +576,7 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     }
 
     final cancelLook = _holdActive && _willCancel;
-    final icon = _circleMode ? Icons.photo_camera_rounded : Icons.mic_rounded;
+    final icon = _circleMode ? LucideIcons.camera : LucideIcons.mic;
 
     return Listener(
       behavior: HitTestBehavior.opaque,

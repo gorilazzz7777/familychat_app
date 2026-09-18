@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../core/settings/shell_nav_layout.dart';
 
@@ -11,7 +11,8 @@ class ShellNavBar extends StatelessWidget {
     required this.chatUnread,
     required this.chatBadgeLabel,
     required this.onDestinationSelected,
-    required this.onBarReorder,
+    required this.onConfigureMenu,
+    this.showLabels = false,
   });
 
   final ShellNavLayout layout;
@@ -19,15 +20,30 @@ class ShellNavBar extends StatelessWidget {
   final int chatUnread;
   final String chatBadgeLabel;
   final ValueChanged<int> onDestinationSelected;
-  final void Function(int oldIndex, int newIndex) onBarReorder;
+  final VoidCallback onConfigureMenu;
+  final bool showLabels;
 
-  /// Approximate content height of the pill (without SafeArea / outer padding).
-  static const double pillHeight = 56;
+  static const double pillHeightLabeled = 56;
+  static const double pillHeightIconsOnly = 52;
+  static const double slotWidthLabeled = 64;
+  static const double slotWidthIconsOnly = 52;
   static const EdgeInsets outerPadding = EdgeInsets.fromLTRB(14, 0, 14, 10);
 
+  static double pillHeightFor({required bool showLabels}) =>
+      showLabels ? pillHeightLabeled : pillHeightIconsOnly;
+
+  static double slotWidthFor({required bool showLabels}) =>
+      showLabels ? slotWidthLabeled : slotWidthIconsOnly;
+
+  /// Approximate content height of the pill (without SafeArea / outer padding).
+  static double pillHeight = pillHeightIconsOnly;
+
   /// Extra scroll inset so last list items can sit above the floating pill.
-  static double contentBottomInset(BuildContext context) {
-    return pillHeight +
+  static double contentBottomInset(
+    BuildContext context, {
+    bool showLabels = false,
+  }) {
+    return pillHeightFor(showLabels: showLabels) +
         outerPadding.bottom +
         MediaQuery.paddingOf(context).bottom +
         8;
@@ -35,19 +51,116 @@ class ShellNavBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final scheme = Theme.of(context).colorScheme;
     final sections = layout.barSections;
     final showMore = layout.showMore;
     final slotCount = sections.length + (showMore ? 1 : 0);
     if (slotCount == 0) return const SizedBox.shrink();
 
-    // Чуть темнее surface, чтобы на белом фоне не сливалась.
+    final height = pillHeightFor(showLabels: showLabels);
+    final slotWidth = slotWidthFor(showLabels: showLabels);
+    final barWidth = showLabels
+        ? null // stretch when labels need room
+        : slotWidth * slotCount;
+
     final background = Color.alphaBlend(
       scheme.onSurface.withValues(
-        alpha: theme.brightness == Brightness.dark ? 0.16 : 0.09,
+        alpha: Theme.of(context).brightness == Brightness.dark ? 0.16 : 0.09,
       ),
       scheme.surface,
+    );
+
+    Widget buildButton({
+      required IconData icon,
+      required IconData selectedIcon,
+      required String label,
+      required bool selected,
+      required VoidCallback onTap,
+      String? badgeLabel,
+    }) {
+      return _ShellNavButton(
+        icon: icon,
+        selectedIcon: selectedIcon,
+        label: label,
+        selected: selected,
+        showLabel: showLabels,
+        badgeLabel: badgeLabel,
+        onTap: onTap,
+        onLongPress: () => _showConfigureMenuSheet(context),
+      );
+    }
+
+    final buttons = <Widget>[
+      for (var index = 0; index < sections.length; index++)
+        Expanded(
+          child: buildButton(
+            icon: ShellNavLayout.icon(sections[index]),
+            selectedIcon: ShellNavLayout.icon(sections[index], selected: true),
+            label: ShellNavLayout.label(sections[index]),
+            selected: selectedIndex == index,
+            badgeLabel: sections[index] == ShellSection.chat && chatUnread > 0
+                ? chatBadgeLabel
+                : null,
+            onTap: () => onDestinationSelected(index),
+          ),
+        ),
+      if (showMore)
+        Expanded(
+          child: buildButton(
+            icon: ShellNavLayout.moreIcon,
+            selectedIcon: ShellNavLayout.moreIcon,
+            label: 'Ещё',
+            selected: selectedIndex == sections.length,
+            onTap: () => onDestinationSelected(sections.length),
+          ),
+        ),
+    ];
+
+    final iconsOnlyButtons = <Widget>[
+      for (var index = 0; index < sections.length; index++)
+        SizedBox(
+          width: slotWidth,
+          child: buildButton(
+            icon: ShellNavLayout.icon(sections[index]),
+            selectedIcon: ShellNavLayout.icon(sections[index], selected: true),
+            label: ShellNavLayout.label(sections[index]),
+            selected: selectedIndex == index,
+            badgeLabel: sections[index] == ShellSection.chat && chatUnread > 0
+                ? chatBadgeLabel
+                : null,
+            onTap: () => onDestinationSelected(index),
+          ),
+        ),
+      if (showMore)
+        SizedBox(
+          width: slotWidth,
+          child: buildButton(
+            icon: ShellNavLayout.moreIcon,
+            selectedIcon: ShellNavLayout.moreIcon,
+            label: 'Ещё',
+            selected: selectedIndex == sections.length,
+            onTap: () => onDestinationSelected(sections.length),
+          ),
+        ),
+    ];
+
+    final pill = Material(
+      color: background,
+      elevation: 12,
+      shadowColor: Colors.black.withValues(alpha: 0.22),
+      shape: StadiumBorder(
+        side: BorderSide(
+          color: scheme.outlineVariant.withValues(alpha: 0.55),
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        height: height,
+        width: barWidth,
+        child: Row(
+          children: showLabels ? buttons : iconsOnlyButtons,
+        ),
+      ),
     );
 
     return Material(
@@ -56,107 +169,39 @@ class ShellNavBar extends StatelessWidget {
         top: false,
         child: Padding(
           padding: outerPadding,
-          child: Material(
-            color: background,
-            elevation: 12,
-            shadowColor: Colors.black.withValues(alpha: 0.22),
-            shape: StadiumBorder(
-              side: BorderSide(
-                color: scheme.outlineVariant.withValues(alpha: 0.55),
-              ),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: SizedBox(
-              height: pillHeight,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final slotWidth = constraints.maxWidth / slotCount;
-                  return Row(
-                    children: [
-                      SizedBox(
-                        width: slotWidth * sections.length,
-                        child: ReorderableListView.builder(
-                          scrollDirection: Axis.horizontal,
-                          padding: EdgeInsets.zero,
-                          clipBehavior: Clip.none,
-                          physics: const NeverScrollableScrollPhysics(),
-                          buildDefaultDragHandles: false,
-                          proxyDecorator: _proxyDecorator,
-                          onReorderStart: (_) {
-                            HapticFeedback.mediumImpact();
-                          },
-                          onReorder: onBarReorder,
-                          itemCount: sections.length,
-                          itemBuilder: (context, index) {
-                            final section = sections[index];
-                            return ReorderableDelayedDragStartListener(
-                              key: ValueKey(section),
-                              index: index,
-                              child: SizedBox(
-                                width: slotWidth,
-                                child: _ShellNavButton(
-                                  icon: ShellNavLayout.icon(section),
-                                  selectedIcon: ShellNavLayout.icon(
-                                    section,
-                                    selected: true,
-                                  ),
-                                  label: ShellNavLayout.label(section),
-                                  selected: selectedIndex == index,
-                                  badgeLabel: section == ShellSection.chat &&
-                                          chatUnread > 0
-                                      ? chatBadgeLabel
-                                      : null,
-                                  onTap: () => onDestinationSelected(index),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      if (showMore)
-                        SizedBox(
-                          width: slotWidth,
-                          child: _ShellNavButton(
-                            icon: Icons.more_horiz,
-                            selectedIcon: Icons.more_horiz,
-                            label: 'Ещё',
-                            selected: selectedIndex == sections.length,
-                            onTap: () =>
-                                onDestinationSelected(sections.length),
-                          ),
-                        ),
-                    ],
-                  );
-                },
-              ),
-            ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (showLabels) Expanded(child: pill) else pill,
+            ],
           ),
         ),
       ),
     );
   }
 
-  static Widget _proxyDecorator(
-    Widget child,
-    int index,
-    Animation<double> animation,
-  ) {
-    return AnimatedBuilder(
-      animation: animation,
-      builder: (context, _) {
-        final t = Curves.easeOut.transform(animation.value);
-        return Transform.scale(
-          scale: 1 + (0.08 * t),
-          child: Material(
-            elevation: 8 * t,
-            color: Colors.transparent,
-            shadowColor: Colors.black26,
-            borderRadius: BorderRadius.circular(16),
-            child: child,
+  Future<void> _showConfigureMenuSheet(BuildContext context) async {
+    final go = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(LucideIcons.settings_2),
+                title: const Text('Настроить меню'),
+                subtitle: const Text('Порядок, разделы и подписи'),
+                onTap: () => Navigator.pop(ctx, true),
+              ),
+              const SizedBox(height: 8),
+            ],
           ),
         );
       },
     );
+    if (go == true) onConfigureMenu();
   }
 }
 
@@ -166,7 +211,9 @@ class _ShellNavButton extends StatelessWidget {
     required this.selectedIcon,
     required this.label,
     required this.selected,
+    required this.showLabel,
     required this.onTap,
+    required this.onLongPress,
     this.badgeLabel,
   });
 
@@ -174,22 +221,26 @@ class _ShellNavButton extends StatelessWidget {
   final IconData selectedIcon;
   final String label;
   final bool selected;
+  final bool showLabel;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
   final String? badgeLabel;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final navTheme = NavigationBarTheme.of(context);
-    final indicatorColor =
-        navTheme.indicatorColor ?? scheme.secondaryContainer;
+    // Brighter than secondaryContainer — clear primary wash.
+    final indicatorColor = Color.alphaBlend(
+      scheme.primary.withValues(alpha: theme.brightness == Brightness.dark ? 0.38 : 0.28),
+      scheme.surface,
+    );
     final foreground =
         selected ? scheme.primary : scheme.onSurfaceVariant;
     Widget iconWidget = Icon(
       selected ? selectedIcon : icon,
       color: foreground,
-      size: 21,
+      size: showLabel ? 22 : 26,
     );
     if (badgeLabel != null) {
       iconWidget = Badge(
@@ -201,58 +252,61 @@ class _ShellNavButton extends StatelessWidget {
       );
     }
 
+    final content = showLabel
+        ? Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              iconWidget,
+              const SizedBox(height: 1),
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  softWrap: false,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: foreground,
+                    fontSize: 10.5,
+                    height: 1.1,
+                    fontWeight:
+                        selected ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          )
+        : iconWidget;
+
+    final ShapeBorder shape = showLabel
+        ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(18))
+        : const CircleBorder();
+
     return Semantics(
       button: true,
       selected: selected,
       label: label,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         splashColor: Colors.transparent,
         highlightColor: Colors.transparent,
         overlayColor: const WidgetStatePropertyAll(Colors.transparent),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return Center(
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOut,
-                  constraints: BoxConstraints(maxWidth: constraints.maxWidth),
-                  padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
-                  decoration: ShapeDecoration(
-                    color: selected ? indicatorColor : Colors.transparent,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      iconWidget,
-                      const SizedBox(height: 1),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          label,
-                          maxLines: 1,
-                          softWrap: false,
-                          textAlign: TextAlign.center,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: foreground,
-                            fontSize: 10.5,
-                            height: 1.1,
-                            fontWeight: selected
-                                ? FontWeight.w600
-                                : FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
+        child: Center(
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            padding: showLabel
+                ? const EdgeInsets.fromLTRB(8, 5, 8, 5)
+                : EdgeInsets.zero,
+            width: showLabel ? null : 42,
+            height: showLabel ? null : 42,
+            alignment: Alignment.center,
+            decoration: ShapeDecoration(
+              color: selected ? indicatorColor : Colors.transparent,
+              shape: shape,
+            ),
+            child: content,
           ),
         ),
       ),

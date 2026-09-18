@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/app_actions_scope.dart';
@@ -57,7 +59,7 @@ class _CalendarScreenState extends ConsumerState<CalendarScreen>
           IconButton(
             tooltip: 'Новое событие',
             onPressed: _createEvent,
-            icon: const Icon(Icons.add),
+            icon: const Icon(LucideIcons.plus),
           ),
         ],
         bottom: FamilyTabBar.build(

@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
@@ -56,6 +58,7 @@ import '../features/location/data/location_share_coordinator.dart';
 import '../features/location/presentation/family_map_screen.dart';
 import '../features/members/presentation/family_invite_flow.dart';
 import '../features/members/presentation/members_screen.dart';
+import '../features/profile/presentation/menu_sections_screen.dart';
 
 class ShellScreen extends ConsumerStatefulWidget {
   const ShellScreen({
@@ -410,7 +413,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   Future<void> _openShareScreenAndRefresh(SharedMedia media) async {
     final directThreadId =
-        await ShareDirectTargetService.takePendingDirectShareThreadId();
+        await ShareDirectTargetService.takePendingDirectShareThreadId(
+      conversationIdentifier: media.conversationIdentifier,
+    );
     final sent = await familyChatNavigatorKey.currentState?.push<bool>(
       MaterialPageRoute<bool>(
         builder: (_) => ChatShareTargetScreen(
@@ -768,7 +773,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                   ),
                 if (_index == _familyTabIndex) ...[
                   IconButton(
-                    icon: const Icon(Icons.map_outlined),
+                    icon: const Icon(LucideIcons.map),
                     tooltip: 'На карте',
                     onPressed: () {
                       Navigator.of(context).push(
@@ -807,7 +812,9 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                 navigationBarTheme: NavigationBarTheme.of(context).copyWith(
                   backgroundColor: Colors.transparent,
                   elevation: 0,
-                  height: ShellNavBar.pillHeight,
+                  height: ShellNavBar.pillHeightFor(
+                    showLabels: ref.watch(appSettingsProvider).menuLabels,
+                  ),
                 ),
               ),
               child: _ShellNavBarWithUnread(
@@ -816,17 +823,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
                     selectedIndex.clamp(0, layout.barSections.length),
                 onDestinationSelected: (i) =>
                     _onBarDestinationSelected(i, layout),
-                onBarReorder: (oldIndex, newIndex) {
-                  final next = ShellNavLayout.orderKeysAfterMove(
-                    currentKeys: ref.read(appSettingsProvider).menuOrder,
-                    enabled: layout.barSections,
-                    oldIndex: oldIndex,
-                    newIndex: newIndex,
-                  );
-                  unawaited(
-                    ref.read(appSettingsProvider.notifier).setMenuOrder(next),
-                  );
-                },
               ),
             )
           : null,
@@ -839,16 +835,15 @@ class _ShellNavBarWithUnread extends ConsumerWidget {
     required this.layout,
     required this.selectedIndex,
     required this.onDestinationSelected,
-    required this.onBarReorder,
   });
 
   final ShellNavLayout layout;
   final int selectedIndex;
   final ValueChanged<int> onDestinationSelected;
-  final void Function(int oldIndex, int newIndex) onBarReorder;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(appSettingsProvider);
     final unreadAsync = ref.watch(chatUnreadTotalProvider);
     final chatUnread = unreadAsync.when(
       data: (value) => value,
@@ -861,8 +856,15 @@ class _ShellNavBarWithUnread extends ConsumerWidget {
       selectedIndex: selectedIndex,
       chatUnread: chatUnread,
       chatBadgeLabel: chatBadgeLabel,
+      showLabels: settings.menuLabels,
       onDestinationSelected: onDestinationSelected,
-      onBarReorder: onBarReorder,
+      onConfigureMenu: () {
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const MenuSectionsScreen(),
+          ),
+        );
+      },
     );
   }
 }

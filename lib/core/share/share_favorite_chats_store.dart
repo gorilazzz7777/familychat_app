@@ -197,11 +197,43 @@ abstract final class ShareFavoriteChatsStore {
     if (changed) await _save(favorites);
   }
 
+  /// Кандидат для системного «Поделиться» из треда списка чатов.
+  static ShareFavoriteChatEntry? entryFromThread(
+    Map<String, dynamic> thread,
+    Map<int, Map<String, dynamic>> memberByUserId,
+  ) {
+    final threadId = int.tryParse(thread['id']?.toString() ?? '') ?? 0;
+    if (threadId <= 0) return null;
+    final kind = thread['kind']?.toString() ?? '';
+    // В шторке полезны личные/семья/избранное; группы тоже ок.
+    if (kind != 'dm' &&
+        kind != 'friend_dm' &&
+        kind != 'family' &&
+        kind != 'group' &&
+        kind != 'saved') {
+      return null;
+    }
+    final last = thread['last_message'] as Map<String, dynamic>?;
+    final lastMs = DateTime.tryParse(last?['created_at']?.toString() ?? '')
+            ?.millisecondsSinceEpoch ??
+        DateTime.now().millisecondsSinceEpoch;
+    return ShareFavoriteChatEntry(
+      threadId: threadId,
+      title: _threadTitle(thread, memberByUserId),
+      shareCount: 0,
+      lastSharedAtMs: lastMs,
+      avatarUrl: _threadAvatar(thread, memberByUserId),
+      threadKind: kind,
+      peerUserId: int.tryParse(thread['peer_user_id']?.toString() ?? ''),
+    );
+  }
+
   static String _threadTitle(
     Map<String, dynamic> thread,
     Map<int, Map<String, dynamic>> memberByUserId,
   ) {
     final kind = thread['kind']?.toString();
+    if (kind == 'saved') return 'Избранное';
     if (kind == 'dm' || kind == 'friend_dm') {
       final peerId = int.tryParse(thread['peer_user_id']?.toString() ?? '');
       if (peerId != null) {

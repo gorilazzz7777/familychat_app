@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../core/media/gallery_device_media_store.dart';
 import '../../../core/media/gallery_media_utils.dart';
@@ -163,7 +164,7 @@ class _GalleryMediaThumbnailState extends State<GalleryMediaThumbnail> {
           _videoBackground(attachment, fit),
           Center(
             child: Icon(
-              Icons.play_circle_outline,
+              LucideIcons.circle_play,
               size: (widget.width != null && widget.width! < 80) ? 28 : 40,
               color: Colors.white70,
             ),
@@ -261,7 +262,7 @@ class _GalleryMediaThumbnailState extends State<GalleryMediaThumbnail> {
       height: widget.height,
       fit: fit,
       placeholder: const Center(child: CircularProgressIndicator()),
-      error: const Center(child: Icon(Icons.broken_image_outlined)),
+      error: const Center(child: Icon(LucideIcons.image_off)),
     );
   }
 }

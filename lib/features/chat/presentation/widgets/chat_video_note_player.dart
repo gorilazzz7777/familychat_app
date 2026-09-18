@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
@@ -460,7 +462,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
                 Center(
                   child: _error != null && !_expanded
                       ? const Icon(
-                          Icons.videocam_off_outlined,
+                          LucideIcons.video_off,
                           color: Colors.white54,
                         )
                       : (_initializing
@@ -473,7 +475,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
                               ),
                             )
                           : const Icon(
-                              Icons.videocam_outlined,
+                              LucideIcons.video,
                               color: Colors.white54,
                               size: 36,
                             )),
@@ -504,8 +506,8 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
                       ),
                       child: Icon(
                         _initializing
-                            ? Icons.hourglass_top_rounded
-                            : Icons.play_arrow_rounded,
+                            ? LucideIcons.hourglass
+                            : LucideIcons.play,
                         color: Colors.white,
                         size: _expanded ? 32 : 30,
                       ),

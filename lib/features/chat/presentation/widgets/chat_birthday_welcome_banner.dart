@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:intl/intl.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
@@ -68,7 +70,7 @@ class ChatBirthdayWelcomeBanner extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.cake_rounded, color: cs.tertiary, size: 20),
+                      Icon(LucideIcons.cake, color: cs.tertiary, size: 20),
                       const SizedBox(width: 6),
                       Text(
                         'Подготовка к дню рождения',
@@ -110,7 +112,7 @@ class ChatBirthdayWelcomeBanner extends StatelessWidget {
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : Icon(_hasMine ? Icons.edit_outlined : Icons.card_giftcard_outlined),
+                          : Icon(_hasMine ? LucideIcons.pencil : LucideIcons.gift),
                           label: Text(
                         _hasMine
                             ? 'Изменить поздравление'
@@ -503,10 +505,10 @@ class _BirthdayScheduledCongratulationDialogState
                                         .surfaceContainerHighest,
                                     child: Icon(
                                       att.kind == 'video' || att.isVideoNote
-                                          ? Icons.videocam_outlined
+                                          ? LucideIcons.video
                                           : att.kind == 'image'
-                                              ? Icons.image_outlined
-                                              : Icons.insert_drive_file_outlined,
+                                              ? LucideIcons.image
+                                              : LucideIcons.file,
                                     ),
                                   ),
                           ),
@@ -522,7 +524,7 @@ class _BirthdayScheduledCongratulationDialogState
                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
                             onPressed: busy ? null : () => _removeAttachment(att.id),
-                            icon: const Icon(Icons.close, size: 16),
+                            icon: const Icon(LucideIcons.x, size: 16),
                           ),
                         ),
                       ],
@@ -536,7 +538,7 @@ class _BirthdayScheduledCongratulationDialogState
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: busy ? null : _pickMedia,
-                    icon: const Icon(Icons.attach_file),
+                    icon: const Icon(LucideIcons.paperclip),
                     label: const Text('Медиа'),
                   ),
                 ),
@@ -544,7 +546,7 @@ class _BirthdayScheduledCongratulationDialogState
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: busy ? null : () => unawaited(_recordCircle()),
-                    icon: const Icon(Icons.radio_button_checked),
+                    icon: const Icon(LucideIcons.circle_dot),
                     label: const Text('Кружок'),
                   ),
                 ),

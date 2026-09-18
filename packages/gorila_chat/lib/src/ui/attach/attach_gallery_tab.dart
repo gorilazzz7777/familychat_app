@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -472,12 +474,12 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
+              leading: const Icon(LucideIcons.camera),
               title: const Text('Фото'),
               onTap: () => Navigator.pop(ctx, 'photo'),
             ),
             ListTile(
-              leading: const Icon(Icons.videocam_outlined),
+              leading: const Icon(LucideIcons.video),
               title: const Text('Видео'),
               onTap: () => Navigator.pop(ctx, 'video'),
             ),
@@ -573,7 +575,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                   flex: 2,
                   child: FilledButton.tonalIcon(
                     onPressed: _webPickGallery,
-                    icon: const Icon(Icons.photo_library_outlined),
+                    icon: const Icon(LucideIcons.images),
                     label: const Text('Выбрать из галереи'),
                   ),
                 ),
@@ -618,7 +620,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
             children: [
               TextButton.icon(
                 onPressed: _pickAlbum,
-                icon: const Icon(Icons.arrow_drop_down),
+                icon: const Icon(LucideIcons.chevron_down),
                 label: Text(
                   _album == null
                       ? ChatAttachL10n.of(context).gallery
@@ -793,7 +795,7 @@ class _AssetThumbState extends State<_AssetThumb> {
             const Positioned(
               left: 6,
               bottom: 6,
-              child: Icon(Icons.play_circle_fill, color: Colors.white, size: 20),
+              child: Icon(LucideIcons.circle_play, color: Colors.white, size: 20),
             ),
           Positioned(
             top: 6,
@@ -945,7 +947,7 @@ class _AlbumPickerTile extends StatelessWidget {
                       return ColoredBox(
                         color: theme.colorScheme.surfaceContainerHighest,
                         child: Icon(
-                          Icons.photo_library_outlined,
+                          LucideIcons.images,
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
                       );
@@ -991,7 +993,7 @@ class _AlbumPickerTile extends StatelessWidget {
               ),
             ),
             if (selected)
-              Icon(Icons.check, color: theme.colorScheme.primary),
+              Icon(LucideIcons.check, color: theme.colorScheme.primary),
           ],
         ),
       ),

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/providers/app_providers.dart';
@@ -295,7 +296,7 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
               onPressed: _openComments,
               icon: Icon(
-                Icons.chat_bubble_outline,
+                LucideIcons.message_circle,
                 size: 22,
                 color: cs.onSurfaceVariant,
               ),

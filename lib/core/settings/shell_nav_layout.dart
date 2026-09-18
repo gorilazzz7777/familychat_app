@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'app_settings.dart';
 
@@ -139,18 +140,17 @@ class ShellNavLayout {
     };
   }
 
+  /// Lucide stroke icons — selected/unselected differ by color in the nav bar.
   static IconData icon(ShellSection section, {bool selected = false}) {
     return switch (section) {
       ShellSection.chat =>
-        selected ? Icons.chat : Icons.chat_outlined,
-      ShellSection.feed =>
-        selected ? Icons.dynamic_feed : Icons.dynamic_feed_outlined,
-      ShellSection.family =>
-        selected ? Icons.people : Icons.people_outline,
-      ShellSection.gallery =>
-        selected ? Icons.photo_library : Icons.photo_library_outlined,
-      ShellSection.calendar =>
-        selected ? Icons.calendar_month : Icons.calendar_month_outlined,
+        selected ? LucideIcons.messages_square : LucideIcons.message_circle,
+      ShellSection.feed => LucideIcons.newspaper,
+      ShellSection.family => LucideIcons.users,
+      ShellSection.gallery => LucideIcons.images,
+      ShellSection.calendar => LucideIcons.calendar_days,
     };
   }
+
+  static IconData get moreIcon => LucideIcons.ellipsis;
 }

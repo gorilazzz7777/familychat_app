@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
@@ -398,7 +400,7 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                 if (!widget.promptMode)
                   IconButton(
                     onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close, color: Colors.white),
+                    icon: const Icon(LucideIcons.x, color: Colors.white),
                   ),
                 Expanded(
                   child: Text(
@@ -423,7 +425,7 @@ class _FaceTaggingSheetState extends ConsumerState<FaceTaggingSheet> {
                     tooltip: _manualMarkMode ? 'Отменить рамку' : 'Нарисовать рамку',
                     onPressed: () => setState(() => _manualMarkMode = !_manualMarkMode),
                     icon: Icon(
-                      _manualMarkMode ? Icons.close : Icons.crop_free_outlined,
+                      _manualMarkMode ? LucideIcons.x : LucideIcons.crop,
                       color: Colors.white,
                     ),
                   ),
@@ -493,7 +495,7 @@ class _SuggestionTile extends StatelessWidget {
       ),
       title: Text(name),
       subtitle: scoreLabel != null ? Text(scoreLabel) : null,
-      trailing: Icon(Icons.auto_awesome, color: theme.colorScheme.primary, size: 20),
+      trailing: Icon(LucideIcons.sparkles, color: theme.colorScheme.primary, size: 20),
       onTap: onTap,
     );
   }

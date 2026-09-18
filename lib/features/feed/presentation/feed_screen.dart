@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/offline_ui.dart';
@@ -1141,7 +1143,7 @@ class _FeedScrollToTopButton extends StatelessWidget {
             ],
           ),
           child: Icon(
-            Icons.keyboard_arrow_up_rounded,
+            LucideIcons.chevron_up,
             size: 30,
             color: cs.onSurface.withValues(alpha: 0.9),
           ),

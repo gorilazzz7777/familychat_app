@@ -1,11 +1,14 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../profile/presentation/widgets/chat_avatar.dart';
 import 'widgets/album_access_fields.dart';
 
 const _reminderOptions = <int?, String>{
@@ -267,7 +270,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
             IconButton(
               tooltip: 'Удалить',
               onPressed: _saving || _loading ? null : _delete,
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(LucideIcons.trash),
             ),
         ],
       ),
@@ -281,7 +284,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                 _EventSectionCard(
                   scheme: scheme,
                   title: 'Основное',
-                  icon: Icons.event_note_rounded,
+                  icon: LucideIcons.notebook_pen,
                   children: [
                     TextField(
                       controller: _titleCtrl,
@@ -295,7 +298,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                         filled: true,
                         fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
                         prefixIcon: Icon(
-                          Icons.celebration_outlined,
+                          LucideIcons.party_popper,
                           color: scheme.primary,
                         ),
                       ),
@@ -309,7 +312,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                             scheme: scheme,
                             label: 'Начало',
                             dateText: _dateFmt.format(_startDate),
-                            icon: Icons.play_circle_outline_rounded,
+                            icon: LucideIcons.circle_play,
                             onTap: _saving ? null : () => _pickDate(isStart: true),
                           ),
                         ),
@@ -319,7 +322,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                             scheme: scheme,
                             label: 'Конец',
                             dateText: _dateFmt.format(_endDate),
-                            icon: Icons.flag_circle_outlined,
+                            icon: LucideIcons.flag,
                             onTap: _saving ? null : () => _pickDate(isStart: false),
                           ),
                         ),
@@ -334,7 +337,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                         filled: true,
                         fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
                         prefixIcon: Icon(
-                          Icons.notifications_active_outlined,
+                          LucideIcons.bell_ring,
                           color: scheme.primary,
                         ),
                       ),
@@ -355,7 +358,9 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                 _EventSectionCard(
                   scheme: scheme,
                   title: 'Участники события',
-                  icon: Icons.people_alt_rounded,
+                  icon: LucideIcons.users,
+                  collapsible: true,
+                  initiallyExpanded: false,
                   trailing: _participantUserIds.isEmpty
                       ? null
                       : _CountBadge(
@@ -394,6 +399,8 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                         return _MemberSelectTile(
                           scheme: scheme,
                           name: name,
+                          avatarUrl: m['avatar_url']?.toString(),
+                          userId: userId,
                           selected: selected,
                           enabled: !_saving,
                           onChanged: (v) => setState(() {
@@ -410,11 +417,11 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                 _EventSectionCard(
                   scheme: scheme,
                   title: 'Фотоальбом',
-                  icon: Icons.photo_album_outlined,
+                  icon: LucideIcons.images,
                   children: [
                     _ToggleRow(
                       scheme: scheme,
-                      icon: Icons.create_new_folder_outlined,
+                      icon: LucideIcons.folder_plus,
                       title: 'Создать альбом',
                       subtitle: 'Привязать альбом к событию',
                       value: _createAlbum,
@@ -428,7 +435,7 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
                       const SizedBox(height: 8),
                       _ToggleRow(
                         scheme: scheme,
-                        icon: Icons.sync_rounded,
+                        icon: LucideIcons.refresh_cw,
                         title: 'Подтягивать фото с телефона',
                         subtitle:
                             'Только из папки Camera (или аналога) за даты события',
@@ -505,13 +512,15 @@ class _CalendarEventEditScreenState extends ConsumerState<CalendarEventEditScree
   }
 }
 
-class _EventSectionCard extends StatelessWidget {
+class _EventSectionCard extends StatefulWidget {
   const _EventSectionCard({
     required this.scheme,
     required this.title,
     required this.icon,
     required this.children,
     this.trailing,
+    this.collapsible = false,
+    this.initiallyExpanded = true,
   });
 
   final ColorScheme scheme;
@@ -519,10 +528,21 @@ class _EventSectionCard extends StatelessWidget {
   final IconData icon;
   final List<Widget> children;
   final Widget? trailing;
+  final bool collapsible;
+  final bool initiallyExpanded;
+
+  @override
+  State<_EventSectionCard> createState() => _EventSectionCardState();
+}
+
+class _EventSectionCardState extends State<_EventSectionCard> {
+  late bool _expanded = widget.initiallyExpanded;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = widget.scheme;
+    final showBody = !widget.collapsible || _expanded;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -545,31 +565,56 @@ class _EventSectionCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: scheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(icon, color: scheme.onPrimaryContainer, size: 22),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    title,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: widget.collapsible
+                    ? () => setState(() => _expanded = !_expanded)
+                    : null,
+                borderRadius: BorderRadius.circular(12),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: scheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        widget.icon,
+                        color: scheme.onPrimaryContainer,
+                        size: 22,
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        widget.title,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    if (widget.trailing != null) widget.trailing!,
+                    if (widget.collapsible) ...[
+                      const SizedBox(width: 4),
+                      Icon(
+                        _expanded
+                            ? LucideIcons.chevron_up
+                            : LucideIcons.chevron_down,
+                        color: scheme.onSurfaceVariant,
+                        size: 20,
+                      ),
+                    ],
+                  ],
                 ),
-                if (trailing != null) trailing!,
-              ],
+              ),
             ),
-            const SizedBox(height: 16),
-            ...children,
+            if (showBody) ...[
+              const SizedBox(height: 16),
+              ...widget.children,
+            ],
           ],
         ),
       ),
@@ -668,10 +713,14 @@ class _MemberSelectTile extends StatelessWidget {
     required this.selected,
     required this.enabled,
     required this.onChanged,
+    this.avatarUrl,
+    this.userId,
   });
 
   final ColorScheme scheme;
   final String name;
+  final String? avatarUrl;
+  final int? userId;
   final bool selected;
   final bool enabled;
   final ValueChanged<bool> onChanged;
@@ -679,9 +728,6 @@ class _MemberSelectTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final initials = name.trim().isEmpty
-        ? '?'
-        : name.trim().characters.first.toUpperCase();
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -697,16 +743,11 @@ class _MemberSelectTile extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
-                CircleAvatar(
+                ChatAvatar(
+                  name: name,
+                  avatarUrl: avatarUrl,
+                  userId: userId,
                   radius: 18,
-                  backgroundColor: selected ? scheme.primary : scheme.primaryContainer,
-                  child: Text(
-                    initials,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: selected ? scheme.onPrimary : scheme.onPrimaryContainer,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(

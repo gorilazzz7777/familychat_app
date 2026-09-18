@@ -1,6 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/local_db/chat_local_store.dart';
@@ -417,28 +420,28 @@ class _GalleryPhotoViewerScreenState
                 startIndex: _index,
               );
             },
-            icon: const Icon(Icons.play_arrow_rounded),
+            icon: const Icon(LucideIcons.play),
           ),
         if (attachmentId != null)
           IconButton(
             tooltip: 'Поделиться',
             onPressed: () => _shareCurrent(context),
-            icon: const Icon(Icons.share_outlined),
+            icon: const Icon(LucideIcons.share),
           ),
         if (threadId != null && chatAsInt(_photo['message_id']) != null)
           IconButton(
             tooltip: 'Переслать',
             onPressed: _forwardCurrent,
-            icon: const Icon(Icons.forward_outlined),
+            icon: const Icon(LucideIcons.forward),
           ),
         if (threadId != null && attachmentId != null && !_isVideo)
           IconButton(
             tooltip: 'Кто на фото',
             onPressed: () => _openFaceTagging(context, ref),
-            icon: const Icon(Icons.face_outlined),
+            icon: const Icon(LucideIcons.scan_face),
           ),
         PopupMenuButton<String>(
-          icon: const Icon(Icons.more_vert),
+          icon: const Icon(LucideIcons.ellipsis_vertical),
           onSelected: (value) async {
             switch (value) {
               case 'faces':
@@ -469,7 +472,7 @@ class _GalleryPhotoViewerScreenState
         final p = _photos[i];
         final tid = p['thread_id'];
         if (tid is! int) {
-          return const Icon(Icons.broken_image_outlined,
+          return const Icon(LucideIcons.image_off,
               color: Colors.white54, size: 48);
         }
         final pageAttachmentId = chatAsInt(p['id']);
@@ -561,8 +564,8 @@ class _GalleryPhotoViewerScreenState
                         children: [
                           Icon(
                             _commentsExpanded
-                                ? Icons.keyboard_arrow_down
-                                : Icons.keyboard_arrow_up,
+                                ? LucideIcons.chevron_down
+                                : LucideIcons.chevron_up,
                             size: 18,
                             color: Colors.white70,
                           ),
@@ -580,7 +583,7 @@ class _GalleryPhotoViewerScreenState
                                     style: const TextStyle(fontSize: 16),
                                   )
                                 : const Icon(
-                                    Icons.add_reaction_outlined,
+                                    LucideIcons.face_slightly_smiling_plus,
                                     size: 18,
                                     color: Colors.white70,
                                   ),

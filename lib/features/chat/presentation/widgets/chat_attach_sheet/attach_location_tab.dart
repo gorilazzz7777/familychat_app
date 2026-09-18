@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:geolocator/geolocator.dart';
 
 import '../../../data/chat_location_utils.dart';
@@ -126,7 +128,7 @@ class _AttachLocationTabState extends State<AttachLocationTab> {
         ListTile(
           leading: CircleAvatar(
             backgroundColor: theme.colorScheme.primary,
-            child: Icon(Icons.my_location, color: theme.colorScheme.onPrimary),
+            child: Icon(LucideIcons.locate, color: theme.colorScheme.onPrimary),
           ),
           title: const Text('Отправить свою геопозицию'),
           subtitle: _userPoint == null

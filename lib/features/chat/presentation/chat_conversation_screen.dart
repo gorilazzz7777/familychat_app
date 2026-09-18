@@ -5,6 +5,8 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -27,6 +29,7 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/share/share_direct_target_service.dart';
 import '../../../core/theme/appearance_prefs.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/face_tagging_sheet.dart';
@@ -277,6 +280,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   bool get _isDm => widget.kind == 'dm' || widget.kind == 'friend_dm';
 
+  bool get _isSaved => widget.kind == 'saved';
+
   bool get _isFriendDm => widget.kind == 'friend_dm';
 
   bool get _canUseSpeak => _viewerIndividualPremium && _isDm;
@@ -343,6 +348,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
     ChatScheduledSendService.instance.addListener(_onScheduledSend);
     unawaited(ChatWsTextSend.ensureConnection());
+    unawaited(
+      ShareDirectTargetService.recordConversationUse(
+        threadId: widget.threadId,
+        title: widget.title,
+      ),
+    );
   }
 
   void _onScheduledSend() {
@@ -2397,6 +2408,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       );
       if (label.isNotEmpty) return label;
     }
+    if (_isSaved) return 'Только вы';
     if (_isGroupLike && !_hasLeft && _participantUserIds.isNotEmpty) {
       return chatParticipantCountLabel(_participantUserIds.length);
     }
@@ -6271,20 +6283,20 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                 leading: IconButton(
                   tooltip: 'Отменить выбор',
                   onPressed: _exitSelection,
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(LucideIcons.x),
                 ),
                 actions: [
                   IconButton(
                     tooltip: 'Удалить',
                     onPressed:
                         _hasDeletableSelection ? _deleteSelected : null,
-                    icon: const Icon(Icons.delete_outline),
+                    icon: const Icon(LucideIcons.trash),
                   ),
                   IconButton(
                     tooltip: 'Скопировать',
                     onPressed:
                         _selectedMessageIds.isEmpty ? null : _copySelected,
-                    icon: const Icon(Icons.copy),
+                    icon: const Icon(LucideIcons.copy),
                   ),
                 ],
               )
@@ -6293,16 +6305,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                   onTap: _openInfo,
                   child: Row(
                     children: [
-                      ChatAvatar(
-                        name: _title,
-                        avatarUrl: _headerAvatarUrl,
-                        userId: widget.peerUserId,
-                        assetPath: chatThreadAvatarAsset(
-                          kind: widget.kind,
-                          isBirthdayCelebration: _isBirthdayCelebration,
+                      if (_isSaved)
+                        const SavedMessagesAvatar(radius: 20)
+                      else
+                        ChatAvatar(
+                          name: _title,
+                          avatarUrl: _headerAvatarUrl,
+                          userId: widget.peerUserId,
+                          assetPath: chatThreadAvatarAsset(
+                            kind: widget.kind,
+                            isBirthdayCelebration: _isBirthdayCelebration,
+                          ),
+                          radius: 20,
                         ),
-                        radius: 20,
-                      ),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Column(
@@ -6343,7 +6358,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                     IconButton(
                       tooltip: 'Звонок',
                       onPressed: () => _startOutgoingCall(),
-                      icon: const Icon(Icons.call_outlined),
+                      icon: const Icon(LucideIcons.phone),
                     ),
                   PopupMenuButton<String>(
                     tooltip: 'Ещё',
@@ -6362,7 +6377,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                           value: 'video',
                           child: ListTile(
                             contentPadding: EdgeInsets.zero,
-                            leading: Icon(Icons.videocam_outlined),
+                            leading: Icon(LucideIcons.video),
                             title: Text('Видеозвонок'),
                           ),
                         ),
@@ -6370,7 +6385,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                         value: 'search',
                         child: ListTile(
                           contentPadding: EdgeInsets.zero,
-                          leading: Icon(Icons.search),
+                          leading: Icon(LucideIcons.search),
                           title: Text('Поиск'),
                         ),
                       ),
@@ -6388,7 +6403,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.logout, size: 48),
+                        const Icon(LucideIcons.log_out, size: 48),
                         const SizedBox(height: 16),
                         Text(
                           widget.kind == 'family'
@@ -6600,7 +6615,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                     canToggleVoiceTranscript:
                                         _viewerIndividualPremium,
                                     isGroupLike: _isGroupLike,
-                                    readStatus: isMine
+                                    readStatus: isMine && !_isSaved
                                         ? m['read_status']?.toString() ??
                                             (m['_scheduled'] == true
                                                 ? 'scheduled'
@@ -6832,7 +6847,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         ? null
                                         : () => unawaited(_speakSelected()),
                                 child: const Icon(
-                                  Icons.record_voice_over_outlined,
+                                  LucideIcons.audio_lines,
                                 ),
                               ),
                             ),
@@ -6850,7 +6865,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                   );
                                   if (msg != null) _startReply(msg);
                                 },
-                                child: const Icon(Icons.reply_outlined),
+                                child: const Icon(LucideIcons.reply),
                               ),
                             ),
                           ),
@@ -6863,7 +6878,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               onPressed: _selectedMessageIds.isEmpty
                                   ? null
                                   : _forwardSelected,
-                              child: const Icon(Icons.forward_outlined),
+                              child: const Icon(LucideIcons.forward),
                             ),
                           ),
                         ),
@@ -6918,7 +6933,7 @@ class _ChatScrollToBottomButton extends StatelessWidget {
             ],
           ),
           child: Icon(
-            Icons.keyboard_arrow_down_rounded,
+            LucideIcons.chevron_down,
             size: 30,
             color: cs.onSurface.withValues(alpha: 0.9),
           ),

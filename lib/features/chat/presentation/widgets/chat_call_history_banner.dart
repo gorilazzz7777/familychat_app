@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:intl/intl.dart';
 
 class ChatCallHistoryBanner extends StatelessWidget {
@@ -87,26 +89,26 @@ class ChatCallHistoryBanner extends StatelessWidget {
     if (_isVideo) {
       switch (_result) {
         case 'completed':
-          return _isOutgoing ? Icons.videocam : Icons.videocam_outlined;
+          return _isOutgoing ? LucideIcons.video : LucideIcons.video;
         case 'missed':
-          return Icons.missed_video_call_outlined;
+          return LucideIcons.video_off;
         case 'declined':
         case 'cancelled':
-          return Icons.videocam_off_outlined;
+          return LucideIcons.video_off;
         default:
-          return Icons.videocam_outlined;
+          return LucideIcons.video;
       }
     }
     switch (_result) {
       case 'completed':
-        return _isOutgoing ? Icons.call_made : Icons.call_received;
+        return _isOutgoing ? LucideIcons.phone_outgoing : LucideIcons.phone_incoming;
       case 'missed':
-        return Icons.phone_missed;
+        return LucideIcons.phone_missed;
       case 'declined':
       case 'cancelled':
-        return Icons.phone_disabled_outlined;
+        return LucideIcons.phone_off;
       default:
-        return Icons.call_outlined;
+        return LucideIcons.phone;
     }
   }
 
@@ -187,7 +189,7 @@ class ChatCallHistoryBanner extends StatelessWidget {
                       visualDensity: VisualDensity.compact,
                       onPressed: onRedial,
                       icon: Icon(
-                        _isVideo ? Icons.videocam : Icons.phone_callback,
+                        _isVideo ? LucideIcons.video : LucideIcons.phone_incoming,
                         color: cs.primary,
                       ),
                     ),

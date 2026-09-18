@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
@@ -221,8 +223,8 @@ class _CalendarStagingReviewScreenState
                                 left: 4,
                                 child: Icon(
                                   selected
-                                      ? Icons.check_circle
-                                      : Icons.circle_outlined,
+                                      ? LucideIcons.circle_check
+                                      : LucideIcons.circle,
                                   color: selected
                                       ? Theme.of(context).colorScheme.primary
                                       : Colors.white,
@@ -237,7 +239,7 @@ class _CalendarStagingReviewScreenState
                                 child: IconButton(
                                   visualDensity: VisualDensity.compact,
                                   icon: const Icon(
-                                    Icons.delete_outline,
+                                    LucideIcons.trash,
                                     color: Colors.white,
                                     shadows: [
                                       Shadow(

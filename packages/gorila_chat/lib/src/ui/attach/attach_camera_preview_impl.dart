@@ -1,5 +1,6 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 class AttachCameraPreviewImpl extends StatefulWidget {
   const AttachCameraPreviewImpl({super.key});
@@ -60,7 +61,7 @@ class _AttachCameraPreviewImplState extends State<AttachCameraPreviewImpl> {
       return const ColoredBox(
         color: Colors.black87,
         child: Center(
-          child: Icon(Icons.camera_alt_outlined, color: Colors.white54),
+          child: Icon(LucideIcons.camera, color: Colors.white54),
         ),
       );
     }

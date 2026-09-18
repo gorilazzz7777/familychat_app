@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/shell_nav_bar.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/settings/app_settings_controller.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
@@ -17,6 +19,7 @@ import '../data/chat_realtime_utils.dart';
 import '../data/familychat_realtime.dart';
 import '../data/chat_sync_service.dart';
 import '../../../core/local_db/chat_local_store.dart';
+import '../../../core/share/share_direct_target_service.dart';
 import 'chat_conversation_screen.dart';
 import 'chat_thread_avatars.dart';
 import 'create_group_screen.dart';
@@ -322,6 +325,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       if (!same) _threads = sorted;
       _loading = nextLoading;
     });
+    unawaited(
+      ShareDirectTargetService.syncFromThreads(
+        sorted,
+        memberByUserId: _memberByUserId,
+      ),
+    );
   }
 
   void _applyMembers(List<Map<String, dynamic>> members) {
@@ -406,6 +415,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         _applyMembers(members);
         _loading = false;
       });
+      unawaited(
+        ShareDirectTargetService.syncFromThreads(
+          sorted,
+          memberByUserId: _memberByUserId,
+        ),
+      );
       unawaited(ChatOfflineSync.instance.refreshOnline(repo));
     } catch (_) {
       if (!mounted || gen != _threadsEnrichGen) return;
@@ -457,7 +472,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   List<Map<String, dynamic>> _sortedThreads(List<Map<String, dynamic>> threads) {
     final sorted = List<Map<String, dynamic>>.from(threads);
-    sorted.sort((a, b) => _lastActivityAt(b).compareTo(_lastActivityAt(a)));
+    sorted.sort((a, b) {
+      final aSaved = isSavedMessagesThread(a['kind']?.toString()) ? 0 : 1;
+      final bSaved = isSavedMessagesThread(b['kind']?.toString()) ? 0 : 1;
+      if (aSaved != bSaved) return aSaved.compareTo(bSaved);
+      return _lastActivityAt(b).compareTo(_lastActivityAt(a));
+    });
     return sorted;
   }
 
@@ -476,7 +496,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     return switch (filter) {
       _ChatFilter.all => true,
       _ChatFilter.family => kind == 'family' || _isBirthdayCelebration(thread),
-      _ChatFilter.dm => kind == 'dm',
+      _ChatFilter.dm => kind == 'dm' || kind == 'saved',
       _ChatFilter.group => kind == 'group' && !_isBirthdayCelebration(thread),
       _ChatFilter.friends => kind == 'friend_dm',
     };
@@ -573,13 +593,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.group_add_outlined),
+              leading: const Icon(LucideIcons.user_plus),
               title: const Text('Группа'),
               onTap: () => Navigator.pop(ctx, 'group'),
             ),
             if (hasIndividualPremium)
               ListTile(
-                leading: const Icon(Icons.person_add_alt_1_outlined),
+                leading: const Icon(LucideIcons.user_plus),
                 title: const Text('Контакт'),
                 subtitle: const Text('Личный чат вне семьи'),
                 onTap: () => Navigator.pop(ctx, 'contact'),
@@ -615,7 +635,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     final filtered = _filteredBy(filter);
     final listPadding = EdgeInsets.only(
       top: _ChatFilterTabBar.overlayExtent,
-      bottom: ShellNavBar.contentBottomInset(context),
+      bottom: ShellNavBar.contentBottomInset(
+        context,
+        showLabels: ref.watch(appSettingsProvider).menuLabels,
+      ),
     );
 
     if (_loading) {
@@ -643,7 +666,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 final title = t['title']?.toString() ?? 'Чат';
                 final unread = chatAsInt(t['unread_count']) ?? 0;
                 final last = t['last_message'] as Map<String, dynamic>?;
-                final lastStatus = _lastMessageReadStatus(last);
+                final isSaved = isSavedMessagesThread(t['kind']?.toString());
+                final lastStatus =
+                    isSaved ? null : _lastMessageReadStatus(last);
                 final created = last != null
                     ? DateTime.tryParse(last['created_at']?.toString() ?? '')
                     : null;
@@ -664,13 +689,17 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
                 return ListTile(
                   key: ValueKey(t['id']),
-                  leading: ChatAvatar(
-                    name: _avatarName(t),
-                    avatarUrl: avatarAsset != null ? null : _dmAvatarUrl(t),
-                    userId: avatarAsset != null ? null : _dmPeerUserId(t),
-                    assetPath: avatarAsset,
-                    radius: 24,
-                  ),
+                  leading: isSaved
+                      ? const SavedMessagesAvatar(radius: 24)
+                      : ChatAvatar(
+                          name: _avatarName(t),
+                          avatarUrl:
+                              avatarAsset != null ? null : _dmAvatarUrl(t),
+                          userId:
+                              avatarAsset != null ? null : _dmPeerUserId(t),
+                          assetPath: avatarAsset,
+                          radius: 24,
+                        ),
                   title: Text(
                     title,
                     maxLines: 1,
@@ -757,12 +786,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.search),
+            icon: const Icon(LucideIcons.search),
             tooltip: 'Поиск',
             onPressed: toggleSearch,
           ),
           IconButton(
-            icon: const Icon(Icons.add),
+            icon: const Icon(LucideIcons.plus),
             tooltip: 'Создать',
             onPressed: _onCreatePressed,
           ),
@@ -778,14 +807,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 autofocus: true,
                 decoration: InputDecoration(
                   hintText: 'Поиск по названию чата',
-                  prefixIcon: const Icon(Icons.search),
+                  prefixIcon: const Icon(LucideIcons.search),
                   suffixIcon: _searchQuery.isNotEmpty
                       ? IconButton(
                           onPressed: () {
                             _searchController.clear();
                             setState(() => _searchQuery = '');
                           },
-                          icon: const Icon(Icons.clear),
+                          icon: const Icon(LucideIcons.x),
                         )
                       : null,
                   isDense: true,

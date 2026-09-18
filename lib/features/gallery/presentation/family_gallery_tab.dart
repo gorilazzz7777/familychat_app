@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
@@ -187,7 +189,7 @@ class FamilyGalleryTabState extends ConsumerState<FamilyGalleryTab>
       floatingActionButton: widget.allowCreateAlbum
           ? FloatingActionButton.extended(
               onPressed: _createAlbum,
-              icon: const Icon(Icons.create_new_folder_outlined),
+              icon: const Icon(LucideIcons.folder_plus),
               label: const Text('Альбом'),
             )
           : null,

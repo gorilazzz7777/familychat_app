@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -258,7 +260,7 @@ class _InviteBody extends StatelessWidget {
         const SizedBox(height: 28),
         FilledButton.icon(
           onPressed: onShare,
-          icon: const Icon(Icons.ios_share_rounded),
+          icon: const Icon(LucideIcons.share),
           label: const Text('Отправить в мессенджер'),
           style: FilledButton.styleFrom(
             minimumSize: const Size.fromHeight(52),

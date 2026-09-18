@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 
@@ -128,7 +130,7 @@ class _CoverBody extends StatelessWidget {
                 )
               else
                 Icon(
-                  Icons.menu_book_rounded,
+                  LucideIcons.book_open,
                   size: avatarRadius.clamp(56, 96),
                   color: const Color(0xFF6B5344).withValues(alpha: 0.75),
                 ),

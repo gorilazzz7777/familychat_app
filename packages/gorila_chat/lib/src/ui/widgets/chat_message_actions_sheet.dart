@@ -1,6 +1,7 @@
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 const kGorilaQuickReactionEmojis = [
   '👍',
@@ -162,7 +163,7 @@ class _ChatMessageActionsSheetBodyState
             ],
             if (widget.canReply)
               ListTile(
-                leading: const Icon(Icons.reply_outlined),
+                leading: const Icon(LucideIcons.reply),
                 title: const Text('Ответить'),
                 onTap: () => Navigator.pop(
                   context,
@@ -171,7 +172,7 @@ class _ChatMessageActionsSheetBodyState
               ),
             if (widget.canEdit)
               ListTile(
-                leading: const Icon(Icons.edit_outlined),
+                leading: const Icon(LucideIcons.pencil),
                 title: const Text('Редактировать'),
                 onTap: () => Navigator.pop(
                   context,
@@ -180,7 +181,7 @@ class _ChatMessageActionsSheetBodyState
               ),
             if (widget.canCopy)
               ListTile(
-                leading: const Icon(Icons.copy_outlined),
+                leading: const Icon(LucideIcons.copy),
                 title: const Text('Копировать'),
                 onTap: () => Navigator.pop(
                   context,
@@ -189,7 +190,7 @@ class _ChatMessageActionsSheetBodyState
               ),
             if (widget.canForward)
               ListTile(
-                leading: const Icon(Icons.forward_outlined),
+                leading: const Icon(LucideIcons.forward),
                 title: const Text('Переслать'),
                 onTap: () => Navigator.pop(
                   context,
@@ -198,7 +199,7 @@ class _ChatMessageActionsSheetBodyState
               ),
             if (widget.canSelect)
               ListTile(
-                leading: const Icon(Icons.checklist_outlined),
+                leading: const Icon(LucideIcons.list_checks),
                 title: const Text('Выбрать'),
                 onTap: () => Navigator.pop(
                   context,
@@ -208,7 +209,7 @@ class _ChatMessageActionsSheetBodyState
             if (widget.canPin)
               ListTile(
                 leading: Icon(
-                  widget.isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                  widget.isPinned ? LucideIcons.pin : LucideIcons.pin,
                 ),
                 title: Text(widget.isPinned ? 'Открепить' : 'Закрепить'),
                 onTap: () => Navigator.pop(
@@ -220,7 +221,7 @@ class _ChatMessageActionsSheetBodyState
               ),
             if (widget.canSpeak)
               ListTile(
-                leading: const Icon(Icons.record_voice_over_outlined),
+                leading: const Icon(LucideIcons.audio_lines),
                 title: const Text('Озвучить'),
                 onTap: () => Navigator.pop(
                   context,
@@ -229,7 +230,7 @@ class _ChatMessageActionsSheetBodyState
               ),
             if (widget.canRetrySend)
               ListTile(
-                leading: const Icon(Icons.refresh),
+                leading: const Icon(LucideIcons.refresh_cw),
                 title: const Text('Повторить отправку'),
                 onTap: () => Navigator.pop(
                   context,
@@ -239,7 +240,7 @@ class _ChatMessageActionsSheetBodyState
             if (widget.canCancelSend)
               ListTile(
                 leading: Icon(
-                  Icons.cancel_schedule_send_outlined,
+                  LucideIcons.calendar_x,
                   color: theme.colorScheme.error,
                 ),
                 title: Text(
@@ -254,7 +255,7 @@ class _ChatMessageActionsSheetBodyState
             if (showDelete)
               ListTile(
                 leading:
-                    Icon(Icons.delete_outline, color: theme.colorScheme.error),
+                    Icon(LucideIcons.trash, color: theme.colorScheme.error),
                 title: Text(
                   'Удалить',
                   style: TextStyle(color: theme.colorScheme.error),
@@ -325,7 +326,7 @@ class _QuickReactionsBar extends StatelessWidget {
                 width: 44,
                 height: 44,
                 child: Icon(
-                  expanded ? Icons.expand_less : Icons.add_reaction_outlined,
+                  expanded ? LucideIcons.chevron_up : LucideIcons.face_slightly_smiling_plus,
                   color: expanded
                       ? theme.colorScheme.onPrimaryContainer
                       : theme.colorScheme.onSurfaceVariant,

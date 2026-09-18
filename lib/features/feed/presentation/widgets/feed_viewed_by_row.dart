@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/providers/app_providers.dart';
@@ -170,7 +172,7 @@ class _FeedViewedByRowState extends ConsumerState<FeedViewedByRow> {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Icon(
-            Icons.visibility_outlined,
+            LucideIcons.eye,
             size: 16,
             color: theme.colorScheme.onSurfaceVariant,
           ),

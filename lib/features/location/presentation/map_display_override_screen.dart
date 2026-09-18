@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
@@ -236,7 +238,7 @@ class _MapDisplayOverrideScreenState
                 child: Row(
                   children: [
                     Icon(
-                      Icons.schedule,
+                      LucideIcons.clock,
                       color: theme.colorScheme.onPrimaryContainer,
                     ),
                     const SizedBox(width: 12),
@@ -317,7 +319,7 @@ class _MapDisplayOverrideScreenState
                                   width: 40,
                                   height: 40,
                                   child: const Icon(
-                                    Icons.location_on,
+                                    LucideIcons.map_pin,
                                     color: Colors.red,
                                     size: 40,
                                   ),
@@ -368,12 +370,12 @@ class _MapDisplayOverrideScreenState
                               } catch (_) {}
                             }
                           },
-                    icon: const Icon(Icons.my_location),
+                    icon: const Icon(LucideIcons.locate),
                   ),
                 IconButton(
                   tooltip: 'Открыть в Яндекс.Картах',
                   onPressed: pick == null ? null : _openInYandex,
-                  icon: const Icon(Icons.open_in_new),
+                  icon: const Icon(LucideIcons.external_link),
                 ),
               ],
             ),

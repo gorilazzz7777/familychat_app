@@ -4,6 +4,8 @@ import 'package:app_links/app_links.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -859,7 +861,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
                 width: 88,
                 height: 88,
                 errorBuilder: (_, __, ___) => Icon(
-                  Icons.favorite_rounded,
+                  LucideIcons.heart,
                   size: 64,
                   color: scheme.primary,
                 ),

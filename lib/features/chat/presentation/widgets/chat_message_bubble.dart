@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -265,7 +267,7 @@ class ChatMessageBubble extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (scheduledAt != null) ...[
-                    Icon(Icons.schedule, size: 13, color: noteMetaColor),
+                    Icon(LucideIcons.clock, size: 13, color: noteMetaColor),
                     const SizedBox(width: 4),
                     Text(
                       timeFmt.format(scheduledAt!.toLocal()),
@@ -337,7 +339,7 @@ class ChatMessageBubble extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (scheduledAt != null) ...[
-                    Icon(Icons.schedule, size: 13, color: stickerMetaColor),
+                    Icon(LucideIcons.clock, size: 13, color: stickerMetaColor),
                     const SizedBox(width: 4),
                     Text(
                       timeFmt.format(scheduledAt!.toLocal()),
@@ -472,7 +474,7 @@ class ChatMessageBubble extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       if (scheduledAt != null) ...[
-                        Icon(Icons.schedule, size: 13, color: metaColor),
+                        Icon(LucideIcons.clock, size: 13, color: metaColor),
                         const SizedBox(width: 4),
                         Text(
                           timeFmt.format(scheduledAt!.toLocal()),
@@ -537,8 +539,8 @@ class ChatMessageBubble extends StatelessWidget {
                         onPressed: onTap,
                         icon: Icon(
                           selected
-                              ? Icons.check_circle
-                              : Icons.circle_outlined,
+                              ? LucideIcons.circle_check
+                              : LucideIcons.circle,
                           color: selected
                               ? theme.colorScheme.primary
                               : theme.colorScheme.outline,
@@ -935,7 +937,7 @@ class _ChatVideoAttachmentPreviewState
               shape: BoxShape.circle,
             ),
             child: const Icon(
-              Icons.play_arrow_rounded,
+              LucideIcons.play,
               color: Colors.white,
               size: 28,
             ),

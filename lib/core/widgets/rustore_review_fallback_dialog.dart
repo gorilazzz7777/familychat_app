@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 const Color _starActive = Color(0xFFFFB300);
 const Color _starInactive = Color(0xFF9E9E9E);
@@ -86,7 +87,7 @@ class _RustoreReviewFallbackDialogState
                       ? null
                       : () => setState(() => _selectedStars = index + 1),
                   icon: Icon(
-                    filled ? Icons.star_rounded : Icons.star_outline_rounded,
+                    filled ? LucideIcons.star : LucideIcons.star,
                     size: 32,
                     color: filled ? _starActive : _starInactive,
                   ),

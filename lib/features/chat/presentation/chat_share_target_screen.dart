@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
@@ -17,6 +19,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/push/push_navigation.dart';
 import '../../../core/push/push_message_handler.dart';
 import 'chat_conversation_screen.dart';
+import 'chat_thread_avatars.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/feed/feed_photo_batch_session.dart';
 import '../../profile/data/album_upload_coordinator.dart';
@@ -128,12 +131,11 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
   }
 
   List<Map<String, dynamic>> get _sortedThreads {
-    if (_favoriteChats.isEmpty) return _threads;
+    final copy = List<Map<String, dynamic>>.from(_threads);
     final rank = {
       for (var i = 0; i < _favoriteChats.length; i++)
         _favoriteChats[i].threadId: i,
     };
-    final copy = List<Map<String, dynamic>>.from(_threads);
     copy.sort((a, b) {
       final aId = chatAsInt(a['id']) ?? 0;
       final bId = chatAsInt(b['id']) ?? 0;
@@ -142,6 +144,9 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
       if (aRank != null && bRank != null) return aRank.compareTo(bRank);
       if (aRank != null) return -1;
       if (bRank != null) return 1;
+      final aSaved = isSavedMessagesThread(a['kind']?.toString()) ? 0 : 1;
+      final bSaved = isSavedMessagesThread(b['kind']?.toString()) ? 0 : 1;
+      if (aSaved != bSaved) return aSaved.compareTo(bSaved);
       return 0;
     });
     return copy;
@@ -666,7 +671,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
                 decoration: InputDecoration(
                   isDense: true,
                   hintText: 'Поиск альбома',
-                  prefixIcon: const Icon(Icons.search, size: 20),
+                  prefixIcon: const Icon(LucideIcons.search, size: 20),
                   contentPadding: const EdgeInsets.symmetric(vertical: 8),
                 ),
                 onChanged: (value) =>
@@ -683,7 +688,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
                     height: 22,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.create_new_folder_outlined),
+                : const Icon(LucideIcons.folder_plus),
           ),
         ],
       ),
@@ -771,7 +776,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
           : ColoredBox(
               color: Theme.of(context).colorScheme.surfaceContainerHighest,
               child: Icon(
-                att.isVideo ? Icons.videocam_outlined : Icons.image_outlined,
+                att.isVideo ? LucideIcons.video : LucideIcons.image,
               ),
             );
       return ClipRRect(
@@ -786,7 +791,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
               if (att.isVideo)
                 const ColoredBox(
                   color: Color(0x33000000),
-                  child: Icon(Icons.play_circle_outline, color: Colors.white),
+                  child: Icon(LucideIcons.circle_play, color: Colors.white),
                 ),
             ],
           ),
@@ -805,7 +810,7 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            att.isAudio ? Icons.mic_none_rounded : Icons.insert_drive_file_outlined,
+            att.isAudio ? LucideIcons.mic : LucideIcons.file,
             size: 22,
           ),
           const SizedBox(height: 4),

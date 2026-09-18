@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../data/chat_send_options.dart';
 import 'chat_send_options_sheet.dart';
@@ -33,7 +34,7 @@ class ChatComposeSendButton extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(8),
           child: Icon(
-            Icons.send_rounded,
+            LucideIcons.send,
             color: theme.colorScheme.primary,
           ),
         ),

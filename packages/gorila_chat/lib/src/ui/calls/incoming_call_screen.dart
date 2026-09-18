@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../calls/call_flow_reporter.dart';
 import '../../contract/chat_call_repository.dart';
@@ -163,13 +164,13 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                 children: [
                   _RoundAction(
                     color: Colors.red,
-                    icon: Icons.call_end,
+                    icon: LucideIcons.phone_off,
                     label: 'Отклонить',
                     onTap: _busy ? null : () => unawaited(_decline()),
                   ),
                   _RoundAction(
                     color: Colors.green,
-                    icon: widget.isVideo ? Icons.videocam : Icons.call,
+                    icon: widget.isVideo ? LucideIcons.video : LucideIcons.phone,
                     label: 'Ответить',
                     onTap: _busy ? null : () => unawaited(_accept()),
                   ),

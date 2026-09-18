@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../data/link_preview_service.dart';
 
@@ -79,12 +80,12 @@ class _ChatLinkPreviewMiniState extends State<ChatLinkPreviewMini> {
                                 },
                           errorWidget: (_, __, ___) => ColoredBox(
                             color: cs.surfaceContainerHigh,
-                            child: Icon(Icons.link, color: cs.primary, size: 22),
+                            child: Icon(LucideIcons.link, color: cs.primary, size: 22),
                           ),
                         )
                       : ColoredBox(
                           color: cs.surfaceContainerHigh,
-                          child: Icon(Icons.link, color: cs.primary, size: 22),
+                          child: Icon(LucideIcons.link, color: cs.primary, size: 22),
                         ),
                 ),
               ),

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:video_player/video_player.dart';
 
 import '../media/local_device_file.dart';
@@ -158,7 +160,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     if (_error != null) {
       return widget.placeholder ??
           const Center(
-            child: Icon(Icons.videocam_off_outlined, color: Colors.white54, size: 48),
+            child: Icon(LucideIcons.video_off, color: Colors.white54, size: 48),
           );
     }
     final controller = _controller;
@@ -190,7 +192,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
             iconSize: 64,
             color: Colors.white.withValues(alpha: 0.92),
             onPressed: _togglePlayback,
-            icon: const Icon(Icons.play_circle_fill),
+            icon: const Icon(LucideIcons.circle_play),
           ),
         if (controller.value.isPlaying)
           GestureDetector(

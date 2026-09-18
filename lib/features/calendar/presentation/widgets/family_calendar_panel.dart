@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
@@ -1329,7 +1331,7 @@ class _ScheduleCalendarPanelState extends State<ScheduleCalendarPanel> {
                           onPressed: _displayYear > _minYear
                               ? () => _goToYear(_displayYear - 1)
                               : null,
-                          icon: const Icon(Icons.chevron_left),
+                          icon: const Icon(LucideIcons.chevron_left),
                           visualDensity: VisualDensity.compact,
                           tooltip: 'Предыдущий год',
                         ),
@@ -1346,7 +1348,7 @@ class _ScheduleCalendarPanelState extends State<ScheduleCalendarPanel> {
                           onPressed: _displayYear < _maxYear
                               ? () => _goToYear(_displayYear + 1)
                               : null,
-                          icon: const Icon(Icons.chevron_right),
+                          icon: const Icon(LucideIcons.chevron_right),
                           visualDensity: VisualDensity.compact,
                           tooltip: 'Следующий год',
                         ),
@@ -1354,14 +1356,14 @@ class _ScheduleCalendarPanelState extends State<ScheduleCalendarPanel> {
                           onPressed: _canZoomOut(viewport)
                               ? () => _stepZoom(zoomIn: false)
                               : null,
-                          icon: const Icon(Icons.remove),
+                          icon: const Icon(LucideIcons.minus),
                           visualDensity: VisualDensity.compact,
                           tooltip: 'Уменьшить масштаб',
                         ),
                         IconButton(
                           onPressed:
                               _canZoomIn() ? () => _stepZoom(zoomIn: true) : null,
-                          icon: const Icon(Icons.add),
+                          icon: const Icon(LucideIcons.plus),
                           visualDensity: VisualDensity.compact,
                           tooltip: 'Увеличить масштаб',
                         ),

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../../core/widgets/family_input_styles.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
@@ -334,7 +335,7 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                   if (!_recording.isRecording)
                     ChatComposeCircleButton(
                       tooltip: 'Вложение',
-                      icon: Icons.attach_file,
+                      icon: LucideIcons.paperclip,
                       iconColor: theme.colorScheme.onSurface,
                       onTap: widget.onAttach,
                     ),

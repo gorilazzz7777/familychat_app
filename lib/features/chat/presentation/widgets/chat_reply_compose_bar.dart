@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'chat_message_quote.dart';
 
@@ -35,7 +36,7 @@ class ChatReplyComposeBar extends StatelessWidget {
             IconButton(
               tooltip: 'Отменить ответ',
               onPressed: onCancel,
-              icon: const Icon(Icons.close),
+              icon: const Icon(LucideIcons.x),
             ),
           ],
         ),

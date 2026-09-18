@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -295,7 +297,7 @@ class _LocationSharingSettingsScreenState
                                           if (mounted) setState(() {});
                                           await _load();
                                         },
-                                  icon: const Icon(Icons.my_location_outlined),
+                                  icon: const Icon(LucideIcons.locate),
                                   label: const Text(
                                     'Разрешить доступ «Всегда»',
                                   ),

@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'chat_emoji_picker_sheet.dart';
 import 'chat_gif_picker_panel.dart';
@@ -228,7 +229,7 @@ class _PickerSearchBar extends StatelessWidget {
                 filled: true,
                 fillColor: cs.surfaceContainerHighest.withValues(alpha: 0.65),
                 prefixIcon: Icon(
-                  Icons.search,
+                  LucideIcons.search,
                   size: 20,
                   color: cs.onSurfaceVariant,
                 ),
@@ -243,7 +244,7 @@ class _PickerSearchBar extends StatelessWidget {
                         ),
                         padding: EdgeInsets.zero,
                         icon: Icon(
-                          Icons.arrow_forward_rounded,
+                          LucideIcons.arrow_right,
                           size: 22,
                           color: cs.primary,
                         ),
@@ -264,7 +265,7 @@ class _PickerSearchBar extends StatelessWidget {
             tooltip: 'Свернуть',
             onPressed: onCollapse,
             icon: Icon(
-              Icons.keyboard_arrow_down_rounded,
+              LucideIcons.chevron_down,
               color: cs.onSurface,
               size: 28,
             ),

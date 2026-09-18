@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:latlong2/latlong.dart';
@@ -232,13 +234,13 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
               onPressed: _openMapDisplaySettings,
               icon: Badge(
                 isLabelVisible: _mapOverride != null,
-                child: const Icon(Icons.tune),
+                child: const Icon(LucideIcons.sliders_horizontal),
               ),
             ),
           IconButton(
             tooltip: 'Обновить',
             onPressed: _loading ? null : _load,
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(LucideIcons.refresh_cw),
           ),
           IconButton(
             tooltip: 'Кто меня видит',
@@ -250,7 +252,7 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
               );
               if (mounted) unawaited(_load());
             },
-            icon: const Icon(Icons.share_location_outlined),
+            icon: const Icon(LucideIcons.map_pin),
           ),
         ],
       ),
@@ -285,7 +287,7 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
                             child: Row(
                               children: [
                                 Icon(
-                                  Icons.pin_drop_outlined,
+                                  LucideIcons.map_pin,
                                   color: theme.colorScheme.onSecondaryContainer,
                                 ),
                                 const SizedBox(width: 10),
@@ -300,7 +302,7 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
                                   ),
                                 ),
                                 Icon(
-                                  Icons.chevron_right,
+                                  LucideIcons.chevron_right,
                                   color: theme.colorScheme.onSecondaryContainer,
                                 ),
                               ],
@@ -457,7 +459,7 @@ class _FamilyMapScreenState extends ConsumerState<FamilyMapScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.map_outlined,
+              LucideIcons.map,
               size: 48,
               color: theme.colorScheme.onSurfaceVariant,
             ),

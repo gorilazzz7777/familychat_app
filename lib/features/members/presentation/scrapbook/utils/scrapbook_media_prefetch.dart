@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../../../core/cache/familychat_media_cache.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
@@ -106,7 +107,7 @@ class ScrapbookCachedPhoto extends StatelessWidget {
         errorBuilder: (_, __, ___) => const ColoredBox(
           color: _paper,
           child: Center(
-            child: Icon(Icons.broken_image_outlined, color: Color(0xFF8B7355)),
+            child: Icon(LucideIcons.image_off, color: Color(0xFF8B7355)),
           ),
         ),
       );
@@ -129,7 +130,7 @@ class ScrapbookCachedPhoto extends StatelessWidget {
       errorWidget: (_, __, ___) => const ColoredBox(
         color: _paper,
         child: Center(
-          child: Icon(Icons.broken_image_outlined, color: Color(0xFF8B7355)),
+          child: Icon(LucideIcons.image_off, color: Color(0xFF8B7355)),
         ),
       ),
       imageBuilder: (context, imageProvider) {

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -676,7 +678,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
                   flex: 2,
                   child: FilledButton.tonalIcon(
                     onPressed: _webPickGallery,
-                    icon: const Icon(Icons.photo_library_outlined),
+                    icon: const Icon(LucideIcons.images),
                     label: const Text('Выбрать из галереи'),
                   ),
                 ),
@@ -723,7 +725,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
             children: [
               TextButton.icon(
                 onPressed: _pickAlbum,
-                icon: const Icon(Icons.arrow_drop_down),
+                icon: const Icon(LucideIcons.chevron_down),
                 label: Text(
                   _album == null
                       ? 'Галерея'
@@ -907,7 +909,7 @@ class _AssetThumbState extends State<_AssetThumb> {
             const Positioned(
               left: 6,
               bottom: 6,
-              child: Icon(Icons.play_circle_fill, color: Colors.white, size: 20),
+              child: Icon(LucideIcons.circle_play, color: Colors.white, size: 20),
             ),
           if (widget.alreadyInAlbum)
             const Positioned(
@@ -1037,7 +1039,7 @@ class _AlbumPickerTile extends StatelessWidget {
                       return ColoredBox(
                         color: theme.colorScheme.surfaceContainerHighest,
                         child: Icon(
-                          Icons.photo_library_outlined,
+                          LucideIcons.images,
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
                       );
@@ -1083,7 +1085,7 @@ class _AlbumPickerTile extends StatelessWidget {
               ),
             ),
             if (selected)
-              Icon(Icons.check, color: theme.colorScheme.primary),
+              Icon(LucideIcons.check, color: theme.colorScheme.primary),
           ],
         ),
       ),

@@ -1,6 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'attach_media_utils.dart';
 import 'chat_attach_l10n.dart';
@@ -65,7 +66,7 @@ class _AttachFileTabState extends State<AttachFileTab> {
         ListTile(
           leading: CircleAvatar(
             backgroundColor: scheme.primaryContainer,
-            child: Icon(Icons.folder_open_outlined, color: scheme.primary),
+            child: Icon(LucideIcons.folder_open, color: scheme.primary),
           ),
           title: Text(ChatAttachL10n.of(context).pickFile),
           subtitle: Text(
@@ -79,7 +80,7 @@ class _AttachFileTabState extends State<AttachFileTab> {
                   height: 22,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.chevron_right),
+              : const Icon(LucideIcons.chevron_right),
           onTap: _picking ? null : _pick,
         ),
         if (widget.selected.isNotEmpty) ...[

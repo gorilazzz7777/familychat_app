@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
@@ -162,10 +164,10 @@ class _NotificationSettingsScreenState
             if (!settings.canQuietHours)
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.lock_outline),
+                leading: const Icon(LucideIcons.lock),
                 title: const Text('Тихие часы'),
                 subtitle: const Text('Доступно в Premium'),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: const Icon(LucideIcons.chevron_right),
                 onTap: _showPremiumDialog,
               )
             else ...[
@@ -186,7 +188,7 @@ class _NotificationSettingsScreenState
                       children: [
                         IconButton(
                           tooltip: 'Изменить',
-                          icon: const Icon(Icons.edit_outlined),
+                          icon: const Icon(LucideIcons.pencil),
                           onPressed: _busy
                               ? null
                               : () => _editPeriod(
@@ -196,7 +198,7 @@ class _NotificationSettingsScreenState
                         ),
                         IconButton(
                           tooltip: 'Удалить',
-                          icon: const Icon(Icons.delete_outline),
+                          icon: const Icon(LucideIcons.trash),
                           onPressed:
                               _busy ? null : () => _removePeriod(i),
                         ),
@@ -208,7 +210,7 @@ class _NotificationSettingsScreenState
                 alignment: Alignment.centerLeft,
                 child: TextButton.icon(
                   onPressed: _busy ? null : () => _editPeriod(),
-                  icon: const Icon(Icons.add),
+                  icon: const Icon(LucideIcons.plus),
                   label: const Text('Добавить период'),
                 ),
               ),

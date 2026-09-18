@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:google_fonts/google_fonts.dart';
 import 'package:video_player/video_player.dart';
 
@@ -859,7 +861,7 @@ class AgedMediaFrame extends StatelessWidget {
                 if (isVideo)
                   const Center(
                     child: Icon(
-                      Icons.play_circle_fill,
+                      LucideIcons.circle_play,
                       color: Colors.white,
                       size: 36,
                       shadows: [

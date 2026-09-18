@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -134,6 +136,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       (widget.kind == 'dm' || widget.kind == 'friend_dm') &&
       widget.peerUserId != null;
 
+  bool get _isSaved => widget.kind == 'saved';
+
   bool get _hasHeaderNetworkPhoto {
     final url = _headerAvatarUrl?.trim();
     return url != null && url.isNotEmpty;
@@ -190,7 +194,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     return ColoredBox(
       color: Theme.of(context).colorScheme.surfaceContainerLow,
       child: Icon(
-        Icons.image_not_supported_outlined,
+        LucideIcons.image_off,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
     );
@@ -292,6 +296,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
             peerProfile,
             preciseLastSeen: widget.viewerIndividualPremium,
           ).label;
+        } else if (_isSaved) {
+          _headerSubtitle = 'Только вы';
         } else if (_showParticipants && participants.isNotEmpty) {
           _headerSubtitle = chatParticipantCountLabel(participants.length);
         }
@@ -694,25 +700,25 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           children: [
             if (widget.canRejoin)
               ListTile(
-                leading: const Icon(Icons.login),
+                leading: const Icon(LucideIcons.log_in),
                 title: const Text('Вернуться в чат'),
                 onTap: () => Navigator.pop(ctx, 'rejoin'),
               ),
             if (widget.canLeave && !widget.hasLeft)
               ListTile(
-                leading: const Icon(Icons.logout),
+                leading: const Icon(LucideIcons.log_out),
                 title: const Text('Покинуть чат'),
                 onTap: () => Navigator.pop(ctx, 'leave'),
               ),
             if (widget.kind == 'group' && !widget.hasLeft)
               ListTile(
-                leading: const Icon(Icons.person_add_outlined),
+                leading: const Icon(LucideIcons.user_plus),
                 title: const Text('Добавить участников'),
                 onTap: () => Navigator.pop(ctx, 'add'),
               ),
             if (widget.kind == 'friend_dm' && widget.peerUserId != null)
               ListTile(
-                leading: const Icon(Icons.person_remove_outlined),
+                leading: const Icon(LucideIcons.user_minus),
                 title: const Text('Удалить из контактов'),
                 onTap: () => Navigator.pop(ctx, 'hide_friend'),
               ),
@@ -915,7 +921,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 radius: 24,
               ),
               title: Text(name),
-              trailing: const Icon(Icons.chevron_right, size: 20),
+              trailing: const Icon(LucideIcons.chevron_right, size: 20),
               onTap: () => _openParticipantProfile(userId),
             );
           },
@@ -1013,13 +1019,13 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           children: [
             if (onOpen != null)
               ListTile(
-                leading: const Icon(Icons.open_in_new),
+                leading: const Icon(LucideIcons.external_link),
                 title: Text(title),
                 onTap: () => Navigator.pop(ctx, 'open'),
               ),
             if (messageId != null && widget.onGoToMessage != null)
               ListTile(
-                leading: const Icon(Icons.reply_outlined),
+                leading: const Icon(LucideIcons.reply),
                 title: const Text('Перейти к сообщению'),
                 onTap: () => Navigator.pop(ctx, 'goto'),
               ),
@@ -1115,13 +1121,16 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 if (!_hasExpandedHeaderPhoto) ...[
-                  ChatAvatar(
-                    name: _title,
-                    avatarUrl: _headerAvatarUrl,
-                    userId: widget.peerUserId,
-                    assetPath: _headerAvatarAsset,
-                    radius: 44,
-                  ),
+                  if (_isSaved)
+                    const SavedMessagesAvatar(radius: 44)
+                  else
+                    ChatAvatar(
+                      name: _title,
+                      avatarUrl: _headerAvatarUrl,
+                      userId: widget.peerUserId,
+                      assetPath: _headerAvatarAsset,
+                      radius: 44,
+                    ),
                   const SizedBox(height: 10),
                 ],
                 _buildNameRow(context),
@@ -1133,7 +1142,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
               top: 0,
               right: 0,
               child: IconButton(
-                icon: const Icon(Icons.more_vert),
+                icon: const Icon(LucideIcons.ellipsis_vertical),
                 onPressed: _showMoreMenu,
               ),
             ),
@@ -1170,18 +1179,19 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 textAlign: TextAlign.center,
               ),
             ),
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              icon: Icon(
-                Icons.edit_outlined,
-                size: 20,
-                color: theme.colorScheme.primary,
+            if (!_isSaved)
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                icon: Icon(
+                  LucideIcons.pencil,
+                  size: 20,
+                  color: theme.colorScheme.primary,
+                ),
+                tooltip: 'Переименовать',
+                onPressed: _renameChat,
               ),
-              tooltip: 'Переименовать',
-              onPressed: _renameChat,
-            ),
           ],
         ),
         if (_headerSubtitle != null)
@@ -1269,7 +1279,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                   right: 0,
                   child: IconButton(
                     icon: Icon(
-                      Icons.more_vert,
+                      LucideIcons.ellipsis_vertical,
                       color: _hasExpandedHeaderPhoto && t < 0.45
                           ? Colors.white
                           : theme.colorScheme.onSurface,
@@ -1307,15 +1317,15 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           _TgProfileAction(
-            icon: Icons.chat_bubble_outline,
+            icon: LucideIcons.message_circle,
             tooltip: 'Чат',
             onTap: () => Navigator.of(context).pop(),
           ),
           const SizedBox(width: 10),
           _TgProfileAction(
             icon: (_notificationsEnabled && !_hasQuietHoursSchedule)
-                ? Icons.notifications_outlined
-                : Icons.notifications_off_outlined,
+                ? LucideIcons.bell
+                : LucideIcons.bell_off,
             tooltip: 'Звук',
             onTap: () {
               if (!_notificationsEnabled && !_hasQuietHoursSchedule) {
@@ -1328,13 +1338,13 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
           if (_isDm) ...[
             const SizedBox(width: 10),
             _TgProfileAction(
-              icon: Icons.call_outlined,
+              icon: LucideIcons.phone,
               tooltip: 'Аудиозвонок',
               onTap: () => _startCall(),
             ),
             const SizedBox(width: 10),
             _TgProfileAction(
-              icon: Icons.videocam_outlined,
+              icon: LucideIcons.video,
               tooltip: 'Видеозвонок',
               onTap: () => _startCall(isVideo: true),
             ),

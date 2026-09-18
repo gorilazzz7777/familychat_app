@@ -1,7 +1,11 @@
 import 'dart:async';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+
+import 'package:flutter_lucide/flutter_lucide.dart';
+
+import 'package:dio/dio.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
@@ -324,7 +328,7 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
                     border: Border.all(color: const Color(0x44FFFFFF)),
                   ),
                   child: const Icon(
-                    Icons.menu_book_rounded,
+                    LucideIcons.book_open,
                     color: Color(0xFFF5E6D3),
                     size: 28,
                   ),
@@ -353,7 +357,7 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
                   ),
                 ),
                 const Icon(
-                  Icons.menu_book_outlined,
+                  LucideIcons.book_open,
                   color: Color(0xCCF5E6D3),
                 ),
               ],
@@ -508,7 +512,7 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
             decoration: InputDecoration(
               hintText: 'Поиск по названию',
               isDense: true,
-              prefixIcon: const Icon(Icons.search, size: 20),
+              prefixIcon: const Icon(LucideIcons.search, size: 20),
               prefixIconConstraints: const BoxConstraints(
                 minWidth: 40,
                 minHeight: 36,
@@ -521,7 +525,7 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
                         _milestoneSearchCtrl.clear();
                         _milestoneQuery = '';
                       }),
-                      icon: const Icon(Icons.close, size: 18),
+                      icon: const Icon(LucideIcons.x, size: 18),
                     ),
               filled: true,
               fillColor:
@@ -651,7 +655,7 @@ class _ChildProfileScreenState extends ConsumerState<ChildProfileScreen>
               onPressed: () => unawaited(
                 _galleryKey.currentState?.createAlbum() ?? Future<void>.value(),
               ),
-              icon: const Icon(Icons.add),
+              icon: const Icon(LucideIcons.plus),
             ),
         ],
       ),
@@ -733,47 +737,47 @@ IconData _milestoneIconFor(Map<String, dynamic> milestone) {
   switch (code) {
     case 'from_hospital':
     case 'home_from_hospital':
-      return Icons.home_outlined;
+      return LucideIcons.house;
     case 'first_smile':
-      return Icons.sentiment_satisfied_alt_outlined;
+      return LucideIcons.face_slightly_smiling;
     case 'first_laugh':
-      return Icons.emoji_emotions_outlined;
+      return LucideIcons.face_slightly_smiling;
     case 'first_sound':
-      return Icons.record_voice_over_outlined;
+      return LucideIcons.audio_lines;
     case 'holds_head':
-      return Icons.accessibility_new_outlined;
+      return LucideIcons.accessibility;
     case 'first_tooth':
-      return Icons.medical_services_outlined;
+      return LucideIcons.stethoscope;
     case 'rolls_over':
-      return Icons.autorenew_rounded;
+      return LucideIcons.refresh_cw;
     case 'sits':
-      return Icons.event_seat_outlined;
+      return LucideIcons.armchair;
     case 'crawls':
-      return Icons.pets_outlined;
+      return LucideIcons.paw_print;
     case 'first_word':
-      return Icons.chat_bubble_outline;
+      return LucideIcons.message_circle;
     case 'stands':
-      return Icons.boy_outlined;
+      return LucideIcons.user;
     case 'first_steps':
-      return Icons.directions_walk_outlined;
+      return LucideIcons.footprints;
     case 'first_birthday':
-      return Icons.celebration_outlined;
+      return LucideIcons.party_popper;
     case 'age_year_1':
-      return Icons.cake_outlined;
+      return LucideIcons.cake;
   }
   final title = (milestone['title']?.toString() ?? '').toLowerCase();
-  if (title.contains('улыб')) return Icons.sentiment_satisfied_alt_outlined;
-  if (title.contains('смех')) return Icons.emoji_emotions_outlined;
+  if (title.contains('улыб')) return LucideIcons.face_slightly_smiling;
+  if (title.contains('смех')) return LucideIcons.face_slightly_smiling;
   if (title.contains('звук') || title.contains('голос')) {
-    return Icons.record_voice_over_outlined;
+    return LucideIcons.audio_lines;
   }
   if (title.contains('роддом') ||
       title.contains('выпис') ||
       title.contains('выезд') ||
       title.contains('дом')) {
-    return Icons.home_outlined;
+    return LucideIcons.house;
   }
-  return Icons.flag_outlined;
+  return LucideIcons.flag;
 }
 
 class _AheadMilestoneCard extends StatelessWidget {
@@ -820,7 +824,7 @@ class _AheadMilestoneCard extends StatelessWidget {
                         top: 0,
                         right: 0,
                         child: Icon(
-                          Icons.schedule,
+                          LucideIcons.clock,
                           size: 14,
                           color: theme.colorScheme.tertiary,
                         ),
@@ -876,7 +880,7 @@ class _AchievedMilestoneCard extends StatelessWidget {
                   ? FamilyPublicImage(url: cover, fit: BoxFit.cover)
                   : Center(
                       child: Icon(
-                        Icons.check_circle,
+                        LucideIcons.circle_check,
                         color: theme.colorScheme.primary,
                         size: 36,
                       ),

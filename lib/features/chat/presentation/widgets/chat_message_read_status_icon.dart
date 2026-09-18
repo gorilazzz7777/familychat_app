@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 /// Статус своего сообщения: отправка / отправлено / прочитано.
 class ChatMessageReadStatusIcon extends StatelessWidget {
@@ -20,7 +21,7 @@ class ChatMessageReadStatusIcon extends StatelessWidget {
         label: 'Отправляется',
         child: Tooltip(
           message: 'Отправляется',
-          child: Icon(Icons.schedule, size: size, color: color),
+          child: Icon(LucideIcons.clock, size: size, color: color),
         ),
       );
     }
@@ -30,7 +31,7 @@ class ChatMessageReadStatusIcon extends StatelessWidget {
         label: 'Отложенная отправка',
         child: Tooltip(
           message: 'Отложенная отправка',
-          child: Icon(Icons.schedule_send, size: size, color: color),
+          child: Icon(LucideIcons.calendar_clock, size: size, color: color),
         ),
       );
     }
@@ -41,7 +42,7 @@ class ChatMessageReadStatusIcon extends StatelessWidget {
         child: Tooltip(
           message: 'Не отправлено. Нажмите, чтобы повторить',
           child: Icon(
-            Icons.refresh,
+            LucideIcons.refresh_cw,
             size: size,
             color: color.withValues(alpha: 0.95),
           ),
@@ -56,7 +57,7 @@ class ChatMessageReadStatusIcon extends StatelessWidget {
       child: Tooltip(
         message: label,
         child: Icon(
-          isRead ? Icons.done_all : Icons.done,
+          isRead ? LucideIcons.check_check : LucideIcons.check,
           size: size,
           color: isRead ? const Color(0xFF4FC3F7) : color,
         ),

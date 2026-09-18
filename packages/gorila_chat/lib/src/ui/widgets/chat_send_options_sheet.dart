@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../contract/chat_send_options.dart';
 
@@ -19,7 +20,7 @@ class ChatSendOptionsSheet {
           children: [
             if (showSilent)
               ListTile(
-                leading: const Icon(Icons.notifications_off_outlined),
+                leading: const Icon(LucideIcons.bell_off),
                 title: const Text('Отправить без звука'),
                 subtitle: const Text(
                   'Получатель увидит сообщение без звука уведомления',
@@ -31,7 +32,7 @@ class ChatSendOptionsSheet {
               ),
             if (showSchedule)
               ListTile(
-                leading: const Icon(Icons.schedule_send_outlined),
+                leading: const Icon(LucideIcons.calendar_clock),
                 title: const Text('Отложить отправку'),
                 subtitle: const Text('Выбрать дату и время'),
                 onTap: () async {
@@ -42,7 +43,7 @@ class ChatSendOptionsSheet {
               ),
             if (showAiAssist)
               ListTile(
-                leading: const Icon(Icons.auto_awesome_outlined),
+                leading: const Icon(LucideIcons.sparkles),
                 title: const Text('С помощью AI'),
                 subtitle: const Text('Составить текст сообщения по заданию'),
                 onTap: () => Navigator.pop(ctx, ChatSendOptions.ai),

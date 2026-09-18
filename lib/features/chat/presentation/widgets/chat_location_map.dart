@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
@@ -48,7 +50,7 @@ class ChatLocationMap extends StatelessWidget {
         point: send,
         width: 36,
         height: 36,
-        child: const Icon(Icons.location_on, color: Colors.red, size: 36),
+        child: const Icon(LucideIcons.map_pin, color: Colors.red, size: 36),
       ),
     ];
 

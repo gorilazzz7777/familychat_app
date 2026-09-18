@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/local_db/chat_local_store.dart';
@@ -522,7 +524,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                         )
                       : null,
                 ),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: () => _openMember(m),
         ),
         const Divider(height: 1),
@@ -555,12 +557,12 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(
-                        Icons.map_outlined,
+                        LucideIcons.map,
                         color: Theme.of(context).colorScheme.primary,
                       ),
                       title: const Text('На карте'),
                       subtitle: const Text('Где сейчас члены семьи'),
-                      trailing: const Icon(Icons.chevron_right),
+                      trailing: const Icon(LucideIcons.chevron_right),
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute<void>(
@@ -575,7 +577,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                       ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: Icon(
-                          Icons.child_care_outlined,
+                          LucideIcons.baby,
                           color: Theme.of(context).colorScheme.primary,
                         ),
                         title: const Text('Импортировать малыша из Dairy'),
@@ -590,7 +592,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                                 child:
                                     CircularProgressIndicator(strokeWidth: 2),
                               )
-                            : const Icon(Icons.chevron_right),
+                            : const Icon(LucideIcons.chevron_right),
                         onTap: _importing ? null : _importBaby,
                       ),
                       const Divider(height: 1),
@@ -599,13 +601,13 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
                     TextField(
                       decoration: InputDecoration(
                         hintText: 'Поиск',
-                        prefixIcon: const Icon(Icons.search),
+                        prefixIcon: const Icon(LucideIcons.search),
                         suffixIcon: _query.isEmpty
                             ? null
                             : IconButton(
                                 tooltip: 'Очистить',
                                 onPressed: () => setState(() => _query = ''),
-                                icon: const Icon(Icons.close),
+                                icon: const Icon(LucideIcons.x),
                               ),
                       ),
                       onChanged: (v) => setState(() => _query = v),
@@ -642,7 +644,7 @@ class _MembersScreenState extends ConsumerState<MembersScreen>
               title: const Text('Семья'),
               actions: [
                 IconButton(
-                  icon: const Icon(Icons.map_outlined),
+                  icon: const Icon(LucideIcons.map),
                   tooltip: 'На карте',
                   onPressed: () {
                     Navigator.of(context).push(

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/offline_ui.dart';
@@ -315,12 +317,12 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.person_outline),
+              leading: const Icon(LucideIcons.user),
               title: const Text('Профиль'),
               onTap: () => Navigator.pop(ctx, 'profile'),
             ),
             ListTile(
-              leading: const Icon(Icons.family_restroom_outlined),
+              leading: const Icon(LucideIcons.users),
               title: const Text('Связь'),
               subtitle: Text(_linkLabelForPerson(person.personId) ?? 'Не указана'),
               onTap: () => Navigator.pop(ctx, 'link'),
@@ -417,7 +419,7 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
               children: [
-                const Icon(Icons.account_tree_outlined, size: 56),
+                const Icon(LucideIcons.git_branch, size: 56),
                 const SizedBox(height: 12),
                 const Text(
                   'Пока недостаточно связей для карты. Нажмите на участника и укажите, кто он для вас.',
@@ -446,7 +448,7 @@ class _FamilyTreeTabState extends ConsumerState<FamilyTreeTab> {
                         subtitle: Text(
                           _linkLabelForPerson(person.personId) ?? 'Связь не указана',
                         ),
-                        trailing: const Icon(Icons.chevron_right),
+                        trailing: const Icon(LucideIcons.chevron_right),
                         onTap: () => _onPersonTap(person, canEditLinks: canEditLinks),
                       ),
                     ),
@@ -819,7 +821,7 @@ class _FamilyTreeHeader extends StatelessWidget {
                     child: _StatChip(
                       value: '${stats.familyTotal}',
                       label: 'в семье',
-                      icon: Icons.people_outline,
+                      icon: LucideIcons.users,
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -827,7 +829,7 @@ class _FamilyTreeHeader extends StatelessWidget {
                     child: _StatChip(
                       value: '${stats.onMap}',
                       label: 'на карте',
-                      icon: Icons.hub_outlined,
+                      icon: LucideIcons.share_2,
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -835,7 +837,7 @@ class _FamilyTreeHeader extends StatelessWidget {
                     child: _StatChip(
                       value: '${stats.nearby}',
                       label: 'рядом',
-                      icon: Icons.near_me_outlined,
+                      icon: LucideIcons.navigation,
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -843,7 +845,7 @@ class _FamilyTreeHeader extends StatelessWidget {
                     child: _StatChip(
                       value: '${stats.links}',
                       label: 'связей',
-                      icon: Icons.link,
+                      icon: LucideIcons.link,
                     ),
                   ),
                 ],

@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -150,7 +152,7 @@ class _BirthdayDetailScreenState extends ConsumerState<BirthdayDetailScreen> {
                   padding: const EdgeInsets.all(20),
                   children: [
                     Icon(
-                      Icons.cake_outlined,
+                      LucideIcons.cake,
                       size: 56,
                       color: theme.colorScheme.tertiary,
                     ),
@@ -203,7 +205,7 @@ class _BirthdayDetailScreenState extends ConsumerState<BirthdayDetailScreen> {
                       const SizedBox(height: 16),
                       FilledButton.icon(
                         onPressed: _openChat,
-                        icon: const Icon(Icons.chat_outlined),
+                        icon: const Icon(LucideIcons.message_circle),
                         label: const Text('Открыть чат подготовки'),
                       ),
                     ],

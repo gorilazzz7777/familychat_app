@@ -3,6 +3,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
@@ -312,8 +314,8 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
           child: Center(
             child: Icon(
               isVideoAttachment(photo)
-                  ? Icons.videocam_outlined
-                  : Icons.image_outlined,
+                  ? LucideIcons.video
+                  : LucideIcons.image,
               size: 48,
               color: cs.onSurfaceVariant,
             ),
@@ -339,7 +341,7 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
           fit: BoxFit.cover,
         );
       }
-      return const Center(child: Icon(Icons.broken_image_outlined));
+      return const Center(child: Icon(LucideIcons.image_off));
     }
 
     return AnimatedSize(
@@ -424,7 +426,7 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
                       tooltip: 'Диафильм',
                       onPressed: () => widget.onPlaySlideshow!(_index),
                       icon: const Icon(
-                        Icons.play_arrow_rounded,
+                        LucideIcons.play,
                         color: Colors.white,
                       ),
                     ),

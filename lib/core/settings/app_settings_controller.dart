@@ -31,6 +31,7 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
     return remote.copyWith(
       screenTimeout: local.screenTimeout,
       menuOrder: local.menuOrder,
+      menuLabels: local.menuLabels,
       autoSaveIncomingToGallery: local.autoSaveIncomingToGallery,
       mediaCacheStale: local.mediaCacheStale,
       mediaCacheSize: local.mediaCacheSize,
@@ -149,9 +150,16 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
     await AppSettingsStorage.save(state);
   }
 
+  Future<void> setMenuLabels(bool value) async {
+    if (state.menuLabels == value) return;
+    state = state.copyWith(menuLabels: value);
+    await AppSettingsStorage.save(state);
+  }
+
   Future<void> resetToDefaults() async {
     final timeout = state.screenTimeout;
     final order = state.menuOrder;
+    final labels = state.menuLabels;
     final autoSave = state.autoSaveIncomingToGallery;
     final stale = state.mediaCacheStale;
     final size = state.mediaCacheSize;
@@ -166,6 +174,7 @@ class AppSettingsController extends StateNotifier<FamilyChatAppSettings> {
     state = FamilyChatAppSettings(
       screenTimeout: timeout,
       menuOrder: order,
+      menuLabels: labels,
       autoSaveIncomingToGallery: autoSave,
       mediaCacheStale: stale,
       mediaCacheSize: size,

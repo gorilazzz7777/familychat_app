@@ -73,13 +73,15 @@ class ChatThreadSelectTile extends StatelessWidget {
     final scheme = theme.colorScheme;
     final title = titleOf(thread, memberByUserId);
     final last = thread['last_message'] as Map<String, dynamic>?;
-    final lastStatus = lastMessageReadStatus(last);
+    final isSaved = isSavedMessagesThread(thread['kind']?.toString());
+    final lastStatus = isSaved ? null : lastMessageReadStatus(last);
     final created = last != null
         ? DateTime.tryParse(last['created_at']?.toString() ?? '')
         : null;
     final isBirthday = thread['is_birthday_celebration'] == true;
+    final kind = thread['kind']?.toString() ?? '';
     final avatarAsset = chatThreadAvatarAsset(
-      kind: thread['kind']?.toString() ?? '',
+      kind: kind,
       isBirthdayCelebration: isBirthday,
     );
     final bg = selected ? scheme.primaryContainer : Colors.transparent;
@@ -97,15 +99,17 @@ class ChatThreadSelectTile extends StatelessWidget {
       color: bg,
       child: ListTile(
         onTap: onTap,
-        leading: ChatAvatar(
-          name: title,
-          avatarUrl: avatarAsset != null
-              ? null
-              : dmAvatarUrl(thread, memberByUserId),
-          userId: avatarAsset != null ? null : dmPeerUserId(thread),
-          assetPath: avatarAsset,
-          radius: 24,
-        ),
+        leading: isSaved
+            ? const SavedMessagesAvatar(radius: 24)
+            : ChatAvatar(
+                name: title,
+                avatarUrl: avatarAsset != null
+                    ? null
+                    : dmAvatarUrl(thread, memberByUserId),
+                userId: avatarAsset != null ? null : dmPeerUserId(thread),
+                assetPath: avatarAsset,
+                radius: 24,
+              ),
         title: Text(
           title,
           maxLines: 1,

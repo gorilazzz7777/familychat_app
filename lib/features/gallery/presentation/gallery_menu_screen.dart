@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/widgets/family_app_bar.dart';
@@ -50,7 +51,7 @@ class GalleryMenuScreenState extends State<GalleryMenuScreen> {
           onProfileTap: () => AppActions.openProfile(context),
           actions: [
             IconButton(
-              icon: const Icon(Icons.add),
+              icon: const Icon(LucideIcons.plus),
               tooltip: 'Новый альбом',
               onPressed: _createAlbum,
             ),

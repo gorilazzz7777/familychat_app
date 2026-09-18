@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:geolocator/geolocator.dart';
 
 import '../../data/chat_location_utils.dart';
@@ -98,7 +100,7 @@ class _ChatLocationComposeSheetState extends State<ChatLocationComposeSheet> {
               children: [
                 IconButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(LucideIcons.x),
                 ),
                 Expanded(
                   child: Text(

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 /// Web stub — без live preview.
 class AttachCameraPreviewImpl extends StatelessWidget {
@@ -9,7 +10,7 @@ class AttachCameraPreviewImpl extends StatelessWidget {
     return const ColoredBox(
       color: Colors.black87,
       child: Center(
-        child: Icon(Icons.camera_alt_outlined, color: Colors.white54),
+        child: Icon(LucideIcons.camera, color: Colors.white54),
       ),
     );
   }

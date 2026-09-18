@@ -44,6 +44,7 @@ class FamilyChatAppSettings {
     this.menuFamily = true,
     this.menuGallery = true,
     this.menuCalendar = true,
+    this.menuLabels = false,
     this.menuOrder = defaultMenuOrder,
     this.screenTimeout = ScreenTimeoutOption.system,
     this.autoSaveIncomingToGallery = false,
@@ -79,6 +80,8 @@ class FamilyChatAppSettings {
   final bool menuFamily;
   final bool menuGallery;
   final bool menuCalendar;
+  /// Show text labels under bottom-nav icons (local preference).
+  final bool menuLabels;
   final List<String> menuOrder;
   final ScreenTimeoutOption screenTimeout;
   final bool autoSaveIncomingToGallery;
@@ -106,6 +109,7 @@ class FamilyChatAppSettings {
     bool? menuFamily,
     bool? menuGallery,
     bool? menuCalendar,
+    bool? menuLabels,
     List<String>? menuOrder,
     ScreenTimeoutOption? screenTimeout,
     bool? autoSaveIncomingToGallery,
@@ -133,6 +137,7 @@ class FamilyChatAppSettings {
       menuFamily: menuFamily ?? this.menuFamily,
       menuGallery: menuGallery ?? this.menuGallery,
       menuCalendar: menuCalendar ?? this.menuCalendar,
+      menuLabels: menuLabels ?? this.menuLabels,
       menuOrder: menuOrder ?? this.menuOrder,
       screenTimeout: screenTimeout ?? this.screenTimeout,
       autoSaveIncomingToGallery:
@@ -187,6 +192,7 @@ class FamilyChatAppSettings {
       menuFamily: _bool(json, 'menuFamily', 'menu_family', true),
       menuGallery: _bool(json, 'menuGallery', 'menu_gallery', true),
       menuCalendar: _bool(json, 'menuCalendar', 'menu_calendar', true),
+      menuLabels: _bool(json, 'menuLabels', 'menu_labels', false),
       menuOrder: _stringList(json['menuOrder'] ?? json['menu_order']),
       screenTimeout: ScreenTimeoutOptionX.fromStorage(
         json['screenTimeout'] ?? json['screen_timeout'],
@@ -277,6 +283,7 @@ class FamilyChatAppSettings {
         'canQuietHours': canQuietHours,
         'screenTimeout': screenTimeout.storageKey,
         'menuOrder': menuOrder,
+        'menuLabels': menuLabels,
         'autoSaveIncomingToGallery': autoSaveIncomingToGallery,
         'mediaCacheStale': mediaCacheStale.storageKey,
         'mediaCacheSize': mediaCacheSize.storageKey,

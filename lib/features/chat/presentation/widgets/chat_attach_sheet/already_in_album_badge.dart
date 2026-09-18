@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 /// Значок «уже есть в альбоме»: двойная галочка как у прочитанного в чате.
 class AlreadyInAlbumBadge extends StatelessWidget {
@@ -20,7 +21,7 @@ class AlreadyInAlbumBadge extends StatelessWidget {
         child: Padding(
           padding: EdgeInsets.all(3),
           child: Icon(
-            Icons.done_all,
+            LucideIcons.check_check,
             size: 14,
             color: _green,
           ),

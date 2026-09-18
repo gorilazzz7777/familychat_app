@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../contract/chat_send_options.dart';
 import 'chat_send_options_sheet.dart';
@@ -56,7 +57,7 @@ class ChatComposeInput extends StatelessWidget {
             IconButton(
               tooltip: 'Вложение',
               onPressed: onAttach,
-              icon: const Icon(Icons.attach_file),
+              icon: const Icon(LucideIcons.paperclip),
             ),
           Expanded(
             child: TextField(
@@ -81,7 +82,7 @@ class ChatComposeInput extends StatelessWidget {
             onLongPress: sending || !hasLongPressMenu
                 ? null
                 : () => _onLongPressSend(context),
-            icon: Icon(Icons.send_rounded, color: scheme.primary),
+            icon: Icon(LucideIcons.send, color: scheme.primary),
           ),
         ],
       ),

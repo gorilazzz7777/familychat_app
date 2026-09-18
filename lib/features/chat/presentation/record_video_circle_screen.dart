@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:permission_handler/permission_handler.dart';
 import 'package:video_player/video_player.dart';
 
@@ -285,7 +287,7 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
                   ? 'Основная камера'
                   : 'Фронтальная камера',
               onPressed: _canFlip ? () => unawaited(_flipCamera()) : null,
-              icon: const Icon(Icons.cameraswitch),
+              icon: const Icon(LucideIcons.switch_camera),
             ),
         ],
       ),
@@ -394,7 +396,7 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
                     ? 'Основная камера'
                     : 'Фронтальная камера',
                 onPressed: _canFlip ? () => unawaited(_flipCamera()) : null,
-                icon: const Icon(Icons.cameraswitch),
+                icon: const Icon(LucideIcons.switch_camera),
               ),
               const SizedBox(width: 12),
             ],
@@ -404,7 +406,7 @@ class _RecordVideoCircleScreenState extends State<RecordVideoCircleScreen> {
                     ? _stopRecording
                     : (_switchingCamera ? null : _startRecording),
                 icon: Icon(
-                  _recording ? Icons.stop : Icons.fiber_manual_record,
+                  _recording ? LucideIcons.square : LucideIcons.circle,
                 ),
                 label: Text(_recording ? 'Стоп' : 'Запись'),
                 style: FilledButton.styleFrom(

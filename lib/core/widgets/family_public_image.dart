@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 import 'family_public_web_image.dart';
@@ -127,7 +129,7 @@ class FamilyPublicImage extends StatelessWidget {
     return ColoredBox(
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Icon(
-        Icons.person_outline,
+        LucideIcons.user,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
     );

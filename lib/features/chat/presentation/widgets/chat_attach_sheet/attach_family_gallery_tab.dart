@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../../core/cache/familychat_local_cache.dart';
@@ -458,7 +460,7 @@ class _AttachFamilyGalleryTabState
     final title = album['title']?.toString().trim();
     final count = album['count'] ?? album['photos_count'];
     return ListTile(
-      leading: const Icon(Icons.photo_album_outlined),
+      leading: const Icon(LucideIcons.images),
       title: Text(title?.isNotEmpty == true ? title! : 'Альбом'),
       subtitle: Text(
         switch (_albumSource(album)) {
@@ -561,7 +563,7 @@ class _AttachFamilyGalleryTabState
                   const ColoredBox(
                     color: Color(0x66000000),
                     child: Center(
-                      child: Icon(Icons.check, color: Colors.white70),
+                      child: Icon(LucideIcons.check, color: Colors.white70),
                     ),
                   )
                 else if (inAlbums)
@@ -574,7 +576,7 @@ class _AttachFamilyGalleryTabState
                   Container(
                     color: Colors.black38,
                     child: const Icon(
-                      Icons.check_circle,
+                      LucideIcons.circle_check,
                       color: Colors.white,
                       size: 32,
                     ),
@@ -600,7 +602,7 @@ class _AttachFamilyGalleryTabState
                 IconButton(
                   tooltip: 'Назад',
                   onPressed: _closeAlbumView,
-                  icon: const Icon(Icons.arrow_back),
+                  icon: const Icon(LucideIcons.arrow_left),
                 ),
               Expanded(
                 child: Text(

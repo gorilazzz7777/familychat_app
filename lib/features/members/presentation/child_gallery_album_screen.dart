@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/media/gallery_photo_date.dart';
@@ -364,28 +366,28 @@ class _ChildGalleryAlbumScreenState
                 onPressed: _selectedPhotoIds.isEmpty
                     ? null
                     : _removeSelectedFromAlbum,
-                icon: const Icon(Icons.remove_circle_outline),
+                icon: const Icon(LucideIcons.circle_minus),
               ),
             if (widget.canManage)
               IconButton(
                 tooltip: 'Удалить',
                 onPressed:
                     _selectedPhotoIds.isEmpty ? null : _deleteSelected,
-                icon: const Icon(Icons.delete_outline),
+                icon: const Icon(LucideIcons.trash),
               ),
             IconButton(
               onPressed: () => setState(() {
                 _selectionMode = false;
                 _selectedPhotoIds.clear();
               }),
-              icon: const Icon(Icons.close),
+              icon: const Icon(LucideIcons.x),
             ),
           ] else ...[
             if (widget.canManage)
               IconButton(
                 tooltip: 'Выбрать',
                 onPressed: () => setState(() => _selectionMode = true),
-                icon: const Icon(Icons.checklist_outlined),
+                icon: const Icon(LucideIcons.list_checks),
               ),
             if (widget.canManage && widget.isCustomAlbum)
               PopupMenuButton<String>(
@@ -423,7 +425,7 @@ class _ChildGalleryAlbumScreenState
                         color: Colors.white,
                       ),
                     )
-                  : const Icon(Icons.add_photo_alternate_outlined),
+                  : const Icon(LucideIcons.image_plus),
             )
           : null,
       body: _loading
@@ -452,7 +454,7 @@ class _ChildGalleryAlbumScreenState
                             const SizedBox(height: 12),
                             FilledButton.icon(
                               onPressed: _showAddPhotosSheet,
-                              icon: const Icon(Icons.add_photo_alternate_outlined),
+                              icon: const Icon(LucideIcons.image_plus),
                               label: const Text('Добавить фото'),
                             ),
                           ],
@@ -512,8 +514,8 @@ class _ChildGalleryAlbumScreenState
                                     right: 6,
                                     child: Icon(
                                       selected
-                                          ? Icons.check_circle
-                                          : Icons.circle_outlined,
+                                          ? LucideIcons.circle_check
+                                          : LucideIcons.circle,
                                       color: selected
                                           ? Theme.of(context)
                                               .colorScheme

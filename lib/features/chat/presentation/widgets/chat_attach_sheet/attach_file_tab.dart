@@ -1,6 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../../profile/presentation/album_upload_file_bytes.dart';
 import '../../../../../core/media/gallery_media_utils.dart';
@@ -140,7 +141,7 @@ class _AttachFileTabState extends State<AttachFileTab> {
         ListTile(
           leading: CircleAvatar(
             backgroundColor: Colors.green.shade600,
-            child: const Icon(Icons.storage, color: Colors.white),
+            child: const Icon(LucideIcons.hard_drive, color: Colors.white),
           ),
           title: const Text('Внутреннее хранилище'),
           subtitle: const Text('Поиск в файловой системе'),
@@ -184,7 +185,7 @@ class _AttachFileTabState extends State<AttachFileTab> {
                   child: const SizedBox(
                     width: 44,
                     height: 44,
-                    child: Icon(Icons.insert_drive_file_outlined),
+                    child: Icon(LucideIcons.file),
                   ),
                 ),
               ),

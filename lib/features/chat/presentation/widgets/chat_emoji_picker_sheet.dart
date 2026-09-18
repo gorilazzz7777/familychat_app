@@ -1,6 +1,7 @@
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'chat_compose_circle_button.dart';
 
@@ -20,7 +21,7 @@ class ChatComposeEmojiButton extends StatelessWidget {
     final theme = Theme.of(context);
     return ChatComposeCircleButton(
       tooltip: open ? 'Клавиатура' : 'Смайлы',
-      icon: open ? Icons.keyboard_alt_outlined : Icons.emoji_emotions_outlined,
+      icon: open ? LucideIcons.keyboard : LucideIcons.face_slightly_smiling,
       iconColor: theme.colorScheme.onSurface,
       onTap: onPressed,
     );

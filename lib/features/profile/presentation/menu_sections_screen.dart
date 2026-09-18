@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/settings/app_settings.dart';
@@ -65,15 +66,32 @@ class _MenuSectionsScreenState extends ConsumerState<MenuSectionsScreen> {
       body: ReorderableListView.builder(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         buildDefaultDragHandles: false,
-        header: Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Text(
-            'Чат всегда остаётся. Зажмите иконку в нижней панели и '
-            'перетащите, чтобы поменять разделы местами.',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
+        header: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Подписи названий меню'),
+              subtitle: const Text(
+                'Показывать текст под иконками в нижней панели',
+              ),
+              value: settings.menuLabels,
+              onChanged: _busy
+                  ? null
+                  : (value) => ref
+                      .read(appSettingsProvider.notifier)
+                      .setMenuLabels(value),
             ),
-          ),
+            const SizedBox(height: 4),
+            Text(
+              'Перетащите разделы за иконку справа, чтобы поменять порядок. '
+              'Долгое нажатие на нижней панели тоже открывает этот экран.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
         ),
         itemCount: sections.length,
         onReorder: _reorder,
@@ -108,7 +126,7 @@ class _MenuSectionsScreenState extends ConsumerState<MenuSectionsScreen> {
                     child: Padding(
                       padding: const EdgeInsets.only(left: 4),
                       child: Icon(
-                        Icons.drag_handle,
+                        LucideIcons.grip_horizontal,
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),

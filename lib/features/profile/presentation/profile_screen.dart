@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -186,23 +188,23 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           children: [
             if (hasPhoto)
               ListTile(
-                leading: const Icon(Icons.visibility_outlined),
+                leading: const Icon(LucideIcons.eye),
                 title: const Text('Просмотр'),
                 onTap: () => Navigator.pop(ctx, 'view'),
               ),
             ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
+              leading: const Icon(LucideIcons.images),
               title: const Text('Выбрать из галереи'),
               onTap: () => Navigator.pop(ctx, 'gallery'),
             ),
             ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
+              leading: const Icon(LucideIcons.camera),
               title: const Text('Сделать фото'),
               onTap: () => Navigator.pop(ctx, 'camera'),
             ),
             if (hasPhoto)
               ListTile(
-                leading: Icon(Icons.delete_outline,
+                leading: Icon(LucideIcons.trash,
                     color: Theme.of(ctx).colorScheme.error),
                 title: Text(
                   'Удалить фото',
@@ -468,14 +470,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                       _genderIcon(
                         theme,
                         value: 'male',
-                        icon: Icons.male,
+                        icon: LucideIcons.user,
                         tooltip: 'Мужской',
                       ),
                       const SizedBox(width: 8),
                       _genderIcon(
                         theme,
                         value: 'female',
-                        icon: Icons.female,
+                        icon: LucideIcons.user,
                         tooltip: 'Женский',
                       ),
                     ],
@@ -541,19 +543,19 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         const SizedBox(height: 8),
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.cake_outlined),
+          leading: const Icon(LucideIcons.cake),
           title: const Text('День рождения'),
           subtitle: Text(birthLabel),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: _pickBirthDate,
         ),
         const SizedBox(height: 24),
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.people_outline, color: theme.colorScheme.primary),
+          leading: Icon(LucideIcons.users, color: theme.colorScheme.primary),
           title: const Text('Семья'),
           subtitle: const Text('Участники и дерево'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -609,13 +611,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         const SizedBox(height: 24),
         OutlinedButton.icon(
           onPressed: _confirmLogout,
-          icon: const Icon(Icons.logout),
+          icon: const Icon(LucideIcons.log_out),
           label: const Text('Выйти'),
         ),
         const SizedBox(height: 12),
         TextButton.icon(
           onPressed: _confirmDeleteAccount,
-          icon: Icon(Icons.delete_forever_outlined,
+          icon: Icon(LucideIcons.trash,
               color: theme.colorScheme.error),
           label: Text(
             'Удалить профиль',
@@ -634,7 +636,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading:
-              Icon(Icons.palette_outlined, color: theme.colorScheme.primary),
+              Icon(LucideIcons.palette, color: theme.colorScheme.primary),
           title: const Text('Оформление'),
           subtitle: const Text('Цвет темы приложения'),
           trailing: Row(
@@ -650,7 +652,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                 ),
               ),
               const SizedBox(width: 4),
-              const Icon(Icons.chevron_right),
+              const Icon(LucideIcons.chevron_right),
             ],
           ),
           onTap: () {
@@ -666,12 +668,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            Icons.share_location_outlined,
+            LucideIcons.map_pin,
             color: theme.colorScheme.primary,
           ),
           title: const Text('Геолокация для семьи'),
           subtitle: const Text('Кто может видеть, где вы'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -683,7 +685,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            Icons.photo_library_outlined,
+            LucideIcons.images,
             color: theme.colorScheme.primary,
           ),
           title: const Text('Фото и кэш'),
@@ -695,7 +697,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                   : 'Кэш ${s.mediaCacheStale.label} · ${s.mediaCacheSize.label}';
             }(),
           ),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -707,12 +709,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            Icons.brightness_auto_outlined,
+            LucideIcons.sun_moon,
             color: theme.colorScheme.primary,
           ),
           title: const Text('Автоугасание экрана'),
           subtitle: Text(ref.watch(appSettingsProvider).screenTimeout.label),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -723,11 +725,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.notifications_outlined,
+          leading: Icon(LucideIcons.bell,
               color: theme.colorScheme.primary),
           title: const Text('Пуш-уведомления'),
           subtitle: const Text('Типы уведомлений и тихие часы'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -738,11 +740,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.view_agenda_outlined,
+          leading: Icon(LucideIcons.layout_list,
               color: theme.colorScheme.primary),
           title: const Text('Разделы меню'),
           subtitle: const Text('Что показывать в нижней панели'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -755,12 +757,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            Icons.shield_outlined,
+            LucideIcons.shield,
             color: theme.colorScheme.primary,
           ),
           title: const Text('Безопасность детей'),
           subtitle: const Text('Сообщить о проблеме'),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(LucideIcons.chevron_right),
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -772,31 +774,31 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            Icons.privacy_tip_outlined,
+            LucideIcons.shield,
             color: theme.colorScheme.primary,
           ),
           title: const Text('Политика конфиденциальности'),
-          trailing: const Icon(Icons.open_in_new),
+          trailing: const Icon(LucideIcons.external_link),
           onTap: () => openFamilyChatPrivacyPolicy(context),
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            Icons.description_outlined,
+            LucideIcons.file_text,
             color: theme.colorScheme.primary,
           ),
           title: const Text('Пользовательское соглашение'),
-          trailing: const Icon(Icons.open_in_new),
+          trailing: const Icon(LucideIcons.external_link),
           onTap: () => openFamilyChatUserAgreement(context),
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            Icons.child_care_outlined,
+            LucideIcons.baby,
             color: theme.colorScheme.primary,
           ),
           title: const Text('Стандарты безопасности детей'),
-          trailing: const Icon(Icons.open_in_new),
+          trailing: const Icon(LucideIcons.external_link),
           onTap: () => openFamilyChatChildSafetyStandards(context),
         ),
       ],

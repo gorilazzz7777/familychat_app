@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 
 /// Свайп влево по сообщению → «Ответить» (как в Telegram).
@@ -129,7 +131,7 @@ class _ChatSwipeToReplyState extends State<ChatSwipeToReply>
                 child: Transform.scale(
                   scale: iconScale,
                   child: Icon(
-                    Icons.reply_rounded,
+                    LucideIcons.reply,
                     color: theme.colorScheme.primary,
                     size: 28,
                   ),

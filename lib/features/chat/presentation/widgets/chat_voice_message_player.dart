@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
@@ -294,7 +296,7 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
                   ),
                 )
               : Icon(
-                  _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  _playing ? LucideIcons.pause : LucideIcons.play,
                   color: onAccent,
                   size: 24,
                 ),
@@ -343,7 +345,7 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
               ref.read(voiceMessagePreferTextProvider.notifier).toggle();
             },
             icon: Icon(
-              showText ? Icons.graphic_eq_rounded : Icons.notes_rounded,
+              showText ? LucideIcons.audio_lines : LucideIcons.sticky_note,
               size: 18,
               color: metaColor,
             ),

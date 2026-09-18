@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:real_page_flip/real_page_flip.dart';
@@ -623,7 +625,7 @@ class _MilestoneScrapbookScreenState
         leading: editing != null
             ? IconButton(
                 tooltip: 'Отмена',
-                icon: const Icon(Icons.close),
+                icon: const Icon(LucideIcons.x),
                 onPressed: () => setState(() => _layoutEdit = null),
               )
             : null,
@@ -636,8 +638,8 @@ class _MilestoneScrapbookScreenState
               onPressed: _toggleLayoutTool,
               icon: Icon(
                 _layoutTool == ScrapbookLayoutTool.transform
-                    ? Icons.rotate_right
-                    : Icons.open_with,
+                    ? LucideIcons.rotate_cw
+                    : LucideIcons.move,
               ),
             ),
             TextButton(
@@ -666,8 +668,8 @@ class _MilestoneScrapbookScreenState
                       )
                     : Icon(
                         defaultTargetPlatform == TargetPlatform.iOS
-                            ? Icons.ios_share
-                            : Icons.share_outlined,
+                            ? LucideIcons.share
+                            : LucideIcons.share,
                       ),
               ),
             Padding(

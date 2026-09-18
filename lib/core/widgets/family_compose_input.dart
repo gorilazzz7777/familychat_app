@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'family_input_styles.dart';
 
@@ -59,7 +60,7 @@ class FamilyComposeInput extends StatelessWidget {
                   ),
                 )
               : Icon(
-                  Icons.send_rounded,
+                  LucideIcons.send,
                   color: onSend == null
                       ? disabledSend
                       : (sendIconColor ?? theme.colorScheme.primary),

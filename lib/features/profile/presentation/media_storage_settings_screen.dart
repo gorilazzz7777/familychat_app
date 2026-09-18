@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/settings/app_settings_controller.dart';
@@ -282,7 +284,7 @@ class _HelpButton extends StatelessWidget {
       tooltip: 'Справка',
       visualDensity: VisualDensity.compact,
       icon: Icon(
-        Icons.help_outline_rounded,
+        LucideIcons.circle_question_mark,
         size: 22,
         color: scheme.onSurfaceVariant,
       ),
@@ -300,7 +302,7 @@ Future<void> _showHelp(
     context: context,
     builder: (ctx) {
       return AlertDialog(
-        icon: const Icon(Icons.help_outline_rounded),
+        icon: const Icon(LucideIcons.circle_question_mark),
         title: Text(title),
         content: Text(body),
         actions: [
@@ -391,7 +393,7 @@ class _OptionSelect<T> extends StatelessWidget {
                 ),
               ),
               Icon(
-                Icons.expand_more_rounded,
+                LucideIcons.chevron_down,
                 color: scheme.onSurfaceVariant,
               ),
             ],
@@ -441,7 +443,7 @@ class _SelectOptionTile extends StatelessWidget {
                   ),
                 ),
                 if (selected)
-                  Icon(Icons.check_rounded, color: scheme.primary),
+                  Icon(LucideIcons.check, color: scheme.primary),
               ],
             ),
           ),

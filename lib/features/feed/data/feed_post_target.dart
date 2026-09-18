@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
@@ -99,18 +100,18 @@ class _FeedPostMenuButtonState extends ConsumerState<FeedPostMenuButton> {
   Widget build(BuildContext context) {
     if (_loading) {
       return IconButton(
-        icon: const Icon(Icons.add),
+        icon: const Icon(LucideIcons.plus),
         onPressed: null,
       );
     }
     if (_children.isEmpty) {
       return IconButton(
-        icon: const Icon(Icons.add),
+        icon: const Icon(LucideIcons.plus),
         onPressed: () => widget.onTargetSelected(const FeedPostTargetSelf()),
       );
     }
     return PopupMenuButton<FeedPostTarget>(
-      icon: const Icon(Icons.add),
+      icon: const Icon(LucideIcons.plus),
       onSelected: widget.onTargetSelected,
       itemBuilder: (context) => [
         const PopupMenuItem(

@@ -232,38 +232,50 @@ import Intents
   }
 
   private func syncShareShortcuts(_ chats: [[String: Any]]) {
-    guard #available(iOS 12.0, *) else { return }
-    for chat in chats.prefix(4) {
-      let threadId: Int? = {
-        if let n = chat["thread_id"] as? Int { return n }
-        if let s = chat["thread_id"] as? String { return Int(s) }
-        return nil
-      }()
-      guard let threadId, threadId > 0 else { continue }
-      let title = (chat["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let displayName = (title?.isEmpty == false) ? title! : "Чат"
-      let handle = INPersonHandle(value: "\(threadId)", type: .unknown)
-      let recipient = INPerson(
-        personHandle: handle,
-        nameComponents: nil,
-        displayName: displayName,
-        image: nil,
-        contactIdentifier: nil,
-        customIdentifier: "familychat_thread_\(threadId)"
-      )
-      let intent = INSendMessageIntent(
-        recipients: [recipient],
-        outgoingMessageType: .outgoingMessageText,
-        content: nil,
-        speakableGroupName: INSpeakableString(spokenPhrase: displayName),
-        conversationIdentifier: "familychat_thread_\(threadId)",
-        serviceName: "Family Space",
-        sender: nil,
-        attachments: nil
-      )
-      let interaction = INInteraction(intent: intent, response: nil)
-      interaction.direction = .outgoing
-      interaction.donate(completion: nil)
+    guard #available(iOS 14.0, *) else { return }
+
+    INInteraction.delete(with: "familychat_share_shortcuts") { _ in
+      for chat in chats.prefix(4) {
+        let threadId: Int? = {
+          if let n = chat["thread_id"] as? Int { return n }
+          if let n = chat["thread_id"] as? NSNumber { return n.intValue }
+          if let s = chat["thread_id"] as? String { return Int(s) }
+          return nil
+        }()
+        guard let threadId, threadId > 0 else { continue }
+        let title = (chat["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = (title?.isEmpty == false) ? title! : "Чат"
+        let conversationId = "familychat_thread_\(threadId)"
+        let groupName = INSpeakableString(spokenPhrase: displayName)
+        let intent = INSendMessageIntent(
+          recipients: nil,
+          outgoingMessageType: .outgoingMessageText,
+          content: nil,
+          speakableGroupName: groupName,
+          conversationIdentifier: conversationId,
+          serviceName: "Family Space",
+          sender: nil,
+          attachments: nil
+        )
+        if let icon = UIImage(named: "AppIcon") ?? UIImage(named: "ic_launcher") {
+          if let data = icon.pngData() {
+            intent.setImage(INImage(imageData: data), forParameterNamed: \.speakableGroupName)
+          }
+        }
+        if #available(iOS 15.0, *) {
+          let metadata = INSendMessageIntentDonationMetadata()
+          metadata.recipientCount = 1
+          metadata.mentionsCurrentUser = false
+          metadata.isReplyToCurrentUser = false
+          metadata.notifyRecipientAnyway = false
+          intent.donationMetadata = metadata
+        }
+        let interaction = INInteraction(intent: intent, response: nil)
+        interaction.identifier = conversationId
+        interaction.groupIdentifier = "familychat_share_shortcuts"
+        interaction.direction = .outgoing
+        interaction.donate(completion: nil)
+      }
     }
   }
 

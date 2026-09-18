@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/feed/feed_photo_batch_session.dart';
@@ -365,7 +367,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                     const SizedBox(height: 20),
                     FilledButton.icon(
                       onPressed: _publishing ? null : _pickMedia,
-                      icon: const Icon(Icons.photo_library_outlined),
+                      icon: const Icon(LucideIcons.images),
                       label: const Text('Добавить медиа'),
                     ),
                   ],
@@ -396,7 +398,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                               ),
                             ),
                             child:
-                                const Icon(Icons.add_photo_alternate_outlined),
+                                const Icon(LucideIcons.image_plus),
                           ),
                         );
                       }
@@ -415,8 +417,8 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                                         .surfaceContainerHighest,
                                     child: Icon(
                                       photo.kind == 'video'
-                                          ? Icons.videocam_outlined
-                                          : Icons.image_outlined,
+                                          ? LucideIcons.video
+                                          : LucideIcons.image,
                                     ),
                                   )
                                 : Image.memory(
@@ -430,7 +432,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                             const Positioned.fill(
                               child: Center(
                                 child: Icon(
-                                  Icons.play_circle_fill,
+                                  LucideIcons.circle_play,
                                   color: Colors.white70,
                                 ),
                               ),
@@ -447,7 +449,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                                   ? null
                                   : () =>
                                       setState(() => _photos.removeAt(index)),
-                              icon: const Icon(Icons.close, size: 16),
+                              icon: const Icon(LucideIcons.x, size: 16),
                             ),
                           ),
                         ],

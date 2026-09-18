@@ -1,25 +1,27 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:intl/intl.dart';
 
 import 'feed_event_date_format.dart';
 
 IconData feedHolidayIcon(String code) {
   return switch (code) {
-    'new_year' || 'old_new_year' => Icons.auto_awesome_outlined,
-    'christmas' || 'easter' => Icons.church_outlined,
-    'valentine' || 'family_day' => Icons.favorite_outline,
-    'defender_day' => Icons.military_tech_outlined,
-    'womens_day' || 'mothers_day' => Icons.spa_outlined,
-    'victory_day' || 'russia_day' || 'unity_day' => Icons.flag_outlined,
-    'knowledge_day' || 'student_day' || 'teachers_day' => Icons.school_outlined,
-    'programmer_day' => Icons.code_outlined,
-    'cosmonautics_day' => Icons.rocket_launch_outlined,
-    'medical_worker_day' => Icons.local_hospital_outlined,
-    'grandparents_day' => Icons.elderly_outlined,
-    'siblings_day' => Icons.groups_2_outlined,
-    'labor_day' => Icons.park_outlined,
-    'april_fools' => Icons.sentiment_very_satisfied_outlined,
-    _ => Icons.event_outlined,
+    'new_year' || 'old_new_year' => LucideIcons.sparkles,
+    'christmas' || 'easter' => LucideIcons.church,
+    'valentine' || 'family_day' => LucideIcons.heart,
+    'defender_day' => LucideIcons.medal,
+    'womens_day' || 'mothers_day' => LucideIcons.flower_2,
+    'victory_day' || 'russia_day' || 'unity_day' => LucideIcons.flag,
+    'knowledge_day' || 'student_day' || 'teachers_day' => LucideIcons.graduation_cap,
+    'programmer_day' => LucideIcons.code,
+    'cosmonautics_day' => LucideIcons.rocket,
+    'medical_worker_day' => LucideIcons.hospital,
+    'grandparents_day' => LucideIcons.person_standing,
+    'siblings_day' => LucideIcons.users,
+    'labor_day' => LucideIcons.trees,
+    'april_fools' => LucideIcons.face_grinning,
+    _ => LucideIcons.calendar,
   };
 }
 
@@ -156,7 +158,7 @@ class FeedHolidayEventCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Icon(
-                        Icons.info_outline,
+                        LucideIcons.info,
                         size: 20,
                         color: accent,
                       ),
@@ -187,7 +189,7 @@ class FeedHolidayEventCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
             child: FilledButton.icon(
               onPressed: onOpenCalendar,
-              icon: const Icon(Icons.calendar_month_outlined),
+              icon: const Icon(LucideIcons.calendar_days),
               label: const Text('Открыть в календаре'),
             ),
           ),
@@ -195,7 +197,7 @@ class FeedHolidayEventCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: Row(
               children: [
-                Icon(Icons.event_note_outlined, size: 18, color: cs.onSurfaceVariant),
+                Icon(LucideIcons.notebook_pen, size: 18, color: cs.onSurfaceVariant),
                 const SizedBox(width: 6),
                 Text(
                   'Без поздравлений — только напоминание',

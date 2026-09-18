@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../chat/data/chat_local_reads.dart';
 import '../../../members/presentation/member_profile_screen.dart';
@@ -367,7 +368,7 @@ class _FeedPeopleListSheetState extends State<FeedPeopleListSheet> {
                 IconButton(
                   tooltip: 'Закрыть',
                   onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(LucideIcons.x),
                 ),
               ],
             ),
@@ -432,7 +433,7 @@ class _FeedPeopleListSheetState extends State<FeedPeopleListSheet> {
                             title: Text(displayName),
                             trailing: emoji.isEmpty
                                 ? (canOpenProfile
-                                    ? const Icon(Icons.chevron_right, size: 20)
+                                    ? const Icon(LucideIcons.chevron_right, size: 20)
                                     : null)
                                 : Text(
                                     emoji,

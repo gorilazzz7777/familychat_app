@@ -731,6 +731,14 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_lucide:
+    dependency: "direct main"
+    description:
+      name: flutter_lucide
+      sha256: "84ba48fa56a23bd1f60c82c3224c1cd09ceca4e162b8229e1ef3330766e8b1d8"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.47.0"
   flutter_map:
     dependency: "direct main"
     description:

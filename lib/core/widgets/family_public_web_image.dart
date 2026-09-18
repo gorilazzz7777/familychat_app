@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../features/familychat/data/familychat_repository.dart';
@@ -248,7 +250,7 @@ class _FamilyPublicWebImageState extends ConsumerState<FamilyPublicWebImage> {
     return ColoredBox(
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Icon(
-        Icons.person_outline,
+        LucideIcons.user,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
     );

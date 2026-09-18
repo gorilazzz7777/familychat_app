@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'attach_file_tab.dart';
 import 'attach_gallery_tab.dart';
@@ -216,8 +217,8 @@ class _ModeBar extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final l10n = ChatAttachL10n.of(context);
     final chips = [
-      (ChatAttachMode.gallery, l10n.gallery, Icons.photo_outlined),
-      (ChatAttachMode.file, l10n.file, Icons.insert_drive_file_outlined),
+      (ChatAttachMode.gallery, l10n.gallery, LucideIcons.image),
+      (ChatAttachMode.file, l10n.file, LucideIcons.file),
     ];
 
     return SizedBox.expand(

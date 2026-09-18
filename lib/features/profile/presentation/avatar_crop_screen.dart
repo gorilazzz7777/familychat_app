@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../core/widgets/family_app_bar.dart';
 
@@ -200,7 +201,7 @@ class _AvatarCropScreenState extends State<AvatarCropScreen> {
         title: 'Фото профиля',
         automaticallyImplyLeading: false,
         leading: IconButton(
-          icon: const Icon(Icons.close),
+          icon: const Icon(LucideIcons.x),
           onPressed: _busy ? null : () => Navigator.of(context).pop(),
         ),
         actions: [

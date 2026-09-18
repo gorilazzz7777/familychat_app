@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -1101,8 +1103,8 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
                     children: [
                       Icon(
                         widget.isVideo || _localVideoEnabled
-                            ? Icons.videocam_outlined
-                            : Icons.call,
+                            ? LucideIcons.video
+                            : LucideIcons.phone,
                         size: 64,
                         color: Colors.white54,
                       ),
@@ -1187,7 +1189,7 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 _circleControl(
-                  icon: _micMuted ? Icons.mic_off : Icons.mic,
+                  icon: _micMuted ? LucideIcons.mic_off : LucideIcons.mic,
                   background: _micMuted
                       ? const Color(0xFF5A2A2A)
                       : const Color(0xFF2A2F36),
@@ -1196,26 +1198,26 @@ class _ChatCallScreenState extends ConsumerState<ChatCallScreen>
                 if (!kIsWeb)
                   _circleControl(
                     icon: _speakerOn
-                        ? Icons.volume_up
-                        : Icons.phone_in_talk,
+                        ? LucideIcons.volume_2
+                        : LucideIcons.phone_call,
                     onPressed:
                         _busy ? null : () => unawaited(_toggleSpeaker()),
                   ),
                 _circleControl(
                   icon: _localVideoEnabled
-                      ? Icons.videocam
-                      : Icons.videocam_off,
+                      ? LucideIcons.video
+                      : LucideIcons.video_off,
                   onPressed:
                       _busy ? null : () => unawaited(_toggleLocalVideo()),
                 ),
                 if (_localVideoEnabled)
                   _circleControl(
-                    icon: Icons.cameraswitch,
+                    icon: LucideIcons.switch_camera,
                     onPressed:
                         _busy ? null : () => unawaited(_flipCamera()),
                   ),
                 _circleControl(
-                  icon: Icons.call_end,
+                  icon: LucideIcons.phone_off,
                   background: Colors.red,
                   onPressed: _busy ? null : () => unawaited(_hangup()),
                 ),

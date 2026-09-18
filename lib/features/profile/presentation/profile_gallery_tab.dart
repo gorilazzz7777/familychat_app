@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/cache/familychat_local_cache.dart';
@@ -201,7 +203,7 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab>
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.edit_outlined),
+              leading: const Icon(LucideIcons.pencil),
               title: const Text('Редактировать'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -209,7 +211,7 @@ class ProfileGalleryTabState extends ConsumerState<ProfileGalleryTab>
               },
             ),
             ListTile(
-              leading: Icon(Icons.delete_outline, color: Theme.of(ctx).colorScheme.error),
+              leading: Icon(LucideIcons.trash, color: Theme.of(ctx).colorScheme.error),
               title: Text(
                 'Удалить',
                 style: TextStyle(color: Theme.of(ctx).colorScheme.error),

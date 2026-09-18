@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -127,9 +129,9 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
 
   IconData _iconForKind(String? kind) {
     return switch (kind) {
-      'birthday' => Icons.cake_outlined,
-      'custom' => Icons.event_note_outlined,
-      _ => Icons.celebration_outlined,
+      'birthday' => LucideIcons.cake,
+      'custom' => LucideIcons.notebook_pen,
+      _ => LucideIcons.party_popper,
     };
   }
 
@@ -209,7 +211,7 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
               IconButton(
                 tooltip: 'Предыдущий месяц',
                 onPressed: _loading ? null : () => _shiftMonth(-1),
-                icon: const Icon(Icons.chevron_left),
+                icon: const Icon(LucideIcons.chevron_left),
               ),
               Expanded(
                 child: Text(
@@ -223,7 +225,7 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
               IconButton(
                 tooltip: 'Следующий месяц',
                 onPressed: _loading ? null : () => _shiftMonth(1),
-                icon: const Icon(Icons.chevron_right),
+                icon: const Icon(LucideIcons.chevron_right),
               ),
             ],
           ),
@@ -312,7 +314,7 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                                           : null,
                                       trailing: isTappable
                                           ? Icon(
-                                              Icons.chevron_right,
+                                              LucideIcons.chevron_right,
                                               color: isPast ? pastFg : null,
                                             )
                                           : null,

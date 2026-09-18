@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/api_error_messages.dart';
@@ -230,7 +232,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
               right: 8,
               child: IconButton.filledTonal(
                 onPressed: () => Navigator.of(ctx).pop(),
-                icon: const Icon(Icons.close),
+                icon: const Icon(LucideIcons.x),
                 tooltip: 'Закрыть',
               ),
             ),
@@ -309,7 +311,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.delete_outline),
+                  : const Icon(LucideIcons.trash),
             ),
         ],
         bottom: _loading || _error != null || _profile == null
@@ -495,7 +497,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                 children: [
                   action(
                     onPressed: busy ? null : _openChat,
-                    icon: Icons.chat_outlined,
+                    icon: LucideIcons.message_circle,
                     label: _openingChat ? '…' : 'Чат',
                     filled: true,
                     showSpinner: _openingChat,
@@ -503,7 +505,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                   SizedBox(width: gap),
                   action(
                     onPressed: busy ? null : () => _startCall(),
-                    icon: Icons.call_outlined,
+                    icon: LucideIcons.phone,
                     label: _openingCall ? '…' : 'Звонок',
                     filled: false,
                     showSpinner: _openingCall,
@@ -511,7 +513,7 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
                   SizedBox(width: gap),
                   action(
                     onPressed: busy ? null : () => _startCall(isVideo: true),
-                    icon: Icons.videocam_outlined,
+                    icon: LucideIcons.video,
                     label: 'Видео',
                     filled: false,
                   ),
@@ -591,12 +593,12 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading: Icon(
-                Icons.map_outlined,
+                LucideIcons.map,
                 color: theme.colorScheme.primary,
               ),
               title: const Text('На карте'),
               subtitle: const Text('Где сейчас этот человек'),
-              trailing: const Icon(Icons.chevron_right),
+              trailing: const Icon(LucideIcons.chevron_right),
               onTap: () {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
@@ -610,26 +612,26 @@ class _MemberProfileScreenState extends ConsumerState<MemberProfileScreen>
         ],
         const SizedBox(height: 24),
         _InfoTile(
-          icon: Icons.badge_outlined,
+          icon: LucideIcons.badge_check,
           label: 'Имя',
           value: (p['first_name']?.toString() ?? '').isEmpty
               ? '—'
               : p['first_name']!.toString(),
         ),
         _InfoTile(
-          icon: Icons.person_outline,
+          icon: LucideIcons.user,
           label: 'Фамилия',
           value: (p['last_name']?.toString() ?? '').isEmpty
               ? '—'
               : p['last_name']!.toString(),
         ),
         _InfoTile(
-          icon: Icons.wc_outlined,
+          icon: LucideIcons.users,
           label: 'Пол',
           value: _genderLabel(p['gender']?.toString() ?? ''),
         ),
         _InfoTile(
-          icon: Icons.cake_outlined,
+          icon: LucideIcons.cake,
           label: 'День рождения',
           value: (birthday == null || birthday.isEmpty) ? '—' : birthday,
         ),

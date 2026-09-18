@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:intl/intl.dart';
 
 import '../../../core/widgets/family_app_bar.dart';
@@ -85,7 +87,7 @@ class _CalendarPhotoPickConfirmScreenState extends State<CalendarPhotoPickConfir
                     matches ? dateLabel : '$dateLabel · вне периода',
                   ),
                   secondary: Icon(
-                    matches ? Icons.check_circle_outline : Icons.help_outline,
+                    matches ? LucideIcons.circle_check : LucideIcons.circle_question_mark,
                     color: matches
                         ? Theme.of(context).colorScheme.primary
                         : Theme.of(context).colorScheme.onSurfaceVariant,

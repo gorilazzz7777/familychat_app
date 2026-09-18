@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 /// Меню «Ещё» над нижней навигацией.
 class MoreMenuPanel extends StatelessWidget {
@@ -40,14 +41,18 @@ class MoreMenuPanel extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           ListTile(
-            leading: Icon(Icons.calendar_month_outlined,
-                color: theme.colorScheme.primary),
+            leading: Icon(
+              LucideIcons.calendar_days,
+              color: theme.colorScheme.primary,
+            ),
             title: const Text('Календарь'),
             onTap: () => _pick(context, onOpenCalendar),
           ),
           ListTile(
-            leading:
-                Icon(Icons.person_outline, color: theme.colorScheme.primary),
+            leading: Icon(
+              LucideIcons.user,
+              color: theme.colorScheme.primary,
+            ),
             title: const Text('Профиль'),
             onTap: () => _pick(context, onOpenProfile),
           ),

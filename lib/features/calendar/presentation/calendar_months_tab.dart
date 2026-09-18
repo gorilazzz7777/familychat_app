@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -352,7 +354,7 @@ class _DayEventsSheet extends StatelessWidget {
                             (e['kind']?.toString() == 'custom' &&
                                 e['is_participant'] == true &&
                                 e['gallery_album_id'] != null))
-                        ? const Icon(Icons.chevron_right)
+                        ? const Icon(LucideIcons.chevron_right)
                         : null,
                     onTap: () => onEventTap(e),
                   ),
@@ -361,7 +363,7 @@ class _DayEventsSheet extends StatelessWidget {
             const SizedBox(height: 8),
             FilledButton.icon(
               onPressed: onCreate,
-              icon: const Icon(Icons.add),
+              icon: const Icon(LucideIcons.plus),
               label: const Text('Добавить событие'),
             ),
           ],

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../../core/media/video_upload_pipeline.dart';
 import '../../../../core/widgets/family_compose_input.dart';
@@ -97,7 +98,7 @@ class _ChatMediaDraftsSheetState extends State<ChatMediaDraftsSheet> {
             alignment: Alignment.centerLeft,
             child: IconButton(
               onPressed: _sending ? null : () => Navigator.of(context).pop(),
-              icon: const Icon(Icons.close, color: Colors.white),
+              icon: const Icon(LucideIcons.x, color: Colors.white),
             ),
           ),
           if (_sending || widget.preparing)
@@ -206,7 +207,7 @@ class _DraftTile extends StatelessWidget {
                 if (draft.isVideo)
                   const Align(
                     alignment: Alignment.center,
-                    child: Icon(Icons.play_circle_outline,
+                    child: Icon(LucideIcons.circle_play,
                         color: Colors.white70, size: 40),
                   ),
                 if (onRemove != null)
@@ -221,7 +222,7 @@ class _DraftTile extends StatelessWidget {
                         onTap: onRemove,
                         child: const Padding(
                           padding: EdgeInsets.all(4),
-                          child: Icon(Icons.close, size: 18, color: Colors.white),
+                          child: Icon(LucideIcons.x, size: 18, color: Colors.white),
                         ),
                       ),
                     ),
@@ -261,8 +262,8 @@ class _DraftTile extends StatelessWidget {
       color: Colors.black26,
       child: Icon(
         draft.previewBroken || draft.isVideo
-            ? Icons.broken_image_outlined
-            : Icons.image_not_supported_outlined,
+            ? LucideIcons.image_off
+            : LucideIcons.image_off,
         color: Colors.white38,
         size: 40,
       ),

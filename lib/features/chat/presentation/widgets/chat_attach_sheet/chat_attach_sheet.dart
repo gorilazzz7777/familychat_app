@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/chat_location_utils.dart';
@@ -417,8 +419,8 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
                             sending: _sending,
                             showCaption: !_hideCaption,
                             sendIcon: _hideCaption
-                                ? Icons.check_rounded
-                                : Icons.send_rounded,
+                                ? LucideIcons.check
+                                : LucideIcons.send,
                             onSend: _sendSelected,
                             onRemove: _removeSelected,
                           ),
@@ -479,7 +481,7 @@ class _FamilySelectionBar extends StatelessWidget {
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.check_rounded),
+                  : const Icon(LucideIcons.check),
               label: const Text('Добавить'),
             ),
           ],
@@ -505,17 +507,17 @@ class _ModeBar extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final chips = switch (style) {
       ChatAttachSheetStyle.albumMedia => const [
-          (ChatAttachMode.gallery, 'Телефон', Icons.phone_android_outlined),
+          (ChatAttachMode.gallery, 'Телефон', LucideIcons.smartphone),
           (
             ChatAttachMode.familyGallery,
             'Галерея семьи',
-            Icons.collections_outlined
+            LucideIcons.images
           ),
         ],
       _ => const [
-          (ChatAttachMode.gallery, 'Галерея', Icons.photo_outlined),
-          (ChatAttachMode.file, 'Файл', Icons.insert_drive_file_outlined),
-          (ChatAttachMode.location, 'Геопозиция', Icons.location_on_outlined),
+          (ChatAttachMode.gallery, 'Галерея', LucideIcons.image),
+          (ChatAttachMode.file, 'Файл', LucideIcons.file),
+          (ChatAttachMode.location, 'Геопозиция', LucideIcons.map_pin),
         ],
     };
 

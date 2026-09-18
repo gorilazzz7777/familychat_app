@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/scheduler.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -527,7 +529,7 @@ class ScrapbookLayoutEditorState extends State<ScrapbookLayoutEditor> {
           const IgnorePointer(
             child: Center(
               child: Icon(
-                Icons.play_circle_fill,
+                LucideIcons.circle_play,
                 color: Colors.white70,
                 size: 28,
               ),
@@ -540,7 +542,7 @@ class ScrapbookLayoutEditorState extends State<ScrapbookLayoutEditor> {
               child: Padding(
                 padding: EdgeInsets.only(top: 6),
                 child: Icon(
-                  Icons.rotate_right,
+                  LucideIcons.rotate_cw,
                   color: Color(0xFFC47A3A),
                   size: 22,
                 ),

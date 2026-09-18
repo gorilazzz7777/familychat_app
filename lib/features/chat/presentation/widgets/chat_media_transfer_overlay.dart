@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/chat_attachment_download_manager.dart';
@@ -117,7 +119,7 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
                         child: const Padding(
                           padding: EdgeInsets.all(10),
                           child: Icon(
-                            Icons.download_rounded,
+                            LucideIcons.download,
                             color: Colors.white,
                             size: 28,
                           ),
@@ -217,7 +219,7 @@ class _CancelButton extends StatelessWidget {
           width: size,
           height: size,
           child: Icon(
-            Icons.close_rounded,
+            LucideIcons.x,
             color: Colors.white,
             size: size * 0.48,
           ),

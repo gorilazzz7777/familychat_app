@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../app/app_actions_scope.dart';
 import '../../familychat/data/familychat_repository.dart';
@@ -94,7 +95,7 @@ class FamilyAddMenuButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<String>(
-      icon: const Icon(Icons.person_add_outlined),
+      icon: const Icon(LucideIcons.user_plus),
       tooltip: 'Добавить в семью',
       onSelected: (value) {
         if (value == 'invite') {

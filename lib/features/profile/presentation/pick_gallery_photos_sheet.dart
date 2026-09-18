@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/providers/app_providers.dart';
@@ -194,7 +196,7 @@ class _PickGalleryPhotosSheetState extends ConsumerState<PickGalleryPhotosSheet>
                                 return const ColoredBox(
                                   color: Color(0x33000000),
                                   child: Center(
-                                    child: Icon(Icons.check, color: Colors.white70),
+                                    child: Icon(LucideIcons.check, color: Colors.white70),
                                   ),
                                 );
                               }
@@ -221,7 +223,7 @@ class _PickGalleryPhotosSheetState extends ConsumerState<PickGalleryPhotosSheet>
                                       Container(
                                         color: Colors.black38,
                                         child: const Icon(
-                                          Icons.check_circle,
+                                          LucideIcons.circle_check,
                                           color: Colors.white,
                                           size: 32,
                                         ),

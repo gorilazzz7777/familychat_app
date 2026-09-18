@@ -271,22 +271,13 @@ class LocationShareCoordinator with WidgetsBindingObserver {
 
   static LocationSettings _backgroundLocationSettings() {
     if (defaultTargetPlatform == TargetPlatform.android) {
+      // Without ForegroundNotificationConfig Android does not show the
+      // persistent «Геолокация с семьёй» shade notification. Tracking still
+      // runs via Always + position stream / timer / resume pings.
       return AndroidSettings(
         accuracy: LocationAccuracy.medium,
         distanceFilter: moveThresholdM.round(),
         intervalDuration: interval,
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: 'Геолокация с семьёй',
-          notificationText:
-              'Family Space обновляет ваше местоположение для близких',
-          notificationChannelName: 'Геолокация с семьёй',
-          enableWakeLock: true,
-          setOngoing: true,
-          notificationIcon: AndroidResource(
-            name: 'ic_launcher',
-            defType: 'mipmap',
-          ),
-        ),
       );
     }
     if (defaultTargetPlatform == TargetPlatform.iOS ||
@@ -296,7 +287,7 @@ class LocationShareCoordinator with WidgetsBindingObserver {
         activityType: ActivityType.other,
         distanceFilter: moveThresholdM.round(),
         pauseLocationUpdatesAutomatically: true,
-        showBackgroundLocationIndicator: true,
+        showBackgroundLocationIndicator: false,
         allowBackgroundLocationUpdates: true,
       );
     }

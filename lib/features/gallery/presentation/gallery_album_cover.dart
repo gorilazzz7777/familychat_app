@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../core/media/media_local_index.dart';
 import 'gallery_media_thumbnail.dart';
@@ -16,7 +17,7 @@ class GalleryAlbumCover extends StatefulWidget {
     super.key,
     required this.cover,
     this.threadId,
-    this.fallbackIcon = Icons.photo_library_outlined,
+    this.fallbackIcon = LucideIcons.images,
   });
 
   final Map<String, dynamic>? cover;

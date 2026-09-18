@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../data/chat_voice_utils.dart';
 import 'chat_compose_circle_button.dart';
@@ -69,7 +70,7 @@ class ChatCircleRecordingOverlay extends StatelessWidget {
                                 ? null
                                 : () => session.flipCamera(),
                             icon: const Icon(
-                              Icons.cameraswitch,
+                              LucideIcons.switch_camera,
                               color: Colors.white,
                             ),
                           ),
@@ -127,7 +128,7 @@ class ChatCircleRecordingOverlay extends StatelessWidget {
                     ),
                     ChatComposeCircleButton(
                       tooltip: 'Отправить',
-                      icon: Icons.send_rounded,
+                      icon: LucideIcons.send,
                       iconColor: cs.onPrimary,
                       backgroundColor: cs.primary,
                       onTap: onSend,

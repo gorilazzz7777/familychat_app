@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'attach_camera_preview_impl.dart'
     if (dart.library.html) 'attach_camera_preview_web.dart';
@@ -30,7 +31,7 @@ class AttachCameraTile extends StatelessWidget {
               alignment: Alignment.bottomRight,
               child: Padding(
                 padding: EdgeInsets.all(6),
-                child: Icon(Icons.camera_alt, color: Colors.white70, size: 20),
+                child: Icon(LucideIcons.camera, color: Colors.white70, size: 20),
               ),
             ),
           ],

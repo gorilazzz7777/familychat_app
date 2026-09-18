@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/media/gallery_media_utils.dart';
@@ -161,28 +163,28 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
         _GalleryAlbumGroup(
           id: 'custom',
           label: widget.customTabLabel,
-          icon: Icons.collections_bookmark_outlined,
+          icon: LucideIcons.bookmark,
           albums: customAlbums,
         ),
       if ((byKind['face'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(
           id: 'face',
           label: 'Люди',
-          icon: Icons.face_outlined,
+          icon: LucideIcons.scan_face,
           albums: List<Map<String, dynamic>>.from(byKind['face']!),
         ),
       if ((byKind['place'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(
           id: 'place',
           label: 'Места',
-          icon: Icons.place_outlined,
+          icon: LucideIcons.map_pin,
           albums: List<Map<String, dynamic>>.from(byKind['place']!),
         ),
       if ((byKind['year'] ?? []).isNotEmpty)
         _GalleryAlbumGroup(
           id: 'year',
           label: 'Годы',
-          icon: Icons.calendar_today_outlined,
+          icon: LucideIcons.calendar,
           albums: List<Map<String, dynamic>>.from(byKind['year']!),
         ),
     ];
@@ -215,11 +217,11 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
 
   IconData _albumIcon(String? kind) {
     return switch (kind) {
-      'year' => Icons.calendar_today_outlined,
-      'place' => Icons.place_outlined,
-      'face' => Icons.face_outlined,
-      'custom' => Icons.collections_bookmark_outlined,
-      _ => Icons.photo_library_outlined,
+      'year' => LucideIcons.calendar,
+      'place' => LucideIcons.map_pin,
+      'face' => LucideIcons.scan_face,
+      'custom' => LucideIcons.bookmark,
+      _ => LucideIcons.images,
     };
   }
 
@@ -260,7 +262,7 @@ class _GalleryAlbumsGroupedViewState extends State<GalleryAlbumsGroupedView> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Icon(
-                      Icons.face_retouching_natural_outlined,
+                      LucideIcons.face_slightly_smiling,
                       color: Theme.of(context).colorScheme.primary,
                     ),
                     const SizedBox(width: 12),
@@ -407,7 +409,7 @@ class _AllPhotosCard extends ConsumerWidget {
                 height: 112,
                 child: GalleryAlbumCover(
                   cover: cover,
-                  fallbackIcon: Icons.photo_library_outlined,
+                  fallbackIcon: LucideIcons.images,
                 ),
               ),
               Expanded(
@@ -437,7 +439,7 @@ class _AllPhotosCard extends ConsumerWidget {
               Padding(
                 padding: const EdgeInsets.only(right: 12),
                 child: Icon(
-                  Icons.chevron_right,
+                  LucideIcons.chevron_right,
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),

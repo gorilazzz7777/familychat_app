@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/i18n/gender_verbs.dart';
@@ -357,13 +358,13 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: const Icon(Icons.visibility_outlined),
+                leading: const Icon(LucideIcons.eye),
                 title: const Text('Просмотрено'),
                 onTap: () => Navigator.pop(ctx, 'viewed'),
               ),
               ListTile(
                 leading: Icon(
-                  Icons.favorite_border,
+                  LucideIcons.heart,
                   color: theme.colorScheme.onSurface,
                 ),
                 title: const Text('Реакции'),
@@ -405,14 +406,14 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: Icon(Icons.open_in_new, color: theme.colorScheme.primary),
+                leading: Icon(LucideIcons.external_link, color: theme.colorScheme.primary),
                 title: Text(navigateLabel),
                 onTap: () => Navigator.pop(ctx, 'navigate'),
               ),
               if (_canDelete)
                 ListTile(
                   leading: Icon(
-                    Icons.delete_outline,
+                    LucideIcons.trash,
                     color: theme.colorScheme.error,
                   ),
                   title: Text(
@@ -574,7 +575,7 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                       IconButton(
                         visualDensity: VisualDensity.compact,
                         tooltip: 'Ещё',
-                        icon: const Icon(Icons.more_vert),
+                        icon: const Icon(LucideIcons.ellipsis_vertical),
                         onPressed: _openPostMenu,
                       ),
                     ],

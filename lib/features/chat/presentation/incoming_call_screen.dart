@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/call/call_lock_screen.dart';
@@ -234,13 +236,13 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen> {
                     _CallActionButton(
                       label: 'Сбросить',
                       color: Colors.red.shade600,
-                      icon: Icons.call_end,
+                      icon: LucideIcons.phone_off,
                       onPressed: _busy ? null : () => unawaited(_decline()),
                     ),
                     _CallActionButton(
                       label: 'Ответить',
                       color: Colors.green.shade600,
-                      icon: widget.isVideo ? Icons.videocam : Icons.call,
+                      icon: widget.isVideo ? LucideIcons.video : LucideIcons.phone,
                       onPressed: _busy ? null : () => unawaited(_answer()),
                     ),
                   ],

@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
+
 import 'package:flutter/services.dart';
 
 import '../../../core/media/gallery_media_utils.dart';
@@ -218,7 +220,7 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
           color: Colors.black,
           child: Center(
             child: Icon(
-              Icons.broken_image_outlined,
+              LucideIcons.image_off,
               color: Colors.white54,
               size: 48,
             ),
@@ -230,7 +232,7 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
       color: Colors.black,
       child: Center(
         child: Icon(
-          Icons.broken_image_outlined,
+          LucideIcons.image_off,
           color: Colors.white54,
           size: 48,
         ),
@@ -322,7 +324,7 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
             child: _ChromeButton(
               tooltip: 'Закрыть',
               onPressed: () => Navigator.of(context).maybePop(),
-              child: const Icon(Icons.close, color: Colors.white, size: 22),
+              child: const Icon(LucideIcons.x, color: Colors.white, size: 22),
             ),
           ),
           Positioned(
@@ -349,7 +351,7 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
             const IgnorePointer(
               child: Center(
                 child: Icon(
-                  Icons.pause_circle_filled,
+                  LucideIcons.circle_pause,
                   color: Colors.white70,
                   size: 72,
                 ),
@@ -374,7 +376,7 @@ class _PhotoSlideshowScreenState extends State<PhotoSlideshowScreen>
                         tooltip: _paused ? 'Продолжить' : 'Пауза',
                         onPressed: _togglePause,
                         icon: Icon(
-                          _paused ? Icons.play_arrow : Icons.pause,
+                          _paused ? LucideIcons.play : LucideIcons.pause,
                           color: Colors.white,
                         ),
                       ),

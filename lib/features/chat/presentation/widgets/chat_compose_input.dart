@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../../../../core/widgets/family_input_styles.dart';
 import '../../data/chat_gif_item.dart';
@@ -184,7 +185,7 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
               if (!recording)
                 ChatComposeCircleButton(
                   tooltip: 'Вложение',
-                  icon: Icons.attach_file,
+                  icon: LucideIcons.paperclip,
                   iconColor: theme.colorScheme.onSurface,
                   onTap: widget.onAttach,
                 ),
