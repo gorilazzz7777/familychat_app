@@ -133,7 +133,7 @@ abstract final class ShareFavoriteChatsStore {
     if (kIsWeb || threadId <= 0) return;
     final trimmedTitle = title.trim().isEmpty ? 'Чат' : title.trim();
     final now = DateTime.now().millisecondsSinceEpoch;
-    final current = await loadAll();
+    final current = List<ShareFavoriteChatEntry>.from(await loadAll());
     final idx = current.indexWhere((e) => e.threadId == threadId);
     ShareFavoriteChatEntry next;
     if (idx >= 0) {
@@ -169,7 +169,7 @@ abstract final class ShareFavoriteChatsStore {
     Map<int, Map<String, dynamic>> memberByUserId,
   ) async {
     if (kIsWeb || threads.isEmpty) return;
-    final favorites = await loadAll();
+    final favorites = List<ShareFavoriteChatEntry>.from(await loadAll());
     if (favorites.isEmpty) return;
     var changed = false;
     final byId = {

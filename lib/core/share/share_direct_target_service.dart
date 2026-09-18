@@ -93,8 +93,15 @@ abstract final class ShareDirectTargetService {
       } catch (e) {
         debugPrint('[ShareDirectTarget] recordSentMessage failed: $e');
       }
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        await _channel.invokeMethod<void>('reportShareShortcutUsed', {
+          'thread_id': threadId,
+        });
+      } catch (e) {
+        debugPrint('[ShareDirectTarget] reportShortcutUsed failed: $e');
+      }
     }
-    // Android shortcuts обновляются пакетным syncFromThreads / syncFromStore.
   }
 
   static Future<void> _publish(List<ShareFavoriteChatEntry> chats) async {

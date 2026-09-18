@@ -15,6 +15,7 @@ export 'package:gorila_chat/gorila_chat.dart'
         chatEnsureMessageOwnership,
         chatPendingMatchesServer,
         chatPendingToReinject,
+        chatUnsyncedMineTipToPreserve,
         chatReconcilePendingDuplicates,
         sortChatMessages,
         chatUpsertMessage,

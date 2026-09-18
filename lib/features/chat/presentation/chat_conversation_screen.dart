@@ -1422,12 +1422,19 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final pendingLocal = chatPendingToReinject(
       memoryMessages: _messages,
       sqliteRows: rows,
+      currentUserId: _currentUserId,
     );
-    final merged = pendingLocal.isEmpty
+    final tipLocal = chatUnsyncedMineTipToPreserve(
+      memoryMessages: _messages,
+      sqliteRows: rows,
+      currentUserId: _currentUserId,
+    );
+    final extras = [...pendingLocal, ...tipLocal];
+    final merged = extras.isEmpty
         ? rows
         : chatMergeMessageLists(
             rows,
-            pendingLocal,
+            extras,
             currentUserId: _currentUserId,
           );
     return chatReconcilePendingDuplicates(
@@ -1446,6 +1453,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final pendingLocal = chatPendingToReinject(
       memoryMessages: _messages,
       sqliteRows: rows,
+      currentUserId: _currentUserId,
+    );
+    final tipLocal = chatUnsyncedMineTipToPreserve(
+      memoryMessages: _messages,
+      sqliteRows: rows,
+      currentUserId: _currentUserId,
     );
     final base = hydrateAttachments
         ? await FamilyChatLocalCache.hydrateAttachmentBytes(
@@ -1454,11 +1467,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           )
         : rows;
     final withPreviews = _preserveLocalPreviews(_messages, base);
-    final merged = pendingLocal.isEmpty
+    final extras = [...pendingLocal, ...tipLocal];
+    final merged = extras.isEmpty
         ? withPreviews
         : chatMergeMessageLists(
             withPreviews,
-            pendingLocal,
+            extras,
             currentUserId: _currentUserId,
           );
     return chatReconcilePendingDuplicates(
@@ -1562,6 +1576,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final pendingLocal = chatPendingToReinject(
       memoryMessages: _messages,
       sqliteRows: sqliteRows,
+      currentUserId: _currentUserId,
     );
     final merged = pendingLocal.isEmpty
         ? sqliteRows
@@ -3747,6 +3762,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       },
     );
     _scrollToBottom();
+    // Seed SQLite immediately so concurrent watches cannot blank the tip
+    // while media is still uploading (memory-only pending used to vanish).
+    if (_localFirst) {
+      unawaited(_persistMessageCache());
+    }
   }
 
   void _replaceOptimisticMessage(int tempId, Map<String, dynamic> msg) {

@@ -2,12 +2,21 @@ package com.familychat.familychat_app
 
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ShortcutInfo
-import android.content.pm.ShortcutManager
-import android.graphics.drawable.Icon
-import android.os.Build
 import android.util.Log
+import androidx.core.app.Person
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.drawable.IconCompat
 
+/**
+ * Direct Share targets for the system share sheet.
+ *
+ * Requires [android.app.shortcuts] meta-data on [MainActivity] (not application)
+ * so [share-target] categories bind to SEND intent-filters.
+ *
+ * [ShortcutManagerCompat.pushDynamicShortcut] also reports usage — needed for
+ * Samsung/Android ranking in the top people row.
+ */
 object ShareShortcutPublisher {
     private const val TAG = "FamilyChatShareShortcut"
     const val CATEGORY = "com.familychat.familychat_app.category.SHARE_TARGET"
@@ -20,49 +29,75 @@ object ShareShortcutPublisher {
         val title: String,
     )
 
-    fun sync(context: Context, chats: List<ChatShortcut>) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) return
-        val manager = context.getSystemService(ShortcutManager::class.java) ?: return
+    fun shortcutIdForThread(threadId: Int): String = "$SHORTCUT_PREFIX$threadId"
 
-        val existingShareIds = manager.dynamicShortcuts
+    fun sync(context: Context, chats: List<ChatShortcut>) {
+        val existingShareIds = ShortcutManagerCompat.getDynamicShortcuts(context)
             .map { it.id }
             .filter { it.startsWith(SHORTCUT_PREFIX) }
         if (existingShareIds.isNotEmpty()) {
-            manager.removeDynamicShortcuts(existingShareIds)
+            ShortcutManagerCompat.removeDynamicShortcuts(context, existingShareIds)
         }
 
-        if (chats.isEmpty()) return
+        if (chats.isEmpty()) {
+            Log.i(TAG, "synced 0 direct share shortcuts (cleared)")
+            return
+        }
 
-        val icon = Icon.createWithResource(context, R.mipmap.ic_launcher)
-        val shortcuts = chats.take(4).mapNotNull { chat ->
-            if (chat.threadId <= 0) return@mapNotNull null
+        val icon = IconCompat.createWithResource(context, R.mipmap.ic_launcher)
+        val max = ShortcutManagerCompat.getMaxShortcutCountPerActivity(context)
+            .coerceAtMost(4)
+            .coerceAtLeast(1)
+        var published = 0
+        chats.take(max).forEachIndexed { index, chat ->
+            if (chat.threadId <= 0) return@forEachIndexed
             val label = chat.title.trim().ifEmpty { "Чат" }
+            // Launcher intent only — share sheet builds ACTION_SEND + EXTRA_SHORTCUT_ID.
             val intent = Intent(context, MainActivity::class.java).apply {
                 action = Intent.ACTION_VIEW
                 addCategory(Intent.CATEGORY_DEFAULT)
                 putExtra(EXTRA_THREAD_ID, chat.threadId)
                 putExtra(EXTRA_THREAD_TITLE, label)
             }
-            ShortcutInfo.Builder(context, "$SHORTCUT_PREFIX${chat.threadId}")
+            val person = Person.Builder()
+                .setName(label)
+                .setKey("thread_${chat.threadId}")
+                .setImportant(true)
+                .build()
+            val shortcut = ShortcutInfoCompat.Builder(context, shortcutIdForThread(chat.threadId))
                 .setShortLabel(label.take(25))
                 .setLongLabel(label.take(100))
                 .setCategories(setOf(CATEGORY))
                 .setIcon(icon)
+                .setRank(index)
                 .setIntent(intent)
-                .apply {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        setLongLived(true)
-                    }
-                }
+                .setPerson(person)
+                .setLongLived(true)
+                .setIsConversation()
                 .build()
+            try {
+                // pushDynamicShortcut reports usage → helps OEM share ranking.
+                val ok = ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)
+                if (ok) published++
+                else Log.w(TAG, "pushDynamicShortcut rejected id=${shortcut.id}")
+            } catch (e: Throwable) {
+                Log.w(TAG, "pushDynamicShortcut failed id=${shortcut.id}", e)
+            }
         }
+        Log.i(
+            TAG,
+            "synced $published/${chats.take(max).size} direct share shortcuts " +
+                "ids=${chats.take(max).map { shortcutIdForThread(it.threadId) }}",
+        )
+    }
 
-        if (shortcuts.isEmpty()) return
+    fun reportUsed(context: Context, threadId: Int) {
+        if (threadId <= 0) return
         try {
-            manager.addDynamicShortcuts(shortcuts)
-            Log.i(TAG, "synced ${shortcuts.size} direct share shortcuts")
+            ShortcutManagerCompat.reportShortcutUsed(context, shortcutIdForThread(threadId))
+            Log.i(TAG, "reportShortcutUsed thread=$threadId")
         } catch (e: Throwable) {
-            Log.w(TAG, "addDynamicShortcuts failed", e)
+            Log.w(TAG, "reportShortcutUsed failed thread=$threadId", e)
         }
     }
 }

@@ -169,6 +169,12 @@ class _ChatShareTargetScreenState extends ConsumerState<ChatShareTargetScreen>
         threadKind: thread['kind']?.toString(),
         peerUserId: ChatThreadSelectTile.dmPeerUserId(thread),
       );
+      unawaited(
+        ShareDirectTargetService.recordConversationUse(
+          threadId: threadId,
+          title: ChatThreadSelectTile.titleOf(thread, _memberByUserId),
+        ),
+      );
     }
     unawaited(ShareDirectTargetService.syncFromStore());
     unawaited(_loadFavoriteChats());

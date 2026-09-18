@@ -317,6 +317,8 @@ void main() {
         '_pending': true,
         'body': '',
         'read_status': 'sending',
+        'sender_user_id': 7,
+        'created_at': '2026-08-05T08:00:00.000Z',
         'attachments': [
           {'kind': 'image', 'filename': 'a.jpg', '_pending': true},
         ],
@@ -324,6 +326,8 @@ void main() {
       {
         'id': 94,
         'body': '',
+        'sender_user_id': 7,
+        'created_at': '2026-08-05T08:00:01.000Z',
         'attachments': [
           {'kind': 'image', 'filename': 'a.jpg'},
         ],
@@ -333,6 +337,8 @@ void main() {
       {
         'id': 94,
         'body': '',
+        'sender_user_id': 7,
+        'created_at': '2026-08-05T08:00:01.000Z',
         'attachments': [
           {'kind': 'image', 'filename': 'a.jpg'},
         ],
@@ -341,8 +347,89 @@ void main() {
     final reinject = chatPendingToReinject(
       memoryMessages: memory,
       sqliteRows: sqlite,
+      currentUserId: 7,
     );
     expect(reinject, isEmpty);
+  });
+
+  test('chatPendingToReinject keeps in-chat media while server absent', () {
+    final pending = {
+      'id': -1789744401865124,
+      '_pending': true,
+      'body': '',
+      'read_status': 'sending',
+      'sender_user_id': 7,
+      'is_mine': true,
+      'created_at': '2026-09-18T15:13:00.000Z',
+      'attachments': [
+        {'kind': 'image', 'filename': '20260918_152230.jpg', '_pending': true},
+      ],
+    };
+    final sqlite = [
+      {
+        'id': 2494,
+        'body': 'hi',
+        'sender_user_id': 7,
+        'created_at': '2026-09-18T15:12:00.000Z',
+        'attachments': const [],
+      },
+      {
+        'id': 2495,
+        'body': 'ok',
+        'sender_user_id': 7,
+        'created_at': '2026-09-18T15:12:30.000Z',
+        'attachments': const [],
+      },
+    ];
+    final reinject = chatPendingToReinject(
+      memoryMessages: [...sqlite, pending],
+      sqliteRows: sqlite,
+      currentUserId: 7,
+    );
+    expect(reinject.map((m) => chatAsInt(m['id'])).toList(), [-1789744401865124]);
+  });
+
+  test('chatUnsyncedMineTipToPreserve keeps just-replaced server id', () {
+    final memory = [
+      {
+        'id': 2494,
+        'body': 'hi',
+        'sender_user_id': 7,
+        'is_mine': true,
+        'created_at': '2026-09-18T15:12:00.000Z',
+      },
+      {
+        'id': 2496,
+        'body': '',
+        'sender_user_id': 7,
+        'is_mine': true,
+        'read_status': 'read',
+        'created_at': '2026-09-18T15:13:00.000Z',
+        'attachments': [
+          {'kind': 'image', 'filename': '20260918_152230.jpg'},
+        ],
+      },
+    ];
+    final sqlite = [
+      {
+        'id': 2494,
+        'body': 'hi',
+        'sender_user_id': 7,
+        'created_at': '2026-09-18T15:12:00.000Z',
+      },
+      {
+        'id': 2495,
+        'body': 'ok',
+        'sender_user_id': 7,
+        'created_at': '2026-09-18T15:12:30.000Z',
+      },
+    ];
+    final tip = chatUnsyncedMineTipToPreserve(
+      memoryMessages: memory,
+      sqliteRows: sqlite,
+      currentUserId: 7,
+    );
+    expect(tip.map((m) => chatAsInt(m['id'])).toList(), [2496]);
   });
 
   test('chatPendingToReinject skips share temp still in sqlite', () {

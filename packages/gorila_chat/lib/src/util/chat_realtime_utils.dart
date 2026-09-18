@@ -305,11 +305,19 @@ bool _chatPendingAttachmentsMatch(
 }
 
 /// Pending rows from in-memory UI that should be merged back into a SQLite
-/// snapshot. Share uploads are always seeded first — if the temp id is gone
-/// from SQLite, [replacePending] already finished and reinject would duplicate.
+/// snapshot.
+///
+/// In-chat media keeps `_pending` on attachments while uploading and often
+/// lives only in memory until HTTP finishes. A SQLite watch must reinject
+/// that bubble until a matching server row exists — otherwise the tip
+/// flickers away between temp delete and server upsert.
+///
+/// Share uploads seed SQLite first; once a matching server row is present,
+/// reinject is skipped so we do not duplicate after [replacePending].
 List<Map<String, dynamic>> chatPendingToReinject({
   required List<Map<String, dynamic>> memoryMessages,
   required List<Map<String, dynamic>> sqliteRows,
+  int? currentUserId,
 }) {
   final sqliteIds = <int>{
     for (final row in sqliteRows)
@@ -319,23 +327,77 @@ List<Map<String, dynamic>> chatPendingToReinject({
     for (final message in memoryMessages)
       if (chatMessageIsPending(message) &&
           message['_scheduled'] != true &&
-          _shouldReinjectPending(message, sqliteIds))
+          _shouldReinjectPending(
+            message,
+            sqliteIds: sqliteIds,
+            sqliteRows: sqliteRows,
+            currentUserId: currentUserId,
+          ))
         message,
   ];
 }
 
-bool _shouldReinjectPending(Map<String, dynamic> pending, Set<int> sqliteIds) {
+bool _shouldReinjectPending(
+  Map<String, dynamic> pending, {
+  required Set<int> sqliteIds,
+  required List<Map<String, dynamic>> sqliteRows,
+  int? currentUserId,
+}) {
   final id = chatAsInt(pending['id']);
   // Already in the SQLite snapshot — re-adding would duplicate the same id
   // (and GlobalKey) in the ListView.
   if (id != null && sqliteIds.contains(id)) return false;
   if (id == null) return true;
+
   final uploading =
       chatAttachmentsOf(pending).any((a) => a['_pending'] == true);
-  // Share media: seeded before UI; absence means deliver replaced it.
-  if (uploading) return false;
+  if (uploading) {
+    // Only drop reinject when deliver already wrote the server row.
+    for (final row in sqliteRows) {
+      if (chatMessageIsPending(row)) continue;
+      if (chatPendingMatchesServer(
+        pending,
+        row,
+        currentUserId: currentUserId,
+      )) {
+        return false;
+      }
+    }
+    // Temp gone / never seeded, server not in snapshot yet — keep the bubble.
+    return true;
+  }
   // Text/file optimistic may exist only in memory for one frame before upsert.
   return true;
+}
+
+/// Keep just-confirmed own messages that SQLite has not echoed yet.
+///
+/// After optimistic→server replace, memory already has the positive id while
+/// a concurrent watch may still see the pre-upsert snapshot. Without this,
+/// the tip disappears for one frame until the upsert watch arrives.
+List<Map<String, dynamic>> chatUnsyncedMineTipToPreserve({
+  required List<Map<String, dynamic>> memoryMessages,
+  required List<Map<String, dynamic>> sqliteRows,
+  int? currentUserId,
+}) {
+  final sqliteIds = <int>{
+    for (final row in sqliteRows)
+      if (chatAsInt(row['id']) != null) chatAsInt(row['id'])!,
+  };
+  var maxSqliteServerId = 0;
+  for (final id in sqliteIds) {
+    if (id > maxSqliteServerId) maxSqliteServerId = id;
+  }
+  return [
+    for (final message in memoryMessages)
+      if (!chatMessageIsPending(message) &&
+          message['_scheduled'] != true &&
+          chatMessageIsMine(message, currentUserId))
+        if (chatAsInt(message['id']) != null &&
+            !sqliteIds.contains(chatAsInt(message['id'])!) &&
+            chatAsInt(message['id'])! > maxSqliteServerId)
+          message,
+  ];
 }
 
 /// Drop optimistic rows that already exist as confirmed server messages.

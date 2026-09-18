@@ -181,6 +181,14 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
+                "reportShareShortcutUsed" -> {
+                    val threadId = call.argument<Int>("thread_id")
+                        ?: (call.argument<Number>("thread_id")?.toInt())
+                        ?: 0
+                    ShareShortcutPublisher.reportUsed(this, threadId)
+                    result.success(null)
+                }
+
                 "takePendingDirectShare" -> {
                     val prefs = getSharedPreferences("familychat_share_targets", MODE_PRIVATE)
                     val threadId = prefs.getInt("pending_thread_id", 0)
@@ -283,6 +291,7 @@ class MainActivity : FlutterActivity() {
                 }
             }
             .apply()
+        ShareShortcutPublisher.reportUsed(this, threadId)
         Log.i(TAG, "direct share target thread_id=$threadId title=$title")
     }
 

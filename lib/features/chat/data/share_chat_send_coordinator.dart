@@ -178,8 +178,9 @@ class ShareChatSendCoordinator {
                   }),
       );
       owned['is_mine'] = true;
-      await ChatLocalStore.instance.deleteMessages(threadId, [tempId]);
+      // Upsert server first — a watch between delete and upsert blanks the tip.
       await ChatLocalStore.instance.upsertMessage(owned);
+      await ChatLocalStore.instance.deleteMessages(threadId, [tempId]);
       return;
     }
     final existing =
