@@ -247,7 +247,7 @@ class FeedReactionsStack extends StatelessWidget {
 
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final diameter = emojiSize + 6;
+    final diameter = emojiSize + 12;
     // slots: [mine|placeholder] + others
     final slotCount = 1 + others.length;
     final width = diameter + (slotCount - 1) * (diameter - overlap);

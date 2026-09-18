@@ -76,7 +76,7 @@ class FeedViewedByRow extends ConsumerStatefulWidget {
   });
 
   /// Upper bound for how many names we try to show in-line.
-  static const maxVisibleNames = 3;
+  static const maxVisibleNames = 2;
 
   final List<Map<String, dynamic>> viewedBy;
   final int? eventId;
@@ -107,6 +107,7 @@ class _FeedViewedByRowState extends ConsumerState<FeedViewedByRow> {
   }
 
   /// How many leading names fit on one line with an optional «ещё +N».
+  /// Never clip «ещё» — drop names until the overflow label fits.
   ({int visibleCount, int overflow}) _fitNames({
     required List<String> names,
     required double maxWidth,
@@ -118,7 +119,6 @@ class _FeedViewedByRowState extends ConsumerState<FeedViewedByRow> {
         ? names.length
         : FeedViewedByRow.maxVisibleNames;
 
-    // Prefer showing as many as possible (up to 3) that still fit with overflow.
     for (var count = maxVisible; count >= 1; count--) {
       final visible = names.take(count).join(', ');
       final overflow = names.length - count;
@@ -136,11 +136,14 @@ class _FeedViewedByRowState extends ConsumerState<FeedViewedByRow> {
       }
     }
 
-    // Even one full name may be too long — still show 1 + overflow.
-    return (
-      visibleCount: 1,
-      overflow: names.length > 1 ? names.length - 1 : 0,
-    );
+    // Names don't fit with «ещё» — show overflow only (full list in sheet).
+    if (names.length > 1) {
+      final overflowLabel = 'ещё +${names.length}';
+      if (_measure(overflowLabel, overflowStyle) <= maxWidth) {
+        return (visibleCount: 0, overflow: names.length);
+      }
+    }
+    return (visibleCount: 1, overflow: 0);
   }
 
   @override
@@ -191,22 +194,30 @@ class _FeedViewedByRowState extends ConsumerState<FeedViewedByRow> {
                     borderRadius: BorderRadius.circular(6),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 1),
-                      child: Text.rich(
-                        TextSpan(
-                          children: [
-                            TextSpan(text: visibleNames, style: mutedStyle),
-                            if (fit.overflow > 0) ...[
-                              TextSpan(text: ' ', style: mutedStyle),
-                              TextSpan(
-                                text: 'ещё +${fit.overflow}',
-                                style: overflowStyle,
+                      // Keep «ещё +N» unclipped: names may shrink, label does not.
+                      child: Row(
+                        children: [
+                          if (fit.visibleCount > 0)
+                            Flexible(
+                              child: Text(
+                                visibleNames,
+                                style: mutedStyle,
+                                maxLines: 1,
+                                softWrap: false,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            ],
+                            ),
+                          if (fit.overflow > 0) ...[
+                            if (fit.visibleCount > 0)
+                              Text(' ', style: mutedStyle),
+                            Text(
+                              'ещё +${fit.overflow}',
+                              style: overflowStyle,
+                              maxLines: 1,
+                              softWrap: false,
+                            ),
                           ],
-                        ),
-                        maxLines: 1,
-                        softWrap: false,
-                        overflow: TextOverflow.ellipsis,
+                        ],
                       ),
                     ),
                   ),

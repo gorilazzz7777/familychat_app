@@ -29,11 +29,18 @@ String feedPersonDisplayName(Map<String, dynamic> person) {
 
 /// Короткое имя для компактной строки «просмотрели» (не полное ФИО).
 String feedPersonShortName(Map<String, dynamic> person) {
-  final first = person['first_name']?.toString().trim() ?? '';
+  String firstToken(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return '';
+    return trimmed.split(RegExp(r'\s+')).first;
+  }
+
+  final first = firstToken(person['first_name']?.toString() ?? '');
   if (first.isNotEmpty && !_isPlaceholderPersonName(first)) return first;
   final full = feedPersonDisplayName(person);
   if (full.isEmpty) return '';
-  return full.split(RegExp(r'\s+')).first;
+  final token = firstToken(full);
+  return token.isEmpty || _isPlaceholderPersonName(token) ? '' : token;
 }
 
 bool _isPlaceholderPersonName(String name) {
