@@ -1702,6 +1702,9 @@ class FamilyChatRepository {
     int threadId,
     int attachmentId,
   ) async {
+    if (attachmentId <= 0) {
+      return {'attachment_id': attachmentId, 'faces': <dynamic>[]};
+    }
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/attachments/$attachmentId/faces/',
     );
@@ -1757,6 +1760,13 @@ class FamilyChatRepository {
     int profileUserId,
     int attachmentId,
   ) async {
+    if (attachmentId <= 0) {
+      return {
+        'attachment_id': attachmentId,
+        'profile_user_id': profileUserId,
+        'faces': <dynamic>[],
+      };
+    }
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/members/$profileUserId/gallery/photos/$attachmentId/faces/',
     );
