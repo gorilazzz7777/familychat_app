@@ -97,16 +97,12 @@ class FeedEventActionBar extends ConsumerStatefulWidget {
     this.attachmentId,
     required this.event,
     required this.createdAt,
-    required this.onNavigate,
-    this.navigateTooltip = 'Перейти',
     this.onEngagementChanged,
   });
 
   final int? attachmentId;
   final Map<String, dynamic> event;
   final DateTime? createdAt;
-  final VoidCallback onNavigate;
-  final String navigateTooltip;
   final VoidCallback? onEngagementChanged;
 
   @override
@@ -264,31 +260,15 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
       child: Row(
         children: [
           if (hasMedia) ...[
-            IconButton(
-              tooltip: 'Реакция',
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              onPressed: _reactBusy ? null : _openReactionSheet,
-              icon: myEmoji != null
-                  ? Text(
-                      myEmoji,
-                      style: const TextStyle(fontSize: 22, height: 1),
-                    )
-                  : Icon(
-                      Icons.favorite_border,
-                      size: 24,
-                      color: cs.onSurfaceVariant,
-                    ),
+            // One control: mine (or grey heart) + others LTR; tap = picker.
+            FeedReactionsStack(
+              reactions: _reactions,
+              myEmoji: myEmoji,
+              onTap: _reactBusy ? null : _openReactionSheet,
             ),
-            if (_reactions.isNotEmpty) ...[
-              FeedReactionsStack(
-                reactions: _reactions,
-                onTap: _reactBusy ? null : _openReactionSheet,
-              ),
+            if (_reactionsTotal > 0) ...[
               const SizedBox(width: 4),
-            ],
-            if (_reactionsTotal > 0)
+              // Count is separate: tap opens who reacted (not the picker).
               Tooltip(
                 message: 'Кто поставил реакцию',
                 child: Material(
@@ -306,6 +286,8 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
                   ),
                 ),
               ),
+            ] else
+              const SizedBox(width: 4),
             IconButton(
               tooltip: 'Комментарии',
               visualDensity: VisualDensity.compact,
@@ -327,14 +309,6 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
                 ),
               ),
           ],
-          IconButton(
-            tooltip: widget.navigateTooltip,
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            onPressed: widget.onNavigate,
-            icon: Icon(Icons.open_in_new, size: 22, color: cs.primary),
-          ),
           const Spacer(),
           if (dateText.isNotEmpty)
             Text(

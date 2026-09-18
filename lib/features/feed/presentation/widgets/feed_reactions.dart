@@ -199,25 +199,38 @@ void writeFeedEngagementToEvent(
 }
 
 /// Пачка эмодзи реакций «друг на друге» (без счётчиков по видам).
+///
+/// Слева направо: своя реакция (или серое сердце), затем остальные.
+/// Своя рисуется сверху по z-order.
 class FeedReactionsStack extends StatelessWidget {
   const FeedReactionsStack({
     super.key,
     required this.reactions,
+    this.myEmoji,
     this.onTap,
     this.emojiSize = 18,
     this.overlap = 10,
+    this.showMinePlaceholder = true,
   });
 
   final List<Map<String, dynamic>> reactions;
+  /// Своя эмодзи, если уже поставили; иначе placeholder (серое сердце).
+  final String? myEmoji;
   final VoidCallback? onTap;
   final double emojiSize;
   final double overlap;
+  /// Показывать серое сердце слева, даже когда реакций ещё нет.
+  final bool showMinePlaceholder;
 
-  List<String> get _emojis {
+  List<String> get _otherEmojis {
+    final mine = myEmoji?.trim();
     final out = <String>[];
+    final seen = <String>{};
     for (final reaction in reactions) {
       final emoji = reaction['emoji']?.toString().trim() ?? '';
       if (emoji.isEmpty) continue;
+      if (mine != null && mine.isNotEmpty && emoji == mine) continue;
+      if (!seen.add(emoji)) continue;
       out.add(emoji);
     }
     return out;
@@ -225,13 +238,62 @@ class FeedReactionsStack extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final emojis = _emojis;
-    if (emojis.isEmpty) return const SizedBox.shrink();
+    final mine = myEmoji?.trim();
+    final hasMine = mine != null && mine.isNotEmpty;
+    final others = _otherEmojis;
+    if (!hasMine && others.isEmpty && !showMinePlaceholder) {
+      return const SizedBox.shrink();
+    }
 
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final diameter = emojiSize + 6;
-    final width = diameter + (emojis.length - 1) * (diameter - overlap);
+    // slots: [mine|placeholder] + others
+    final slotCount = 1 + others.length;
+    final width = diameter + (slotCount - 1) * (diameter - overlap);
+
+    Widget chip({required Widget child}) {
+      return Container(
+        width: diameter,
+        height: diameter,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: cs.surface,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: cs.surfaceContainerHighest,
+            width: 1.5,
+          ),
+        ),
+        child: child,
+      );
+    }
+
+    // Paint right→left so the leftmost (mine) ends up on top.
+    final children = <Widget>[];
+    for (var i = slotCount - 1; i >= 0; i--) {
+      final Widget content;
+      if (i == 0) {
+        content = hasMine
+            ? Text(mine, style: TextStyle(fontSize: emojiSize, height: 1))
+            : Icon(
+                Icons.favorite_border,
+                size: emojiSize,
+                color: cs.onSurfaceVariant,
+              );
+      } else {
+        content = Text(
+          others[i - 1],
+          style: TextStyle(fontSize: emojiSize, height: 1),
+        );
+      }
+      children.add(
+        Positioned(
+          left: i * (diameter - overlap),
+          child: chip(child: content),
+        ),
+      );
+    }
 
     return Tooltip(
       message: 'Реакция',
@@ -245,29 +307,7 @@ class FeedReactionsStack extends StatelessWidget {
             height: diameter,
             child: Stack(
               clipBehavior: Clip.none,
-              children: [
-                for (var i = 0; i < emojis.length; i++)
-                  Positioned(
-                    left: i * (diameter - overlap),
-                    child: Container(
-                      width: diameter,
-                      height: diameter,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: cs.surface,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: cs.surfaceContainerHighest,
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Text(
-                        emojis[i],
-                        style: TextStyle(fontSize: emojiSize, height: 1),
-                      ),
-                    ),
-                  ),
-              ],
+              children: children,
             ),
           ),
         ),

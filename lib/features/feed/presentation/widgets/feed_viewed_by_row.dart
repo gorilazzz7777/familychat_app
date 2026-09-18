@@ -149,7 +149,7 @@ class _FeedViewedByRowState extends ConsumerState<FeedViewedByRow> {
     if (viewedBy.isEmpty) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final names = viewedBy.map((person) {
-      final name = feedPersonDisplayName(person);
+      final name = feedPersonShortName(person);
       return name.isEmpty ? 'Участник' : name;
     }).toList();
 

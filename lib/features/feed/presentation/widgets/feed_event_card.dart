@@ -394,34 +394,47 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
   bool get _canDelete => _event['can_delete'] == true;
 
   Future<void> _openPostMenu() async {
-    if (!_canDelete || _eventId == null) return;
+    final navigateLabel = _navigateTooltip();
     final choice = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
       builder: (ctx) {
+        final theme = Theme.of(ctx);
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: Icon(
-                  Icons.delete_outline,
-                  color: Theme.of(ctx).colorScheme.error,
-                ),
-                title: Text(
-                  'Удалить',
-                  style: TextStyle(color: Theme.of(ctx).colorScheme.error),
-                ),
-                onTap: () => Navigator.pop(ctx, 'delete'),
+                leading: Icon(Icons.open_in_new, color: theme.colorScheme.primary),
+                title: Text(navigateLabel),
+                onTap: () => Navigator.pop(ctx, 'navigate'),
               ),
+              if (_canDelete)
+                ListTile(
+                  leading: Icon(
+                    Icons.delete_outline,
+                    color: theme.colorScheme.error,
+                  ),
+                  title: Text(
+                    'Удалить',
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                  onTap: () => Navigator.pop(ctx, 'delete'),
+                ),
               const SizedBox(height: 8),
             ],
           ),
         );
       },
     );
-    if (!mounted || choice != 'delete') return;
-    await _confirmAndDeletePost();
+    if (!mounted || choice == null) return;
+    if (choice == 'navigate') {
+      widget.onOpenSource();
+      return;
+    }
+    if (choice == 'delete') {
+      await _confirmAndDeletePost();
+    }
   }
 
   Future<void> _confirmAndDeletePost() async {
@@ -558,13 +571,12 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      if (_canDelete)
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          tooltip: 'Ещё',
-                          icon: const Icon(Icons.more_vert),
-                          onPressed: _openPostMenu,
-                        ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: 'Ещё',
+                        icon: const Icon(Icons.more_vert),
+                        onPressed: _openPostMenu,
+                      ),
                     ],
                   ),
                 ),
@@ -616,8 +628,6 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                   attachmentId: engagementAttachmentId,
                   event: _event,
                   createdAt: createdAt,
-                  onNavigate: widget.onOpenSource,
-                  navigateTooltip: _navigateTooltip(),
                   onEngagementChanged: widget.onEngagementChanged,
                 ),
                 FeedViewedByRow(

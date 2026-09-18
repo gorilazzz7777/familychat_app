@@ -13,8 +13,9 @@ String formatFeedEventDate(DateTime dateTime) {
   if (diff == 1) {
     return 'вчера';
   }
+  // Locale `MMM` already ends with «.» for Russian (сент.) — do not add another.
   if (local.year == now.year) {
-    return DateFormat('d MMM.', 'ru').format(local);
+    return DateFormat('d MMM', 'ru').format(local);
   }
-  return DateFormat('d MMM. yyyy', 'ru').format(local);
+  return DateFormat('d MMM yyyy', 'ru').format(local);
 }
