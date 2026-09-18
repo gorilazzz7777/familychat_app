@@ -184,7 +184,14 @@ class FamilyChatRepository {
     String? themeSeedColor,
   }) async {
     final data = <String, dynamic>{};
-    if (firstName != null) data['first_name'] = firstName;
+    if (firstName != null) {
+      final trimmed = firstName.trim();
+      // Never clear name with empty string — old builds did this and got 400.
+      if (trimmed.isEmpty) {
+        throw ArgumentError('first_name is required');
+      }
+      data['first_name'] = trimmed;
+    }
     if (lastName != null) data['last_name'] = lastName;
     if (gender != null) data['gender'] = gender;
     if (birthDate != null) data['birth_date'] = birthDate;
