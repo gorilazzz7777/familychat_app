@@ -3588,9 +3588,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         continue;
       }
       final status = m['read_status']?.toString().trim() ?? '';
-      if (status.isEmpty || status == 'sending' || status == 'queued') {
+      if (status.isEmpty ||
+          status == 'sending' ||
+          status == 'queued' ||
+          status == 'sent') {
         changed = true;
-        out.add({...m, 'read_status': 'sent'});
+        out.add({...m, 'read_status': 'read'});
       } else {
         out.add(m);
       }
@@ -3773,7 +3776,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (serverId != null &&
           serverId > 0 &&
           (status.isEmpty || status == 'sending' || status == 'queued')) {
-        merged['read_status'] = 'sent';
+        merged['read_status'] = _isSaved ? 'read' : 'sent';
+      } else if (_isSaved &&
+          serverId != null &&
+          serverId > 0 &&
+          status == 'sent') {
+        merged['read_status'] = 'read';
       }
       if (_currentUserId != null &&
           chatAsInt(merged['sender_user_id']) == null) {
