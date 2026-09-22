@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -12,10 +13,14 @@ class ChatLocalStore {
 
   static final ChatLocalStore instance = ChatLocalStore._();
 
+  static const _telegramChatsMetaKey = 'telegram_chats_v1';
+
   ChatDatabase? _db;
   Future<ChatDatabase?>? _opening;
   bool _started = false;
   Future<void> _writeChain = Future<void>.value();
+  final _telegramChatsController =
+      StreamController<List<Map<String, dynamic>>>.broadcast();
 
   static bool get isSupported => ChatDatabase.isSupported;
 
@@ -249,6 +254,38 @@ class ChatLocalStore {
 
   Future<void> metaSet(String key, String value) {
     return _enqueueWrite((db) => db.metaSet(key, value));
+  }
+
+  Future<List<Map<String, dynamic>>> readTelegramChats() async {
+    final raw = await metaGet(_telegramChatsMetaKey);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> replaceTelegramChats(List<Map<String, dynamic>> chats) {
+    final encoded = jsonEncode(chats);
+    return _enqueueWrite((db) async {
+      await db.metaSet(_telegramChatsMetaKey, encoded);
+      if (!_telegramChatsController.isClosed) {
+        _telegramChatsController.add(
+          chats.map((e) => Map<String, dynamic>.from(e)).toList(),
+        );
+      }
+    });
+  }
+
+  Stream<List<Map<String, dynamic>>> watchTelegramChats() async* {
+    yield await readTelegramChats();
+    yield* _telegramChatsController.stream;
   }
 
   Future<List<Map<String, dynamic>>> readOutboxItems() async {

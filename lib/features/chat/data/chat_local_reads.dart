@@ -57,4 +57,22 @@ abstract final class ChatLocalReads {
     }
     await FamilyChatLocalCache.saveChatMembers(members);
   }
+
+  static Future<List<Map<String, dynamic>>> telegramChats() async {
+    if (_sqlite) {
+      return ChatLocalStore.instance.readTelegramChats();
+    }
+    final cached = await FamilyChatLocalCache.readTelegramChats();
+    return cached ?? const [];
+  }
+
+  static Future<void> saveTelegramChats(
+    List<Map<String, dynamic>> chats,
+  ) async {
+    if (_sqlite) {
+      await ChatLocalStore.instance.replaceTelegramChats(chats);
+      return;
+    }
+    await FamilyChatLocalCache.saveTelegramChats(chats);
+  }
 }

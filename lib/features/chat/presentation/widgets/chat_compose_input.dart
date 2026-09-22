@@ -29,6 +29,9 @@ class ChatComposeInput extends StatefulWidget {
     this.forceSendButton = false,
     this.voiceTranscriptionEnabled = false,
     this.showAiAssist = false,
+    this.showDeliverToTelegram = false,
+    this.deliveryChannel = ChatDeliveryChannel.auto,
+    this.highlightTelegram = false,
     this.hintText = 'Сообщение...',
     this.panelSlotMaxHeight,
     this.panelBarsOverhead = 0,
@@ -49,6 +52,9 @@ class ChatComposeInput extends StatefulWidget {
   final bool forceSendButton;
   final bool voiceTranscriptionEnabled;
   final bool showAiAssist;
+  final bool showDeliverToTelegram;
+  final ChatDeliveryChannel deliveryChannel;
+  final bool highlightTelegram;
   final String hintText;
 
   /// Высота нижнего слота от [LayoutBuilder] экрана чата.
@@ -238,6 +244,9 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
                 forceSendButton: widget.forceSendButton,
                 voiceTranscriptionEnabled: widget.voiceTranscriptionEnabled,
                 showAiAssist: widget.showAiAssist,
+                showDeliverToTelegram: widget.showDeliverToTelegram,
+                deliveryChannel: widget.deliveryChannel,
+                highlightTelegram: widget.highlightTelegram,
                 onRecordingChanged: _onRecordingChanged,
                 circleSession: _circleSession,
                 recordingHost: _recordingHost,

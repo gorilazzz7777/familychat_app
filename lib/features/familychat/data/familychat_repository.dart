@@ -1123,6 +1123,8 @@ class FamilyChatRepository {
     int? replyToMessageId,
     List<int>? mentionedUserIds,
     bool notifySilent = false,
+    bool deliverToTelegram = false,
+    String? deliveryChannel,
     int? clientMsgId,
     Map<String, dynamic>? location,
     int? voiceDurationMs,
@@ -1142,6 +1144,9 @@ class FamilyChatRepository {
             'mentioned_user_ids': mentionedUserIds,
           if (clientMsgId != null) 'client_msg_id': clientMsgId,
           if (notifySilent) 'notify_silent': true,
+          if (deliverToTelegram) 'deliver_to_telegram': true,
+          if (deliveryChannel != null && deliveryChannel.isNotEmpty)
+            'delivery_channel': deliveryChannel,
           if (location != null) 'location': location,
           if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
           if (voiceTranscript != null && voiceTranscript.trim().isNotEmpty)
@@ -2472,5 +2477,56 @@ class FamilyChatRepository {
       data: {'body': body},
     );
     return res.data!;
+  }
+
+  Future<Map<String, dynamic>> telegramConnection() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/telegram/connection/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> telegramConnectionStart() async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/telegram/connection/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> telegramConnectionDisconnect() async {
+    final res = await _dio.delete<Map<String, dynamic>>(
+      'familychat/telegram/connection/',
+    );
+    return res.data ?? {};
+  }
+
+  Future<List<Map<String, dynamic>>> telegramChats() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/telegram/chats/',
+    );
+    final raw = res.data?['chats'];
+    if (raw is! List) return [];
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  Future<Map<String, dynamic>> telegramMatchChat({
+    required int chatId,
+    required int userId,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/telegram/chats/$chatId/match/',
+      data: {'user_id': userId},
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> telegramUnmatchChat(int chatId) async {
+    final res = await _dio.delete<Map<String, dynamic>>(
+      'familychat/telegram/chats/$chatId/match/',
+    );
+    return res.data ?? {};
   }
 }

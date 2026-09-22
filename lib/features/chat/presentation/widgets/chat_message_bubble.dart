@@ -3,10 +3,10 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:visibility_detector/visibility_detector.dart';
 
 import '../../../../core/network/chat_network_link.dart';
 import '../../../../core/settings/app_settings_controller.dart';
@@ -14,11 +14,16 @@ import '../../data/chat_media_providers.dart';
 import '../../data/chat_realtime_utils.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/media/gallery_video_thumbnail.dart';
+import '../../../../core/media/local_device_file.dart';
 import '../../../../core/media/media_local_index.dart';
+import '../../../../core/providers/app_providers.dart';
+import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import '../../data/chat_location_utils.dart';
 import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_voice_utils.dart';
+import 'chat_animated_media_scope.dart';
 import 'chat_bubble_clipper.dart';
 import 'chat_image_album.dart';
 import 'chat_link_preview_card.dart';
@@ -194,21 +199,28 @@ class ChatMessageBubble extends StatelessWidget {
   }
 
   /// Стикер без подписи — без цветного фона пузыря (как в Telegram).
+  /// В т.ч. анимированные TG-стикеры (webm/mp4).
   bool _isStandaloneSticker() {
     if (messageMetadata['sticker'] == null) return false;
     if (_showBody(body, forward)) return false;
     if (location != null) return false;
     if (_linkPreviewUrl() != null) return false;
-    var hasImage = false;
+    var hasMedia = false;
     for (final a in attachments) {
       if (isVoiceAttachment(a, messageMetadata: messageMetadata)) return false;
       if (_attachmentIsVideoNote(a)) return false;
-      if (a['kind'] == 'video' || isVideoAttachment(a)) return false;
+      if (a['kind'] == 'video' || isVideoAttachment(a)) {
+        hasMedia = true;
+        continue;
+      }
       if (a['kind'] == 'file' && !chatAttachmentLooksLikeImage(a)) return false;
-      if (chatAttachmentLooksLikeImage(a)) hasImage = true;
+      if (chatAttachmentLooksLikeImage(a)) hasMedia = true;
     }
-    return hasImage;
+    return hasMedia;
   }
+
+  bool get _isAnimatedMediaMessage =>
+      messageMetadata['gif'] != null || messageMetadata['sticker'] != null;
 
   @override
   Widget build(BuildContext context) {
@@ -263,28 +275,10 @@ class ChatMessageBubble extends StatelessWidget {
             const SizedBox(height: 4),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (scheduledAt != null) ...[
-                    Icon(LucideIcons.clock, size: 13, color: noteMetaColor),
-                    const SizedBox(width: 4),
-                    Text(
-                      timeFmt.format(scheduledAt!.toLocal()),
-                      style: theme.textTheme.labelSmall
-                          ?.copyWith(color: noteMetaColor),
-                    ),
-                  ] else if (createdAt != null)
-                    Text(
-                      timeFmt.format(createdAt!.toLocal()),
-                      style: theme.textTheme.labelSmall
-                          ?.copyWith(color: noteMetaColor),
-                    ),
-                  if (isMine && readStatus != null) ...[
-                    const SizedBox(width: 4),
-                    _buildMineStatus(theme, noteMetaColor),
-                  ],
-                ],
+              child: _buildTimeMetaRow(
+                theme: theme,
+                metaColor: noteMetaColor,
+                timeFmt: timeFmt,
               ),
             ),
           ],
@@ -335,28 +329,10 @@ class ChatMessageBubble extends StatelessWidget {
             const SizedBox(height: 4),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (scheduledAt != null) ...[
-                    Icon(LucideIcons.clock, size: 13, color: stickerMetaColor),
-                    const SizedBox(width: 4),
-                    Text(
-                      timeFmt.format(scheduledAt!.toLocal()),
-                      style: theme.textTheme.labelSmall
-                          ?.copyWith(color: stickerMetaColor),
-                    ),
-                  ] else if (createdAt != null)
-                    Text(
-                      timeFmt.format(createdAt!.toLocal()),
-                      style: theme.textTheme.labelSmall
-                          ?.copyWith(color: stickerMetaColor),
-                    ),
-                  if (isMine && readStatus != null) ...[
-                    const SizedBox(width: 4),
-                    _buildMineStatus(theme, stickerMetaColor),
-                  ],
-                ],
+              child: _buildTimeMetaRow(
+                theme: theme,
+                metaColor: stickerMetaColor,
+                timeFmt: timeFmt,
               ),
             ),
           ],
@@ -470,28 +446,10 @@ class ChatMessageBubble extends StatelessWidget {
                   padding: hasVisualMedia
                       ? const EdgeInsets.fromLTRB(8, 4, 8, 0)
                       : const EdgeInsets.only(top: 4),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (scheduledAt != null) ...[
-                        Icon(LucideIcons.clock, size: 13, color: metaColor),
-                        const SizedBox(width: 4),
-                        Text(
-                          timeFmt.format(scheduledAt!.toLocal()),
-                          style: theme.textTheme.labelSmall
-                              ?.copyWith(color: metaColor),
-                        ),
-                      ] else if (createdAt != null)
-                        Text(
-                          timeFmt.format(createdAt!.toLocal()),
-                          style: theme.textTheme.labelSmall
-                              ?.copyWith(color: metaColor),
-                        ),
-                      if (isMine && readStatus != null) ...[
-                        const SizedBox(width: 4),
-                        _buildMineStatus(theme, metaColor),
-                      ],
-                    ],
+                  child: _buildTimeMetaRow(
+                    theme: theme,
+                    metaColor: metaColor,
+                    timeFmt: timeFmt,
                   ),
                 ),
               ],
@@ -621,6 +579,47 @@ class ChatMessageBubble extends StatelessWidget {
     if (forward == null) return true;
     final original = forward['original_body']?.toString() ?? '';
     return body.trim() != original.trim();
+  }
+
+  bool get _fromTelegram =>
+      messageMetadata['source']?.toString() == 'telegram';
+
+  /// Meta-ряд справа: [лого TG] · время · галочки.
+  Widget _buildTimeMetaRow({
+    required ThemeData theme,
+    required Color metaColor,
+    required DateFormat timeFmt,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_fromTelegram) ...[
+          Image.asset(
+            'assets/logo/tg.png',
+            width: 12,
+            height: 12,
+            filterQuality: FilterQuality.medium,
+          ),
+          const SizedBox(width: 4),
+        ],
+        if (scheduledAt != null) ...[
+          Icon(LucideIcons.clock, size: 13, color: metaColor),
+          const SizedBox(width: 4),
+          Text(
+            timeFmt.format(scheduledAt!.toLocal()),
+            style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
+          ),
+        ] else if (createdAt != null)
+          Text(
+            timeFmt.format(createdAt!.toLocal()),
+            style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
+          ),
+        if (isMine && readStatus != null) ...[
+          const SizedBox(width: 4),
+          _buildMineStatus(theme, metaColor),
+        ],
+      ],
+    );
   }
 
   String? _linkPreviewUrl() {
@@ -785,6 +784,17 @@ class ChatMessageBubble extends StatelessWidget {
               onCancelUpload: onCancelUpload,
             ),
           );
+        } else if (_isAnimatedMediaMessage) {
+          out.add(
+            _ChatGifVideoPreview(
+              threadId: threadId,
+              attachment: a,
+              maxWidth: maxWidth,
+              borderRadius: mediaRadius,
+              onOpen: onImageTap != null ? () => onImageTap!(a) : null,
+              preferSquare: messageMetadata['sticker'] != null,
+            ),
+          );
         } else {
           out.add(
             _ChatVideoAttachmentPreview(
@@ -818,6 +828,292 @@ class ChatMessageBubble extends StatelessWidget {
     }
 
     return out;
+  }
+}
+
+/// TG GIF / анимированный стикер (mp4/webm) в пузыре.
+///
+/// Autoplay при первом показе (пока не было скролла) → стоп на скролле →
+/// дальше только тап (play/pause). Fullscreen — иконка «развернуть».
+class _ChatGifVideoPreview extends ConsumerStatefulWidget {
+  const _ChatGifVideoPreview({
+    required this.threadId,
+    required this.attachment,
+    required this.maxWidth,
+    this.borderRadius,
+    this.onOpen,
+    this.preferSquare = false,
+  });
+
+  final int threadId;
+  final Map<String, dynamic> attachment;
+  final double maxWidth;
+  final BorderRadius? borderRadius;
+  final VoidCallback? onOpen;
+  final bool preferSquare;
+
+  @override
+  ConsumerState<_ChatGifVideoPreview> createState() =>
+      _ChatGifVideoPreviewState();
+}
+
+class _ChatGifVideoPreviewState extends ConsumerState<_ChatGifVideoPreview> {
+  static const _maxActivePlayers = 2;
+  static int _activePlayers = 0;
+
+  late double _aspect;
+  var _aspectLocked = false;
+  var _visibleEnough = false;
+  var _playing = false;
+  var _holdsSlot = false;
+  var _didAutoplay = false;
+  var _lastScrollGen = -1;
+  String? _thumbPath;
+  Timer? _visDebounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _aspect = chatAttachmentAspectRatio(widget.attachment) ?? 1.0;
+    unawaited(_loadThumb());
+  }
+
+  @override
+  void dispose() {
+    _visDebounce?.cancel();
+    _releaseSlot();
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final ctrl = ChatAnimatedMediaScope.maybeOf(context);
+    final gen = ctrl?.scrollGeneration ?? 0;
+    if (gen != _lastScrollGen) {
+      _lastScrollGen = gen;
+      _visDebounce?.cancel();
+      if (_playing) {
+        _stopPlayback(update: false);
+        // Defer setState — may be called during build/dependOn.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() {});
+        });
+      }
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatGifVideoPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.attachment['id'] != widget.attachment['id'] ||
+        oldWidget.attachment['file_url'] != widget.attachment['file_url']) {
+      _stopPlayback(update: false);
+      _aspectLocked = false;
+      _didAutoplay = false;
+      _aspect = chatAttachmentAspectRatio(widget.attachment) ?? _aspect;
+      _thumbPath = null;
+      unawaited(_loadThumb());
+    }
+  }
+
+  void _applyAspect(double next) {
+    if (_aspectLocked) return;
+    if (next <= 0 || !next.isFinite) return;
+    if ((next - _aspect).abs() < 0.02) {
+      _aspectLocked = true;
+      return;
+    }
+    setState(() {
+      _aspect = next;
+      _aspectLocked = true;
+    });
+  }
+
+  Future<void> _loadThumb() async {
+    final att = Map<String, dynamic>.from(widget.attachment);
+    if (att['kind']?.toString() != 'video') {
+      att['kind'] = 'video';
+    }
+    final path = await GalleryVideoThumbnail.ensureForAttachment(
+      att,
+      maxWidth: 512,
+      timeMs: 0,
+    );
+    if (!mounted || path == null || path.isEmpty) return;
+    setState(() => _thumbPath = path);
+  }
+
+  bool _acquireSlot() {
+    if (_holdsSlot) return true;
+    if (_activePlayers >= _maxActivePlayers) return false;
+    _activePlayers++;
+    _holdsSlot = true;
+    return true;
+  }
+
+  void _releaseSlot() {
+    if (!_holdsSlot) return;
+    _holdsSlot = false;
+    _activePlayers = (_activePlayers - 1).clamp(0, _maxActivePlayers);
+  }
+
+  void _stopPlayback({required bool update}) {
+    _visDebounce?.cancel();
+    if (!_playing && !_holdsSlot) return;
+    _playing = false;
+    _releaseSlot();
+    if (update && mounted) setState(() {});
+  }
+
+  void _startPlayback({bool userInitiated = false}) {
+    final ctrl = ChatAnimatedMediaScope.maybeOf(context);
+    if (ctrl?.isScrolling == true) return;
+    // После любого скролла autoplay запрещён; тап — нет.
+    if (!userInitiated && ctrl?.suppressAutoplay == true) return;
+    if (!_visibleEnough) return;
+    if (!_acquireSlot()) return;
+    setState(() => _playing = true);
+  }
+
+  void _togglePlay() {
+    if (_playing) {
+      _stopPlayback(update: true);
+      return;
+    }
+    // Explicit tap — play even if visibility debounce hasn't settled yet.
+    _visibleEnough = true;
+    _startPlayback(userInitiated: true);
+  }
+
+  void _onVisibility(double fraction) {
+    final enough = fraction >= 0.5;
+    if (enough == _visibleEnough) return;
+    _visibleEnough = enough;
+    _visDebounce?.cancel();
+    if (!enough) {
+      _visDebounce = Timer(const Duration(milliseconds: 200), () {
+        if (!mounted) return;
+        if (!_visibleEnough) _stopPlayback(update: true);
+      });
+      return;
+    }
+    _visDebounce = Timer(const Duration(milliseconds: 280), () {
+      if (!mounted || !_visibleEnough) return;
+      final ctrl = ChatAnimatedMediaScope.maybeOf(context);
+      if (ctrl?.isScrolling == true) return;
+      if (ctrl?.suppressAutoplay == true) return;
+      if (_didAutoplay || _playing) return;
+      _didAutoplay = true;
+      _startPlayback();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Rebuild when scroll generation / suppress flags change.
+    ChatAnimatedMediaScope.maybeOf(context);
+
+    MediaLocalIndex.hydrateAttachment(widget.attachment);
+    final fitted = chatFitMediaSize(
+      aspectRatio: _aspect,
+      maxWidth: widget.maxWidth,
+      maxHeight: chatMediaMaxThumbHeight(widget.maxWidth),
+    );
+    final localPath = galleryLocalDevicePath(widget.attachment);
+    final url = chatAttachmentImageUrl(
+      repo: ref.read(familychatRepositoryProvider),
+      threadId: widget.threadId,
+      attachment: widget.attachment,
+    );
+    final attId = widget.attachment['id'];
+    final visibilityKey = ValueKey('gif-vis:$attId:${widget.threadId}');
+
+    final thumb = _thumbPath != null
+        ? localDeviceFileImage(
+            path: _thumbPath!,
+            width: fitted.width,
+            height: fitted.height,
+            fit: BoxFit.cover,
+          )
+        : const ColoredBox(color: Color(0x11000000));
+
+    final body = Stack(
+      fit: StackFit.expand,
+      children: [
+        thumb,
+        if (_playing)
+          GalleryVideoPlayer(
+            key: ValueKey('gif-player:$attId'),
+            url: url,
+            localPath: localPath.isEmpty ? null : localPath,
+            fit: BoxFit.cover,
+            autoplay: true,
+            looping: true,
+            muted: true,
+            showControls: false,
+            placeholder: const SizedBox.shrink(),
+            onResolvedSize: (size) {
+              if (size.height <= 0) return;
+              _applyAspect(size.width / size.height);
+            },
+          ),
+        if (!_playing)
+          Center(
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.42),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                LucideIcons.play,
+                color: Colors.white,
+                size: 26,
+              ),
+            ),
+          ),
+        if (widget.onOpen != null)
+          Positioned(
+            top: 6,
+            right: 6,
+            child: Material(
+              color: Colors.black.withValues(alpha: 0.42),
+              shape: const CircleBorder(),
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: widget.onOpen,
+                child: const Padding(
+                  padding: EdgeInsets.all(6),
+                  child: Icon(
+                    LucideIcons.maximize_2,
+                    size: 16,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+
+    return VisibilityDetector(
+      key: visibilityKey,
+      onVisibilityChanged: (info) => _onVisibility(info.visibleFraction),
+      child: GestureDetector(
+        onTap: _togglePlay,
+        behavior: HitTestBehavior.opaque,
+        child: ClipRRect(
+          borderRadius: widget.borderRadius ?? BorderRadius.circular(10),
+          child: SizedBox(
+            width: fitted.width,
+            height: fitted.height,
+            child: body,
+          ),
+        ),
+      ),
+    );
   }
 }
 

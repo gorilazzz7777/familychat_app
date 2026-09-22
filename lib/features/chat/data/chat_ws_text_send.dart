@@ -100,6 +100,8 @@ abstract final class ChatWsTextSend {
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
+    bool deliverToTelegram = false,
+    String? deliveryChannel,
   }) async {
     _ensureRealtimeListener();
     final trimmed = body.trim();
@@ -132,6 +134,8 @@ abstract final class ChatWsTextSend {
         replyToMessageId: replyToMessageId,
         mentionedUserIds: mentionedUserIds,
         notifySilent: notifySilent,
+        deliverToTelegram: deliverToTelegram,
+        deliveryChannel: deliveryChannel,
         timeout: ackTimeout,
       );
       if (ack == null) {

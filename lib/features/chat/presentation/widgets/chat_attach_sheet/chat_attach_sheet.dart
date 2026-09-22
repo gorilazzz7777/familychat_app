@@ -11,7 +11,6 @@ import 'attach_gallery_tab.dart';
 import 'attach_location_tab.dart';
 import 'attach_selection_bar.dart';
 import 'chat_attach_models.dart';
-import '../../../../../core/widgets/share_to_diary_checkbox.dart';
 import '../../../../members/presentation/utils/milestone_photo_add_trace.dart';
 
 /// Режим шторки: полный чат, только телефон, или альбом (телефон + галерея семьи).
@@ -139,7 +138,7 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
   @override
   void initState() {
     super.initState();
-    _mode = _albumMode ? ChatAttachMode.familyGallery : ChatAttachMode.gallery;
+    _mode = ChatAttachMode.gallery;
     _sheetCtrl.addListener(_onSheetSize);
   }
 
@@ -384,20 +383,11 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
 
   Widget _buildBottomChrome(ColorScheme scheme) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
-    final showDiaryShare = _phoneOnly || _albumMode;
     return Material(
       color: scheme.surface,
       child: Padding(
         padding: EdgeInsets.only(bottom: bottomInset),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (showDiaryShare && _hasSendSelection)
-              const Padding(
-                padding: EdgeInsets.fromLTRB(8, 0, 8, 0),
-                child: ShareToDiaryCheckbox(dense: true),
-              ),
-            SizedBox(
+        child: SizedBox(
           height: kChatAttachBottomChromeHeight,
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
@@ -436,8 +426,6 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
                           ),
                   ),
           ),
-            ),
-          ],
         ),
       ),
     );
@@ -459,7 +447,6 @@ class _FamilySelectionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return SizedBox.expand(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),

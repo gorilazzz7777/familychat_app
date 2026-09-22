@@ -475,6 +475,16 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     return entitlements is Map && entitlements['individual_premium'] == true;
   }
 
+  bool get _telegramConnected {
+    final tg = _status['telegram'];
+    return tg is Map && tg['connected'] == true;
+  }
+
+  bool get _telegramGrace {
+    final tg = _status['telegram'];
+    return tg is Map && tg['status']?.toString() == 'grace';
+  }
+
   String get _title => switch (_index) {
         _chatTabIndex => 'Family Space',
         _feedTabIndex => 'Лента',
@@ -573,6 +583,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         return ChatHubScreen(
           key: _chatHubKey,
           hasIndividualPremium: _hasIndividualPremium,
+          telegramConnected: _telegramConnected,
+          telegramGrace: _telegramGrace,
           profileName: _displayName,
           profileAvatarUrl: _avatarUrl,
           onProfileTap: _openProfile,

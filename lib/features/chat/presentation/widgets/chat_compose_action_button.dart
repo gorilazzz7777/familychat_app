@@ -11,7 +11,7 @@ import '../../data/chat_send_options.dart';
 import '../../data/chat_voice_recorder.dart';
 import '../record_video_circle_screen.dart';
 import 'chat_compose_circle_button.dart';
-import 'chat_send_options_sheet.dart';
+import 'chat_compose_send_button.dart';
 import 'chat_video_circle_session.dart';
 import 'chat_voice_recording_compose_slot.dart';
 
@@ -48,6 +48,9 @@ class ChatComposeActionButton extends StatefulWidget {
     this.forceSendButton = false,
     this.voiceTranscriptionEnabled = false,
     this.showAiAssist = false,
+    this.showDeliverToTelegram = false,
+    this.deliveryChannel = ChatDeliveryChannel.auto,
+    this.highlightTelegram = false,
     this.onRecordingChanged,
     this.circleSession,
     this.recordingHost,
@@ -65,6 +68,9 @@ class ChatComposeActionButton extends StatefulWidget {
   final bool forceSendButton;
   final bool voiceTranscriptionEnabled;
   final bool showAiAssist;
+  final bool showDeliverToTelegram;
+  final ChatDeliveryChannel deliveryChannel;
+  final bool highlightTelegram;
   final void Function(ChatVoiceRecordingChange change)? onRecordingChanged;
   /// Общая сессия камеры (чтобы композ мог рисовать превью).
   final ChatVideoCircleSession? circleSession;
@@ -551,13 +557,21 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
 
     if (_showSend && !_holdActive && !_locked) {
       return ChatComposeCircleButton(
-        tooltip: 'Отправить',
+        tooltip: widget.highlightTelegram ? 'Отправить в Telegram' : 'Отправить',
         icon: LucideIcons.send,
-        onTap: () => widget.onSend(ChatSendOptions.normal),
+        iconColor: widget.highlightTelegram ? Colors.white : null,
+        backgroundColor:
+            widget.highlightTelegram ? kTelegramSendBlue : null,
+        borderColor: widget.highlightTelegram ? kTelegramSendBlue : null,
+        onTap: () => widget.onSend(
+          ChatSendOptions(deliveryChannel: widget.deliveryChannel),
+        ),
         onLongPress: () async {
           final options = await ChatSendOptionsSheet.show(
             context,
             showAiAssist: widget.showAiAssist,
+            showDeliveryChannel: widget.showDeliverToTelegram,
+            initialChannel: widget.deliveryChannel,
           );
           if (options == null) return;
           widget.onSend(options);

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -64,6 +65,26 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   final Map<String, int> _selectionOrder = {};
   GalleryKnownMediaHints _knownHints = const GalleryKnownMediaHints();
 
+  static const _gridCrossAxisCount = 3;
+  static const _gridSpacing = 2.0;
+  static const _gridPadH = 2.0;
+  static const _dragSlop = 18.0;
+  static const _dragAutoScrollEdge = 76.0;
+  static const _dragAutoScrollMaxSpeed = 22.0;
+
+  final GlobalKey _gridKey = GlobalKey();
+  int? _activePointer;
+  Offset? _pointerDownGlobal;
+  Offset? _dragPointerGlobal;
+  int? _dragAnchorAssetIndex;
+  bool _dragSelectActive = false;
+  bool _dragSelectAdds = true;
+  bool _ignoreTapAfterDrag = false;
+  Set<String> _dragBaselineIds = {};
+  final Set<String> _pendingSelectIds = {};
+  final Set<String> _loadingSelectIds = {};
+  Timer? _dragAutoScrollTimer;
+
   @override
   void initState() {
     super.initState();
@@ -107,6 +128,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
 
   @override
   void dispose() {
+    _stopDragAutoScroll();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -121,13 +143,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   @override
   void didUpdateWidget(covariant AttachGalleryTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _selectionOrder
-      ..clear()
-      ..addEntries(
-        widget.selected.asMap().entries.map(
-              (e) => MapEntry(e.value.id, e.key + 1),
-            ),
-      );
+    _refreshSelectionOrder();
   }
 
   Future<void> _bootstrap() async {
@@ -433,7 +449,247 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     }
   }
 
-  bool _isSelected(String id) => widget.selected.any((e) => e.id == id);
+  bool _isSelected(String id) =>
+      widget.selected.any((e) => e.id == id) || _pendingSelectIds.contains(id);
+
+  void _refreshSelectionOrder({Set<String>? pendingExtra}) {
+    _selectionOrder
+      ..clear()
+      ..addEntries(
+        widget.selected.asMap().entries.map(
+              (e) => MapEntry(e.value.id, e.key + 1),
+            ),
+      );
+    var next = _selectionOrder.length + 1;
+    final pending = pendingExtra ?? _pendingSelectIds;
+    for (final id in pending) {
+      if (_selectionOrder.containsKey(id)) continue;
+      _selectionOrder[id] = next++;
+    }
+  }
+
+  int? _assetIndexAtGlobal(Offset global) {
+    final ctx = _gridKey.currentContext;
+    if (ctx == null) return null;
+    final box = ctx.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    final local = box.globalToLocal(global);
+    final scroll = widget.scrollController.hasClients
+        ? widget.scrollController.offset
+        : 0.0;
+    final contentY = local.dy + scroll;
+    final usableW = box.size.width -
+        _gridPadH * 2 -
+        _gridSpacing * (_gridCrossAxisCount - 1);
+    if (usableW <= 0) return null;
+    final cell = usableW / _gridCrossAxisCount;
+    final x = local.dx - _gridPadH;
+    if (x < -0.5 || contentY < -0.5) return null;
+    final col = (x / (cell + _gridSpacing)).floor();
+    final row = (contentY / (cell + _gridSpacing)).floor();
+    if (col < 0 || col >= _gridCrossAxisCount || row < 0) return null;
+    final gridIndex = row * _gridCrossAxisCount + col;
+    if (gridIndex <= 0) return null; // camera tile
+    final assetIndex = gridIndex - 1;
+    if (assetIndex < 0 || assetIndex >= _assets.length) return null;
+    return assetIndex;
+  }
+
+  void _onGridPointerDown(PointerDownEvent event) {
+    if (kIsWeb) return;
+    _activePointer = event.pointer;
+    _pointerDownGlobal = event.position;
+    _dragPointerGlobal = event.position;
+    _dragSelectActive = false;
+    _ignoreTapAfterDrag = false;
+    _dragAnchorAssetIndex = _assetIndexAtGlobal(event.position);
+    _stopDragAutoScroll();
+  }
+
+  void _onGridPointerMove(PointerMoveEvent event) {
+    if (kIsWeb) return;
+    if (event.pointer != _activePointer || _pointerDownGlobal == null) return;
+    if (_dragAnchorAssetIndex == null) return;
+
+    _dragPointerGlobal = event.position;
+    final delta = event.position - _pointerDownGlobal!;
+    if (!_dragSelectActive) {
+      if (delta.distance < _dragSlop) return;
+      // Keep vertical scroll when the gesture is clearly upward.
+      final mostlyUp =
+          delta.dy < 0 && delta.dy.abs() > delta.dx.abs() + 4;
+      if (mostlyUp) return;
+      final anchor = _assets[_dragAnchorAssetIndex!];
+      final anchorId = 'asset_${anchor.id}';
+      _dragSelectActive = true;
+      _ignoreTapAfterDrag = true;
+      _dragBaselineIds = {
+        for (final item in widget.selected) item.id,
+      };
+      _dragSelectAdds = !_dragBaselineIds.contains(anchorId);
+      HapticFeedback.selectionClick();
+      setState(() {});
+    }
+
+    _updateDragAutoScroll();
+    final current =
+        _assetIndexAtGlobal(event.position) ?? _dragAnchorAssetIndex!;
+    _applyDragRange(current);
+  }
+
+  void _onGridPointerUp(PointerEvent event) {
+    if (event.pointer != _activePointer) return;
+    _activePointer = null;
+    _pointerDownGlobal = null;
+    _dragPointerGlobal = null;
+    _dragAnchorAssetIndex = null;
+    _stopDragAutoScroll();
+    if (_dragSelectActive) {
+      _dragSelectActive = false;
+      setState(() {});
+      // Keep _ignoreTapAfterDrag until the competing tap is swallowed.
+      Future<void>.delayed(const Duration(milliseconds: 50), () {
+        _ignoreTapAfterDrag = false;
+      });
+    }
+  }
+
+  double _dragAutoScrollSpeed(Offset global) {
+    final ctx = _gridKey.currentContext;
+    if (ctx == null) return 0;
+    final box = ctx.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return 0;
+    final local = box.globalToLocal(global);
+    final h = box.size.height;
+    if (local.dy < _dragAutoScrollEdge) {
+      final t = (1 - (local.dy / _dragAutoScrollEdge)).clamp(0.0, 1.0);
+      return -_dragAutoScrollMaxSpeed * t * t;
+    }
+    if (local.dy > h - _dragAutoScrollEdge) {
+      final t =
+          ((local.dy - (h - _dragAutoScrollEdge)) / _dragAutoScrollEdge)
+              .clamp(0.0, 1.0);
+      return _dragAutoScrollMaxSpeed * t * t;
+    }
+    return 0;
+  }
+
+  void _updateDragAutoScroll() {
+    if (!_dragSelectActive || _dragPointerGlobal == null) {
+      _stopDragAutoScroll();
+      return;
+    }
+    if (_dragAutoScrollSpeed(_dragPointerGlobal!) == 0) {
+      _stopDragAutoScroll();
+      return;
+    }
+    _dragAutoScrollTimer ??= Timer.periodic(
+      const Duration(milliseconds: 16),
+      (_) => _tickDragAutoScroll(),
+    );
+  }
+
+  void _tickDragAutoScroll() {
+    if (!mounted ||
+        !_dragSelectActive ||
+        _dragPointerGlobal == null ||
+        _dragAnchorAssetIndex == null) {
+      _stopDragAutoScroll();
+      return;
+    }
+    if (!widget.scrollController.hasClients) return;
+    final speed = _dragAutoScrollSpeed(_dragPointerGlobal!);
+    if (speed == 0) {
+      _stopDragAutoScroll();
+      return;
+    }
+    final pos = widget.scrollController.position;
+    final next = (pos.pixels + speed).clamp(0.0, pos.maxScrollExtent);
+    if (next != pos.pixels) {
+      widget.scrollController.jumpTo(next);
+    }
+    final current =
+        _assetIndexAtGlobal(_dragPointerGlobal!) ?? _dragAnchorAssetIndex!;
+    _applyDragRange(current);
+    if (pos.pixels > pos.maxScrollExtent - 400) {
+      unawaited(_loadMore());
+    }
+  }
+
+  void _stopDragAutoScroll() {
+    _dragAutoScrollTimer?.cancel();
+    _dragAutoScrollTimer = null;
+  }
+
+  void _applyDragRange(int currentAssetIndex) {
+    final anchor = _dragAnchorAssetIndex;
+    if (anchor == null) return;
+    final lo = math.min(anchor, currentAssetIndex);
+    final hi = math.max(anchor, currentAssetIndex);
+    final inRange = <String>{};
+    for (var i = lo; i <= hi && i < _assets.length; i++) {
+      inRange.add('asset_${_assets[i].id}');
+    }
+
+    final target = Set<String>.from(_dragBaselineIds);
+    if (_dragSelectAdds) {
+      target.addAll(inRange);
+    } else {
+      target.removeAll(inRange);
+    }
+    _syncSelectionToTarget(target);
+  }
+
+  void _syncSelectionToTarget(Set<String> targetIds) {
+    final kept = widget.selected.where((e) => targetIds.contains(e.id)).toList();
+    final missing = <String>[
+      for (final id in targetIds)
+        if (!kept.any((e) => e.id == id)) id,
+    ];
+
+    if (kept.length != widget.selected.length) {
+      widget.onSelectedChanged(kept);
+    }
+
+    setState(() {
+      _pendingSelectIds
+        ..clear()
+        ..addAll(missing);
+      _refreshSelectionOrder(pendingExtra: _pendingSelectIds);
+    });
+
+    for (final id in missing) {
+      if (_loadingSelectIds.contains(id)) continue;
+      AssetEntity? asset;
+      for (final a in _assets) {
+        if ('asset_${a.id}' == id) {
+          asset = a;
+          break;
+        }
+      }
+      if (asset == null) continue;
+      unawaited(_ensureAssetSelected(asset));
+    }
+  }
+
+  Future<void> _ensureAssetSelected(AssetEntity asset) async {
+    final id = 'asset_${asset.id}';
+    if (widget.selected.any((e) => e.id == id)) {
+      if (_pendingSelectIds.remove(id) && mounted) {
+        setState(() => _refreshSelectionOrder());
+      }
+      return;
+    }
+    _pendingSelectIds.add(id);
+    if (!_loadingSelectIds.add(id)) return;
+    try {
+      await _addAssetToSelection(asset);
+    } finally {
+      _loadingSelectIds.remove(id);
+      _pendingSelectIds.remove(id);
+      if (mounted) setState(() => _refreshSelectionOrder());
+    }
+  }
 
   /// На iOS `originFile` часто даёт HEIC, который Image.memory / часть пайплайна
   /// обрабатывают плохо. `file` обычно уже пригодный JPEG/PNG.
@@ -482,13 +738,28 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   }
 
   Future<void> _toggleAsset(AssetEntity asset) async {
+    if (_ignoreTapAfterDrag || _dragSelectActive) return;
     final id = 'asset_${asset.id}';
-    if (_isSelected(id)) {
+    if (widget.selected.any((e) => e.id == id)) {
+      _pendingSelectIds.remove(id);
       widget.onSelectedChanged(
         widget.selected.where((e) => e.id != id).toList(),
       );
       return;
     }
+    if (_pendingSelectIds.contains(id) || _loadingSelectIds.contains(id)) {
+      return;
+    }
+    setState(() {
+      _pendingSelectIds.add(id);
+      _refreshSelectionOrder();
+    });
+    await _ensureAssetSelected(asset);
+  }
+
+  Future<void> _addAssetToSelection(AssetEntity asset) async {
+    final id = 'asset_${asset.id}';
+    if (widget.selected.any((e) => e.id == id)) return;
 
     final loaded = await _readAssetPayload(asset);
     if (loaded == null) {
@@ -503,7 +774,6 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     final bytes = loaded.bytes;
     final filePath = loaded.path;
 
-    // GEO diag: PhotoManager location + EXIF в file/originBytes/originFile.
     unawaited(logAssetGeoSourceDiagnostics(asset));
     unawaited(
       logUploadImageExifDiagnostics(
@@ -551,6 +821,10 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
         ),
       );
     }
+    if (!mounted) return;
+    if (widget.selected.any((e) => e.id == id)) return;
+    // Drag range no longer wants this asset.
+    if (!_pendingSelectIds.contains(id)) return;
     widget.onSelectedChanged([...widget.selected, item]);
   }
 
@@ -789,47 +1063,58 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
               }
               return false;
             },
-            child: GridView.builder(
-              controller: widget.scrollController,
-              cacheExtent: 240,
-              padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisSpacing: 2,
-                crossAxisSpacing: 2,
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: _onGridPointerDown,
+              onPointerMove: _onGridPointerMove,
+              onPointerUp: _onGridPointerUp,
+              onPointerCancel: _onGridPointerUp,
+              child: GridView.builder(
+                key: _gridKey,
+                controller: widget.scrollController,
+                physics: _dragSelectActive
+                    ? const NeverScrollableScrollPhysics()
+                    : null,
+                cacheExtent: 240,
+                padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  mainAxisSpacing: 2,
+                  crossAxisSpacing: 2,
+                ),
+                itemCount: _assets.length + 1 + (_loadingMore ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return AttachCameraTile(
+                      onTap: () => unawaited(_openCameraCapture()),
+                      onLongPress: kIsWeb
+                          ? () => unawaited(_openCameraVideoWeb())
+                          : () => unawaited(_openCameraCapture()),
+                    );
+                  }
+                  final assetIndex = index - 1;
+                  if (assetIndex >= _assets.length) {
+                    return const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(12),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  }
+                  final asset = _assets[assetIndex];
+                  final id = 'asset_${asset.id}';
+                  final selected = _isSelected(id);
+                  final order = _selectionOrder[id];
+                  return _AssetThumb(
+                    asset: asset,
+                    selected: selected,
+                    order: order,
+                    alreadyInAlbum: widget.highlightKnownAssets &&
+                        _knownHints.matchesAsset(asset),
+                    onTap: () => _toggleAsset(asset),
+                  );
+                },
               ),
-              itemCount: _assets.length + 1 + (_loadingMore ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  return AttachCameraTile(
-                    onTap: () => unawaited(_openCameraCapture()),
-                    onLongPress: kIsWeb
-                        ? () => unawaited(_openCameraVideoWeb())
-                        : () => unawaited(_openCameraCapture()),
-                  );
-                }
-                final assetIndex = index - 1;
-                if (assetIndex >= _assets.length) {
-                  return const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(12),
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  );
-                }
-                final asset = _assets[assetIndex];
-                final id = 'asset_${asset.id}';
-                final selected = _isSelected(id);
-                final order = _selectionOrder[id];
-                return _AssetThumb(
-                  asset: asset,
-                  selected: selected,
-                  order: order,
-                  alreadyInAlbum: widget.highlightKnownAssets &&
-                      _knownHints.matchesAsset(asset),
-                  onTap: () => _toggleAsset(asset),
-                );
-              },
             ),
           ),
         ),

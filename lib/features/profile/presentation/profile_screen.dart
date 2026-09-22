@@ -17,6 +17,7 @@ import 'notification_settings_screen.dart';
 import 'menu_sections_screen.dart';
 import 'screen_timeout_settings_screen.dart';
 import 'media_storage_settings_screen.dart';
+import 'telegram_settings_screen.dart';
 import 'avatar_crop_screen.dart';
 import 'birthday_format.dart';
 import 'birthday_picker.dart';
@@ -403,46 +404,72 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
         ),
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
+        padding: const EdgeInsets.all(16),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            GestureDetector(
-              onTap: _avatarBusy ? null : _showAvatarOptions,
-              child: SizedBox(
-                width: avatarRadius * 2,
-                height: avatarRadius * 2,
-                child: Stack(
-                  children: [
-                    ChatAvatar(
-                      name: _displayName,
-                      avatarUrl: _avatarUrl,
-                      radius: avatarRadius,
-                    ),
-                    if (_avatarBusy)
-                      const Positioned.fill(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.black38,
+            SizedBox(
+              width: avatarRadius * 2,
+              child: Column(
+                children: [
+                  GestureDetector(
+                    onTap: _avatarBusy ? null : _showAvatarOptions,
+                    child: SizedBox(
+                      width: avatarRadius * 2,
+                      height: avatarRadius * 2,
+                      child: Stack(
+                        children: [
+                          ChatAvatar(
+                            name: _displayName,
+                            avatarUrl: _avatarUrl,
+                            radius: avatarRadius,
                           ),
-                          child: Center(
-                            child: SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
+                          if (_avatarBusy)
+                            const Positioned.fill(
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.black38,
+                                ),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: 24,
+                                    height: 24,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
+                        ],
                       ),
-                  ],
-                ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _genderIcon(
+                        theme,
+                        value: 'male',
+                        icon: LucideIcons.mars,
+                        tooltip: 'Мужской',
+                      ),
+                      const SizedBox(width: 8),
+                      _genderIcon(
+                        theme,
+                        value: 'female',
+                        icon: LucideIcons.venus,
+                        tooltip: 'Женский',
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-            const SizedBox(width: 16),
+            const SizedBox(width: 14),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -451,6 +478,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                     controller: _lastName,
                     decoration: const InputDecoration(
                       labelText: 'Фамилия',
+                      isDense: true,
                     ),
                     textCapitalization: TextCapitalization.words,
                     onChanged: (_) => setState(() {}),
@@ -460,27 +488,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                     controller: _firstName,
                     decoration: const InputDecoration(
                       labelText: 'Имя',
+                      isDense: true,
                     ),
                     textCapitalization: TextCapitalization.words,
                     onChanged: (_) => setState(() {}),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      _genderIcon(
-                        theme,
-                        value: 'male',
-                        icon: LucideIcons.user,
-                        tooltip: 'Мужской',
-                      ),
-                      const SizedBox(width: 8),
-                      _genderIcon(
-                        theme,
-                        value: 'female',
-                        icon: LucideIcons.user,
-                        tooltip: 'Женский',
-                      ),
-                    ],
                   ),
                 ],
               ),
@@ -738,6 +749,41 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             );
           },
         ),
+        if (() {
+          final entitlements = widget.status['entitlements'];
+          return entitlements is Map &&
+              entitlements['individual_premium'] == true;
+        }())
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              LucideIcons.send,
+              color: theme.colorScheme.primary,
+            ),
+            title: const Text('Telegram'),
+            subtitle: Text(
+              () {
+                final tg = widget.status['telegram'];
+                if (tg is Map && tg['connected'] == true) {
+                  if (tg['status']?.toString() == 'grace') {
+                    return 'Только чтение';
+                  }
+                  return 'Подключён';
+                }
+                return 'Подключить чаты Telegram';
+              }(),
+            ),
+            trailing: const Icon(LucideIcons.chevron_right),
+            onTap: () {
+              Navigator.of(context)
+                  .push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const TelegramSettingsScreen(),
+                    ),
+                  )
+                  .then((_) => widget.onStatusChanged());
+            },
+          ),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(LucideIcons.layout_list,

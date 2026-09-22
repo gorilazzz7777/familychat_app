@@ -485,21 +485,43 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
   Widget _mediaBody(_ChatViewerPhoto photo, {required bool autoplay}) {
     if (photo.isVideo) {
       final local = galleryLocalDevicePath(photo.attachment ?? const {});
+      final gifLike = _attachmentIsGifVideo(photo.attachment);
       return GalleryVideoPlayer(
         url: photo.imageUrl,
         localPath: local.isEmpty ? null : local,
         httpHeaders: photo.httpHeaders,
         fit: BoxFit.contain,
         autoplay: autoplay,
+        looping: gifLike,
+        muted: gifLike,
+        showControls: !gifLike,
       );
     }
     return _imageBody(photo);
+  }
+
+  static bool _attachmentIsGifVideo(Map<String, dynamic>? attachment) {
+    if (attachment == null) return false;
+    // TG animation / animated sticker: kind forced to image, file is video/*.
+    if (attachment['kind']?.toString() == 'image' &&
+        isVideoAttachment(attachment)) {
+      return true;
+    }
+    return false;
+  }
+
+  static String _animatedMediaTitle(Map<String, dynamic>? attachment) {
+    final ct = attachment?['content_type']?.toString().toLowerCase() ?? '';
+    final name = attachment?['filename']?.toString().toLowerCase() ?? '';
+    if (ct.contains('webm') || name.endsWith('.webm')) return 'Стикер';
+    return 'GIF';
   }
 
   @override
   Widget build(BuildContext context) {
     final photo = _photos.isEmpty ? null : _currentPhoto;
     final isVideo = photo?.isVideo == true;
+    final gifLike = _attachmentIsGifVideo(photo?.attachment);
     final canForward =
         (photo?.threadId ?? widget.threadId) != null &&
             (photo?.messageId ?? widget.messageId) != null;
@@ -525,7 +547,9 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       pageController: _pageController!,
       zoomPageKey: _zoomPageKey,
       itemCount: _photos.length,
-      title: isVideo ? 'Видео' : 'Фото',
+      title: gifLike
+          ? (_animatedMediaTitle(photo?.attachment))
+          : (isVideo ? 'Видео' : 'Фото'),
       onPageChanged: (i) => setState(() {
         _index = i;
         _highlightUserId = null;

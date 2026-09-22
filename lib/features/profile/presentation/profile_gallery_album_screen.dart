@@ -7,7 +7,6 @@ import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/share/share_to_diary_prefs.dart';
 import '../../../core/cache/familychat_local_cache.dart';
 import '../../../core/media/gallery_photo_local_state.dart';
 import '../../../core/media/gallery_media_export.dart';
@@ -222,7 +221,7 @@ class _ProfileGalleryAlbumScreenState
       albumId: widget.albumId,
       title: widget.title,
       photos: photos,
-      shareToDiary: ref.read(shareToDiaryPrefsProvider),
+      shareToDiary: false,
     );
     _ensureUploadPollTimer();
     _syncFromCoordinator();
@@ -884,7 +883,7 @@ class _ProfileGalleryAlbumScreenState
             widget.userId,
             albumPk,
             chunk,
-            shareToDiary: ref.read(shareToDiaryPrefsProvider),
+            shareToDiary: false,
           );
           for (var j = 0; j < chunk.length; j++) {
             _onUploadProgress(success: true);

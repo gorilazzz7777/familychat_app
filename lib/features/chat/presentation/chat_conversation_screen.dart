@@ -65,6 +65,7 @@ import 'chat_forward_screen.dart';
 import 'chat_info_sheet.dart';
 import 'chat_call_screen.dart';
 import 'record_video_circle_screen.dart';
+import 'widgets/chat_animated_media_scope.dart';
 import 'widgets/chat_attach_sheet/chat_attach_models.dart';
 import 'widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import 'widgets/chat_compose_input.dart';
@@ -168,6 +169,7 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
     this.initialPeerAvatarUrl,
     this.initialCanSend = true,
     this.expectedLastMessageId,
+    this.openedFromTelegramTab = false,
   });
 
   final int threadId;
@@ -187,6 +189,9 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
   /// Id последнего сообщения из списка чатов — чтобы не показывать устаревший кэш.
   final int? expectedLastMessageId;
 
+  /// Opened from Chat Hub «ТГ» segment — default delivery to Telegram.
+  final bool openedFromTelegramTab;
+
   @override
   ConsumerState<ChatConversationScreen> createState() =>
       _ChatConversationScreenState();
@@ -197,6 +202,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   final _controller = TextEditingController();
   final _inputFocus = FocusNode();
   final _scrollController = ScrollController();
+  final _animatedMediaController = ChatAnimatedMediaController();
   final _messageKeys = <int, GlobalKey>{};
   List<Map<String, dynamic>> _messages = [];
   bool _loading = true;
@@ -251,6 +257,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   List<ChatMentionParticipant> _mentionParticipants = [];
   bool _voiceTranscriptionEnabled = false;
   bool _viewerIndividualPremium = false;
+  bool _telegramCanForce = false;
+  bool _telegramWillSend = false;
+  late ChatDeliveryChannel _deliveryChannel =
+      (widget.openedFromTelegramTab || widget.kind == 'telegram')
+          ? ChatDeliveryChannel.telegram
+          : ChatDeliveryChannel.auto;
   bool _aiComposing = false;
   bool _speaking = false;
   bool _canSend = true;
@@ -626,6 +638,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           uid != _currentUserId || premium != _viewerIndividualPremium;
       _currentUserId = uid;
       _viewerIndividualPremium = premium;
+      if (!fromCache) {
+        unawaited(_refreshTelegramRouting());
+      }
       if (!changed || !mounted) return;
       // Backfill owner on optimistic bubbles created before identity resolved.
       if (uid != null && _messages.isNotEmpty) {
@@ -644,6 +659,58 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         }
       }
       if (!fromCache) setState(() {});
+    } catch (_) {}
+  }
+
+  /// Unmatched Telegram hub thread — only TG peer, always deliver there.
+  bool get _isUnmatchedTelegramThread => widget.kind == 'telegram';
+
+  /// Show Авто/Space/TG sheet: linked DM owner only (not pure TG threads).
+  bool get _showDeliveryChannelPicker =>
+      _telegramCanForce && !_isUnmatchedTelegramThread;
+
+  Future<void> _refreshTelegramRouting() async {
+    if (_isUnmatchedTelegramThread) {
+      if (!_telegramCanForce || !_telegramWillSend) {
+        if (!mounted) return;
+        setState(() {
+          _telegramCanForce = true;
+          _telegramWillSend = true;
+          _deliveryChannel = ChatDeliveryChannel.telegram;
+        });
+      }
+      return;
+    }
+    try {
+      final threads =
+          await ref.read(familychatRepositoryProvider).chatThreads();
+      Map<String, dynamic>? thread;
+      for (final t in threads) {
+        if (chatAsInt(t['id']) == widget.threadId) {
+          thread = t;
+          break;
+        }
+      }
+      final tg = thread?['telegram'];
+      if (!mounted) return;
+      if (tg is! Map) {
+        if (_telegramCanForce || _telegramWillSend) {
+          setState(() {
+            _telegramCanForce = false;
+            _telegramWillSend = false;
+          });
+        }
+        return;
+      }
+      final canForce = tg['can_force_telegram'] == true && tg['owner'] == true;
+      final willSend = tg['will_send_to_telegram'] == true && canForce;
+      if (canForce == _telegramCanForce && willSend == _telegramWillSend) {
+        return;
+      }
+      setState(() {
+        _telegramCanForce = canForce;
+        _telegramWillSend = willSend;
+      });
     } catch (_) {}
   }
 
@@ -2070,6 +2137,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }
 
   void _onScroll() {
+    // Срабатывает раньше ScrollNotification — гасим GIF/стикеры здесь,
+    // иначе VisibilityDetector успевает поднять новый ExoPlayer.
+    if (_scrollController.hasClients) {
+      final pixels = _scrollController.position.pixels;
+      if ((pixels - _lastScrollPixels).abs() > 0.5) {
+        _animatedMediaController.noteUserScroll();
+      }
+    }
     _updateScrollToBottomVisibility();
     _scheduleStickyDayUpdate();
     _scheduleSlidingWindowTrim();
@@ -2290,6 +2365,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     unawaited(_speakPlayer?.dispose() ?? Future<void>.value());
     _controller.dispose();
     _scrollController.dispose();
+    _animatedMediaController.dispose();
     super.dispose();
   }
 
@@ -4006,6 +4082,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
+    bool deliverToTelegram = false,
+    String? deliveryChannel,
   }) async {
     if (_localFirst) {
       await _persistMessageCache();
@@ -4030,6 +4108,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           replyToMessageId: replyToMessageId,
           mentionedUserIds: mentionedUserIds,
           notifySilent: notifySilent,
+          deliverToTelegram: deliverToTelegram,
+          deliveryChannel: deliveryChannel,
         );
       }
       if (!mounted) return true;
@@ -4114,6 +4194,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
+    bool deliverToTelegram = false,
+    String? deliveryChannel,
     int? voiceDurationMs,
     String? voiceTranscript,
     int? videoNoteDurationMs,
@@ -4137,6 +4219,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         replyToMessageId: replyToMessageId,
         mentionedUserIds: mentionedUserIds,
         notifySilent: notifySilent,
+        deliverToTelegram: deliverToTelegram,
+        deliveryChannel: deliveryChannel,
       );
       if (sentViaWs) return true;
     }
@@ -4222,6 +4306,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         mentionedUserIds:
             mentionedUserIds.isEmpty ? null : mentionedUserIds,
         notifySilent: notifySilent,
+        deliverToTelegram: deliverToTelegram,
+        deliveryChannel: deliveryChannel,
         clientMsgId: tempId,
         voiceDurationMs: voiceDurationMs,
         voiceTranscript: voiceTranscript,
@@ -4229,6 +4315,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       );
       if (!mounted) return true;
       _replaceOptimisticMessage(tempId, msg);
+      unawaited(_refreshTelegramRouting());
       _scrollToBottom();
       await _persistMessageCache();
       for (var i = 0; i < attachments.length; i++) {
@@ -4967,11 +5054,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     List<int> mentionedUserIds = const [],
     ChatSendOptions options = ChatSendOptions.normal,
   }) async {
+    if (_showDeliveryChannelPicker) {
+      setState(() => _deliveryChannel = options.deliveryChannel);
+    }
+    if (options.preferenceOnly) return;
     if (options.aiAssist) {
       await _runAiAssistCompose();
       return;
     }
-    await _send(mentionedUserIds: mentionedUserIds, options: options);
+    final channel = _isUnmatchedTelegramThread
+        ? ChatDeliveryChannel.telegram
+        : (_telegramCanForce
+            ? options.deliveryChannel
+            : ChatDeliveryChannel.auto);
+    final effective = ChatSendOptions(
+      silent: options.silent,
+      scheduledAt: options.scheduledAt,
+      aiAssist: options.aiAssist,
+      deliveryChannel: channel,
+    );
+    await _send(mentionedUserIds: mentionedUserIds, options: effective);
+  }
+
+  bool get _highlightTelegramSend {
+    if (_isUnmatchedTelegramThread) return true;
+    if (!_telegramCanForce) return false;
+    return switch (_deliveryChannel) {
+      ChatDeliveryChannel.telegram => true,
+      ChatDeliveryChannel.familychat => false,
+      ChatDeliveryChannel.auto => _telegramWillSend,
+    };
   }
 
   Future<void> _send({
@@ -5117,6 +5229,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         replyToMessageId: replyId,
         mentionedUserIds: mentionedUserIds,
         notifySilent: options.silent,
+        deliverToTelegram: options.deliverToTelegram,
+        deliveryChannel: options.deliveryChannelApi,
       );
       return;
     }
@@ -5134,6 +5248,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       replyToMessageId: replyId,
       mentionedUserIds: mentionedUserIds,
       notifySilent: options.silent,
+      deliverToTelegram: options.deliverToTelegram,
+      deliveryChannel: options.deliveryChannelApi,
     );
   }
 
@@ -6297,6 +6413,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               _editingMessageId != null,
                           voiceTranscriptionEnabled: _voiceTranscriptionEnabled,
                           showAiAssist: _viewerIndividualPremium,
+                          showDeliverToTelegram: _showDeliveryChannelPicker,
+                          deliveryChannel: _deliveryChannel,
+                          highlightTelegram: _highlightTelegramSend,
                           participants: _mentionParticipants,
                           currentUserId: _currentUserId,
                           panelSlotMaxHeight: panelSlotMaxHeight,
@@ -6316,6 +6435,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               _editingMessageId != null,
                           voiceTranscriptionEnabled: _voiceTranscriptionEnabled,
                           showAiAssist: _viewerIndividualPremium,
+                          showDeliverToTelegram: _showDeliveryChannelPicker,
+                          deliveryChannel: _deliveryChannel,
+                          highlightTelegram: _highlightTelegramSend,
                           panelSlotMaxHeight: panelSlotMaxHeight,
                           panelBarsOverhead: barsOverhead,
                         ),
@@ -6554,7 +6676,28 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                             ChatVoicePlaybackCoordinator
                                                 .instance
                                                 .syncFromMessages(_messages);
-                                            return Stack(
+                                            return ChatAnimatedMediaScope(
+                                              controller:
+                                                  _animatedMediaController,
+                                              child: NotificationListener<
+                                                  ScrollNotification>(
+                                                onNotification: (n) {
+                                                  if (n.depth != 0) {
+                                                    return false;
+                                                  }
+                                                  if (n is ScrollUpdateNotification ||
+                                                      n is ScrollStartNotification ||
+                                                      n is UserScrollNotification) {
+                                                    _animatedMediaController
+                                                        .noteUserScroll();
+                                                  } else if (n
+                                                      is ScrollEndNotification) {
+                                                    _animatedMediaController
+                                                        .noteScrollEnd();
+                                                  }
+                                                  return false;
+                                                },
+                                                child: Stack(
                                           children: [
                                             RefreshIndicator(
                             onRefresh: _onPullRefresh,
@@ -6877,7 +7020,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 ),
                               ),
                             ],
-                          );
+                          ),
+                                              ),
+                                            );
                                           },
                                         ),
                                       ),

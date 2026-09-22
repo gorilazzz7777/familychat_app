@@ -10,6 +10,7 @@ import '../../familychat/data/familychat_repository.dart';
 import 'active_chat_context.dart';
 import 'chat_bootstrap_coordinator.dart';
 import 'chat_local_mutations.dart';
+import 'chat_local_reads.dart';
 import 'chat_message_preview.dart';
 import 'chat_offline_outbox.dart';
 import 'chat_realtime_utils.dart';
@@ -27,6 +28,7 @@ class ChatSyncService {
   int? _currentUserId;
   bool _listening = false;
   bool _syncingHub = false;
+  bool _syncingTelegramChats = false;
   bool _historySyncing = false;
   bool _deferredHubSync = false;
   bool _deferredHubPrefetch = false;
@@ -387,6 +389,7 @@ class ChatSyncService {
       await ChatLocalStore.instance.replaceThreads(enriched);
       await ChatLocalStore.instance.replaceMembers(members);
       _notifyUnreadChanged();
+      unawaited(syncTelegramChats());
 
       if (prefetchMessages) {
         for (final thread in enriched) {
@@ -401,6 +404,23 @@ class ChatSyncService {
       debugPrint('[ChatSyncService] syncHub failed: $e\n$st');
     } finally {
       _syncingHub = false;
+    }
+  }
+
+  /// Telegram hub segment: same local-first model as main chats.
+  Future<void> syncTelegramChats() async {
+    final repo = _repo;
+    if (repo == null) return;
+    if (_syncingTelegramChats) return;
+    _syncingTelegramChats = true;
+    try {
+      final remote = await repo.telegramChats();
+      await ChatLocalReads.saveTelegramChats(remote);
+    } catch (e, st) {
+      // No premium / not connected / network — keep previous local snapshot.
+      debugPrint('[ChatSyncService] syncTelegramChats failed: $e\n$st');
+    } finally {
+      _syncingTelegramChats = false;
     }
   }
 

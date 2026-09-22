@@ -43,6 +43,9 @@ class ChatMentionComposeInput extends StatefulWidget {
     this.forceSendButton = false,
     this.voiceTranscriptionEnabled = false,
     this.showAiAssist = false,
+    this.showDeliverToTelegram = false,
+    this.deliveryChannel = ChatDeliveryChannel.auto,
+    this.highlightTelegram = false,
     required this.participants,
     this.currentUserId,
     this.hintText = 'Сообщение...',
@@ -65,6 +68,9 @@ class ChatMentionComposeInput extends StatefulWidget {
   final bool forceSendButton;
   final bool voiceTranscriptionEnabled;
   final bool showAiAssist;
+  final bool showDeliverToTelegram;
+  final ChatDeliveryChannel deliveryChannel;
+  final bool highlightTelegram;
   final List<ChatMentionParticipant> participants;
   final int? currentUserId;
   final String hintText;
@@ -390,6 +396,9 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
                     voiceTranscriptionEnabled:
                         widget.voiceTranscriptionEnabled,
                     showAiAssist: widget.showAiAssist,
+                    showDeliverToTelegram: widget.showDeliverToTelegram,
+                    deliveryChannel: widget.deliveryChannel,
+                    highlightTelegram: widget.highlightTelegram,
                     onRecordingChanged: _onRecordingChanged,
                     circleSession: _circleSession,
                     recordingHost: _recordingHost,

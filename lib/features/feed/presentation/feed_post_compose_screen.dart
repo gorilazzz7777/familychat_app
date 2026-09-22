@@ -13,8 +13,6 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
-import '../../../core/share/share_to_diary_prefs.dart';
-import '../../../core/widgets/share_to_diary_checkbox.dart';
 import '../data/feed_post_target.dart';
 import '../data/feed_post_uploader.dart';
 
@@ -320,7 +318,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
       repo: ref.read(familychatRepositoryProvider),
       photos: snapshot,
       caption: caption,
-      shareToDiary: child == null ? ref.read(shareToDiaryPrefsProvider) : false,
+      shareToDiary: false,
       childId: child?.childId,
       optimisticId: optimisticId,
       batchId: batchId,
@@ -458,10 +456,7 @@ class _FeedPostComposeScreenState extends ConsumerState<FeedPostComposeScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                if (_childTarget == null) ...[
-                  const ShareToDiaryCheckbox(dense: true),
-                  const SizedBox(height: 8),
-                ] else
+                if (_childTarget != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Text(

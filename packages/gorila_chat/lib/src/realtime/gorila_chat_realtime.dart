@@ -354,6 +354,8 @@ class GorilaChatRealtime {
     int? replyToMessageId,
     List<int>? mentionedUserIds,
     bool notifySilent = false,
+    bool deliverToTelegram = false,
+    String? deliveryChannel,
     Duration timeout = _defaultSendAckTimeout,
   }) async {
     if (!isConnected) {
@@ -382,6 +384,9 @@ class GorilaChatRealtime {
       if (mentionedUserIds != null && mentionedUserIds.isNotEmpty)
         'mentioned_user_ids': mentionedUserIds,
       if (notifySilent) 'notify_silent': true,
+      if (deliverToTelegram) 'deliver_to_telegram': true,
+      if (deliveryChannel != null && deliveryChannel.isNotEmpty)
+        'delivery_channel': deliveryChannel,
     });
 
     try {

@@ -417,6 +417,20 @@ abstract final class FamilyChatLocalCache {
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
+  static Future<void> saveTelegramChats(List<Map<String, dynamic>> chats) async {
+    await writeJson('chat/telegram_chats', {
+      'chats': chats,
+    });
+  }
+
+  static Future<List<Map<String, dynamic>>?> readTelegramChats() async {
+    final raw = await readJson('chat/telegram_chats');
+    if (raw == null) return null;
+    final list = raw['chats'];
+    if (list is! List) return null;
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
   static Future<void> saveStatus(Map<String, dynamic> status) async {
     await writeJson('session/status', {
       'status': status,

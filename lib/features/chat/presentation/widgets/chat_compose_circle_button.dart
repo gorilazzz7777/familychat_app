@@ -9,6 +9,7 @@ class ChatComposeCircleButton extends StatelessWidget {
     this.onLongPress,
     this.iconColor,
     this.backgroundColor,
+    this.borderColor,
     this.iconSize = 22,
     this.size = 40,
     this.tooltip,
@@ -19,6 +20,7 @@ class ChatComposeCircleButton extends StatelessWidget {
   final VoidCallback? onLongPress;
   final Color? iconColor;
   final Color? backgroundColor;
+  final Color? borderColor;
   final double iconSize;
   final double size;
   final String? tooltip;
@@ -33,6 +35,7 @@ class ChatComposeCircleButton extends StatelessWidget {
     final cs = theme.colorScheme;
     final bg = backgroundColor ?? defaultBackground(cs);
     final fg = iconColor ?? defaultIconColor(cs);
+    final border = borderColor ?? cs.outline.withValues(alpha: 0.42);
 
     final child = SizedBox(
       width: size,
@@ -44,9 +47,7 @@ class ChatComposeCircleButton extends StatelessWidget {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: bg,
-        border: Border.all(
-          color: cs.outline.withValues(alpha: 0.42),
-        ),
+        border: Border.all(color: border),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.08),

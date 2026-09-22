@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../app/app_actions_scope.dart';
 import '../../../app/shell_nav_bar.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/settings/app_settings_controller.dart';
@@ -24,21 +25,28 @@ import 'chat_conversation_screen.dart';
 import 'chat_thread_avatars.dart';
 import 'create_group_screen.dart';
 import 'friend_invite_flow.dart';
+import 'telegram_chats_pane.dart';
 import 'widgets/chat_message_read_status_icon.dart';
 
-enum _ChatFilter { all, family, dm, group, friends }
+enum _ChatFilter { all, family, dm, group, friends, telegram }
 
 class ChatHubScreen extends ConsumerStatefulWidget {
   const ChatHubScreen({
     super.key,
     this.hasIndividualPremium = false,
+    this.telegramConnected = false,
+    this.telegramGrace = false,
     this.profileName = '',
     this.profileAvatarUrl = '',
     this.onProfileTap,
   });
 
-  /// Вкладка «Друзья» и создание контакта — только с Individual Premium.
+  /// Вкладки «Друзья» / «Telegram» — только с Individual Premium.
   final bool hasIndividualPremium;
+  /// Business Secretary активен (active).
+  final bool telegramConnected;
+  /// Grace после окончания Premium (read-only TG).
+  final bool telegramGrace;
   final String profileName;
   final String profileAvatarUrl;
   final VoidCallback? onProfileTap;
@@ -56,6 +64,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       _ChatFilter.dm,
       _ChatFilter.group,
       if (hasIndividualPremium) _ChatFilter.friends,
+      if (hasIndividualPremium) _ChatFilter.telegram,
     ];
   }
 
@@ -119,6 +128,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       hasIndividualPremium: widget.hasIndividualPremium,
     );
     _tabController = TabController(length: _filters.length, vsync: this);
+    _tabController.addListener(_onFilterTabChanged);
     FamilyChatRealtime.instance.addListener(_onRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineSync);
     _lastKnownOnline = ChatOfflineSync.instance.isOnline;
@@ -208,10 +218,37 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         vsync: this,
         initialIndex: initialIndex.clamp(0, next.length - 1),
       );
+      _tabController.addListener(_onFilterTabChanged);
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       oldController.dispose();
     });
+  }
+
+  void _onFilterTabChanged() {
+    if (_tabController.indexIsChanging) return;
+    if (!mounted) return;
+    final idx = _tabController.index;
+    if (idx < 0 || idx >= _filters.length) return;
+    if (_filters[idx] == _ChatFilter.telegram) {
+      if (_searchVisible) {
+        setState(() {
+          _searchVisible = false;
+          _searchQuery = '';
+          _searchController.clear();
+        });
+      }
+      unawaited(AppActions.refreshStatus());
+    } else {
+      setState(() {});
+    }
+  }
+
+  bool get _telegramFilterSelected {
+    final idx = _tabController.index;
+    return idx >= 0 &&
+        idx < _filters.length &&
+        _filters[idx] == _ChatFilter.telegram;
   }
 
   String _filterLabel(_ChatFilter filter) {
@@ -221,6 +258,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       _ChatFilter.dm => 'Личные',
       _ChatFilter.group => 'Группы',
       _ChatFilter.friends => 'Друзья',
+      _ChatFilter.telegram =>
+        widget.telegramGrace ? 'Telegram · чтение' : 'Telegram',
     };
   }
 
@@ -499,6 +538,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       _ChatFilter.dm => kind == 'dm' || kind == 'saved',
       _ChatFilter.group => kind == 'group' && !_isBirthdayCelebration(thread),
       _ChatFilter.friends => kind == 'friend_dm',
+      _ChatFilter.telegram => false,
     };
   }
 
@@ -628,7 +668,22 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       _ChatFilter.dm => 'Нет личных чатов',
       _ChatFilter.group => 'Нет групповых чатов',
       _ChatFilter.friends => 'Нет контактов',
+      _ChatFilter.telegram => 'Нет чатов Telegram',
     };
+  }
+
+  Widget _buildFilterPage(_ChatFilter filter) {
+    if (filter == _ChatFilter.telegram) {
+      return Padding(
+        padding: const EdgeInsets.only(top: _ChatFilterTabBar.overlayExtent),
+        child: TelegramChatsPane(
+          hasIndividualPremium: widget.hasIndividualPremium,
+          telegramConnected: widget.telegramConnected,
+          telegramGrace: widget.telegramGrace,
+        ),
+      );
+    }
+    return _buildThreadList(filter);
   }
 
   Widget _buildThreadList(_ChatFilter filter) {
@@ -699,14 +754,29 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                           assetPath: avatarAsset,
                           radius: 24,
                         ),
-                  title: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight:
-                          unread > 0 ? FontWeight.w600 : FontWeight.w500,
-                    ),
+                  title: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight:
+                                unread > 0 ? FontWeight.w600 : FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      if (t['telegram'] is Map &&
+                          (t['telegram'] as Map)['linked'] == true) ...[
+                        const SizedBox(width: 6),
+                        Icon(
+                          LucideIcons.send,
+                          size: 14,
+                          color: scheme.primary,
+                        ),
+                      ],
+                    ],
                   ),
                   subtitle: Padding(
                     padding: const EdgeInsets.only(top: 2),
@@ -798,7 +868,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       ),
       body: Column(
         children: [
-          if (_searchVisible)
+          if (_searchVisible && !_telegramFilterSelected)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
               child: TextField(
@@ -830,7 +900,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                   children: _filters.map((filter) {
                     return ColoredBox(
                       color: theme.scaffoldBackgroundColor,
-                      child: _buildThreadList(filter),
+                      child: _buildFilterPage(filter),
                     );
                   }).toList(),
                 ),
