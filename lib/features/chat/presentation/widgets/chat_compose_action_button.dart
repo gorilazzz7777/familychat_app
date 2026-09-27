@@ -51,6 +51,7 @@ class ChatComposeActionButton extends StatefulWidget {
     this.showDeliverToTelegram = false,
     this.deliveryChannel = ChatDeliveryChannel.auto,
     this.highlightTelegram = false,
+    this.preferOpusVoice = false,
     this.onRecordingChanged,
     this.circleSession,
     this.recordingHost,
@@ -71,6 +72,8 @@ class ChatComposeActionButton extends StatefulWidget {
   final bool showDeliverToTelegram;
   final ChatDeliveryChannel deliveryChannel;
   final bool highlightTelegram;
+  /// TDLib voice notes require Opus in OGG.
+  final bool preferOpusVoice;
   final void Function(ChatVoiceRecordingChange change)? onRecordingChanged;
   /// Общая сессия камеры (чтобы композ мог рисовать превью).
   final ChatVideoCircleSession? circleSession;
@@ -222,7 +225,10 @@ class _ChatComposeActionButtonState extends State<ChatComposeActionButton> {
     }
     final granted = await _recorder.ensurePermission();
     if (!granted) throw StateError('permission');
-    await _recorder.start(forTranscription: widget.voiceTranscriptionEnabled);
+    await _recorder.start(
+      forTranscription: widget.voiceTranscriptionEnabled,
+      preferOpus: widget.preferOpusVoice,
+    );
   }
 
   void _detachPointerRoute() {

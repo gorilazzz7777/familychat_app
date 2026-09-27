@@ -49,7 +49,7 @@ class _ScreenTimeoutGuardState extends ConsumerState<ScreenTimeoutGuard>
   }
 
   void _onActivity() {
-    if (!_resumed) return;
+    if (!_resumed || !mounted) return;
     _idleTimer?.cancel();
     final option = ref.read(appSettingsProvider).screenTimeout;
     if (option == ScreenTimeoutOption.system) {

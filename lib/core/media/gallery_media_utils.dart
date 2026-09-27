@@ -9,7 +9,10 @@ String galleryAttachmentUrl(Map<String, dynamic> attachment) {
 }
 
 /// Локальный путь на телефоне (оригинал отправителя или копия FamilyChat).
+/// Для видео предпочитаем [video_local_path], чтобы не открывать jpg-превью как mp4.
 String galleryLocalDevicePath(Map<String, dynamic> attachment) {
+  final video = attachment['video_local_path']?.toString().trim() ?? '';
+  if (video.isNotEmpty) return video;
   return attachment['local_device_path']?.toString().trim() ?? '';
 }
 

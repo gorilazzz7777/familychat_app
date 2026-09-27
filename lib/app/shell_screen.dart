@@ -26,6 +26,9 @@ import '../core/share/incoming_share_bus.dart';
 import '../core/share/share_direct_target_service.dart';
 import '../core/settings/app_settings_controller.dart';
 import '../core/settings/shell_nav_layout.dart';
+import '../features/telegram_tdlib/telegram_match_store.dart';
+import '../features/telegram_tdlib/telegram_tdlib_providers.dart';
+import '../features/telegram_tdlib/telegram_tdlib_service.dart';
 import 'app_actions_scope.dart';
 import 'shell_nav_bar.dart';
 import 'shell_refresh.dart';
@@ -97,6 +100,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   final _visitedTabs = <int>{_chatTabIndex, _feedTabIndex};
   Timer? _webPollTimer;
   bool _lastKnownOnline = true;
+  bool _tdlibMatchesImported = false;
 
   @override
   void initState() {
@@ -167,7 +171,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       syncApiOnline: ChatOfflineSync.instance.setOnline,
     );
     installWebVisibilityPresenceListener();
-    AppActions.bindShell(selectSection: _selectSection);
+    AppActions.bindShell(
+      selectSection: _selectSection,
+      openTelegramChatsTab: () {
+        _selectSection(ShellSection.chat);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _chatHubKey.currentState?.selectTelegramTab();
+        });
+      },
+    );
   }
 
   Future<void> _webRealtimeSoftSync() async {
@@ -321,6 +333,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       unawaited(FamilyChatNotifications.clearMessageNotificationsOnAppOpen());
       ChatSyncService.instance.beginResumeCatchUp();
       ChatUiConnectivity.instance.onAppResumed();
+      unawaited(TelegramTdlibService.instance.onAppResumed());
+      unawaited(
+        TelegramTdlibService.instance.reconcileFamilyIdentities(),
+      );
       unawaited(_refreshTab(_index, silent: true));
       unawaited(
         PushRegistrationService.registerIfPossible(
@@ -350,6 +366,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       ChatUiConnectivity.instance.onAppBackground();
       if (state == AppLifecycleState.paused ||
           state == AppLifecycleState.hidden) {
+        unawaited(TelegramTdlibService.instance.onAppPaused());
         RuStoreReviewPromptService.onAppPaused();
         unawaited(
           ChatOutboxBackground.flushWhileBackgrounded(
@@ -476,14 +493,32 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   }
 
   bool get _telegramConnected {
-    final tg = _status['telegram'];
-    return tg is Map && tg['connected'] == true;
+    // TDLib client-side auth (Business Secretary UI hidden).
+    final tdlib = ref.watch(telegramTdlibServiceProvider);
+    return tdlib.phase == TdlibAuthPhase.ready;
   }
 
-  bool get _telegramGrace {
-    final tg = _status['telegram'];
-    return tg is Map && tg['status']?.toString() == 'grace';
+  Future<void> _importTdlibSecretaryMatches() async {
+    try {
+      final chats =
+          await ref.read(familychatRepositoryProvider).telegramChats();
+      final n =
+          await TelegramMatchStore.instance.importFromSecretaryChats(chats);
+      if (n > 0) {
+        debugPrint('[tdlib] imported $n secretary matches');
+      }
+      // After secretary import, also apply verified family TDLib identities.
+      await ref
+          .read(telegramTdlibServiceProvider)
+          .reconcileFamilyIdentities();
+    } catch (e) {
+      debugPrint('[tdlib] secretary match import failed: $e');
+      // Allow retry on next ready rebuild.
+      if (mounted) _tdlibMatchesImported = false;
+    }
   }
+
+  bool get _telegramGrace => false;
 
   String get _title => switch (_index) {
         _chatTabIndex => 'Family Space',
@@ -751,6 +786,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     final showingNestedScreen = _hideShellAppBar;
     final layout = ShellNavLayout.fromSettings(ref.watch(appSettingsProvider));
     final current = _sectionOf(_index);
+    final tdlib = ref.watch(telegramTdlibServiceProvider);
+    if (tdlib.phase != TdlibAuthPhase.ready) {
+      _tdlibMatchesImported = false;
+    } else if (!_tdlibMatchesImported) {
+      _tdlibMatchesImported = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_importTdlibSecretaryMatches());
+      });
+    }
     if (!layout.isEnabled(current) && _index != _chatTabIndex) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -857,11 +901,15 @@ class _ShellNavBarWithUnread extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(appSettingsProvider);
     final unreadAsync = ref.watch(chatUnreadTotalProvider);
-    final chatUnread = unreadAsync.when(
+    final fcUnread = unreadAsync.when(
       data: (value) => value,
       loading: () => unreadAsync.valueOrNull ?? 0,
       error: (_, __) => 0,
     );
+    final tdlib = ref.watch(telegramTdlibServiceProvider);
+    final tgUnread =
+        tdlib.phase == TdlibAuthPhase.ready ? tdlib.notifiedUnreadTotal : 0;
+    final chatUnread = fcUnread + tgUnread;
     final chatBadgeLabel = chatUnread > 99 ? '99+' : '$chatUnread';
     return ShellNavBar(
       layout: layout,

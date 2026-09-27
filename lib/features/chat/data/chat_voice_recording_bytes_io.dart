@@ -21,7 +21,9 @@ Future<void> discardVoiceRecordingFile(String path) async {
   }
 }
 
-Future<String?> voiceRecordingTempPath() async {
+Future<String?> voiceRecordingTempPath({String extension = 'm4a'}) async {
   final dir = await getTemporaryDirectory();
-  return '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+  final safeExt = extension.replaceAll(RegExp(r'[^\w]+'), '');
+  final ext = safeExt.isEmpty ? 'm4a' : safeExt;
+  return '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.$ext';
 }

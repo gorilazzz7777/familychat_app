@@ -33,19 +33,39 @@ class ChatVoiceRecorder {
     return status.isGranted;
   }
 
-  Future<void> start({bool forTranscription = false}) async {
+  Future<void> start({
+    bool forTranscription = false,
+    bool preferOpus = false,
+  }) async {
     if (isActive) return;
     // Web всегда WAV; при STT на native — WAV 16 kHz mono под Vosk.
     final useWav = kIsWeb || forTranscription;
     _wavForTranscription = useWav;
-    final preferred = useWav ? AudioEncoder.wav : AudioEncoder.aacLc;
-    final supported = await _recorder.isEncoderSupported(preferred);
-    final encoder = supported ? preferred : AudioEncoder.wav;
+
+    late AudioEncoder encoder;
+    if (useWav) {
+      final preferred = AudioEncoder.wav;
+      encoder = await _recorder.isEncoderSupported(preferred)
+          ? preferred
+          : AudioEncoder.wav;
+    } else if (preferOpus &&
+        await _recorder.isEncoderSupported(AudioEncoder.opus)) {
+      encoder = AudioEncoder.opus;
+    } else if (await _recorder.isEncoderSupported(AudioEncoder.aacLc)) {
+      encoder = AudioEncoder.aacLc;
+    } else {
+      encoder = AudioEncoder.wav;
+    }
     _encoder = encoder;
     _wavForTranscription = encoder == AudioEncoder.wav;
 
-    final path = await voiceRecordingTempPath() ??
-        'voice_${DateTime.now().millisecondsSinceEpoch}.${_wavForTranscription ? 'wav' : 'm4a'}';
+    final ext = switch (encoder) {
+      AudioEncoder.wav => 'wav',
+      AudioEncoder.opus => 'ogg',
+      _ => 'm4a',
+    };
+    final path = await voiceRecordingTempPath(extension: ext) ??
+        'voice_${DateTime.now().millisecondsSinceEpoch}.$ext';
     final config = _wavForTranscription
         ? RecordConfig(
             encoder: encoder,

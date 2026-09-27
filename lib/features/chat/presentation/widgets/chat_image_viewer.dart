@@ -17,6 +17,7 @@ import '../../../../core/media/gallery_media_utils.dart';
 import '../../../../core/media/media_incoming_sync.dart';
 import '../../../../core/media/media_local_index.dart';
 import '../../../../core/providers/app_providers.dart';
+import '../../../familychat/data/familychat_repository.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
 import '../../../profile/presentation/widgets/photo_people_on_photo_bar.dart';
 import '../../../gallery/presentation/widgets/gallery_carousel_thumbnail_strip.dart';
@@ -35,10 +36,16 @@ abstract final class ChatImageViewer {
     String? filename,
     int? messageId,
     Map<String, dynamic>? attachment,
+    /// Sibling media from the same message/album — enables swipe in viewer.
+    List<Map<String, dynamic>>? galleryAttachments,
     VoidCallback? onGoToMessage,
     Map<String, String>? httpHeaders,
   }) {
-    if (imageUrl.isEmpty && attachmentId == null) return Future.value();
+    if (imageUrl.isEmpty &&
+        attachmentId == null &&
+        (galleryAttachments == null || galleryAttachments.isEmpty)) {
+      return Future.value();
+    }
     return Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         fullscreenDialog: true,
@@ -51,6 +58,7 @@ abstract final class ChatImageViewer {
             filename: filename,
             messageId: messageId,
             attachment: attachment,
+            galleryAttachments: galleryAttachments,
             onGoToMessage: onGoToMessage,
             httpHeaders: httpHeaders,
           ),
@@ -68,6 +76,7 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
     this.filename,
     this.messageId,
     this.attachment,
+    this.galleryAttachments,
     this.onGoToMessage,
     this.httpHeaders,
   });
@@ -78,6 +87,7 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
   final String? filename;
   final int? messageId;
   final Map<String, dynamic>? attachment;
+  final List<Map<String, dynamic>>? galleryAttachments;
   final VoidCallback? onGoToMessage;
   final Map<String, String>? httpHeaders;
 
@@ -165,29 +175,64 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       imageUrl: widget.imageUrl,
       fallbackMessageId: widget.messageId,
     );
-    final media = <_ChatViewerPhoto>[seed];
-    if (widget.threadId != null) {
-      try {
-        final threadMedia = await repo.threadMedia(widget.threadId!);
-        for (final att in threadMedia) {
-          if (!isGalleryMediaAttachment(att)) continue;
-          final url = chatAttachmentImageUrl(
-            repo: repo,
-            threadId: widget.threadId!,
-            attachment: att,
-          );
-          media.add(
-            _photoFromAttachment(
-              att,
-              imageUrl: url,
-            ),
-          );
+
+    final media = <_ChatViewerPhoto>[];
+    final gallery = widget.galleryAttachments;
+    if (gallery != null && gallery.isNotEmpty) {
+      final openId = widget.attachmentId?.toString() ??
+          widget.attachment?['id']?.toString();
+      final openVideoPath =
+          widget.attachment?['video_local_path']?.toString().trim() ?? '';
+      for (final raw in gallery) {
+        if (!isGalleryMediaAttachment(raw)) continue;
+        final att = Map<String, dynamic>.from(raw);
+        // Opened item in a multi-media album: prefer the path we just
+        // finished downloading (gallery snapshot is often stale).
+        if (openId != null &&
+            openId.isNotEmpty &&
+            att['id']?.toString() == openId &&
+            openVideoPath.isNotEmpty) {
+          att['video_local_path'] = openVideoPath;
+          att.remove('local_device_path');
         }
-      } catch (_) {}
+        MediaLocalIndex.hydrateAttachment(att);
+        final url = _urlForAttachment(att, repo: repo);
+        media.add(
+          _photoFromAttachment(
+            att,
+            imageUrl: url,
+            fallbackMessageId: widget.messageId,
+          ),
+        );
+      }
     }
+
+    if (media.isEmpty) {
+      media.add(seed);
+      if (widget.threadId != null) {
+        try {
+          final threadMedia = await repo.threadMedia(widget.threadId!);
+          for (final att in threadMedia) {
+            if (!isGalleryMediaAttachment(att)) continue;
+            final url = chatAttachmentImageUrl(
+              repo: repo,
+              threadId: widget.threadId!,
+              attachment: att,
+            );
+            media.add(
+              _photoFromAttachment(
+                att,
+                imageUrl: url,
+              ),
+            );
+          }
+        } catch (_) {}
+      }
+    }
+
     final dedup = <String, _ChatViewerPhoto>{};
     for (final p in media) {
-      final key = '${p.threadId}:${p.attachmentId}:${p.imageUrl}';
+      final key = _photoDedupKey(p);
       dedup[key] = p;
     }
     final list = dedup.values.toList();
@@ -207,6 +252,31 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       _index = selected.clamp(0, _photos.length - 1);
       _pageController = PageController(initialPage: _index);
     });
+  }
+
+  String _photoDedupKey(_ChatViewerPhoto p) {
+    final id = p.attachmentId;
+    if (id != null) return 'id:$id';
+    final local = galleryLocalDevicePath(p.attachment ?? const {});
+    if (local.isNotEmpty) return 'local:$local';
+    return 'url:${p.imageUrl}';
+  }
+
+  String _urlForAttachment(
+    Map<String, dynamic> att, {
+    required FamilyChatRepository repo,
+  }) {
+    if (widget.threadId != null) {
+      try {
+        final url = chatAttachmentImageUrl(
+          repo: repo,
+          threadId: widget.threadId!,
+          attachment: att,
+        );
+        if (url.isNotEmpty) return url;
+      } catch (_) {}
+    }
+    return galleryAttachmentUrl(att);
   }
 
   _ChatViewerPhoto get _currentPhoto {
@@ -429,7 +499,11 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
         final media = SizedBox(
           width: constraints.maxWidth,
           height: constraints.maxHeight,
-          child: _mediaBody(photo, autoplay: autoplay),
+          child: _mediaBody(
+            photo,
+            autoplay: autoplay,
+            isCurrent: isCurrent,
+          ),
         );
         if (photo.isVideo) {
           return Center(child: media);
@@ -482,22 +556,63 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     );
   }
 
-  Widget _mediaBody(_ChatViewerPhoto photo, {required bool autoplay}) {
+  Widget _mediaBody(
+    _ChatViewerPhoto photo, {
+    required bool autoplay,
+    required bool isCurrent,
+  }) {
     if (photo.isVideo) {
+      // Keep only the current page's VideoPlayerController. Off-screen
+      // neighbors in mixed photo/video galleries were tearing / hitching
+      // when several controllers initialized at once.
+      if (!isCurrent) {
+        return _videoStill(photo);
+      }
       final local = galleryLocalDevicePath(photo.attachment ?? const {});
       final gifLike = _attachmentIsGifVideo(photo.attachment);
+      // Prefer local file. Empty/proxy imageUrl for TDLib must not be used as
+      // the playable stream — that left album videos black after open.
+      final url = local.isNotEmpty ? '' : photo.imageUrl;
       return GalleryVideoPlayer(
-        url: photo.imageUrl,
+        key: ValueKey(
+          'viewer-video:${photo.attachmentId ?? local}:${local.isNotEmpty ? 'local' : 'net'}',
+        ),
+        url: url,
         localPath: local.isEmpty ? null : local,
-        httpHeaders: photo.httpHeaders,
+        httpHeaders: local.isEmpty ? photo.httpHeaders : null,
         fit: BoxFit.contain,
         autoplay: autoplay,
         looping: gifLike,
         muted: gifLike,
         showControls: !gifLike,
+        showScrubber: !gifLike,
       );
     }
     return _imageBody(photo);
+  }
+
+  Widget _videoStill(_ChatViewerPhoto photo) {
+    final attachment = photo.attachment;
+    if (attachment != null && photo.threadId != null) {
+      final preview = Map<String, dynamic>.from(attachment);
+      final thumb = preview['thumbnail_local_path']?.toString().trim() ?? '';
+      if (thumb.isNotEmpty) {
+        preview['local_device_path'] = thumb;
+      }
+      preview.remove('video_local_path');
+      return ChatNetworkImage(
+        threadId: photo.threadId!,
+        attachment: preview,
+        fit: BoxFit.contain,
+        width: double.infinity,
+        height: double.infinity,
+        showTransferOverlay: false,
+      );
+    }
+    return const ColoredBox(
+      color: Colors.black,
+      child: Center(child: GalleryVideoPlayBadge()),
+    );
   }
 
   static bool _attachmentIsGifVideo(Map<String, dynamic>? attachment) {
@@ -547,9 +662,11 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       pageController: _pageController!,
       zoomPageKey: _zoomPageKey,
       itemCount: _photos.length,
-      title: gifLike
-          ? (_animatedMediaTitle(photo?.attachment))
-          : (isVideo ? 'Видео' : 'Фото'),
+      title: _photos.length > 1
+          ? '${gifLike ? _animatedMediaTitle(photo?.attachment) : (isVideo ? 'Видео' : 'Фото')} ${_index + 1}/${_photos.length}'
+          : (gifLike
+              ? (_animatedMediaTitle(photo?.attachment))
+              : (isVideo ? 'Видео' : 'Фото')),
       onPageChanged: (i) => setState(() {
         _index = i;
         _highlightUserId = null;

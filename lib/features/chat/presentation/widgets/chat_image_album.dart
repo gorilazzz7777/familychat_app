@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../../../core/media/gallery_media_utils.dart';
+import '../../../../core/media/local_device_file.dart';
+import '../../../../core/widgets/gallery_video_player.dart';
 import 'chat_media_layout.dart';
 import 'chat_network_image.dart';
 
@@ -179,6 +181,40 @@ class ChatImageAlbum extends StatelessWidget {
     );
   }
 
+  /// Video tiles must feed ChatNetworkImage a jpg/webp thumb, never mp4.
+  Map<String, dynamic> _previewAttachment(Map<String, dynamic> attachment) {
+    final kind = attachment['kind']?.toString();
+    final isVideo = kind == 'video' || isVideoAttachment(attachment);
+    if (!isVideo) return attachment;
+
+    final a = Map<String, dynamic>.from(attachment);
+    final thumbBytes = a['thumbnail_bytes'];
+    final thumbPath = a['thumbnail_local_path']?.toString().trim() ?? '';
+    // Prefer downloaded thumb file over tiny minithumb bytes — otherwise the
+    // album cell stays blurry forever even after TDLib finished the thumb.
+    if (thumbPath.isNotEmpty && localDeviceFileExists(thumbPath)) {
+      a['local_device_path'] = thumbPath;
+      a.remove('local_bytes');
+      a.remove('video_local_path');
+      return a;
+    }
+    if (isSafeUiPreviewBytes(thumbBytes)) {
+      a['local_bytes'] = thumbBytes;
+      a.remove('local_device_path');
+      a.remove('video_local_path');
+      return a;
+    }
+    if (isSafeUiPreviewBytes(a['local_bytes'])) {
+      a.remove('local_device_path');
+      a.remove('video_local_path');
+      return a;
+    }
+    // Avoid decoding video binary as an image.
+    a.remove('local_device_path');
+    a.remove('video_local_path');
+    return a;
+  }
+
   Widget _tile(
     Map<String, dynamic> attachment, {
     required double width,
@@ -186,14 +222,20 @@ class ChatImageAlbum extends StatelessWidget {
     BorderRadius? borderRadius,
     String? overlayLabel,
   }) {
+    final isVideo = attachment['kind'] == 'video' ||
+        isVideoAttachment(attachment);
+    final preview = _previewAttachment(attachment);
     // Always ChatNetworkImage: it prefers local_bytes / local_device_path, then
     // URL. Avoid Image.memory → network switch that blinks on share deliver.
+    // TDLib / skip_age_defer media: allow open even with minithumb only.
     final canOpen = onImageTap != null &&
-        !isSafeUiPreviewBytes(attachment['local_bytes']);
+        (isVideo ||
+            attachment['skip_age_defer'] == true ||
+            !isSafeUiPreviewBytes(preview['local_bytes']));
 
     Widget image = ChatNetworkImage(
       threadId: threadId,
-      attachment: attachment,
+      attachment: preview,
       width: width,
       height: height,
       fit: BoxFit.cover,
@@ -213,6 +255,27 @@ class ChatImageAlbum extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           image,
+          if (attachment['is_downloading'] == true)
+            ColoredBox(
+              color: Colors.black.withValues(alpha: 0.35),
+              child: Center(
+                child: SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    color: Colors.white,
+                    value: () {
+                      final p = attachment['download_progress'];
+                      if (p is num && p > 0 && p <= 1) return p.toDouble();
+                      return null;
+                    }(),
+                  ),
+                ),
+              ),
+            )
+          else if (isVideo && overlayLabel == null)
+            const Center(child: GalleryVideoPlayBadge()),
           if (overlayLabel != null)
             ColoredBox(
               color: Colors.black54,
@@ -245,7 +308,7 @@ class ChatImageAlbum extends StatelessWidget {
   }
 }
 
-/// Одно фото: размер окна = пропорции кадра, без обрезки.
+/// Одно фото: на всю ширину пузыря, высота по аспекту (cover при потолке).
 class _ChatSingleAspectThumb extends StatefulWidget {
   const _ChatSingleAspectThumb({
     required this.threadId,
@@ -278,11 +341,15 @@ class _ChatSingleAspectThumb extends StatefulWidget {
 class _ChatSingleAspectThumbState extends State<_ChatSingleAspectThumb> {
   late double _aspect;
 
+  bool get _hasKnownAspect =>
+      chatAttachmentAspectRatio(widget.attachment) != null;
+
   @override
   void initState() {
     super.initState();
     _aspect = chatAttachmentAspectRatio(widget.attachment) ?? (4 / 3);
-    _probeLocalBytes();
+    // Minithumb JPEG often has a wrong aspect — don't override TDLib/API size.
+    if (!_hasKnownAspect) _probeLocalBytes();
   }
 
   @override
@@ -290,13 +357,16 @@ class _ChatSingleAspectThumbState extends State<_ChatSingleAspectThumb> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.attachment['id'] != widget.attachment['id'] ||
         oldWidget.attachment['file_url'] != widget.attachment['file_url'] ||
-        oldWidget.attachment['local_bytes'] != widget.attachment['local_bytes']) {
+        oldWidget.attachment['local_bytes'] != widget.attachment['local_bytes'] ||
+        oldWidget.attachment['width'] != widget.attachment['width'] ||
+        oldWidget.attachment['height'] != widget.attachment['height']) {
       _aspect = chatAttachmentAspectRatio(widget.attachment) ?? _aspect;
-      _probeLocalBytes();
+      if (!_hasKnownAspect) _probeLocalBytes();
     }
   }
 
   Future<void> _probeLocalBytes() async {
+    if (_hasKnownAspect) return;
     final local = widget.attachment['local_bytes'];
     if (!isSafeUiPreviewBytes(local)) return;
     final size = await chatDecodeImageSize(local as Uint8List);
@@ -319,7 +389,10 @@ class _ChatSingleAspectThumbState extends State<_ChatSingleAspectThumb> {
     );
     final local = widget.attachment['local_bytes'];
     final hasLocal = isSafeUiPreviewBytes(local);
-    final canOpen = widget.onImageTap != null && !hasLocal;
+    final canOpen = widget.onImageTap != null &&
+        (widget.attachment['skip_age_defer'] == true ||
+            widget.attachment['local_device_path'] != null ||
+            !hasLocal);
 
     // Prefer ChatNetworkImage always so share deliver doesn't swap widget types.
     final image = ChatNetworkImage(
@@ -327,7 +400,7 @@ class _ChatSingleAspectThumbState extends State<_ChatSingleAspectThumb> {
       attachment: widget.attachment,
       width: size.width,
       height: size.height,
-      fit: BoxFit.contain,
+      fit: BoxFit.cover,
       uploadMessageId: widget.uploadMessageId,
       onCancelUpload: widget.onCancelUpload,
       messageMetadata: widget.messageMetadata,
@@ -335,6 +408,8 @@ class _ChatSingleAspectThumbState extends State<_ChatSingleAspectThumb> {
       borderRadius: widget.borderRadius,
       onResolvedSize: (resolved) {
         if (resolved.height <= 0) return;
+        // Prefer explicit width/height from attachment over decoded pixels.
+        if (_hasKnownAspect) return;
         _applyAspect(resolved.width / resolved.height);
       },
     );

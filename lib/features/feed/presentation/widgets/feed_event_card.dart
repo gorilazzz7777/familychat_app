@@ -113,6 +113,12 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
   bool get _isHolidayEvent =>
       _kind == 'calendar_event' && _payload['event_kind']?.toString() == 'holiday';
 
+  bool get _isMilestoneEvent =>
+      _kind == 'calendar_event' && _payload['event_kind']?.toString() == 'milestone';
+
+  bool get _tracksMediaCarousel =>
+      _kind == 'photo_batch_uploaded' || _isMilestoneEvent;
+
   String _honoreeName() {
     final fromPayload = _payload['person_name']?.toString().trim();
     if (fromPayload != null && fromPayload.isNotEmpty) return fromPayload;
@@ -163,6 +169,7 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
   }
 
   String _navigateTooltip() {
+    if (_isMilestoneEvent) return 'Открыть веху';
     return switch (_kind) {
       'message_sent' => 'Открыть чат',
       'photo_added_to_album' => 'Открыть альбом',
@@ -180,11 +187,30 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     if (caption.isEmpty) return null;
     if (_kind == 'photo_uploaded' ||
         _kind == 'photo_added_to_album' ||
-        _kind == 'photo_batch_uploaded') {
+        _kind == 'photo_batch_uploaded' ||
+        _isMilestoneEvent) {
       return caption;
     }
     return null;
   }
+
+  String? _formatMeasure(dynamic raw, String unit) {
+    if (raw == null) return null;
+    if (raw is num) {
+      final d = raw.toDouble();
+      final text = d == d.roundToDouble() ? '${d.toInt()}' : '$d';
+      return '$text $unit';
+    }
+    final text = '$raw'.trim();
+    return text.isEmpty ? null : '$text $unit';
+  }
+
+  String? get _weightLabel => _formatMeasure(_payload['weight_kg'], 'кг');
+
+  String? get _heightLabel => _formatMeasure(_payload['height_cm'], 'см');
+
+  bool get _hasMilestoneMeta =>
+      _weightLabel != null || _heightLabel != null;
 
   String _bodyPreview() {
     if (_kind == 'message_sent') {
@@ -255,7 +281,7 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
   }
 
   List<Map<String, dynamic>> _displayPhotos() {
-    if (_kind == 'photo_batch_uploaded') {
+    if (_kind == 'photo_batch_uploaded' || _isMilestoneEvent) {
       return _batchPhotos();
     }
     final single = _singlePhoto();
@@ -281,14 +307,15 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
 
   int? _currentEngagementAttachmentId(List<Map<String, dynamic>> photos) {
     if (photos.isEmpty) return null;
-    final index = _kind == 'photo_batch_uploaded'
+    final index = _tracksMediaCarousel
         ? _batchIndex.clamp(0, photos.length - 1)
         : 0;
     return _attachmentIdForEngagement(photos[index]);
   }
 
   void _openPhoto(int index, List<Map<String, dynamic>> photos) {
-    if (widget.onOpenPhotoBatch != null && _kind == 'photo_batch_uploaded') {
+    if (widget.onOpenPhotoBatch != null &&
+        (_kind == 'photo_batch_uploaded' || _isMilestoneEvent)) {
       widget.onOpenPhotoBatch!(widget.event, initialIndex: index);
       return;
     }
@@ -601,7 +628,7 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
             FeedEventMediaBlock(
               photos: photos,
               onPhotoTap: (index) => _openPhoto(index, photos),
-              onIndexChanged: _kind == 'photo_batch_uploaded'
+              onIndexChanged: _tracksMediaCarousel
                   ? (index) => setState(() => _batchIndex = index)
                   : null,
               onPlaySlideshow: photos.length > 1
@@ -618,6 +645,29 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
             _longPressArea(
               attachmentId: engagementAttachmentId,
               child: FeedExpandableCaption(text: caption),
+            ),
+          if (_isMilestoneEvent && _hasMilestoneMeta)
+            _longPressArea(
+              attachmentId: engagementAttachmentId,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    if (_weightLabel != null)
+                      _FeedMetaChip(
+                        icon: LucideIcons.weight,
+                        label: _weightLabel!,
+                      ),
+                    if (_heightLabel != null)
+                      _FeedMetaChip(
+                        icon: LucideIcons.ruler,
+                        label: _heightLabel!,
+                      ),
+                  ],
+                ),
+              ),
             ),
           _longPressArea(
             attachmentId: engagementAttachmentId,
@@ -637,6 +687,40 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                   onViewedByChanged: _storeViewedBy,
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FeedMetaChip extends StatelessWidget {
+  const _FeedMetaChip({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.65),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: cs.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],

@@ -133,6 +133,8 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
         urlIdentityChanged ||
         oldWidget.attachment['local_device_path'] !=
             widget.attachment['local_device_path'] ||
+        oldWidget.attachment['thumbnail_local_path'] !=
+            widget.attachment['thumbnail_local_path'] ||
         oldWidget.attachment['local_bytes'] !=
             widget.attachment['local_bytes']) {
       _resetPlayback();
@@ -199,6 +201,17 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
       setState(() {
         _thumbBytes = localPreview;
         _thumbPath = null;
+        _thumbUrl = null;
+      });
+      return;
+    }
+
+    final thumbLocal = att['thumbnail_local_path']?.toString().trim() ?? '';
+    if (thumbLocal.isNotEmpty && localDeviceFileExists(thumbLocal)) {
+      if (!mounted || gen != _thumbGen) return;
+      setState(() {
+        _thumbBytes = null;
+        _thumbPath = thumbLocal;
         _thumbUrl = null;
       });
       return;

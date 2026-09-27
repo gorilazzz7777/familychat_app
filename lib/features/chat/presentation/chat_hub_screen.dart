@@ -12,6 +12,7 @@ import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../data/chat_hub_folders.dart';
 import '../data/chat_hub_last_message_time.dart';
 import '../data/chat_hub_tab_order_storage.dart';
 import '../data/chat_local_reads.dart';
@@ -24,11 +25,13 @@ import '../../../core/share/share_direct_target_service.dart';
 import 'chat_conversation_screen.dart';
 import 'chat_thread_avatars.dart';
 import 'create_group_screen.dart';
-import 'friend_invite_flow.dart';
+import '../../telegram_tdlib/presentation/telegram_conversation_screen.dart';
+import '../../telegram_tdlib/telegram_group_bridge.dart';
+import '../../telegram_tdlib/telegram_match_store.dart';
+import '../../telegram_tdlib/telegram_tdlib_providers.dart';
+import '../../telegram_tdlib/telegram_tdlib_service.dart';
 import 'telegram_chats_pane.dart';
 import 'widgets/chat_message_read_status_icon.dart';
-
-enum _ChatFilter { all, family, dm, group, friends, telegram }
 
 class ChatHubScreen extends ConsumerStatefulWidget {
   const ChatHubScreen({
@@ -41,9 +44,10 @@ class ChatHubScreen extends ConsumerStatefulWidget {
     this.onProfileTap,
   });
 
-  /// Вкладки «Друзья» / «Telegram» — только с Individual Premium.
+  /// Individual Premium gates TG features (folder when disconnected, rows in «Все»).
+  /// friend_dm threads remain visible under «Все».
   final bool hasIndividualPremium;
-  /// Business Secretary активен (active).
+  /// TDLib authorization ready (logged in). When true, «Telegram» folder is hidden.
   final bool telegramConnected;
   /// Grace после окончания Premium (read-only TG).
   final bool telegramGrace;
@@ -56,22 +60,26 @@ class ChatHubScreen extends ConsumerStatefulWidget {
 }
 
 class ChatHubScreenState extends ConsumerState<ChatHubScreen>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  static List<_ChatFilter> _filtersFor({required bool hasIndividualPremium}) {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
+  /// System chips: «Telegram» only while Premium and TDLib is not logged in.
+  static List<HubChip> _systemChipsFor({
+    required bool hasIndividualPremium,
+    required bool telegramConnected,
+  }) {
     return [
-      _ChatFilter.all,
-      _ChatFilter.family,
-      _ChatFilter.dm,
-      _ChatFilter.group,
-      if (hasIndividualPremium) _ChatFilter.friends,
-      if (hasIndividualPremium) _ChatFilter.telegram,
+      const HubChip.system(ChatHubSystemFilter.all),
+      const HubChip.system(ChatHubSystemFilter.family),
+      if (hasIndividualPremium && !telegramConnected)
+        const HubChip.system(ChatHubSystemFilter.telegram),
     ];
   }
 
   late TabController _tabController;
-  late List<_ChatFilter> _filters;
+  late List<HubChip> _chips;
+  List<ChatFolderData> _customFolders = [];
   List<Map<String, dynamic>> _threads = [];
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
+  Map<int, TelegramMatch> _tdlibMatches = {};
   bool _loading = true;
   bool _hubBootstrapDone = false;
   bool _lastKnownOnline = true;
@@ -95,6 +103,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   /// Обновить список чатов (например при возврате на вкладку).
   Future<void> refresh({bool silent = true}) async {
+    unawaited(_loadCustomFolders());
     if (_localFirst) {
       final repo = ref.read(familychatRepositoryProvider);
       // Shell resume already ran one catch-up (reconnect + open thread).
@@ -123,16 +132,28 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   @override
   void initState() {
     super.initState();
+    unawaited(_reloadTdlibMatches());
+    TelegramMatchStore.instance.revision.addListener(_onTdlibMatchesChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(ref.read(telegramTdlibServiceProvider).ensureStarted());
+      unawaited(
+        ref.read(telegramTdlibServiceProvider).reconcileFamilyIdentities(),
+      );
+    });
     WidgetsBinding.instance.addObserver(this);
-    _filters = _filtersFor(
+    _chips = _systemChipsFor(
       hasIndividualPremium: widget.hasIndividualPremium,
+      // Phase may already be ready from a previous session.
+      telegramConnected: widget.telegramConnected ||
+          ref.read(telegramTdlibServiceProvider).phase == TdlibAuthPhase.ready,
     );
-    _tabController = TabController(length: _filters.length, vsync: this);
+    _tabController = TabController(length: _chips.length, vsync: this);
     _tabController.addListener(_onFilterTabChanged);
     FamilyChatRealtime.instance.addListener(_onRealtime);
     ChatOfflineSync.instance.addListener(_onOfflineSync);
     _lastKnownOnline = ChatOfflineSync.instance.isOnline;
     unawaited(_restoreTabOrder());
+    unawaited(_loadCustomFolders());
     if (_localFirst) {
       _bindLocalStore();
       unawaited(_bootstrapLocalHub());
@@ -140,6 +161,125 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       _load();
     }
   }
+
+  Future<void> _reloadTdlibMatches() async {
+    final matches = await TelegramMatchStore.instance.loadAll();
+    if (!mounted) return;
+    setState(() => _tdlibMatches = matches);
+    unawaited(
+      ref.read(telegramTdlibServiceProvider).refreshMatchedTgUserIds(),
+    );
+  }
+
+  void _onTdlibMatchesChanged() {
+    unawaited(_reloadTdlibMatches());
+  }
+
+  List<Map<String, dynamic>> _tdlibHubEntries() {
+    if (!widget.hasIndividualPremium) return const [];
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.phase != TdlibAuthPhase.ready) return const [];
+    final byUser = {
+      for (final c in svc.privateChats) c.userId: c,
+    };
+    final out = <Map<String, dynamic>>[];
+    for (final m in _tdlibMatches.values) {
+      final preview = byUser[m.tgUserId];
+      final created = preview != null && preview.lastMessageDate > 0
+          ? DateTime.fromMillisecondsSinceEpoch(preview.lastMessageDate * 1000)
+              .toIso8601String()
+          : null;
+      final member = _memberByUserId[m.fcUserId];
+      final memberName = member?['display_name']?.toString().trim() ?? '';
+      final memberAvatar = member?['avatar_url']?.toString().trim() ?? '';
+      final title = memberName.isNotEmpty
+          ? memberName
+          : (m.displayName.isNotEmpty
+              ? m.displayName
+              : (preview?.title ?? 'Telegram'));
+      final avatar = memberAvatar.isNotEmpty
+          ? memberAvatar
+          : (m.avatarUrl.isNotEmpty ? m.avatarUrl : '');
+      out.add({
+        'id': -m.tgChatId.abs(),
+        'kind': 'tdlib_dm',
+        'title': title,
+        'peer_user_id': m.fcUserId,
+        'peer_avatar_url': avatar,
+        'tdlib_chat_id': m.tgChatId,
+        'tdlib_user_id': m.tgUserId,
+        'telegram': {'linked': true},
+        'notifications_enabled': !svc.isChatMuted(m.tgChatId),
+        'unread_count': preview?.unreadCount ?? 0,
+        'last_message': {
+          'body': preview?.lastMessageText ?? '',
+          if (created != null) 'created_at': created,
+          if (preview?.lastMessageReadStatus != null)
+            'read_status': preview!.lastMessageReadStatus,
+          if (preview?.lastMessageOutgoing == true) 'is_mine': true,
+        },
+      });
+    }
+    return out;
+  }
+
+  /// TG rows for «Все»: same membership as [TelegramChatsPane]
+  /// (groups + unmatched privates). Matched privates stay as
+  /// FC DM / synthetic [tdlib_dm] and are excluded here to avoid dupes.
+  /// Linked dual FC↔TG groups are also excluded (shown as one FC group).
+  List<Map<String, dynamic>> _telegramListEntries() {
+    if (!widget.hasIndividualPremium) return const [];
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.phase != TdlibAuthPhase.ready) return const [];
+    final linkedTgChatIds = _linkedTelegramGroupChatIds();
+    final out = <Map<String, dynamic>>[];
+    for (final c in svc.hubChats) {
+      // Same gate as TelegramChatsPane: groups/channels always; privates only
+      // if unmatched. (Channels have isGroup=false — must not use !isGroup alone.)
+      final isPrivate = !c.isGroup && !c.isChannel;
+      if (isPrivate && _tdlibMatches.containsKey(c.userId)) continue;
+      if (linkedTgChatIds.contains(c.chatId)) continue;
+      final created = c.lastMessageDate > 0
+          ? DateTime.fromMillisecondsSinceEpoch(c.lastMessageDate * 1000)
+              .toIso8601String()
+          : null;
+      out.add({
+        'id': -c.chatId.abs(),
+        'kind': 'tdlib_chat',
+        'title': c.title,
+        'tdlib_chat_id': c.chatId,
+        if (!c.isGroup && !c.isChannel) 'tdlib_user_id': c.userId,
+        'tdlib_photo_path': c.photoLocalPath,
+        'tdlib_photo_bytes': c.photoMinithumbnailBytes,
+        'notifications_enabled': !svc.isChatMuted(c.chatId),
+        'unread_count': c.unreadCount,
+        'last_message': {
+          'body': c.lastMessageText,
+          if (created != null) 'created_at': created,
+          if (c.lastMessageReadStatus != null)
+            'read_status': c.lastMessageReadStatus,
+          if (c.lastMessageOutgoing) 'is_mine': true,
+        },
+      });
+    }
+    return out;
+  }
+
+  Set<int> _linkedTelegramGroupChatIds() {
+    final out = <int>{};
+    for (final t in _threads) {
+      if (t['kind']?.toString() != 'group') continue;
+      final tg = t['telegram'];
+      if (tg is! Map || tg['linked'] != true) continue;
+      final id = (tg['tg_chat_id'] as num?)?.toInt() ??
+          int.tryParse('${tg['tg_chat_id'] ?? ''}');
+      if (id != null && id != 0) out.add(id);
+    }
+    return out;
+  }
+
+  bool _isTdlibHubKind(String? kind) =>
+      kind == 'tdlib_dm' || kind == 'tdlib_chat';
 
   Future<void> _bootstrapLocalHub() async {
     final db = await ChatLocalStore.instance.ensureOpen();
@@ -167,7 +307,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   @override
   void didUpdateWidget(covariant ChatHubScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.hasIndividualPremium != widget.hasIndividualPremium) {
+    if (oldWidget.hasIndividualPremium != widget.hasIndividualPremium ||
+        oldWidget.telegramConnected != widget.telegramConnected) {
       _syncFiltersWithPremium();
     }
   }
@@ -175,6 +316,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    TelegramMatchStore.instance.revision.removeListener(_onTdlibMatchesChanged);
     _tabController.dispose();
     FamilyChatRealtime.instance.removeListener(_onRealtime);
     ChatOfflineSync.instance.removeListener(_onOfflineSync);
@@ -184,41 +326,81 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     super.dispose();
   }
 
+  /// Live TDLib auth — prefer over [widget.telegramConnected] so the Telegram
+  /// folder hides as soon as phase becomes ready (prop can lag one frame).
+  bool get _tdlibReady =>
+      ref.read(telegramTdlibServiceProvider).phase == TdlibAuthPhase.ready;
+
   void _syncFiltersWithPremium() {
-    final available = _filtersFor(
-      hasIndividualPremium: widget.hasIndividualPremium,
-    );
-    final next = <_ChatFilter>[];
-    for (final f in _filters) {
-      if (available.contains(f)) next.add(f);
-    }
-    for (final f in available) {
-      if (!next.contains(f)) next.add(f);
-    }
-    _replaceFilters(next);
+    _rebuildChips(preferSelected: _selectedChip);
   }
 
-  void _replaceFilters(List<_ChatFilter> next) {
-    final same = next.length == _filters.length &&
-        List.generate(next.length, (i) => next[i] == _filters[i])
+  HubChip get _selectedChip {
+    final idx = _tabController.index;
+    if (idx >= 0 && idx < _chips.length) return _chips[idx];
+    return const HubChip.system(ChatHubSystemFilter.all);
+  }
+
+  List<HubChip> _composeChips({List<String>? orderKeys}) {
+    final system = _systemChipsFor(
+      hasIndividualPremium: widget.hasIndividualPremium,
+      telegramConnected: _tdlibReady || widget.telegramConnected,
+    );
+    final custom = [
+      for (final f in _customFolders)
+        HubChip.custom(id: f.id, name: f.name),
+    ];
+    if (orderKeys == null || orderKeys.isEmpty) {
+      return [...system, ...custom];
+    }
+    final byKey = <String, HubChip>{
+      for (final c in [...system, ...custom]) c.key: c,
+    };
+    final out = <HubChip>[];
+    for (final key in orderKeys) {
+      final chip = byKey.remove(key);
+      if (chip != null) out.add(chip);
+    }
+    // Remaining system first (stable), then custom by position.
+    for (final c in system) {
+      if (byKey.remove(c.key) != null) out.add(c);
+    }
+    for (final c in custom) {
+      if (byKey.remove(c.key) != null) out.add(c);
+    }
+    return out;
+  }
+
+  void _rebuildChips({HubChip? preferSelected}) {
+    final next = _composeChips(orderKeys: _chips.map((c) => c.key).toList());
+    _replaceChips(next, preferSelected: preferSelected);
+  }
+
+  void _replaceChips(List<HubChip> next, {HubChip? preferSelected}) {
+    final same = next.length == _chips.length &&
+        List.generate(next.length, (i) => next[i] == _chips[i])
             .every((ok) => ok);
     if (same) return;
 
-    final selected = _tabController.index >= 0 &&
-            _tabController.index < _filters.length
-        ? _filters[_tabController.index]
-        : next.first;
+    final selected = preferSelected ??
+        (_tabController.index >= 0 && _tabController.index < _chips.length
+            ? _chips[_tabController.index]
+            : next.first);
     final oldController = _tabController;
-    final initialIndex =
-        next.contains(selected) ? next.indexOf(selected) : 0;
+    oldController.removeListener(_onFilterTabChanged);
+    final allChip = const HubChip.system(ChatHubSystemFilter.all);
+    final initialIndex = next.contains(selected)
+        ? next.indexOf(selected)
+        : (next.contains(allChip) ? next.indexOf(allChip) : 0);
+    final newController = TabController(
+      length: next.length,
+      vsync: this,
+      initialIndex: initialIndex.clamp(0, next.isEmpty ? 0 : next.length - 1),
+    );
+    newController.addListener(_onFilterTabChanged);
     setState(() {
-      _filters = next;
-      _tabController = TabController(
-        length: next.length,
-        vsync: this,
-        initialIndex: initialIndex.clamp(0, next.length - 1),
-      );
-      _tabController.addListener(_onFilterTabChanged);
+      _chips = next;
+      _tabController = newController;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       oldController.dispose();
@@ -229,15 +411,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     if (_tabController.indexIsChanging) return;
     if (!mounted) return;
     final idx = _tabController.index;
-    if (idx < 0 || idx >= _filters.length) return;
-    if (_filters[idx] == _ChatFilter.telegram) {
-      if (_searchVisible) {
-        setState(() {
-          _searchVisible = false;
-          _searchQuery = '';
-          _searchController.clear();
-        });
-      }
+    if (idx < 0 || idx >= _chips.length) return;
+    if (_chips[idx].system == ChatHubSystemFilter.telegram) {
       unawaited(AppActions.refreshStatus());
     } else {
       setState(() {});
@@ -247,71 +422,346 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   bool get _telegramFilterSelected {
     final idx = _tabController.index;
     return idx >= 0 &&
-        idx < _filters.length &&
-        _filters[idx] == _ChatFilter.telegram;
+        idx < _chips.length &&
+        _chips[idx].system == ChatHubSystemFilter.telegram;
   }
 
-  String _filterLabel(_ChatFilter filter) {
-    return switch (filter) {
-      _ChatFilter.all => 'Все',
-      _ChatFilter.family => 'Семья',
-      _ChatFilter.dm => 'Личные',
-      _ChatFilter.group => 'Группы',
-      _ChatFilter.friends => 'Друзья',
-      _ChatFilter.telegram =>
-        widget.telegramGrace ? 'Telegram · чтение' : 'Telegram',
-    };
-  }
-
-  String _filterKey(_ChatFilter filter) => filter.name;
-
-  _ChatFilter? _filterFromKey(String key) {
-    for (final f in _ChatFilter.values) {
-      if (f.name == key) return f;
+  String _chipLabel(HubChip chip) {
+    if (chip.isCustom) return chip.label;
+    if (chip.system == ChatHubSystemFilter.telegram && widget.telegramGrace) {
+      return 'Telegram · чтение';
     }
-    return null;
+    return chip.label;
+  }
+
+  Future<void> _loadCustomFolders() async {
+    try {
+      final raw = await ref.read(familychatRepositoryProvider).chatFolders();
+      if (!mounted) return;
+      final folders = raw.map(ChatFolderData.fromJson).toList()
+        ..sort((a, b) {
+          final c = a.position.compareTo(b.position);
+          return c != 0 ? c : a.id.compareTo(b.id);
+        });
+      setState(() => _customFolders = folders);
+      _rebuildChips(preferSelected: _selectedChip);
+    } catch (_) {
+      // Hub still works with system folders only.
+    }
   }
 
   Future<void> _restoreTabOrder() async {
     final saved = await ChatHubTabOrderStorage.load();
     if (!mounted || saved == null || saved.isEmpty) return;
-    final available = _filtersFor(
-      hasIndividualPremium: widget.hasIndividualPremium,
-    );
-    final restored = <_ChatFilter>[];
-    for (final key in saved) {
-      final filter = _filterFromKey(key);
-      if (filter != null &&
-          available.contains(filter) &&
-          !restored.contains(filter)) {
-        restored.add(filter);
-      }
-    }
-    for (final filter in available) {
-      if (!restored.contains(filter)) restored.add(filter);
-    }
-    if (restored.length != available.length) return;
-    _replaceFilters(restored);
+    final next = _composeChips(orderKeys: saved);
+    _replaceChips(next);
   }
 
   Future<void> _persistTabOrder() async {
-    await ChatHubTabOrderStorage.save(_filters.map(_filterKey).toList());
+    await ChatHubTabOrderStorage.save(_chips.map((c) => c.key).toList());
+    var pos = 0;
+    final repo = ref.read(familychatRepositoryProvider);
+    final byId = <int, ChatFolderData>{
+      for (final f in _customFolders) f.id: f,
+    };
+    for (final chip in _chips) {
+      if (!chip.isCustom) continue;
+      final id = chip.folderId!;
+      final current = byId[id];
+      if (current == null) {
+        pos++;
+        continue;
+      }
+      if (current.position != pos) {
+        try {
+          await repo.updateChatFolder(id, position: pos);
+          byId[id] = ChatFolderData(
+            id: current.id,
+            name: current.name,
+            position: pos,
+            memberKeys: current.memberKeys,
+          );
+        } catch (_) {}
+      }
+      pos++;
+    }
+    if (!mounted) return;
+    setState(() {
+      _customFolders = byId.values.toList()
+        ..sort((a, b) {
+          final c = a.position.compareTo(b.position);
+          return c != 0 ? c : a.id.compareTo(b.id);
+        });
+    });
+  }
+
+  /// Switch hub filter to Telegram (no-op if tab not available).
+  void selectTelegramTab() {
+    final i = _chips.indexWhere((c) => c.system == ChatHubSystemFilter.telegram);
+    if (i < 0) return;
+    if (_tabController.index != i) {
+      _tabController.index = i;
+    }
   }
 
   void _onReorderTabs(int oldIndex, int newIndex) {
     if (newIndex > oldIndex) newIndex -= 1;
     if (oldIndex == newIndex) return;
-    final selected = _filters[_tabController.index];
+    final selected = _chips[_tabController.index];
     setState(() {
-      final item = _filters.removeAt(oldIndex);
-      _filters.insert(newIndex, item);
+      final item = _chips.removeAt(oldIndex);
+      _chips.insert(newIndex, item);
     });
-    final nextIndex = _filters.indexOf(selected);
+    final nextIndex = _chips.indexOf(selected);
     if (nextIndex >= 0 && _tabController.index != nextIndex) {
       _tabController.index = nextIndex;
     }
     unawaited(_persistTabOrder());
   }
+
+  Future<void> _createFolderFlow() async {
+    final name = await _promptFolderName();
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      final created = await ref
+          .read(familychatRepositoryProvider)
+          .createChatFolder(name: name);
+      if (!mounted) return;
+      final folder = ChatFolderData.fromJson(created);
+      setState(() {
+        _customFolders = [..._customFolders, folder];
+      });
+      final chip = HubChip.custom(id: folder.id, name: folder.name);
+      _rebuildChips(preferSelected: chip);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось создать папку: $e')),
+      );
+    }
+  }
+
+  Future<String?> _promptFolderName({String initial = ''}) async {
+    final controller = TextEditingController(text: initial);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Новая папка'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            maxLength: 64,
+            decoration: const InputDecoration(
+              hintText: 'Название',
+              counterText: '',
+            ),
+            onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+              child: const Text('Создать'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    final name = result?.trim() ?? '';
+    return name.isEmpty ? null : name;
+  }
+
+  List<ChatFolderData> _foldersContaining(Map<String, dynamic> thread) {
+    return _customFolders.where((f) => f.containsHubRow(thread)).toList();
+  }
+
+  Future<void> _onThreadLongPress(Map<String, dynamic> thread) async {
+    final ids = ChatFolderMemberKey.apiIds(thread);
+    if (ids == null) return;
+    final inFolders = _foldersContaining(thread);
+    final selected = _selectedChip;
+    final inCurrentCustom = selected.isCustom &&
+        _customFolders.any(
+          (f) => f.id == selected.folderId && f.containsHubRow(thread),
+        );
+
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(LucideIcons.folder_plus),
+                title: const Text('Добавить в папку'),
+                onTap: () => Navigator.of(ctx).pop('add'),
+              ),
+              if (inCurrentCustom)
+                ListTile(
+                  leading: const Icon(LucideIcons.folder_minus),
+                  title: const Text('Удалить из папки'),
+                  onTap: () => Navigator.of(ctx).pop('remove_current'),
+                )
+              else if (inFolders.isNotEmpty)
+                ListTile(
+                  leading: const Icon(LucideIcons.folder_minus),
+                  title: const Text('Удалить из папки'),
+                  onTap: () => Navigator.of(ctx).pop('remove_pick'),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || action == null) return;
+    if (action == 'add') {
+      await _pickFolderAndAdd(thread);
+    } else if (action == 'remove_current' && selected.folderId != null) {
+      await _removeFromFolder(selected.folderId!, thread);
+    } else if (action == 'remove_pick') {
+      await _pickFolderAndRemove(thread, inFolders);
+    }
+  }
+
+  Future<void> _pickFolderAndAdd(Map<String, dynamic> thread) async {
+    final already = {
+      for (final f in _foldersContaining(thread)) f.id,
+    };
+    final choices = _customFolders.where((f) => !already.contains(f.id)).toList();
+    final picked = await showModalBottomSheet<Object>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text('Добавить в папку'),
+              ),
+              for (final f in choices)
+                ListTile(
+                  leading: const Icon(LucideIcons.folder),
+                  title: Text(f.name),
+                  onTap: () => Navigator.of(ctx).pop(f.id),
+                ),
+              ListTile(
+                leading: const Icon(LucideIcons.plus),
+                title: const Text('Создать папку'),
+                onTap: () => Navigator.of(ctx).pop('create'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || picked == null) return;
+    if (picked == 'create') {
+      final name = await _promptFolderName();
+      if (name == null || !mounted) return;
+      try {
+        final created = await ref
+            .read(familychatRepositoryProvider)
+            .createChatFolder(name: name);
+        final folder = ChatFolderData.fromJson(created);
+        await _addToFolder(folder.id, thread);
+        await _loadCustomFolders();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e')),
+        );
+      }
+      return;
+    }
+    if (picked is int) {
+      await _addToFolder(picked, thread);
+    }
+  }
+
+  Future<void> _pickFolderAndRemove(
+    Map<String, dynamic> thread,
+    List<ChatFolderData> folders,
+  ) async {
+    if (folders.length == 1) {
+      await _removeFromFolder(folders.first.id, thread);
+      return;
+    }
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(title: Text('Удалить из папки')),
+              for (final f in folders)
+                ListTile(
+                  leading: const Icon(LucideIcons.folder_minus),
+                  title: Text(f.name),
+                  onTap: () => Navigator.of(ctx).pop(f.id),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || picked == null) return;
+    await _removeFromFolder(picked, thread);
+  }
+
+  Future<void> _addToFolder(int folderId, Map<String, dynamic> thread) async {
+    final ids = ChatFolderMemberKey.apiIds(thread);
+    if (ids == null) return;
+    try {
+      await ref.read(familychatRepositoryProvider).addChatFolderMember(
+            folderId,
+            threadId: ids.threadId,
+            tgChatId: ids.tgChatId,
+          );
+      await _loadCustomFolders();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Добавлено в папку')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось добавить: $e')),
+      );
+    }
+  }
+
+  Future<void> _removeFromFolder(int folderId, Map<String, dynamic> thread) async {
+    final ids = ChatFolderMemberKey.apiIds(thread);
+    if (ids == null) return;
+    try {
+      await ref.read(familychatRepositoryProvider).removeChatFolderMember(
+            folderId,
+            threadId: ids.threadId,
+            tgChatId: ids.tgChatId,
+          );
+      await _loadCustomFolders();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Удалено из папки')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось удалить: $e')),
+      );
+    }
+  }
+
 
   void _onOfflineSync() {
     if (!mounted) return;
@@ -389,6 +839,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshFromLocalStore());
+      unawaited(_reloadTdlibMatches());
+      unawaited(
+        ref.read(telegramTdlibServiceProvider).reconcileFamilyIdentities(),
+      );
       if (_localFirst) {
         final repo = ref.read(familychatRepositoryProvider);
         if (!ChatSyncService.instance.resumeCatchUpFresh) {
@@ -454,6 +908,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         _applyMembers(members);
         _loading = false;
       });
+      TelegramGroupBridge.instance.bindRepository(repo);
+      TelegramGroupBridge.instance.syncFromThreads(sorted);
+      unawaited(TelegramGroupBridge.instance.flushPending());
       unawaited(
         ShareDirectTargetService.syncFromThreads(
           sorted,
@@ -476,16 +933,32 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   String _threadsFingerprint(List<Map<String, dynamic>> threads) {
     return threads.map((t) {
       final last = t['last_message'] as Map<String, dynamic>?;
-      return '${t['id']}|${t['unread_count']}|${last?['id']}|${last?['read_status']}|${t['title']}|${t['custom_title']}|${chatMessagePreviewText(last)}';
+      return '${t['id']}|${t['unread_count']}|${t['notifications_enabled']}|${last?['id']}|${last?['read_status']}|${t['title']}|${t['custom_title']}|${chatMessagePreviewText(last)}';
     }).join(';');
   }
 
   int? _dmPeerUserId(Map<String, dynamic> thread) {
     final kind = thread['kind']?.toString();
-    if (kind != 'dm' && kind != 'friend_dm') return null;
+    if (kind != 'dm' && kind != 'friend_dm' && kind != 'tdlib_dm') {
+      return null;
+    }
     final raw = thread['peer_user_id'];
     if (raw is int) return raw;
     return int.tryParse('$raw');
+  }
+
+  /// Hide synthetic TDLib hub rows when an FC DM already exists for that peer.
+  /// FC DM keeps send modes (TG / FC / auto); TDLib tab still lists unmatched.
+  bool _isHiddenTdlibDuplicate(Map<String, dynamic> thread) {
+    if (thread['kind']?.toString() != 'tdlib_dm') return false;
+    final peer = _dmPeerUserId(thread);
+    if (peer == null || peer <= 0) return false;
+    for (final t in _threads) {
+      final kind = t['kind']?.toString() ?? '';
+      if (kind != 'dm' && kind != 'friend_dm') continue;
+      if (_dmPeerUserId(t) == peer) return true;
+    }
+    return false;
   }
 
   String? _dmAvatarUrl(Map<String, dynamic> thread) {
@@ -530,27 +1003,115 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     return thread['is_birthday_celebration'] == true;
   }
 
-  bool _matchesFilter(Map<String, dynamic> thread, _ChatFilter filter) {
+  /// Dual groups that include TG-only peers stay out of «Семья».
+  bool _familyFolderOk(Map<String, dynamic> thread) {
+    final tg = thread['telegram'];
+    if (tg is! Map) return true;
+    if (tg['linked'] != true) return true;
+    if (tg.containsKey('family_folder_eligible')) {
+      return tg['family_folder_eligible'] != false;
+    }
+    return true;
+  }
+
+  bool _matchesChip(Map<String, dynamic> thread, HubChip chip) {
+    if (chip.isCustom) {
+      ChatFolderData? folder;
+      for (final f in _customFolders) {
+        if (f.id == chip.folderId) {
+          folder = f;
+          break;
+        }
+      }
+      return folder?.containsHubRow(thread) ?? false;
+    }
     final kind = thread['kind']?.toString() ?? '';
-    return switch (filter) {
-      _ChatFilter.all => true,
-      _ChatFilter.family => kind == 'family' || _isBirthdayCelebration(thread),
-      _ChatFilter.dm => kind == 'dm' || kind == 'saved',
-      _ChatFilter.group => kind == 'group' && !_isBirthdayCelebration(thread),
-      _ChatFilter.friends => kind == 'friend_dm',
-      _ChatFilter.telegram => false,
+    return switch (chip.system!) {
+      // All = FC threads + TG hub rows (incl. friend_dm; no Friends folder).
+      ChatHubSystemFilter.all => true,
+      // Семья = FC family world only (family/group + family DMs).
+      // Exclude friend_dm, TG synthetics, and dual groups with TG-only peers.
+      ChatHubSystemFilter.family =>
+        (kind == 'family' ||
+                kind == 'group' ||
+                kind == 'dm' ||
+                _isBirthdayCelebration(thread)) &&
+            _familyFolderOk(thread),
+      ChatHubSystemFilter.telegram => false,
     };
   }
 
-  List<Map<String, dynamic>> _filteredBy(_ChatFilter filter) {
+  List<Map<String, dynamic>> _hubMergedThreads({required bool includeTelegramList}) {
+    return [
+      ..._threads,
+      ..._tdlibHubEntries(),
+      if (includeTelegramList) ..._telegramListEntries(),
+    ];
+  }
+
+  bool _chipIncludesTelegramList(HubChip chip) {
+    if (chip.isCustom) return true;
+    return chip.system == ChatHubSystemFilter.all;
+  }
+
+  List<Map<String, dynamic>> _filteredBy(HubChip chip) {
     final q = _searchQuery.trim().toLowerCase();
-    return _threads.where((t) {
-      if (!_matchesFilter(t, filter)) return false;
+    final merged = _hubMergedThreads(
+      includeTelegramList: _chipIncludesTelegramList(chip),
+    );
+    final filtered = merged.where((t) {
+      // One row per person: FC DM (send modes) wins over synthetic tdlib_dm.
+      if (_isHiddenTdlibDuplicate(t)) return false;
+      if (!_matchesChip(t, chip)) return false;
       if (q.isEmpty) return true;
       final title = t['title']?.toString().toLowerCase() ?? '';
       final defaultTitle = t['default_title']?.toString().toLowerCase() ?? '';
       return title.contains(q) || defaultTitle.contains(q);
     }).toList();
+    return _sortedThreads(filtered);
+  }
+
+  /// Whether this hub row should contribute to folder / tab unread badges.
+  bool _threadNotificationsEnabled(Map<String, dynamic> thread) {
+    final kind = thread['kind']?.toString();
+    if (_isTdlibHubKind(kind)) {
+      final chatId = (thread['tdlib_chat_id'] as num?)?.toInt();
+      if (chatId == null) return true;
+      return !ref.read(telegramTdlibServiceProvider).isChatMuted(chatId);
+    }
+    final fcOn = thread['notifications_enabled'] as bool? ?? true;
+    if (!fcOn) return false;
+    // Matched FC DM: honor Telegram mute so the row stays gray and is
+    // excluded from folder totals even when FC notifications_enabled is true.
+    final peer = _dmPeerUserId(thread);
+    if (peer != null && peer > 0) {
+      final svc = ref.read(telegramTdlibServiceProvider);
+      for (final m in _tdlibMatches.values) {
+        if (m.fcUserId != peer || m.tgChatId == 0) continue;
+        if (svc.isChatMuted(m.tgChatId)) return false;
+        break;
+      }
+    }
+    return true;
+  }
+
+  /// Unread total for a folder chip: unmuted chats only (no search filter).
+  int _notifiedUnreadForChip(HubChip chip) {
+    if (chip.system == ChatHubSystemFilter.telegram) {
+      // Folder is only visible while disconnected — no TG unread yet.
+      return 0;
+    }
+    var total = 0;
+    final merged = _hubMergedThreads(
+      includeTelegramList: _chipIncludesTelegramList(chip),
+    );
+    for (final t in merged) {
+      if (_isHiddenTdlibDuplicate(t)) continue;
+      if (!_matchesChip(t, chip)) continue;
+      if (!_threadNotificationsEnabled(t)) continue;
+      total += chatAsInt(t['unread_count']) ?? 0;
+    }
+    return total;
   }
 
   String _preview(Map<String, dynamic> thread) {
@@ -576,6 +1137,23 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   Future<void> _openThread(Map<String, dynamic> thread) async {
+    if (_isTdlibHubKind(thread['kind']?.toString())) {
+      final chatId = (thread['tdlib_chat_id'] as num?)?.toInt();
+      if (chatId == null) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => TelegramConversationScreen(
+            chatId: chatId,
+            title: thread['title']?.toString() ?? 'Telegram',
+            tgUserId: (thread['tdlib_user_id'] as num?)?.toInt(),
+            fcUserId: (thread['peer_user_id'] as num?)?.toInt(),
+            peerAvatarUrl: _dmAvatarUrl(thread) ?? '',
+          ),
+        ),
+      );
+      await _reloadTdlibMatches();
+      return;
+    }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ChatConversationScreen(
@@ -621,73 +1199,65 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     await refresh();
   }
 
-  Future<void> openCreateMenu({required bool hasIndividualPremium}) async {
-    final scheme = Theme.of(context).colorScheme;
+  Future<void> openCreateMenu() async {
     final action = await showModalBottomSheet<String>(
       context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: scheme.surface,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(LucideIcons.user_plus),
-              title: const Text('Группа'),
-              onTap: () => Navigator.pop(ctx, 'group'),
-            ),
-            if (hasIndividualPremium)
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               ListTile(
-                leading: const Icon(LucideIcons.user_plus),
-                title: const Text('Контакт'),
-                subtitle: const Text('Личный чат вне семьи'),
-                onTap: () => Navigator.pop(ctx, 'contact'),
+                leading: const Icon(LucideIcons.users),
+                title: const Text('Создать группу'),
+                onTap: () => Navigator.of(ctx).pop('group'),
               ),
-          ],
-        ),
-      ),
+              ListTile(
+                leading: const Icon(LucideIcons.folder_plus),
+                title: const Text('Создать папку'),
+                onTap: () => Navigator.of(ctx).pop('folder'),
+              ),
+            ],
+          ),
+        );
+      },
     );
     if (!mounted || action == null) return;
     if (action == 'group') {
       await createGroup();
-      return;
+    } else if (action == 'folder') {
+      await _createFolderFlow();
     }
-    await runFriendInviteFlow(
-      context,
-      ref.read(familychatRepositoryProvider),
-      hasIndividualPremium: hasIndividualPremium,
-    );
   }
 
-  String _emptyLabel(_ChatFilter filter) {
+  String _emptyLabel(HubChip chip) {
     if (_searchQuery.trim().isNotEmpty) return 'Чаты не найдены';
-    return switch (filter) {
-      _ChatFilter.all => 'Нет чатов',
-      _ChatFilter.family => 'Нет семейных чатов',
-      _ChatFilter.dm => 'Нет личных чатов',
-      _ChatFilter.group => 'Нет групповых чатов',
-      _ChatFilter.friends => 'Нет контактов',
-      _ChatFilter.telegram => 'Нет чатов Telegram',
+    if (chip.isCustom) return 'В папке пока нет чатов';
+    return switch (chip.system!) {
+      ChatHubSystemFilter.all => 'Нет чатов',
+      ChatHubSystemFilter.family => 'Нет семейных чатов',
+      ChatHubSystemFilter.telegram => 'Нет чатов Telegram',
     };
   }
 
-  Widget _buildFilterPage(_ChatFilter filter) {
-    if (filter == _ChatFilter.telegram) {
+  Widget _buildFilterPage(HubChip chip) {
+    if (chip.system == ChatHubSystemFilter.telegram) {
       return Padding(
         padding: const EdgeInsets.only(top: _ChatFilterTabBar.overlayExtent),
         child: TelegramChatsPane(
           hasIndividualPremium: widget.hasIndividualPremium,
           telegramConnected: widget.telegramConnected,
           telegramGrace: widget.telegramGrace,
+          searchQuery: _searchQuery,
         ),
       );
     }
-    return _buildThreadList(filter);
+    return _buildThreadList(chip);
   }
 
-  Widget _buildThreadList(_ChatFilter filter) {
-    final filtered = _filteredBy(filter);
+  Widget _buildThreadList(HubChip chip) {
+    final filtered = _filteredBy(chip);
     final listPadding = EdgeInsets.only(
       top: _ChatFilterTabBar.overlayExtent,
       bottom: ShellNavBar.contentBottomInset(
@@ -708,27 +1278,29 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               padding: listPadding,
               children: [
                 const SizedBox(height: 120),
-                Center(child: Text(_emptyLabel(filter))),
+                Center(child: Text(_emptyLabel(chip))),
               ],
             )
           : ListView.builder(
-              key: PageStorageKey<String>('chat-hub-${filter.name}'),
+              key: PageStorageKey<String>('chat-hub-${chip.key}'),
               physics: const AlwaysScrollableScrollPhysics(),
               padding: listPadding,
               itemCount: filtered.length,
               itemBuilder: (context, i) {
                 final t = filtered[i];
                 final title = t['title']?.toString() ?? 'Чат';
+                final kind = t['kind']?.toString() ?? '';
                 final unread = chatAsInt(t['unread_count']) ?? 0;
+                final notificationsOn = _threadNotificationsEnabled(t);
                 final last = t['last_message'] as Map<String, dynamic>?;
-                final isSaved = isSavedMessagesThread(t['kind']?.toString());
+                final isSaved = isSavedMessagesThread(kind);
                 final lastStatus = _lastMessageReadStatus(last);
                 final created = last != null
                     ? DateTime.tryParse(last['created_at']?.toString() ?? '')
                     : null;
                 final isBirthday = _isBirthdayCelebration(t);
                 final avatarAsset = chatThreadAvatarAsset(
-                  kind: t['kind']?.toString() ?? '',
+                  kind: kind,
                   isBirthdayCelebration: isBirthday,
                 );
                 final theme = Theme.of(context);
@@ -740,6 +1312,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                   fontSize: 11,
                   color: scheme.onSurfaceVariant.withValues(alpha: 0.72),
                 );
+                // Neutral gray — scheme.onSurface / onSurfaceVariant inherit the
+                // blue seed and read as "active" next to the mute icon.
+                final unreadBadgeColor = notificationsOn
+                    ? scheme.primary
+                    : const Color(0xFFB0B0B0);
+                final tdlibPhotoPath = t['tdlib_photo_path']?.toString();
+                final tdlibPhotoBytes = t['tdlib_photo_bytes'];
 
                 return ListTile(
                   key: ValueKey(t['id']),
@@ -752,6 +1331,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                           userId:
                               avatarAsset != null ? null : _dmPeerUserId(t),
                           assetPath: avatarAsset,
+                          localFilePath: tdlibPhotoPath,
+                          memoryBytes: tdlibPhotoBytes is List<int>
+                              ? tdlibPhotoBytes
+                              : null,
                           radius: 24,
                         ),
                   title: Row(
@@ -767,6 +1350,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                           ),
                         ),
                       ),
+                      if (!notificationsOn) ...[
+                        const SizedBox(width: 4),
+                        Icon(
+                          LucideIcons.bell_off,
+                          size: 14,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ],
                       if (t['telegram'] is Map &&
                           (t['telegram'] as Map)['linked'] == true) ...[
                         const SizedBox(width: 6),
@@ -818,17 +1409,20 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                   trailing: unread > 0
                       ? CircleAvatar(
                           radius: 10,
-                          backgroundColor: scheme.primary,
+                          backgroundColor: unreadBadgeColor,
                           child: Text(
                             '$unread',
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: notificationsOn
+                                  ? scheme.onPrimary
+                                  : scheme.surface,
                               fontSize: 11,
                             ),
                           ),
                         )
                       : null,
                   onTap: () => _openThread(t),
+                  onLongPress: () => unawaited(_onThreadLongPress(t)),
                 );
               },
             ),
@@ -836,89 +1430,113 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   void _onCreatePressed() {
-    unawaited(openCreateMenu(hasIndividualPremium: widget.hasIndividualPremium));
+    unawaited(openCreateMenu());
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Rebuild list + folder badges whenever TDLib chat/mute/unread changes.
+    // (A nested Builder-only watch would leave TabBarView stale.)
+    final tdlib = ref.watch(telegramTdlibServiceProvider);
+    final connected = tdlib.phase == TdlibAuthPhase.ready;
+    final shouldShowTelegram = widget.hasIndividualPremium && !connected;
+    final showingTelegram = _chips.any(
+      (c) => c.system == ChatHubSystemFilter.telegram,
+    );
+    if (shouldShowTelegram != showingTelegram) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _syncFiltersWithPremium();
+      });
+    }
 
-    return Scaffold(
-      appBar: FamilyAppBar.build(
-        title: 'Family Space',
-        profileName: widget.profileName,
-        profileAvatarUrl: widget.profileAvatarUrl,
-        onProfileTap: widget.onProfileTap,
-        titleStyle: theme.textTheme.titleLarge?.copyWith(
-          color: const Color(0xFF4A9ED8),
-          fontWeight: FontWeight.w600,
+    return PopScope(
+      canPop: !_searchVisible,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _searchVisible) toggleSearch();
+      },
+      child: Scaffold(
+        appBar: FamilyAppBar.build(
+          title: 'Family Space',
+          profileName: widget.profileName,
+          profileAvatarUrl: widget.profileAvatarUrl,
+          onProfileTap: widget.onProfileTap,
+          titleStyle: theme.textTheme.titleLarge?.copyWith(
+            color: const Color(0xFF4A9ED8),
+            fontWeight: FontWeight.w600,
+          ),
+          actions: [
+            IconButton(
+              icon: Icon(
+                _searchVisible ? LucideIcons.x : LucideIcons.search,
+              ),
+              tooltip: _searchVisible ? 'Закрыть' : 'Поиск',
+              onPressed: toggleSearch,
+            ),
+            IconButton(
+              icon: const Icon(LucideIcons.plus),
+              tooltip: 'Создать',
+              onPressed: _onCreatePressed,
+            ),
+          ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(LucideIcons.search),
-            tooltip: 'Поиск',
-            onPressed: toggleSearch,
-          ),
-          IconButton(
-            icon: const Icon(LucideIcons.plus),
-            tooltip: 'Создать',
-            onPressed: _onCreatePressed,
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          if (_searchVisible && !_telegramFilterSelected)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              child: TextField(
-                controller: _searchController,
-                autofocus: true,
-                decoration: InputDecoration(
-                  hintText: 'Поиск по названию чата',
-                  prefixIcon: const Icon(LucideIcons.search),
-                  suffixIcon: _searchQuery.isNotEmpty
-                      ? IconButton(
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() => _searchQuery = '');
-                          },
-                          icon: const Icon(LucideIcons.x),
-                        )
-                      : null,
-                  isDense: true,
+        body: Column(
+          children: [
+            if (_searchVisible)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                child: TextField(
+                  controller: _searchController,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    hintText: _telegramFilterSelected
+                        ? 'Поиск чатов Telegram'
+                        : 'Поиск по названию чата',
+                    prefixIcon: const Icon(LucideIcons.search),
+                    suffixIcon: _searchQuery.isNotEmpty
+                        ? IconButton(
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                            icon: const Icon(LucideIcons.x),
+                          )
+                        : null,
+                    isDense: true,
+                  ),
+                  onChanged: (v) => setState(() => _searchQuery = v),
                 ),
-                onChanged: (v) => setState(() => _searchQuery = v),
+              ),
+            Expanded(
+              child: Stack(
+                children: [
+                  TabBarView(
+                    controller: _tabController,
+                    physics: const NeverScrollableScrollPhysics(),
+                    children: _chips.map((chip) {
+                      return ColoredBox(
+                        color: theme.scaffoldBackgroundColor,
+                        child: _buildFilterPage(chip),
+                      );
+                    }).toList(),
+                  ),
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: _ChatFilterTabBar(
+                      chips: _chips,
+                      controller: _tabController,
+                      labelOf: _chipLabel,
+                      unreadOf: _notifiedUnreadForChip,
+                      onReorder: _onReorderTabs,
+                    ),
+                  ),
+                ],
               ),
             ),
-          Expanded(
-            child: Stack(
-              children: [
-                TabBarView(
-                  controller: _tabController,
-                  physics: const NeverScrollableScrollPhysics(),
-                  children: _filters.map((filter) {
-                    return ColoredBox(
-                      color: theme.scaffoldBackgroundColor,
-                      child: _buildFilterPage(filter),
-                    );
-                  }).toList(),
-                ),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: _ChatFilterTabBar(
-                    filters: _filters,
-                    controller: _tabController,
-                    labelOf: _filterLabel,
-                    onReorder: _onReorderTabs,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -926,15 +1544,17 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
 class _ChatFilterTabBar extends StatelessWidget {
   const _ChatFilterTabBar({
-    required this.filters,
+    required this.chips,
     required this.controller,
     required this.labelOf,
+    required this.unreadOf,
     required this.onReorder,
   });
 
-  final List<_ChatFilter> filters;
+  final List<HubChip> chips;
   final TabController controller;
-  final String Function(_ChatFilter filter) labelOf;
+  final String Function(HubChip chip) labelOf;
+  final int Function(HubChip chip) unreadOf;
   final void Function(int oldIndex, int newIndex) onReorder;
 
   static const double _pillHeight = 40;
@@ -956,7 +1576,7 @@ class _ChatFilterTabBar extends StatelessWidget {
     final indicatorColor = scheme.secondaryContainer;
     final selectedColor = scheme.primary;
     final unselectedColor = scheme.onSurfaceVariant;
-    final count = filters.length;
+    final count = chips.length;
     if (count == 0) return const SizedBox.shrink();
 
     return Padding(
@@ -1011,10 +1631,11 @@ class _ChatFilterTabBar extends StatelessWidget {
                         onReorder: onReorder,
                         itemCount: count,
                         itemBuilder: (context, index) {
-                          final filter = filters[index];
+                          final chip = chips[index];
                           final selected = selectedIndex == index;
+                          final unread = unreadOf(chip);
                       return ReorderableDelayedDragStartListener(
-                        key: ValueKey(filter),
+                        key: ValueKey(chip.key),
                         index: index,
                         child: SizedBox(
                           width: slotWidth,
@@ -1052,21 +1673,42 @@ class _ChatFilterTabBar extends StatelessWidget {
                                 ),
                                 child: FittedBox(
                                   fit: BoxFit.scaleDown,
-                                  child: Text(
-                                    labelOf(filter),
-                                    maxLines: 1,
-                                    softWrap: false,
-                                    textAlign: TextAlign.center,
-                                    style:
-                                        theme.textTheme.labelLarge?.copyWith(
-                                      fontSize: 13,
-                                      fontWeight: selected
-                                          ? FontWeight.w600
-                                          : FontWeight.w500,
-                                      color: selected
-                                          ? selectedColor
-                                          : unselectedColor,
-                                    ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        labelOf(chip),
+                                        maxLines: 1,
+                                        softWrap: false,
+                                        textAlign: TextAlign.center,
+                                        style: theme.textTheme.labelLarge
+                                            ?.copyWith(
+                                          fontSize: 13,
+                                          fontWeight: selected
+                                              ? FontWeight.w600
+                                              : FontWeight.w500,
+                                          color: selected
+                                              ? selectedColor
+                                              : unselectedColor,
+                                        ),
+                                      ),
+                                      if (unread > 0) ...[
+                                        const SizedBox(width: 4),
+                                        CircleAvatar(
+                                          radius: 8,
+                                          backgroundColor: scheme.primary,
+                                          child: Text(
+                                            unread > 99 ? '99+' : '$unread',
+                                            style: TextStyle(
+                                              color: scheme.onPrimary,
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w600,
+                                              height: 1,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
                                   ),
                                 ),
                               ),

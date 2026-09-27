@@ -32,6 +32,7 @@ class ChatComposeInput extends StatefulWidget {
     this.showDeliverToTelegram = false,
     this.deliveryChannel = ChatDeliveryChannel.auto,
     this.highlightTelegram = false,
+    this.preferOpusVoice = false,
     this.hintText = 'Сообщение...',
     this.panelSlotMaxHeight,
     this.panelBarsOverhead = 0,
@@ -55,6 +56,7 @@ class ChatComposeInput extends StatefulWidget {
   final bool showDeliverToTelegram;
   final ChatDeliveryChannel deliveryChannel;
   final bool highlightTelegram;
+  final bool preferOpusVoice;
   final String hintText;
 
   /// Высота нижнего слота от [LayoutBuilder] экрана чата.
@@ -247,6 +249,7 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
                 showDeliverToTelegram: widget.showDeliverToTelegram,
                 deliveryChannel: widget.deliveryChannel,
                 highlightTelegram: widget.highlightTelegram,
+                preferOpusVoice: widget.preferOpusVoice,
                 onRecordingChanged: _onRecordingChanged,
                 circleSession: _circleSession,
                 recordingHost: _recordingHost,

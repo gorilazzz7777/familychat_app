@@ -12,6 +12,8 @@ import '../network/api_client.dart';
 import '../notifications/familychat_notifications.dart';
 import '../platform/browser_info.dart';
 import '../../features/familychat/data/familychat_repository.dart';
+import '../../features/telegram_tdlib/telegram_tdlib_push.dart';
+import '../../features/telegram_tdlib/telegram_tdlib_service.dart';
 import '../../firebase_options.dart';
 import 'web_fcm_service_worker.dart';
 import 'web_fcm_token.dart';
@@ -24,6 +26,16 @@ Future<void> familychatFirebaseBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
   DartPluginRegistrant.ensureInitialized();
   await PushRegistrationService.ensureFirebaseInitialized();
+  if (isTelegramRemoteMessage(message)) {
+    try {
+      await TelegramTdlibService.instance.processPushNotificationPayload(
+        buildTdlibProcessPushPayload(message),
+      );
+    } catch (e, st) {
+      debugPrint('[FCM background] tdlib push failed: $e\n$st');
+    }
+    return;
+  }
   try {
     await ChatBackgroundSync.handleRemoteMessage(message);
   } catch (e, st) {

@@ -42,7 +42,8 @@ class InstallStore {
     final normalized = _normalize(installer);
     _cached = normalized;
     AppClient.setInstallStore(normalized);
-    if (kDebugMode) {
+    // Expected for debug/sideload builds — don't alarm on null installer.
+    if (kDebugMode && installer != null && installer.isNotEmpty) {
       debugPrint('[InstallStore] installer=$installer -> $normalized');
     }
     return normalized;

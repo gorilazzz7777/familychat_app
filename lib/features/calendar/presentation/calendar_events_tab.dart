@@ -11,6 +11,7 @@ import '../../../core/network/offline_ui.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
+import '../../members/presentation/child_milestone_view_screen.dart';
 import 'calendar_event_edit_screen.dart';
 import 'birthday_detail_screen.dart';
 import 'widgets/album_access_fields.dart';
@@ -131,6 +132,7 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
     return switch (kind) {
       'birthday' => LucideIcons.cake,
       'custom' => LucideIcons.notebook_pen,
+      'milestone' => LucideIcons.trophy,
       _ => LucideIcons.party_popper,
     };
   }
@@ -140,8 +142,37 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
     return switch (kind) {
       'birthday' => cs.tertiary,
       'custom' => cs.secondary,
+      'milestone' => const Color(0xFFE8A0BF),
       _ => cs.primary,
     };
+  }
+
+  String? _milestoneCode(Map<String, dynamic> event) {
+    final code = event['milestone_code']?.toString().trim();
+    if (code != null && code.isNotEmpty) return code;
+    if (event['kind']?.toString() == 'milestone') {
+      final fallback = event['code']?.toString().trim();
+      if (fallback != null && fallback.isNotEmpty) return fallback;
+    }
+    return null;
+  }
+
+  Future<void> _openMilestoneEvent(Map<String, dynamic> event) async {
+    final code = _milestoneCode(event);
+    if (code == null) return;
+    final rawChild = event['child_profile_id'];
+    final childId = rawChild is int ? rawChild : int.tryParse('$rawChild');
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ChildMilestoneViewScreen(
+          code: code,
+          initialTitle: event['title']?.toString(),
+          canEdit: true,
+          childId: childId,
+          childName: event['child_name']?.toString(),
+        ),
+      ),
+    );
   }
 
   Future<void> _openCustomEvent(Map<String, dynamic> event) async {
@@ -254,9 +285,11 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                             itemBuilder: (context, i) {
                               final e = _events[i];
                               final kind = e['kind']?.toString();
-                              final isCustom = kind == 'custom';
+                              final isMilestone = _milestoneCode(e) != null;
+                              final isCustom = kind == 'custom' && !isMilestone;
                               final isBirthday = kind == 'birthday';
-                              final isTappable = isCustom || isBirthday;
+                              final isTappable =
+                                  isCustom || isBirthday || isMilestone;
                               final isPast = isCalendarEventPast(e);
                               final date = e['date']?.toString() ?? '';
                               final showDateHeader = i == 0 ||
@@ -265,7 +298,9 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                               final endIso = e['end_date']?.toString() ?? date;
                               final subtitle = isCustom && startIso != endIso
                                   ? formatCalendarDateRange(startIso, endIso)
-                                  : null;
+                                  : isMilestone
+                                      ? 'Малыш'
+                                      : null;
                               final pastTint = const Color(0xFFE8F5E9);
                               final pastFg = const Color(0xFF5A8F6A);
                               return Column(
@@ -287,10 +322,13 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                                     color: isPast ? pastTint : null,
                                     child: ListTile(
                                       leading: Icon(
-                                        _iconForKind(kind),
+                                        _iconForKind(isMilestone ? 'milestone' : kind),
                                         color: isPast
                                             ? pastFg
-                                            : _iconColor(context, kind),
+                                            : _iconColor(
+                                                context,
+                                                isMilestone ? 'milestone' : kind,
+                                              ),
                                       ),
                                       title: Text(
                                         e['title']?.toString() ?? '',
@@ -318,11 +356,13 @@ class _CalendarEventsTabState extends ConsumerState<CalendarEventsTab> {
                                               color: isPast ? pastFg : null,
                                             )
                                           : null,
-                                      onTap: isCustom
-                                          ? () => _openCustomEvent(e)
-                                          : isBirthday
-                                              ? () => _openBirthdayEvent(e)
-                                              : null,
+                                      onTap: isMilestone
+                                          ? () => _openMilestoneEvent(e)
+                                          : isCustom
+                                              ? () => _openCustomEvent(e)
+                                              : isBirthday
+                                                  ? () => _openBirthdayEvent(e)
+                                                  : null,
                                     ),
                                   ),
                                 ],

@@ -100,16 +100,29 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
 
   int? get _attachmentId => chatAsInt(widget.attachment['id']);
 
-  bool get _deferFullDecode => ChatMediaDisplayPolicy.shouldDeferFullDecode(
-        threadId: widget.threadId,
-        attachmentId: _attachmentId,
-        messageCreatedAt: widget.messageCreatedAt,
-      );
+  /// TDLib (and similar) locals — not FamilyChat API attachments.
+  bool get _isExternalLocalMedia =>
+      widget.attachment['skip_age_defer'] == true;
+
+  bool get _deferFullDecode {
+    // Local-first sources (e.g. TDLib) already downloaded the file via their
+    // own pipeline — age-gate "Load" would hit the FamilyChat downloader.
+    if (_isExternalLocalMedia) return false;
+    return ChatMediaDisplayPolicy.shouldDeferFullDecode(
+      threadId: widget.threadId,
+      attachmentId: _attachmentId,
+      messageCreatedAt: widget.messageCreatedAt,
+    );
+  }
 
   @override
   void initState() {
     super.initState();
     _urlLoadAllowed = !_deferFullDecode && _shouldAutoLoadUrl();
+    if (_isExternalLocalMedia) {
+      // Owned by TelegramTdlibService — never hit FC content URL / bytes API.
+      return;
+    }
     if (_useBytesPath) {
       _scheduleAutoDownload();
     } else {
@@ -177,6 +190,10 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       _sizeReported = false;
       _sizeListenAttached = false;
       _clearPinnedUrl();
+      if (_isExternalLocalMedia) {
+        _headers = null;
+        return;
+      }
       _pinDisplayUrl(newUrl);
       _urlLoadAllowed = !_deferFullDecode && _shouldAutoLoadUrl();
       if (_useBytesPath) {
@@ -344,12 +361,32 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   bool _isFullMediaDisplayed() {
     if (_deferFullDecode) return false;
     MediaLocalIndex.hydrateAttachment(widget.attachment);
-    final localPath = galleryLocalDevicePath(widget.attachment);
+    final localPath = _localImagePath(widget.attachment);
     if (localDeviceFileExists(localPath)) return true;
     if (isSafeUiPreviewBytes(widget.attachment['local_bytes'])) return true;
+    if (isSafeUiPreviewBytes(widget.attachment['thumbnail_bytes'])) return true;
     if (_cachedBytes() != null) return true;
     if (!_useBytesPath && _urlLoadAllowed) return true;
     return false;
+  }
+
+  /// Image-safe local path: never an mp4/webm video file.
+  String _localImagePath(Map<String, dynamic> attachment) {
+    final device = attachment['local_device_path']?.toString().trim() ?? '';
+    if (device.isNotEmpty && !_pathLooksLikeVideo(device)) return device;
+    final thumb =
+        attachment['thumbnail_local_path']?.toString().trim() ?? '';
+    if (thumb.isNotEmpty && !_pathLooksLikeVideo(thumb)) return thumb;
+    return '';
+  }
+
+  bool _pathLooksLikeVideo(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.mp4') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.webm') ||
+        lower.endsWith('.mkv') ||
+        lower.endsWith('.m4v');
   }
 
   Uint8List? _cachedBytes() {
@@ -370,6 +407,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
   Future<void> _manualDownload() async {
     final attachmentId = _attachmentId;
     if (attachmentId == null) return;
+    // TDLib media must not go through the FamilyChat attachment downloader.
+    if (_isExternalLocalMedia) return;
 
     ChatMediaDisplayPolicy.markExpanded(widget.threadId, attachmentId);
 
@@ -420,6 +459,45 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
 
   Widget _wrapOverlay(Widget child) {
     if (!widget.showTransferOverlay) return child;
+    final skipAgeDefer = widget.attachment['skip_age_defer'] == true;
+    final tdlibDownloading = widget.attachment['is_downloading'] == true;
+    // TDLib downloads are driven by TelegramTdlibService — do not show the
+    // FamilyChat "Load" button (wrong downloader / wrong attachment id).
+    if (skipAgeDefer && tdlibDownloading) {
+      // Don't cover an already-decoded local thumb/photo with a spinner.
+      final localPath = galleryLocalDevicePath(widget.attachment);
+      final thumbPath =
+          widget.attachment['thumbnail_local_path']?.toString().trim() ?? '';
+      if (localDeviceFileExists(localPath) ||
+          localDeviceFileExists(thumbPath)) {
+        return child;
+      }
+      final progress = widget.attachment['download_progress'];
+      final value = progress is num && progress > 0
+          ? progress.toDouble().clamp(0.0, 1.0)
+          : null;
+      return Stack(
+        fit: StackFit.passthrough,
+        children: [
+          child,
+          ColoredBox(
+            color: Colors.black.withValues(alpha: 0.28),
+            child: Center(
+              child: SizedBox(
+                width: 52,
+                height: 52,
+                child: CircularProgressIndicator(
+                  value: value,
+                  strokeWidth: 3.5,
+                  color: Colors.white,
+                  backgroundColor: Colors.white24,
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
     return ChatMediaTransferOverlay(
       threadId: widget.threadId,
       attachment: widget.attachment,
@@ -427,7 +505,8 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       onCancelUpload: widget.onCancelUpload,
       onDownloadTap: _manualDownload,
       borderRadius: widget.borderRadius,
-      showManualDownload: !_isFullMediaDisplayed(),
+      showManualDownload:
+          !_isFullMediaDisplayed() && !skipAgeDefer,
       showWhenDownloading: _useBytesPath || _deferFullDecode,
       child: child,
     );
@@ -599,9 +678,24 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
       return _wrapOverlay(_thumbPlaceholder(lightOnly: true));
     }
 
-    MediaLocalIndex.hydrateAttachment(widget.attachment);
-    final localPath = galleryLocalDevicePath(widget.attachment);
-    if (localDeviceFileExists(localPath)) {
+    // TDLib / skip_age_defer: never let MediaLocalIndex rewrite paths — it
+    // matches generic filenames like "photo.jpg" and can wipe a valid
+    // local_device_path after Telegram finished the download.
+    if (!_isExternalLocalMedia) {
+      MediaLocalIndex.hydrateAttachment(widget.attachment);
+    }
+    // Never decode mp4/webm as an image — galleryLocalDevicePath prefers
+    // video_local_path, which turns the bubble into a grey error box once
+    // the video file finishes downloading.
+    var localPath = _localImagePath(widget.attachment);
+    if (!localDeviceFileExists(localPath)) {
+      final thumbPath =
+          widget.attachment['thumbnail_local_path']?.toString().trim() ?? '';
+      if (localDeviceFileExists(thumbPath) && !_pathLooksLikeVideo(thumbPath)) {
+        localPath = thumbPath;
+      }
+    }
+    if (localDeviceFileExists(localPath) && !_pathLooksLikeVideo(localPath)) {
       final localImage = localDeviceFileImage(
         path: localPath,
         width: widget.width,
@@ -624,6 +718,20 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
           provider: MemoryImage(local as Uint8List),
         ),
       );
+    }
+    final thumbBytes = widget.attachment['thumbnail_bytes'];
+    if (isSafeUiPreviewBytes(thumbBytes)) {
+      return _wrapOverlay(
+        _sizedImage(
+          provider: MemoryImage(thumbBytes as Uint8List),
+        ),
+      );
+    }
+
+    // TDLib / external locals: never build an FC API URL (thread ids like
+    // -100… and file ids produce 404/HTML that ImageDecoder can't parse).
+    if (_isExternalLocalMedia) {
+      return _wrapOverlay(_thumbPlaceholder());
     }
 
     if (_useBytesPath) {

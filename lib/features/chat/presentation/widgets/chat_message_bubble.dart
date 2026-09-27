@@ -56,6 +56,8 @@ class ChatMessageBubble extends StatelessWidget {
     this.showSenderAvatar = false,
     this.senderName,
     this.senderAvatarUrl,
+    this.senderAvatarLocalPath,
+    this.senderAvatarMemoryBytes,
     this.onSenderAvatarTap,
     this.compactWithPrevious = false,
     this.compactWithNext = false,
@@ -66,6 +68,7 @@ class ChatMessageBubble extends StatelessWidget {
     this.onLongPress,
     this.onImageTap,
     this.onReplyTap,
+    this.onForwardTap,
     this.onSwipeReply,
     this.onReactionTap,
     this.onRetrySend,
@@ -73,10 +76,15 @@ class ChatMessageBubble extends StatelessWidget {
     this.pendingMessageId,
     this.isGroupLike = false,
     this.mentions = const [],
+    this.textEntities = const [],
     this.scheduledAt,
     this.location,
     this.messageMetadata = const {},
     this.canToggleVoiceTranscript = false,
+    this.collapseBodyAfterLines,
+    this.bodyExpanded = false,
+    this.onToggleBodyExpand,
+    this.onOpenUrl,
   });
 
   final int threadId;
@@ -92,6 +100,8 @@ class ChatMessageBubble extends StatelessWidget {
   final bool showSenderAvatar;
   final String? senderName;
   final String? senderAvatarUrl;
+  final String? senderAvatarLocalPath;
+  final List<int>? senderAvatarMemoryBytes;
   final VoidCallback? onSenderAvatarTap;
   final bool compactWithPrevious;
   final bool compactWithNext;
@@ -102,6 +112,7 @@ class ChatMessageBubble extends StatelessWidget {
   final VoidCallback? onLongPress;
   final void Function(Map<String, dynamic> attachment)? onImageTap;
   final VoidCallback? onReplyTap;
+  final VoidCallback? onForwardTap;
   /// Свайп влево — то же, что «Ответить» в меню.
   final VoidCallback? onSwipeReply;
   final void Function(String emoji)? onReactionTap;
@@ -110,10 +121,18 @@ class ChatMessageBubble extends StatelessWidget {
   final int? pendingMessageId;
   final bool isGroupLike;
   final List<Map<String, dynamic>> mentions;
+  final List<ChatTextEntity> textEntities;
   final DateTime? scheduledAt;
   final ChatLocationPoint? location;
   final Map<String, dynamic> messageMetadata;
   final bool canToggleVoiceTranscript;
+
+  /// Для каналов: свернуть длинный текст после N строк.
+  final int? collapseBodyAfterLines;
+  final bool bodyExpanded;
+  final VoidCallback? onToggleBodyExpand;
+  /// Return true if the URL was handled in-app (e.g. t.me → TDLib jump).
+  final Future<bool> Function(String url)? onOpenUrl;
 
   static const double _avatarSize = 32;
 
@@ -300,10 +319,14 @@ class ChatMessageBubble extends StatelessWidget {
             if (forward != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),
-                child: _buildForwardQuote(
-                  forward!,
-                  quoteAccent,
-                  theme.colorScheme.onSurface,
+                child: GestureDetector(
+                  onTap: onForwardTap,
+                  behavior: HitTestBehavior.opaque,
+                  child: _buildForwardQuote(
+                    forward!,
+                    quoteAccent,
+                    theme.colorScheme.onSurface,
+                  ),
                 ),
               ),
             if (replyTo != null)
@@ -351,7 +374,9 @@ class ChatMessageBubble extends StatelessWidget {
         color: bubbleColor,
         elevation: 0,
         child: ChatMessageTapTarget(
-          onTap: onTap,
+          // Media tiles own short taps (open photo/video). Menu = long-press,
+          // same as video-notes — otherwise parent onTap steals album taps.
+          onTap: (hasVisualMedia && !selectionMode) ? null : onTap,
           onLongPress: selectionMode ? null : onLongPress,
           child: Padding(
             padding: EdgeInsets.fromLTRB(
@@ -368,7 +393,15 @@ class ChatMessageBubble extends StatelessWidget {
                     padding: hasVisualMedia
                         ? const EdgeInsets.fromLTRB(8, 6, 8, 0)
                         : EdgeInsets.zero,
-                    child: _buildForwardQuote(forward!, quoteAccent, textColor),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: selectionMode ? onTap : onForwardTap,
+                      child: _buildForwardQuote(
+                        forward!,
+                        quoteAccent,
+                        textColor,
+                      ),
+                    ),
                   ),
                 if (replyTo != null)
                   Padding(
@@ -402,28 +435,10 @@ class ChatMessageBubble extends StatelessWidget {
                     padding: hasVisualMedia
                         ? const EdgeInsets.fromLTRB(8, 6, 8, 0)
                         : EdgeInsets.zero,
-                    child: ChatMentionText(
-                      body: body,
-                      mentions: mentions,
-                      style: theme.textTheme.bodyMedium
-                              ?.copyWith(color: textColor) ??
-                          TextStyle(color: textColor),
-                      mentionStyle:
-                          (theme.textTheme.bodyMedium ?? const TextStyle())
-                              .copyWith(
-                        color: isMine
-                            ? const Color(0xFF8FD3FF)
-                            : theme.colorScheme.primary,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      linkStyle:
-                          (theme.textTheme.bodyMedium ?? const TextStyle())
-                              .copyWith(
-                        color: isMine
-                            ? const Color(0xFF8FD3FF)
-                            : theme.colorScheme.primary,
-                        decoration: TextDecoration.none,
-                      ),
+                    child: _buildCaptionBody(
+                      theme: theme,
+                      textColor: textColor,
+                      maxWidth: contentMaxWidth,
                     ),
                   ),
                 if (location != null) ...[
@@ -440,8 +455,21 @@ class ChatMessageBubble extends StatelessWidget {
                     url: _linkPreviewUrl()!,
                     isMine: isMine,
                     maxWidth: contentMaxWidth,
+                    onOpenUrl: onOpenUrl,
                   ),
                 ],
+                if (reactions.isNotEmpty)
+                  Padding(
+                    padding: hasVisualMedia
+                        ? const EdgeInsets.fromLTRB(8, 6, 8, 0)
+                        : const EdgeInsets.only(top: 6),
+                    child: ChatMessageReactionsRow(
+                      reactions: reactions,
+                      alignEnd: isMine,
+                      onReactionTap:
+                          selectionMode ? null : onReactionTap,
+                    ),
+                  ),
                 Padding(
                   padding: hasVisualMedia
                       ? const EdgeInsets.fromLTRB(8, 4, 8, 0)
@@ -475,9 +503,7 @@ class ChatMessageBubble extends StatelessWidget {
               padding: EdgeInsets.only(
                 left: 8,
                 right: 8,
-                bottom: reactions.isNotEmpty
-                    ? (compactWithNext ? 14 : 18)
-                    : (compactWithNext ? 1 : 6),
+                bottom: compactWithNext ? 1 : 6,
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -515,6 +541,8 @@ class ChatMessageBubble extends StatelessWidget {
                               child: ChatAvatar(
                                 name: senderName ?? '',
                                 avatarUrl: senderAvatarUrl,
+                                localFilePath: senderAvatarLocalPath,
+                                memoryBytes: senderAvatarMemoryBytes,
                                 radius: _avatarSize / 2,
                               ),
                             )
@@ -533,31 +561,28 @@ class ChatMessageBubble extends StatelessWidget {
                               ? screenWidth - 16
                               : maxBubbleWidth,
                         ),
-                        child: Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            bubble,
-                            if (reactions.isNotEmpty)
-                              Positioned(
-                                left: isMine ? 20 : 6,
-                                right: isMine ? 6 : 20,
-                                // Наезжает на нижний край пузыря ~на половину чипа.
-                                bottom: -11,
-                                child: Align(
-                                  alignment: isMine
-                                      ? Alignment.centerRight
-                                      : Alignment.centerLeft,
-                                  child: ChatMessageReactionsRow(
-                                    reactions: reactions,
-                                    alignEnd: isMine,
-                                    onReactionTap:
-                                        selectionMode ? null : onReactionTap,
-                                    overlapStyle: true,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
+                        child: standaloneVideoNote || standaloneSticker
+                            ? Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: isMine
+                                    ? CrossAxisAlignment.end
+                                    : CrossAxisAlignment.start,
+                                children: [
+                                  bubble,
+                                  if (reactions.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: ChatMessageReactionsRow(
+                                        reactions: reactions,
+                                        alignEnd: isMine,
+                                        onReactionTap: selectionMode
+                                            ? null
+                                            : onReactionTap,
+                                      ),
+                                    ),
+                                ],
+                              )
+                            : bubble,
                       ),
                     ),
                   ),
@@ -583,6 +608,90 @@ class ChatMessageBubble extends StatelessWidget {
 
   bool get _fromTelegram =>
       messageMetadata['source']?.toString() == 'telegram';
+
+  Widget _buildCaptionBody({
+    required ThemeData theme,
+    required Color textColor,
+    required double maxWidth,
+  }) {
+    final baseStyle = theme.textTheme.bodyMedium?.copyWith(color: textColor) ??
+        TextStyle(color: textColor);
+    final mentionStyle = (theme.textTheme.bodyMedium ?? const TextStyle())
+        .copyWith(
+      color: isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary,
+      fontWeight: FontWeight.w600,
+    );
+    final linkStyle = (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+      color: isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary,
+      decoration: TextDecoration.none,
+    );
+    final limit = collapseBodyAfterLines;
+    final canCollapse = limit != null &&
+        limit > 0 &&
+        onToggleBodyExpand != null &&
+        _bodyExceedsLines(body, baseStyle, maxWidth, limit);
+
+    final text = ChatMentionText(
+      body: body,
+      mentions: mentions,
+      entities: textEntities,
+      style: baseStyle,
+      mentionStyle: mentionStyle,
+      linkStyle: linkStyle,
+      maxLines: canCollapse && !bodyExpanded ? limit : null,
+      overflow: canCollapse && !bodyExpanded ? TextOverflow.ellipsis : null,
+      onOpenUrl: onOpenUrl,
+    );
+
+    if (!canCollapse) return text;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        text,
+        const SizedBox(height: 2),
+        GestureDetector(
+          onTap: onToggleBodyExpand,
+          behavior: HitTestBehavior.opaque,
+          child: Text(
+            bodyExpanded ? 'Свернуть' : 'ещё',
+            style: linkStyle.copyWith(
+              fontWeight: FontWeight.w600,
+              fontSize: (baseStyle.fontSize ?? 14) * 0.95,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  static bool _bodyExceedsLines(
+    String text,
+    TextStyle style,
+    double maxWidth,
+    int maxLines,
+  ) {
+    if (text.isEmpty || maxWidth <= 0) return false;
+    final newlineCount = '\n'.allMatches(text).length;
+    if (newlineCount >= maxLines) return true;
+    // Approximate wrapped lines without TextPainter (avoids TextDirection issues).
+    final fontSize = style.fontSize ?? 14;
+    final avgCharWidth = fontSize * 0.52;
+    final charsPerLine = (maxWidth / avgCharWidth).floor().clamp(8, 10000);
+    var lines = 0;
+    for (final paragraph in text.split('\n')) {
+      if (paragraph.isEmpty) {
+        lines += 1;
+      } else {
+        lines += ((paragraph.length + charsPerLine - 1) / charsPerLine)
+            .floor()
+            .clamp(1, 100000);
+      }
+      if (lines > maxLines) return true;
+    }
+    return lines > maxLines;
+  }
 
   /// Meta-ряд справа: [лого TG] · время · галочки.
   Widget _buildTimeMetaRow({
@@ -699,16 +808,19 @@ class ChatMessageBubble extends StatelessWidget {
     required bool hasLeadingContent,
     required BorderRadius mediaRadius,
   }) {
-    final images = <Map<String, dynamic>>[];
+    // Keep send-order: images + regular videos can share one album grid
+    // (Telegram media groups). Video notes / voice / files stay separate.
+    final albumMedia = <Map<String, dynamic>>[];
     final rest = <Map<String, dynamic>>[];
     for (final a in attachments) {
       if (isVoiceAttachment(a, messageMetadata: messageMetadata) ||
-          a['kind'] == 'video' ||
-          isVideoAttachment(a) ||
+          _attachmentIsVideoNote(a) ||
           (a['kind'] == 'file' && !chatAttachmentLooksLikeImage(a))) {
         rest.add(a);
+      } else if (a['kind'] == 'video' || isVideoAttachment(a)) {
+        albumMedia.add(a);
       } else if (chatAttachmentLooksLikeImage(a)) {
-        images.add(a);
+        albumMedia.add(a);
       } else {
         rest.add(a);
       }
@@ -722,12 +834,65 @@ class ChatMessageBubble extends StatelessWidget {
       needsGap = true;
     }
 
-    if (images.isNotEmpty) {
+    void addStandaloneVideo(Map<String, dynamic> a) {
+      final isCircle = _attachmentIsVideoNote(a);
+      // Single-video message: inline play in bubble (not gallery).
+      final att = Map<String, dynamic>.from(a)..['prefer_inline_play'] = true;
+      if (isCircle) {
+        out.add(
+          ChatVideoNotePlayer(
+            threadId: threadId,
+            attachment: att,
+            durationMs: _videoNoteDurationMs(),
+            idleSize: (maxWidth * 0.72).clamp(160.0, 220.0),
+            interactive: !selectionMode,
+            messageMetadata: messageMetadata,
+            uploadMessageId: pendingMessageId,
+            onCancelUpload: onCancelUpload,
+          ),
+        );
+      } else if (_isAnimatedMediaMessage) {
+        out.add(
+          _ChatGifVideoPreview(
+            threadId: threadId,
+            attachment: att,
+            maxWidth: maxWidth,
+            borderRadius: mediaRadius,
+            onOpen: onImageTap != null ? () => onImageTap!(att) : null,
+            preferSquare: messageMetadata['sticker'] != null,
+          ),
+        );
+      } else {
+        out.add(
+          _ChatVideoAttachmentPreview(
+            threadId: threadId,
+            attachment: att,
+            maxWidth: maxWidth,
+            circular: false,
+            borderRadius: mediaRadius,
+            onRequestDownload:
+                onImageTap != null ? () => onImageTap!(att) : null,
+            onOpenFullscreen: onImageTap != null
+                ? () => onImageTap!(
+                      Map<String, dynamic>.from(att)
+                        ..['force_fullscreen'] = true,
+                    )
+                : null,
+            messageMetadata: messageMetadata,
+            messageCreatedAt: createdAt,
+            uploadMessageId: pendingMessageId,
+            onCancelUpload: onCancelUpload,
+          ),
+        );
+      }
+    }
+
+    if (albumMedia.length >= 2) {
       addGap();
       out.add(
         ChatImageAlbum(
           threadId: threadId,
-          attachments: images,
+          attachments: albumMedia,
           maxWidth: maxWidth,
           onImageTap: onImageTap,
           borderRadius: mediaRadius,
@@ -737,6 +902,27 @@ class ChatMessageBubble extends StatelessWidget {
           messageCreatedAt: createdAt,
         ),
       );
+    } else if (albumMedia.length == 1) {
+      final a = albumMedia.first;
+      if (a['kind'] == 'video' || isVideoAttachment(a)) {
+        addGap();
+        addStandaloneVideo(a);
+      } else {
+        addGap();
+        out.add(
+          ChatImageAlbum(
+            threadId: threadId,
+            attachments: albumMedia,
+            maxWidth: maxWidth,
+            onImageTap: onImageTap,
+            borderRadius: mediaRadius,
+            uploadMessageId: pendingMessageId,
+            onCancelUpload: onCancelUpload,
+            messageMetadata: messageMetadata,
+            messageCreatedAt: createdAt,
+          ),
+        );
+      }
     }
 
     for (final a in rest) {
@@ -770,47 +956,8 @@ class ChatMessageBubble extends StatelessWidget {
           ),
         );
       } else if (a['kind'] == 'video' || isVideoAttachment(a)) {
-        final isCircle = _attachmentIsVideoNote(a);
-        if (isCircle) {
-          out.add(
-            ChatVideoNotePlayer(
-              threadId: threadId,
-              attachment: a,
-              durationMs: _videoNoteDurationMs(),
-              idleSize: (maxWidth * 0.72).clamp(160.0, 220.0),
-              interactive: !selectionMode,
-              messageMetadata: messageMetadata,
-              uploadMessageId: pendingMessageId,
-              onCancelUpload: onCancelUpload,
-            ),
-          );
-        } else if (_isAnimatedMediaMessage) {
-          out.add(
-            _ChatGifVideoPreview(
-              threadId: threadId,
-              attachment: a,
-              maxWidth: maxWidth,
-              borderRadius: mediaRadius,
-              onOpen: onImageTap != null ? () => onImageTap!(a) : null,
-              preferSquare: messageMetadata['sticker'] != null,
-            ),
-          );
-        } else {
-          out.add(
-            _ChatVideoAttachmentPreview(
-              threadId: threadId,
-              attachment: a,
-              maxWidth: maxWidth,
-              circular: false,
-              borderRadius: mediaRadius,
-              onOpen: onImageTap != null ? () => onImageTap!(a) : null,
-              messageMetadata: messageMetadata,
-              messageCreatedAt: createdAt,
-              uploadMessageId: pendingMessageId,
-              onCancelUpload: onCancelUpload,
-            ),
-          );
-        }
+        // Video notes land here; regular videos are handled above.
+        addStandaloneVideo(a);
       } else {
         out.add(
           _ChatFileAttachmentRow(
@@ -1124,7 +1271,8 @@ class _ChatVideoAttachmentPreview extends ConsumerStatefulWidget {
     required this.maxWidth,
     this.circular = false,
     this.borderRadius,
-    this.onOpen,
+    this.onRequestDownload,
+    this.onOpenFullscreen,
     this.messageMetadata = const {},
     this.messageCreatedAt,
     this.uploadMessageId,
@@ -1136,7 +1284,10 @@ class _ChatVideoAttachmentPreview extends ConsumerStatefulWidget {
   final double maxWidth;
   final bool circular;
   final BorderRadius? borderRadius;
-  final VoidCallback? onOpen;
+  /// First tap when the mp4 is not local yet — parent starts download.
+  final VoidCallback? onRequestDownload;
+  /// Tap while already playing — open fullscreen viewer.
+  final VoidCallback? onOpenFullscreen;
   final Map<String, dynamic> messageMetadata;
   final DateTime? messageCreatedAt;
   final int? uploadMessageId;
@@ -1150,27 +1301,94 @@ class _ChatVideoAttachmentPreview extends ConsumerStatefulWidget {
 class _ChatVideoAttachmentPreviewState
     extends ConsumerState<_ChatVideoAttachmentPreview> {
   late double _aspect;
+  bool _playing = false;
+  bool _waitingForDownload = false;
+  String? _generatedThumbPath;
+
+  String get _videoPath {
+    final v = widget.attachment['video_local_path']?.toString().trim() ?? '';
+    if (v.isNotEmpty) return v;
+    final local = widget.attachment['local_device_path']?.toString().trim() ?? '';
+    final lower = local.toLowerCase();
+    if (lower.endsWith('.mp4') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.webm') ||
+        lower.endsWith('.mkv')) {
+      return local;
+    }
+    return '';
+  }
+
+  /// Real streamable HTTPS (S3 / CDN). FamilyChat `/attachments/…/content`
+  /// proxy URLs are NOT playable for TDLib file ids — those need download.
+  String get _streamableVideoUrl {
+    for (final key in ['file_url', 'url', 'video_url']) {
+      final raw = widget.attachment[key]?.toString().trim() ?? '';
+      if (raw.startsWith('https://') || raw.startsWith('http://')) {
+        final uri = Uri.tryParse(raw);
+        if (uri == null) continue;
+        if (uri.path.contains('/attachments/') &&
+            uri.path.contains('/content')) {
+          continue;
+        }
+        return raw;
+      }
+    }
+    return '';
+  }
+
+  bool get _downloading => widget.attachment['is_downloading'] == true;
 
   @override
   void initState() {
     super.initState();
     _aspect = chatAttachmentAspectRatio(widget.attachment) ?? (16 / 9);
-    _probeLocalBytes();
+    if (chatAttachmentAspectRatio(widget.attachment) == null) {
+      _probeLocalBytes();
+    }
+    unawaited(_ensureThumb());
   }
 
   @override
   void didUpdateWidget(covariant _ChatVideoAttachmentPreview oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final oldPath =
+        oldWidget.attachment['video_local_path']?.toString().trim() ?? '';
+    final newPath = _videoPath;
     if (oldWidget.attachment['id'] != widget.attachment['id'] ||
         oldWidget.attachment['file_url'] != widget.attachment['file_url'] ||
         oldWidget.attachment['local_bytes'] !=
-            widget.attachment['local_bytes']) {
+            widget.attachment['local_bytes'] ||
+        oldWidget.attachment['thumbnail_bytes'] !=
+            widget.attachment['thumbnail_bytes'] ||
+        oldWidget.attachment['thumbnail_local_path'] !=
+            widget.attachment['thumbnail_local_path'] ||
+        oldWidget.attachment['local_device_path'] !=
+            widget.attachment['local_device_path'] ||
+        oldWidget.attachment['width'] != widget.attachment['width'] ||
+        oldWidget.attachment['height'] != widget.attachment['height'] ||
+        oldPath != newPath ||
+        oldWidget.attachment['is_downloading'] !=
+            widget.attachment['is_downloading'] ||
+        oldWidget.attachment['download_progress'] !=
+            widget.attachment['download_progress']) {
       _aspect = chatAttachmentAspectRatio(widget.attachment) ?? _aspect;
-      _probeLocalBytes();
+      if (chatAttachmentAspectRatio(widget.attachment) == null) {
+        _probeLocalBytes();
+      }
+      unawaited(_ensureThumb());
+    }
+    // Download finished while we were waiting → play inline with sound.
+    if (_waitingForDownload && newPath.isNotEmpty) {
+      _waitingForDownload = false;
+      if (!_playing && mounted) {
+        setState(() => _playing = true);
+      }
     }
   }
 
   Future<void> _probeLocalBytes() async {
+    if (chatAttachmentAspectRatio(widget.attachment) != null) return;
     final local = widget.attachment['local_bytes'];
     if (!isSafeUiPreviewBytes(local)) return;
     final size = await chatDecodeImageSize(local as Uint8List);
@@ -1184,9 +1402,110 @@ class _ChatVideoAttachmentPreviewState
     setState(() => _aspect = next);
   }
 
+  Future<void> _ensureThumb() async {
+    final thumbPath =
+        widget.attachment['thumbnail_local_path']?.toString().trim() ?? '';
+    if (thumbPath.isNotEmpty) {
+      if (_generatedThumbPath != null && mounted) {
+        setState(() => _generatedThumbPath = null);
+      }
+      return;
+    }
+    if (isSafeUiPreviewBytes(widget.attachment['thumbnail_bytes']) ||
+        isSafeUiPreviewBytes(widget.attachment['local_bytes'])) {
+      return;
+    }
+    // After the mp4 lands, bake a still so the cell is not a grey box.
+    final videoPath = _videoPath;
+    if (videoPath.isEmpty) return;
+    final att = Map<String, dynamic>.from(widget.attachment)
+      ..['video_local_path'] = videoPath
+      ..['kind'] = 'video';
+    final path = await GalleryVideoThumbnail.ensureForAttachment(
+      att,
+      maxWidth: 512,
+      timeMs: 0,
+    );
+    if (!mounted || path == null || path.isEmpty) return;
+    if (_generatedThumbPath == path) return;
+    setState(() => _generatedThumbPath = path);
+  }
+
+  /// Prefer thumbnail image for the bubble preview — never decode mp4 as image.
+  Map<String, dynamic> _previewAttachment() {
+    final a = Map<String, dynamic>.from(widget.attachment);
+    final thumbBytes = a['thumbnail_bytes'];
+    final thumbPath = a['thumbnail_local_path']?.toString().trim() ?? '';
+    final generated = _generatedThumbPath?.trim() ?? '';
+    final localPath = a['local_device_path']?.toString().trim() ?? '';
+    final contentType = a['content_type']?.toString() ?? '';
+    final looksLikeVideoFile = contentType.startsWith('video/') ||
+        localPath.toLowerCase().endsWith('.mp4') ||
+        localPath.toLowerCase().endsWith('.mov') ||
+        localPath.toLowerCase().endsWith('.webm');
+
+    if (thumbPath.isNotEmpty && localDeviceFileExists(thumbPath)) {
+      a['local_device_path'] = thumbPath;
+      a.remove('local_bytes');
+      // Keep thumbnail_bytes as ChatNetworkImage fallback if decode fails.
+      a.remove('video_local_path');
+      return a;
+    }
+    if (generated.isNotEmpty && localDeviceFileExists(generated)) {
+      a['local_device_path'] = generated;
+      a.remove('local_bytes');
+      a.remove('video_local_path');
+      return a;
+    }
+    if (isSafeUiPreviewBytes(thumbBytes)) {
+      a['local_bytes'] = thumbBytes;
+      a.remove('local_device_path');
+      a.remove('video_local_path');
+      return a;
+    }
+    if (isSafeUiPreviewBytes(a['local_bytes'])) {
+      a.remove('local_device_path');
+      a.remove('video_local_path');
+      return a;
+    }
+    if (looksLikeVideoFile || _videoPath.isNotEmpty) {
+      // Avoid grey broken Image.file on video binary.
+      a.remove('local_device_path');
+      a.remove('video_local_path');
+    }
+    return a;
+  }
+
+  Future<void> _onTap() async {
+    if (_downloading) return;
+    if (_playing) {
+      // Play/pause handled by GalleryVideoPlayer overlay; bubble tap ignored.
+      return;
+    }
+    final path = _videoPath;
+    if (path.isNotEmpty) {
+      await _ensureThumb();
+      if (!mounted) return;
+      setState(() => _playing = true);
+      return;
+    }
+    // FamilyChat may stream a real HTTPS mp4. TDLib videos only have a local
+    // path after download — never treat the FC content-proxy URL as streamable
+    // (that left _playing=true with an empty player and no download).
+    final streamUrl = _streamableVideoUrl;
+    if (streamUrl.isNotEmpty) {
+      if (!mounted) return;
+      setState(() => _playing = true);
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _waitingForDownload = true);
+    widget.onRequestDownload?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final attachment = widget.attachment;
+    final previewAtt = _previewAttachment();
     final maxWidth = widget.maxWidth;
     final circular = widget.circular;
     final size = circular
@@ -1199,10 +1518,16 @@ class _ChatVideoAttachmentPreviewState
             maxWidth: size,
             maxHeight: chatMediaMaxThumbHeight(size),
           );
-    // Always ChatNetworkImage so age-gate + bubble-size decode apply uniformly.
+
+    final videoPath = _videoPath;
+    final streamUrl = _streamableVideoUrl;
+    final canPlay = videoPath.isNotEmpty || streamUrl.isNotEmpty;
+    final showSpinner =
+        _downloading || (_waitingForDownload && videoPath.isEmpty);
+
     final background = ChatNetworkImage(
       threadId: widget.threadId,
-      attachment: attachment,
+      attachment: previewAtt,
       width: fitted.width,
       height: fitted.height,
       fit: BoxFit.cover,
@@ -1213,6 +1538,7 @@ class _ChatVideoAttachmentPreviewState
       borderRadius: widget.borderRadius,
       onResolvedSize: (resolved) {
         if (resolved.height <= 0) return;
+        if (chatAttachmentAspectRatio(widget.attachment) != null) return;
         _applyAspect(resolved.width / resolved.height);
       },
     );
@@ -1225,25 +1551,75 @@ class _ChatVideoAttachmentPreviewState
         alignment: Alignment.center,
         children: [
           background,
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.42),
-              shape: BoxShape.circle,
+          if (_playing && canPlay)
+            GalleryVideoPlayer(
+              key: ValueKey(
+                'bubble-video:${videoPath.isNotEmpty ? videoPath : streamUrl}',
+              ),
+              url: streamUrl,
+              localPath: videoPath.isNotEmpty ? videoPath : null,
+              fit: BoxFit.cover,
+              autoplay: true,
+              looping: true,
+              muted: false,
+              showControls: false,
+              showScrubber: true,
+              placeholder: const SizedBox.shrink(),
+              onResolvedSize: (resolved) {
+                if (resolved.height <= 0) return;
+                if (chatAttachmentAspectRatio(widget.attachment) != null) {
+                  return;
+                }
+                _applyAspect(resolved.width / resolved.height);
+              },
             ),
-            child: const Icon(
-              LucideIcons.play,
-              color: Colors.white,
-              size: 28,
+          if (_playing && canPlay && widget.onOpenFullscreen != null)
+            Positioned(
+              top: 6,
+              right: 6,
+              child: Material(
+                color: Colors.black.withValues(alpha: 0.42),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: widget.onOpenFullscreen,
+                  child: const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: Icon(
+                      LucideIcons.maximize_2,
+                      size: 16,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
             ),
-          ),
+          if (showSpinner) ...[
+            ColoredBox(color: Colors.black.withValues(alpha: 0.35)),
+            Center(
+              child: SizedBox(
+                width: 52,
+                height: 52,
+                child: CircularProgressIndicator(
+                  value: () {
+                    final p = widget.attachment['download_progress'];
+                    if (p is num && p > 0) return p.toDouble().clamp(0.0, 1.0);
+                    return null;
+                  }(),
+                  strokeWidth: 3.5,
+                  color: Colors.white,
+                  backgroundColor: Colors.white24,
+                ),
+              ),
+            ),
+          ] else if (!_playing)
+            const Center(child: GalleryVideoPlayBadge()),
         ],
       ),
     );
 
     return GestureDetector(
-      onTap: widget.onOpen,
+      onTap: _playing ? null : () => unawaited(_onTap()),
       behavior: HitTestBehavior.opaque,
       child: circular
           ? ClipOval(child: content)

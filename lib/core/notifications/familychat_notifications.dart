@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../call/callkit_incoming_service.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
+import '../../features/telegram_tdlib/telegram_tdlib_push.dart';
 import '../push/push_navigation.dart';
 import 'chat_push_notification_style.dart';
 import 'chat_push_thread_preview.dart';
@@ -544,6 +545,10 @@ class FamilyChatNotifications {
         });
         return;
       }
+      if (type == kTdlibPushType) {
+        openTdlibChatFromPushData(data);
+        return;
+      }
       openChatFromPushData(data);
     } catch (e) {
       debugPrint('notification tap payload error: $e');
@@ -654,6 +659,10 @@ class FamilyChatNotifications {
       final threadId = int.tryParse(data['thread_id']?.toString() ?? '') ?? 0;
       return chatNotificationId(threadId);
     }
+    if (type == kTdlibPushType) {
+      final chatId = int.tryParse(data['chat_id']?.toString() ?? '') ?? 0;
+      return tdlibChatNotificationId(chatId);
+    }
     if (type == 'familychat_calendar_reminder') {
       final eventId = int.tryParse(data['event_id']?.toString() ?? '') ?? 0;
       return 200000 + eventId;
@@ -671,6 +680,11 @@ class FamilyChatNotifications {
       final threadId = int.tryParse(data['thread_id']?.toString() ?? '');
       if (threadId == null) return 'familychat_chat';
       return chatNotificationTag(threadId);
+    }
+    if (type == kTdlibPushType) {
+      final chatId = int.tryParse(data['chat_id']?.toString() ?? '');
+      if (chatId == null) return 'tdlib_tg';
+      return tdlibChatNotificationTag(chatId);
     }
     return null;
   }
@@ -898,6 +912,17 @@ class FamilyChatNotifications {
   static Future<void> cancelCallNotification(int callId) async {
     if (kIsWeb || !_initialized) return;
     await _plugin.cancel(300000 + callId);
+  }
+
+  static Future<void> clearTdlibChatNotifications({required int chatId}) async {
+    if (kIsWeb) return;
+    await initialize();
+    if (!_initialized) return;
+    final tag = tdlibChatNotificationTag(chatId);
+    final id = tdlibChatNotificationId(chatId);
+    await _plugin.cancel(0, tag: tag);
+    await _plugin.cancel(id, tag: tag);
+    await _plugin.cancel(id);
   }
 
   /// Снять пуши сообщений из шторки (весь чат или все сообщения).

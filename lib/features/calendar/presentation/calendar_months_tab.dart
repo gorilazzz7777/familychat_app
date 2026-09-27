@@ -11,6 +11,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/data/chat_offline_sync.dart';
 import '../../gallery/presentation/gallery_albums_grouped_view.dart';
+import '../../members/presentation/child_milestone_view_screen.dart';
 import '../data/calendar_agenda_utils.dart';
 import 'calendar_event_edit_screen.dart';
 import 'birthday_detail_screen.dart';
@@ -140,6 +141,28 @@ class _CalendarMonthsTabState extends ConsumerState<CalendarMonthsTab> {
 
   Future<void> _openAgendaItem(DateTime day, Map<String, dynamic> item) async {
     final kind = item['kind']?.toString();
+    final milestoneCode = item['milestone_code']?.toString().trim();
+    if (kind == 'milestone' ||
+        (milestoneCode != null && milestoneCode.isNotEmpty)) {
+      final code = (milestoneCode != null && milestoneCode.isNotEmpty)
+          ? milestoneCode
+          : item['code']?.toString().trim();
+      if (code == null || code.isEmpty) return;
+      final rawChild = item['child_profile_id'];
+      final childId = rawChild is int ? rawChild : int.tryParse('$rawChild');
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChildMilestoneViewScreen(
+            code: code,
+            initialTitle: item['title']?.toString(),
+            canEdit: true,
+            childId: childId,
+            childName: item['child_name']?.toString(),
+          ),
+        ),
+      );
+      return;
+    }
     if (kind == 'birthday') {
       final userId = item['person_user_id'];
       final honoreeUserId = userId is int ? userId : int.tryParse('$userId');
@@ -346,19 +369,35 @@ class _DayEventsSheet extends StatelessWidget {
               )
             else
               ...events.map(
-                (e) => Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: ListTile(
-                    title: Text(e['title']?.toString() ?? ''),
-                    trailing: (e['editable'] == true ||
-                            (e['kind']?.toString() == 'custom' &&
-                                e['is_participant'] == true &&
-                                e['gallery_album_id'] != null))
-                        ? const Icon(LucideIcons.chevron_right)
-                        : null,
-                    onTap: () => onEventTap(e),
-                  ),
-                ),
+                (e) {
+                  final kind = e['kind']?.toString();
+                  final milestoneCode =
+                      e['milestone_code']?.toString().trim() ?? '';
+                  final isMilestone = kind == 'milestone' ||
+                      milestoneCode.isNotEmpty;
+                  final isTappable = e['editable'] == true ||
+                      isMilestone ||
+                      (kind == 'custom' &&
+                          e['is_participant'] == true &&
+                          e['gallery_album_id'] != null);
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      leading: isMilestone
+                          ? const Icon(
+                              LucideIcons.trophy,
+                              color: Color(0xFFE8A0BF),
+                            )
+                          : null,
+                      title: Text(e['title']?.toString() ?? ''),
+                      subtitle: isMilestone ? const Text('Малыш') : null,
+                      trailing: isTappable
+                          ? const Icon(LucideIcons.chevron_right)
+                          : null,
+                      onTap: () => onEventTap(e),
+                    ),
+                  );
+                },
               ),
             const SizedBox(height: 8),
             FilledButton.icon(

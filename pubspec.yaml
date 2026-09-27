@@ -72,6 +72,8 @@ dependencies:
   flutter_callkit_incoming: ^2.5.8
   flutter_foreground_task: ^10.0.0
   flutter_lucide: ^1.47.0
+  ffi: ^2.2.0
+  flutter_tts: ^4.2.5
 
 # sqlite3 3.x hooks download prebuilt .so from GitHub by default — that fails
 # when github.com is unreachable. Compile vendored amalgamation instead.

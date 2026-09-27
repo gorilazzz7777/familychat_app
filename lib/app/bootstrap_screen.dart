@@ -20,8 +20,10 @@ import '../core/impersonation/impersonation_storage.dart';
 import '../core/routing/app_uri_parser.dart';
 import '../core/push/push_navigation.dart';
 import '../core/session/auth_session_bus.dart';
+import '../core/storage/device_id_storage.dart';
 import '../features/auth/data/oauth_login_service.dart';
 import '../features/auth/presentation/login_screen.dart';
+import '../features/auth/session/local_anonymous.dart';
 import '../features/auth/utils/guest_status.dart';
 import '../features/chat/data/chat_offline_sync.dart';
 import '../features/chat/data/chat_realtime_utils.dart';
@@ -30,8 +32,6 @@ import '../features/chat/data/chat_sync_service.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
 import '../features/chat/data/link_preview_service.dart';
-import '../features/chat/presentation/chat_conversation_screen.dart';
-import '../features/chat/presentation/friend_invite_flow.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
 import '../core/theme/theme_seed_controller.dart';
@@ -61,7 +61,6 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   String? _bootError;
   String? _pendingInvite;
   String? _pendingFriendInvite;
-  bool _friendInviteHandling = false;
   bool _familyTransferHandling = false;
   Map<String, dynamic>? _transferOnboardingSession;
 
@@ -176,9 +175,8 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
     final friendToken = extractFriendInviteToken(uri);
     if (friendToken != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_pendingFriendInviteKey, friendToken);
-      if (mounted) setState(() => _pendingFriendInvite = friendToken);
+      // Out-of-family friend invites are disabled — fail closed.
+      await _dismissFriendInvite(showMessage: true);
       return;
     }
     final token = extractInviteToken(uri);
@@ -195,13 +193,12 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   Future<void> _hydratePendingInvitesFromPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final friendToken = prefs.getString(_pendingFriendInviteKey);
+      // Drop any leftover friend-invite tokens (feature disabled in UI).
+      await prefs.remove(_pendingFriendInviteKey);
       final token = prefs.getString(_pendingInviteKey);
       if (!mounted) return;
       setState(() {
-        _pendingFriendInvite = (friendToken != null && friendToken.isNotEmpty)
-            ? friendToken
-            : null;
+        _pendingFriendInvite = null;
         _pendingInvite = (token != null && token.isNotEmpty) ? token : null;
       });
     } catch (_) {}
@@ -211,18 +208,6 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   Future<void> _validatePendingInvitesInBackground() async {
     await _hydratePendingInvitesFromPrefs();
     final prefs = await SharedPreferences.getInstance();
-    final friendToken = prefs.getString(_pendingFriendInviteKey);
-    if (friendToken != null && friendToken.isNotEmpty) {
-      try {
-        await ref
-            .read(familychatRepositoryProvider)
-            .fetchFriendInviteInfo(friendToken);
-        if (mounted) setState(() => _pendingFriendInvite = friendToken);
-      } catch (_) {
-        await prefs.remove(_pendingFriendInviteKey);
-        if (mounted) setState(() => _pendingFriendInvite = null);
-      }
-    }
     final token = prefs.getString(_pendingInviteKey);
     if (token == null || token.isEmpty) return;
     try {
@@ -246,6 +231,16 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     if (mounted) setState(() => _pendingFriendInvite = null);
   }
 
+  Future<void> _dismissFriendInvite({required bool showMessage}) async {
+    await _clearPendingFriendInvite();
+    if (!showMessage || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Добавление контактов вне семьи недоступно'),
+      ),
+    );
+  }
+
   /// Локальная часть web-entry: invite из URL, pending call. Без сети.
   Future<void> _persistWebEntryLocal() async {
     if (!kIsWeb) return;
@@ -257,9 +252,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     }
     final friendToken = extractFriendInviteToken(Uri.base);
     if (friendToken != null) {
+      // Out-of-family friend invites are disabled — clear and ignore.
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_pendingFriendInviteKey, friendToken);
-      _pendingFriendInvite = friendToken;
+      await prefs.remove(_pendingFriendInviteKey);
+      _pendingFriendInvite = null;
     }
     final pendingCall = readWebPendingCallLaunch();
     if (pendingCall != null) {
@@ -318,6 +314,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
   void _enterWithStatus(Map<String, dynamic> status,
       {required bool fromCache}) {
+    final localAnon = isLocalAnonymousStatus(status);
     setState(() {
       _checking = false;
       _loggedIn = true;
@@ -326,6 +323,11 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
           status['onboarding_complete'] == true && status['has_family'] == true;
       _bootError = null;
     });
+    if (localAnon) {
+      ChatOfflineSync.instance.setOnline(false);
+      _syncAppActions();
+      return;
+    }
     if (fromCache) {
       ChatOfflineSync.instance.setOnline(false);
     } else {
@@ -588,35 +590,39 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
       final auth = ref.read(authRepositoryProvider);
       if (!await _hasSession()) {
-        ChatBootTrace.log('boot_ensure_session');
+        ChatBootTrace.log('boot_try_restore');
         try {
-          await auth.ensureSession().timeout(const Duration(seconds: 45));
+          final restored =
+              await auth.tryRestoreSession().timeout(const Duration(seconds: 45));
+          if (!restored) {
+            ChatBootTrace.log('boot_local_anonymous');
+            await DeviceIdStorage.getOrCreate();
+            if (!mounted) return;
+            _enterWithStatus(localAnonymousStatus(), fromCache: false);
+            return;
+          }
         } on TimeoutException {
           if (!mounted) return;
-          setState(() {
-            _checking = false;
-            _loggedIn = false;
-            _bootError = 'Таймаут входа. Проверьте интернет.';
-          });
-          ChatBootTrace.log('boot_ensure_session_timeout');
+          // Prefer local-anonymous over blocking on flaky network for scanners /
+          // first open; returning users with refresh token already passed hasSession.
+          ChatBootTrace.log('boot_restore_timeout_local_anonymous');
+          await DeviceIdStorage.getOrCreate();
+          _enterWithStatus(localAnonymousStatus(), fromCache: false);
           return;
         } catch (e) {
           if (!mounted) return;
-          setState(() {
-            _checking = false;
-            _loggedIn = false;
-            _bootError = e is DioException
-                ? 'Не удалось войти (${e.response?.statusCode ?? 'сеть'})'
-                : 'Не удалось войти. Проверьте интернет.';
-          });
-          ChatBootTrace.log('boot_ensure_session_error', detail: '$e');
+          ChatBootTrace.log('boot_restore_error_local_anonymous', detail: '$e');
+          await DeviceIdStorage.getOrCreate();
+          _enterWithStatus(localAnonymousStatus(), fromCache: false);
           return;
         }
       }
 
       if (!await _hasSession()) {
-        ChatBootTrace.log('boot_no_session_login');
-        await _showLogin();
+        ChatBootTrace.log('boot_local_anonymous_fallback');
+        await DeviceIdStorage.getOrCreate();
+        if (!mounted) return;
+        _enterWithStatus(localAnonymousStatus(), fromCache: false);
         return;
       }
 
@@ -627,7 +633,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
       // Cache-first: повторный запуск — Shell сразу, status в фоне.
       final cached = await FamilyChatLocalCache.readStatus();
-      if (cached != null && cached.isNotEmpty) {
+      if (cached != null &&
+          cached.isNotEmpty &&
+          !isLocalAnonymousStatus(cached)) {
         ChatBootTrace.log('boot_cache_hit');
         Map<String, dynamic>? me;
         Object? meError;
@@ -742,40 +750,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
   Future<void> _maybeHandleFriendInvite() async {
     final token = _pendingFriendInvite;
-    if (token == null || token.isEmpty || _friendInviteHandling) return;
-    _friendInviteHandling = true;
-    try {
-      final result = await confirmAndAcceptFriendInvite(
-        context,
-        ref.read(familychatRepositoryProvider),
-        token,
-      );
-      await _clearPendingFriendInvite();
-      if (!mounted || result == null) return;
-      final thread = result['thread'] as Map<String, dynamic>?;
-      if (thread == null) return;
-      final threadId = thread['id'] is int
-          ? thread['id'] as int
-          : int.tryParse('${thread['id']}');
-      if (threadId == null) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => ChatConversationScreen(
-            threadId: threadId,
-            title: thread['title']?.toString() ?? 'Чат',
-            defaultTitle: thread['default_title']?.toString() ??
-                thread['title']?.toString() ??
-                'Чат',
-            customTitle: thread['custom_title']?.toString() ?? '',
-            kind: thread['kind']?.toString() ?? 'friend_dm',
-            peerUserId: thread['peer_user_id'] as int?,
-            initialCanSend: thread['can_send'] != false,
-          ),
-        ),
-      );
-    } finally {
-      _friendInviteHandling = false;
-    }
+    if (token == null || token.isEmpty) return;
+    // Out-of-family friend invites are disabled — fail closed.
+    await _dismissFriendInvite(showMessage: true);
   }
 
   void _syncAppActions() {
@@ -913,7 +890,6 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
               },
               onLogout: _logout,
               pendingInviteToken: _pendingInvite,
-              pendingFriendInviteToken: _pendingFriendInvite,
               onPendingInviteCleared: _clearPendingInvite,
               transferSession: _transferOnboardingSession,
             )

@@ -2,7 +2,88 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-/// Рендерит текст сообщения с @упоминаниями и кликабельными ссылками.
+import '../../../telegram_tdlib/telegram_link_navigation.dart';
+
+/// Styled range from Telegram TDLib `textEntity` (UTF-16 offsets).
+class ChatTextEntity {
+  const ChatTextEntity({
+    required this.offset,
+    required this.length,
+    this.bold = false,
+    this.italic = false,
+    this.underline = false,
+    this.strikethrough = false,
+    this.code = false,
+    this.url,
+  });
+
+  final int offset;
+  final int length;
+  final bool bold;
+  final bool italic;
+  final bool underline;
+  final bool strikethrough;
+  final bool code;
+  final String? url;
+
+  factory ChatTextEntity.fromMap(Map<String, dynamic> m, {String body = ''}) {
+    final offset = (m['offset'] as num?)?.toInt() ?? 0;
+    final length = (m['length'] as num?)?.toInt() ?? 0;
+    var url = m['url']?.toString();
+    final kind = m['url_kind']?.toString();
+    if ((url == null || url.isEmpty) &&
+        kind != null &&
+        offset >= 0 &&
+        length > 0 &&
+        offset + length <= body.length) {
+      final slice = body.substring(offset, offset + length);
+      switch (kind) {
+        case 'url':
+          url = slice;
+        case 'email':
+          url = 'mailto:$slice';
+        case 'phone':
+          url = 'tel:${slice.replaceAll(RegExp(r'[\s\-()]'), '')}';
+        case 'mention':
+          final user = slice.startsWith('@') ? slice.substring(1) : slice;
+          url = 'https://t.me/$user';
+      }
+    }
+    return ChatTextEntity(
+      offset: offset,
+      length: length,
+      bold: m['bold'] == true,
+      italic: m['italic'] == true,
+      underline: m['underline'] == true,
+      strikethrough: m['strikethrough'] == true,
+      code: m['code'] == true,
+      url: url,
+    );
+  }
+
+  static List<ChatTextEntity> listFromMaps(
+    String body,
+    List<Map<String, dynamic>> raw,
+  ) {
+    if (raw.isEmpty) return const [];
+    return [
+      for (final m in raw) ChatTextEntity.fromMap(m, body: body),
+    ];
+  }
+
+  Map<String, dynamic> toMap() => {
+        'offset': offset,
+        'length': length,
+        if (bold) 'bold': true,
+        if (italic) 'italic': true,
+        if (underline) 'underline': true,
+        if (strikethrough) 'strikethrough': true,
+        if (code) 'code': true,
+        if (url != null && url!.isNotEmpty) 'url': url,
+      };
+}
+
+/// Рендерит текст сообщения с @упоминаниями, TDLib-сущностями и кликабельными ссылками.
 class ChatMentionText extends StatelessWidget {
   const ChatMentionText({
     super.key,
@@ -11,6 +92,10 @@ class ChatMentionText extends StatelessWidget {
     required this.style,
     required this.mentionStyle,
     this.linkStyle,
+    this.entities = const [],
+    this.maxLines,
+    this.overflow,
+    this.onOpenUrl,
   });
 
   final String body;
@@ -18,6 +103,11 @@ class ChatMentionText extends StatelessWidget {
   final TextStyle style;
   final TextStyle mentionStyle;
   final TextStyle? linkStyle;
+  final List<ChatTextEntity> entities;
+  final int? maxLines;
+  final TextOverflow? overflow;
+  /// Return true if the URL was handled (skip external launch).
+  final Future<bool> Function(String url)? onOpenUrl;
 
   static final _urlPattern = RegExp(
     r'(?:https?:\/\/|www\.)[^\s<>"{}|\\^`\[\]]+',
@@ -34,7 +124,8 @@ class ChatMentionText extends StatelessWidget {
 
   static String stripTrailingPunctuation(String raw) {
     var value = raw.trim();
-    while (value.isNotEmpty && _trailingPunctuation.contains(value[value.length - 1])) {
+    while (value.isNotEmpty &&
+        _trailingPunctuation.contains(value[value.length - 1])) {
       value = value.substring(0, value.length - 1);
     }
     return value;
@@ -48,11 +139,115 @@ class ChatMentionText extends StatelessWidget {
             style.copyWith(color: Theme.of(context).colorScheme.primary))
         .copyWith(decoration: TextDecoration.none);
 
-    if (mentions.isEmpty && !_urlPattern.hasMatch(body)) {
-      return Text(body, style: style);
+    if (entities.isNotEmpty) {
+      return Text.rich(
+        TextSpan(children: _buildEntitySpans(resolvedLinkStyle)),
+        maxLines: maxLines,
+        overflow: overflow,
+      );
     }
 
-    return Text.rich(TextSpan(children: _buildSpans(resolvedLinkStyle)));
+    if (mentions.isEmpty && !_urlPattern.hasMatch(body)) {
+      return Text(
+        body,
+        style: style,
+        maxLines: maxLines,
+        overflow: overflow,
+      );
+    }
+
+    return Text.rich(
+      TextSpan(children: _buildSpans(resolvedLinkStyle)),
+      maxLines: maxLines,
+      overflow: overflow,
+    );
+  }
+
+  List<InlineSpan> _buildEntitySpans(TextStyle resolvedLinkStyle) {
+    final n = body.length;
+    if (n == 0) return const [];
+
+    final bold = List<bool>.filled(n, false);
+    final italic = List<bool>.filled(n, false);
+    final underline = List<bool>.filled(n, false);
+    final strike = List<bool>.filled(n, false);
+    final code = List<bool>.filled(n, false);
+    final urls = List<String?>.filled(n, null);
+
+    for (final e in entities) {
+      if (e.length <= 0) continue;
+      final start = e.offset.clamp(0, n);
+      final end = (e.offset + e.length).clamp(0, n);
+      if (start >= end) continue;
+      for (var i = start; i < end; i++) {
+        if (e.bold) bold[i] = true;
+        if (e.italic) italic[i] = true;
+        if (e.underline) underline[i] = true;
+        if (e.strikethrough) strike[i] = true;
+        if (e.code) code[i] = true;
+        final u = e.url?.trim();
+        if (u != null && u.isNotEmpty) urls[i] = u;
+      }
+    }
+
+    bool sameAt(int a, int b) =>
+        bold[a] == bold[b] &&
+        italic[a] == italic[b] &&
+        underline[a] == underline[b] &&
+        strike[a] == strike[b] &&
+        code[a] == code[b] &&
+        urls[a] == urls[b];
+
+    final spans = <InlineSpan>[];
+    var i = 0;
+    while (i < n) {
+      var j = i + 1;
+      while (j < n && sameAt(i, j)) {
+        j++;
+      }
+      final chunk = body.substring(i, j);
+      final url = urls[i];
+      var runStyle = style;
+      if (bold[i]) {
+        runStyle = runStyle.copyWith(fontWeight: FontWeight.w700);
+      }
+      if (italic[i]) {
+        runStyle = runStyle.copyWith(fontStyle: FontStyle.italic);
+      }
+      if (underline[i] || strike[i]) {
+        runStyle = runStyle.copyWith(
+          decoration: TextDecoration.combine([
+            if (underline[i]) TextDecoration.underline,
+            if (strike[i]) TextDecoration.lineThrough,
+          ]),
+        );
+      }
+      if (code[i]) {
+        runStyle = runStyle.copyWith(
+          fontFamily: 'monospace',
+          backgroundColor: const Color(0x22000000),
+        );
+      }
+      if (url != null && url.isNotEmpty) {
+        runStyle = resolvedLinkStyle.merge(
+          TextStyle(
+            fontWeight: bold[i] ? FontWeight.w700 : resolvedLinkStyle.fontWeight,
+            fontStyle: italic[i] ? FontStyle.italic : resolvedLinkStyle.fontStyle,
+          ),
+        );
+        spans.add(
+          TextSpan(
+            text: chunk,
+            style: runStyle,
+            recognizer: TapGestureRecognizer()..onTap = () => _openUrl(url),
+          ),
+        );
+      } else {
+        spans.add(TextSpan(text: chunk, style: runStyle));
+      }
+      i = j;
+    }
+    return spans;
   }
 
   List<InlineSpan> _buildSpans(TextStyle resolvedLinkStyle) {
@@ -129,7 +324,29 @@ class ChatMentionText extends StatelessWidget {
   }
 
   Future<void> _openUrl(String raw) async {
-    final uri = Uri.tryParse(raw.startsWith('http') ? raw : 'https://$raw');
+    var value = raw.trim();
+    if (value.startsWith('@') && value.length > 1) {
+      value = 'https://t.me/${value.substring(1)}';
+    } else if (value.startsWith('tg://')) {
+      // keep
+    } else if (!value.startsWith('http://') && !value.startsWith('https://')) {
+      if (value.contains('@') && !value.contains(' ')) {
+        value = 'mailto:$value';
+      } else if (RegExp(r'^\+?[\d\s\-()]+$').hasMatch(value)) {
+        value = 'tel:${value.replaceAll(RegExp(r'[\s\-()]'), '')}';
+      } else {
+        value = 'https://$value';
+      }
+    }
+    if (onOpenUrl != null) {
+      try {
+        if (await onOpenUrl!(value)) return;
+      } catch (_) {}
+    }
+    try {
+      if (await TelegramLinkNavigation.tryOpen(value)) return;
+    } catch (_) {}
+    final uri = Uri.tryParse(value);
     if (uri == null) return;
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   }

@@ -12,6 +12,7 @@ import '../../../core/media/media_local_index.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/app_skeletons.dart';
 import '../../chat/presentation/chat_conversation_screen.dart';
+import '../../members/presentation/child_milestone_view_screen.dart';
 import '../../members/presentation/child_profile_screen.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/gallery_photo_viewer_screen.dart';
@@ -917,6 +918,30 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                       payload['title']?.toString() ??
                       'День рождения',
                   eventDate: payload['date']?.toString(),
+                ),
+              ),
+            );
+            if (mounted) await refresh(silent: true);
+            return;
+          }
+        }
+        if (eventKind == 'milestone') {
+          final code = payload['milestone_code']?.toString() ??
+              payload['code']?.toString() ??
+              '';
+          if (code.isNotEmpty) {
+            final rawChildId = payload['child_id'];
+            final childId =
+                rawChildId is int ? rawChildId : int.tryParse('$rawChildId');
+            if (!mounted) return;
+            await Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => ChildMilestoneViewScreen(
+                  code: code,
+                  initialTitle: payload['milestone_title']?.toString() ??
+                      payload['title']?.toString(),
+                  childId: childId,
+                  childName: payload['child_name']?.toString(),
                 ),
               ),
             );

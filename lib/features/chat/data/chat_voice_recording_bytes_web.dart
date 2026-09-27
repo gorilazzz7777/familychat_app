@@ -27,4 +27,4 @@ Future<void> discardVoiceRecordingFile(String path) async {
   } catch (_) {}
 }
 
-Future<String?> voiceRecordingTempPath() async => null;
+Future<String?> voiceRecordingTempPath({String extension = 'm4a'}) async => null;

@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/widgets/family_public_image.dart';
@@ -10,6 +13,8 @@ class ChatAvatar extends StatelessWidget {
     this.avatarUrl,
     this.userId,
     this.assetPath,
+    this.localFilePath,
+    this.memoryBytes,
     this.radius = 24,
   });
 
@@ -17,6 +22,10 @@ class ChatAvatar extends StatelessWidget {
   final String? avatarUrl;
   final int? userId;
   final String? assetPath;
+  /// Local filesystem path (e.g. TDLib downloaded chat photo).
+  final String? localFilePath;
+  /// In-memory JPEG/PNG (e.g. TDLib minithumbnail) until file is ready.
+  final List<int>? memoryBytes;
   final double radius;
 
   static String initials(String name) {
@@ -34,6 +43,7 @@ class ChatAvatar extends StatelessWidget {
     final bg = Theme.of(context).colorScheme.primary;
     final url = avatarUrl?.trim();
     final asset = assetPath?.trim();
+    final local = localFilePath?.trim();
     final size = radius * 2;
 
     if (asset != null && asset.isNotEmpty) {
@@ -51,6 +61,32 @@ class ChatAvatar extends StatelessWidget {
       );
     }
 
+    // Prefer full local photo over URL / minithumbnail whenever the file exists.
+    if (!kIsWeb && local != null && local.isNotEmpty) {
+      final file = File(local);
+      if (file.existsSync()) {
+        final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+        final px = (size * dpr).round();
+        return CircleAvatar(
+          radius: radius,
+          backgroundColor: bg.withValues(alpha: 0.15),
+          child: ClipOval(
+            child: Image.file(
+              file,
+              width: size,
+              height: size,
+              cacheWidth: px,
+              cacheHeight: px,
+              fit: BoxFit.cover,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (_, __, ___) => _initialsBox(bg, size, radius),
+            ),
+          ),
+        );
+      }
+    }
+
+    // Network URL before TDLib minithumbnail — mini is ~40px and looks blurry.
     if (url != null && url.isNotEmpty) {
       return CircleAvatar(
         radius: radius,
@@ -64,6 +100,25 @@ class ChatAvatar extends StatelessWidget {
             fit: BoxFit.cover,
             placeholder: _loadingAvatar(bg, size, radius),
             error: _initialsBox(bg, size, radius),
+          ),
+        ),
+      );
+    }
+
+    final bytes = memoryBytes;
+    if (bytes != null && bytes.isNotEmpty) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: bg.withValues(alpha: 0.15),
+        child: ClipOval(
+          child: Image.memory(
+            Uint8List.fromList(bytes),
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            filterQuality: FilterQuality.low,
+            errorBuilder: (_, __, ___) => _initialsBox(bg, size, radius),
           ),
         ),
       );

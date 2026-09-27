@@ -15,18 +15,19 @@ abstract final class DeferredInviteRecovery {
     required FamilyChatRepository repository,
   }) async {
     final prefs = await SharedPreferences.getInstance();
+    // Friend invites are disabled in UI — never surface pending friend tokens.
+    await prefs.remove(pendingFriendInviteKey);
+
     var invite = prefs.getString(pendingInviteKey)?.trim();
-    var friend = prefs.getString(pendingFriendInviteKey)?.trim();
-    if ((invite != null && invite.isNotEmpty) ||
-        (friend != null && friend.isNotEmpty)) {
-      return (invite: invite, friend: friend);
+    if (invite != null && invite.isNotEmpty) {
+      return (invite: invite, friend: null);
     }
 
     final fromClip = await _readClipboardOnce(prefs);
     if (fromClip != null) {
       if (fromClip.isFriend) {
-        await prefs.setString(pendingFriendInviteKey, fromClip.token);
-        return (invite: null, friend: fromClip.token);
+        // Fail closed: ignore friend invite from clipboard.
+        return (invite: null, friend: null);
       }
       await prefs.setString(pendingInviteKey, fromClip.token);
       return (invite: fromClip.token, friend: null);
@@ -37,16 +38,13 @@ abstract final class DeferredInviteRecovery {
     try {
       final resolved = await repository.resolveDeferredInvite();
       final inv = (resolved['invite_token']?.toString() ?? '').trim();
-      final fr = (resolved['friend_invite_token']?.toString() ?? '').trim();
       if (inv.isNotEmpty) {
         await prefs.setString(pendingInviteKey, inv);
       }
-      if (fr.isNotEmpty) {
-        await prefs.setString(pendingFriendInviteKey, fr);
-      }
+      // Ignore friend_invite_token from deferred resolve.
       return (
         invite: inv.isEmpty ? null : inv,
-        friend: fr.isEmpty ? null : fr,
+        friend: null,
       );
     } catch (_) {
       return (invite: null, friend: null);

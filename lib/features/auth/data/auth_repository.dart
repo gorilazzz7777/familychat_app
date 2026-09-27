@@ -58,13 +58,20 @@ class AuthRepository {
     }
   }
 
-  /// Восстановить сессию: refresh уже есть — ок; иначе device-auth, иначе guest.
-  Future<bool> ensureSession() async {
+  /// Восстановить существующую сессию: refresh или device-auth.
+  /// Не создаёт нового гостя (см. [ensureMaterializedSession]).
+  Future<bool> tryRestoreSession() async {
     if (await hasSession()) return true;
     if (await tryDeviceAuth()) {
       await syncGuestSessionFlag();
       return true;
     }
+    return false;
+  }
+
+  /// Восстановить сессию или создать гостя (только после явного materialize).
+  Future<bool> ensureSession() async {
+    if (await tryRestoreSession()) return true;
     await guestLogin();
     return true;
   }

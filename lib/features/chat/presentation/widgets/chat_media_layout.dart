@@ -40,7 +40,8 @@ double? chatAttachmentAspectRatio(Map<String, dynamic> attachment) {
   return null;
 }
 
-/// Вписать медиа в maxWidth×maxHeight с сохранением пропорций (без обрезки).
+/// Размер медиа в пузыре как в Telegram: всегда на всю [maxWidth],
+/// высота = width/aspect с потолком [maxHeight] (лишнее обрезает [BoxFit.cover]).
 Size chatFitMediaSize({
   required double aspectRatio,
   required double maxWidth,
@@ -48,16 +49,10 @@ Size chatFitMediaSize({
 }) {
   var aspect = aspectRatio;
   if (aspect <= 0 || !aspect.isFinite) aspect = 4 / 3;
-  var width = maxWidth;
+  final width = maxWidth > 0 ? maxWidth : 1.0;
   var height = width / aspect;
-  if (height > maxHeight) {
-    height = maxHeight;
-    width = height * aspect;
-  }
-  if (width > maxWidth) {
-    width = maxWidth;
-    height = width / aspect;
-  }
+  if (height > maxHeight) height = maxHeight;
+  if (height < 1) height = 1;
   return Size(width, height);
 }
 

@@ -898,6 +898,139 @@ class FamilyChatRepository {
     return res.data!;
   }
 
+  /// Link FC group thread ↔ Telegram chat id (TDLib dual group).
+  Future<Map<String, dynamic>> linkTelegramGroup({
+    required int threadId,
+    required int tgChatId,
+    String chatType = 'group',
+    String title = '',
+    bool familyFolderEligible = true,
+    String bridgeSource = 'tdlib',
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/telegram/group-links/',
+      data: {
+        'thread_id': threadId,
+        'tg_chat_id': tgChatId,
+        'chat_type': chatType,
+        if (title.isNotEmpty) 'title': title,
+        'family_folder_eligible': familyFolderEligible,
+        'bridge_source': bridgeSource,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> ingestTelegramGroupBridgeMessage({
+    required int threadId,
+    required int tgChatId,
+    required int tgMessageId,
+    String text = '',
+    int senderTgUserId = 0,
+    bool isOutgoing = false,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/telegram/group-bridge/ingest/',
+      data: {
+        'thread_id': threadId,
+        'tg_chat_id': tgChatId,
+        'tg_message_id': tgMessageId,
+        if (text.isNotEmpty) 'text': text,
+        if (senderTgUserId > 0) 'sender_tg_user_id': senderTgUserId,
+        'is_outgoing': isOutgoing,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> registerTelegramGroupOutboundMap({
+    required int threadId,
+    required int fcMessageId,
+    required int tgChatId,
+    required int tgMessageId,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/telegram/group-bridge/outbound-map/',
+      data: {
+        'thread_id': threadId,
+        'fc_message_id': fcMessageId,
+        'tg_chat_id': tgChatId,
+        'tg_message_id': tgMessageId,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  Future<List<Map<String, dynamic>>> chatFolders() async {
+    final res =
+        await _dio.get<Map<String, dynamic>>('familychat/chat/folders/');
+    return (res.data?['folders'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+  }
+
+  Future<Map<String, dynamic>> createChatFolder({required String name}) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/folders/',
+      data: {'name': name},
+    );
+    return res.data!;
+  }
+
+  Future<Map<String, dynamic>> updateChatFolder(
+    int folderId, {
+    String? name,
+    int? position,
+  }) async {
+    final res = await _dio.patch<Map<String, dynamic>>(
+      'familychat/chat/folders/$folderId/',
+      data: {
+        if (name != null) 'name': name,
+        if (position != null) 'position': position,
+      },
+    );
+    return res.data!;
+  }
+
+  Future<void> deleteChatFolder(int folderId) async {
+    await _dio.delete('familychat/chat/folders/$folderId/');
+  }
+
+  Future<Map<String, dynamic>> addChatFolderMember(
+    int folderId, {
+    int? threadId,
+    int? tgChatId,
+  }) async {
+    assert(
+      (threadId != null) != (tgChatId != null),
+      'Exactly one of threadId / tgChatId',
+    );
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/chat/folders/$folderId/members/',
+      data: {
+        if (threadId != null) 'thread_id': threadId,
+        if (tgChatId != null) 'tg_chat_id': tgChatId,
+      },
+    );
+    return res.data!;
+  }
+
+  Future<void> removeChatFolderMember(
+    int folderId, {
+    int? threadId,
+    int? tgChatId,
+  }) async {
+    assert(
+      (threadId != null) != (tgChatId != null),
+      'Exactly one of threadId / tgChatId',
+    );
+    await _dio.delete(
+      'familychat/chat/folders/$folderId/members/',
+      queryParameters: {
+        if (threadId != null) 'thread_id': threadId,
+        if (tgChatId != null) 'tg_chat_id': tgChatId,
+      },
+    );
+  }
+
   Future<Map<String, dynamic>> leaveChatThread(int threadId) async {
     final res = await _dio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/leave/',
@@ -2528,5 +2661,43 @@ class FamilyChatRepository {
       'familychat/telegram/chats/$chatId/match/',
     );
     return res.data ?? {};
+  }
+
+  /// Upsert verified TDLib self-identity (getMe → server).
+  Future<Map<String, dynamic>> putTdlibIdentity({
+    required int tgUserId,
+    String tgUsername = '',
+    String tgFirstName = '',
+  }) async {
+    final res = await _dio.put<Map<String, dynamic>>(
+      'familychat/telegram/tdlib-identity/',
+      data: {
+        'tg_user_id': tgUserId,
+        if (tgUsername.isNotEmpty) 'tg_username': tgUsername,
+        if (tgFirstName.isNotEmpty) 'tg_first_name': tgFirstName,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  /// Deactivate own TDLib identity on Telegram logout (no chat cascade).
+  Future<Map<String, dynamic>> deleteTdlibIdentity() async {
+    final res = await _dio.delete<Map<String, dynamic>>(
+      'familychat/telegram/tdlib-identity/',
+    );
+    return res.data ?? {};
+  }
+
+  /// Active TDLib identities of members in shared families (for reconcile).
+  Future<List<Map<String, dynamic>>> listFamilyTdlibIdentities() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/telegram/family-tdlib-identities/',
+    );
+    final raw = res.data?['identities'];
+    if (raw is! List) return [];
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
   }
 }

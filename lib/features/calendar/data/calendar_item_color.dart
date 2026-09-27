@@ -43,6 +43,8 @@ Color scheduleItemBlockColor(Map<String, dynamic> item) {
       return _defaultHoliday;
     case 'birthday':
       return _defaultBirthday;
+    case 'milestone':
+      return const Color(0xFFE8A0BF);
     case 'custom':
       return _defaultEvent;
     default:

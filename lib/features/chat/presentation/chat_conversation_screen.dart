@@ -86,6 +86,11 @@ import 'widgets/chat_birthday_welcome_banner.dart';
 import 'widgets/chat_day_separator.dart';
 import 'widgets/chat_system_message_banner.dart';
 import 'widgets/chat_undo_action_snackbar.dart';
+import '../../telegram_tdlib/telegram_match_store.dart';
+import '../../telegram_tdlib/telegram_tdlib_providers.dart';
+import '../../telegram_tdlib/telegram_tdlib_service.dart';
+import '../../telegram_tdlib/telegram_group_bridge.dart';
+import '../../telegram_tdlib/tdlib_config.dart';
 
 class _PendingFileDraft {
   const _PendingFileDraft({
@@ -259,6 +264,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _viewerIndividualPremium = false;
   bool _telegramCanForce = false;
   bool _telegramWillSend = false;
+  /// TDLib private chat id for this FC DM (matched peer) — used for outbox ticks.
+  int? _tdlibPeerChatId;
+  /// `tdlib` | `secretary` | null for linked dual groups.
+  String? _telegramBridgeMode;
+  bool _telegramLinkedGroup = false;
   late ChatDeliveryChannel _deliveryChannel =
       (widget.openedFromTelegramTab || widget.kind == 'telegram')
           ? ChatDeliveryChannel.telegram
@@ -352,6 +362,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_isDm && widget.peerUserId != null) {
       UserPresenceCache.instance.addListener(_onPeerPresenceCacheChanged);
       unawaited(_loadPeerStatus(widget.peerUserId!));
+      unawaited(_resolveTdlibPeerChatId());
       // Presence updates come via WS `user_presence` — no periodic HTTP.
       _peerStatusLabelTimer = Timer.periodic(const Duration(seconds: 30), (_) {
         _refreshPeerStatusLabel();
@@ -640,6 +651,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _viewerIndividualPremium = premium;
       if (!fromCache) {
         unawaited(_refreshTelegramRouting());
+        unawaited(_resolveTdlibPeerChatId());
       }
       if (!changed || !mounted) return;
       // Backfill owner on optimistic bubbles created before identity resolved.
@@ -667,7 +679,95 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   /// Show Авто/Space/TG sheet: linked DM owner only (not pure TG threads).
   bool get _showDeliveryChannelPicker =>
-      _telegramCanForce && !_isUnmatchedTelegramThread;
+      _telegramCanForce && !_isUnmatchedTelegramThread && !_telegramLinkedGroup;
+
+  bool get _shouldMirrorLinkedGroupToTelegram {
+    if (!_telegramLinkedGroup) return false;
+    final mode = _telegramBridgeMode ?? 'tdlib';
+    if (mode != 'tdlib') return false;
+    final chatId = _tdlibPeerChatId;
+    return chatId != null && chatId != 0;
+  }
+
+  void _maybeMirrorLinkedGroup({
+    required Map<String, dynamic> message,
+    required String text,
+  }) {
+    if (!_shouldMirrorLinkedGroupToTelegram) return;
+    final body = text.trim();
+    if (body.isEmpty) return;
+    final fcId = chatAsInt(message['id']);
+    final tgChatId = _tdlibPeerChatId;
+    if (fcId == null || fcId <= 0 || tgChatId == null) return;
+    // Skip messages that already came from Telegram.
+    final meta = message['metadata'];
+    if (meta is Map && meta['source']?.toString() == 'telegram') return;
+    TelegramGroupBridge.instance.bindRepository(
+      ref.read(familychatRepositoryProvider),
+    );
+    unawaited(
+      TelegramGroupBridge.instance.mirrorOutboundText(
+        threadId: widget.threadId,
+        tgChatId: tgChatId,
+        fcMessageId: fcId,
+        text: body,
+      ),
+    );
+  }
+
+  Future<void> _resolveTdlibPeerChatId() async {
+    int? resolved = _tdlibPeerChatId;
+    final peerId = widget.peerUserId;
+    if (peerId != null && peerId > 0) {
+      final all = await TelegramMatchStore.instance.loadAll();
+      for (final m in all.values) {
+        if (m.fcUserId == peerId && m.tgChatId != 0) {
+          resolved = m.tgChatId;
+          break;
+        }
+      }
+    }
+    if (!mounted) return;
+    if (resolved != _tdlibPeerChatId) {
+      setState(() => _tdlibPeerChatId = resolved);
+    }
+    if (resolved != null &&
+        resolved != 0 &&
+        TdlibConfig.isEnabled) {
+      unawaited(ref.read(telegramTdlibServiceProvider).ensureStarted());
+    }
+  }
+
+  /// Own-message ticks: TG-delivered → TDLib last_read_outbox; else FC status.
+  String _mineReadStatus(Map<String, dynamic> m) {
+    final base = m['read_status']?.toString() ??
+        (m['_scheduled'] == true
+            ? 'scheduled'
+            : m['_pending'] == true
+                ? 'sending'
+                : 'sent');
+    if (base == 'sending' ||
+        base == 'queued' ||
+        base == 'failed' ||
+        base == 'scheduled') {
+      return base;
+    }
+    final metaRaw = m['metadata'];
+    if (metaRaw is! Map) return base;
+    final meta = metaRaw.map((k, v) => MapEntry(k.toString(), v));
+    final delivered = meta['delivered_to_telegram'] == true;
+    final tgMsgId = (meta['telegram_message_id'] as num?)?.toInt() ??
+        int.tryParse('${meta['telegram_message_id'] ?? ''}') ??
+        0;
+    final chatId = _tdlibPeerChatId;
+    if (delivered && tgMsgId > 0 && chatId != null && chatId != 0) {
+      final last =
+          TelegramTdlibService.instance.lastReadOutboxId(chatId);
+      if (last > 0 && tgMsgId <= last) return 'read';
+      return 'sent';
+    }
+    return base;
+  }
 
   Future<void> _refreshTelegramRouting() async {
     if (_isUnmatchedTelegramThread) {
@@ -694,23 +794,52 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final tg = thread?['telegram'];
       if (!mounted) return;
       if (tg is! Map) {
-        if (_telegramCanForce || _telegramWillSend) {
+        if (_telegramCanForce ||
+            _telegramWillSend ||
+            _telegramLinkedGroup) {
           setState(() {
             _telegramCanForce = false;
             _telegramWillSend = false;
+            _telegramLinkedGroup = false;
+            _telegramBridgeMode = null;
           });
         }
         return;
       }
       final canForce = tg['can_force_telegram'] == true && tg['owner'] == true;
-      final willSend = tg['will_send_to_telegram'] == true && canForce;
-      if (canForce == _telegramCanForce && willSend == _telegramWillSend) {
+      final willSend = tg['will_send_to_telegram'] == true &&
+          (canForce || widget.kind == 'group');
+      final tgChatId = (tg['tg_chat_id'] as num?)?.toInt() ??
+          int.tryParse('${tg['tg_chat_id'] ?? ''}');
+      final bridgeMode = tg['bridge_mode']?.toString();
+      final linkedGroup = widget.kind == 'group' && tg['linked'] == true;
+      final chatIdChanged =
+          tgChatId != null && tgChatId != 0 && tgChatId != _tdlibPeerChatId;
+      if (canForce == _telegramCanForce &&
+          willSend == _telegramWillSend &&
+          bridgeMode == _telegramBridgeMode &&
+          linkedGroup == _telegramLinkedGroup &&
+          !chatIdChanged) {
         return;
       }
       setState(() {
         _telegramCanForce = canForce;
         _telegramWillSend = willSend;
+        _telegramBridgeMode = bridgeMode;
+        _telegramLinkedGroup = linkedGroup;
+        if (chatIdChanged) _tdlibPeerChatId = tgChatId;
       });
+      if (linkedGroup &&
+          tgChatId != null &&
+          tgChatId != 0) {
+        TelegramGroupBridge.instance.registerLink(
+          threadId: widget.threadId,
+          tgChatId: tgChatId,
+        );
+      }
+      if ((canForce || linkedGroup) && TdlibConfig.isEnabled) {
+        unawaited(ref.read(telegramTdlibServiceProvider).ensureStarted());
+      }
     } catch (_) {}
   }
 
@@ -4135,6 +4264,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             source: 'ui',
           );
           _replaceOptimisticMessage(tempId, ack);
+          _maybeMirrorLinkedGroup(message: ack, text: body);
           _scrollToBottom();
           await _persistMessageCache();
           return true;
@@ -4315,6 +4445,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       );
       if (!mounted) return true;
       _replaceOptimisticMessage(tempId, msg);
+      _maybeMirrorLinkedGroup(
+        message: msg,
+        text: caption.isEmpty ? (msg['body']?.toString() ?? '') : caption,
+      );
       unawaited(_refreshTelegramRouting());
       _scrollToBottom();
       await _persistMessageCache();
@@ -6192,6 +6326,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     String? filename,
     int? messageId,
     Map<String, dynamic>? attachment,
+    List<Map<String, dynamic>>? galleryAttachments,
   }) async {
     final headers = await chatImageAuthHeaders(ref);
     if (!mounted) return;
@@ -6203,15 +6338,29 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       filename: filename,
       messageId: messageId,
       attachment: attachment,
+      galleryAttachments: galleryAttachments,
       onGoToMessage:
           messageId != null ? () => _scrollToMessage(messageId) : null,
       httpHeaders: headers,
     );
   }
 
-  void _openImageFromAttachment(Map<String, dynamic> attachment,
-      {int? messageId}) {
+  void _openImageFromAttachment(
+    Map<String, dynamic> attachment, {
+    int? messageId,
+    List<Map<String, dynamic>>? galleryAttachments,
+  }) {
+    // Single-video bubble: first tap plays inline; only force_fullscreen
+    // (second tap) or gallery taps should open the viewer.
+    final preferInline = attachment['prefer_inline_play'] == true;
+    final forceFullscreen = attachment['force_fullscreen'] == true;
+    if (preferInline && !forceFullscreen) return;
+
     final repo = ref.read(familychatRepositoryProvider);
+    final gallery = _messageGalleryAttachments(
+      galleryAttachments,
+      attachment,
+    );
     unawaited(_openImageAsync(
       imageUrl: chatAttachmentImageUrl(
         repo: repo,
@@ -6221,7 +6370,43 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       filename: attachment['filename']?.toString(),
       messageId: messageId ?? chatAsInt(attachment['message_id']),
       attachment: attachment,
+      // Message album (≥2): swipe siblings. Single: keep threadMedia fallback.
+      galleryAttachments: gallery.length >= 2 ? gallery : null,
     ));
+  }
+
+  List<Map<String, dynamic>> _messageGalleryAttachments(
+    List<Map<String, dynamic>>? gallery,
+    Map<String, dynamic> current,
+  ) {
+    final source = gallery ?? const <Map<String, dynamic>>[];
+    final out = <Map<String, dynamic>>[];
+    final seen = <Object>{};
+    void add(Map raw) {
+      final copy = Map<String, dynamic>.from(raw);
+      if (!isGalleryMediaAttachment(copy)) return;
+      final id = chatAsInt(copy['id']);
+      final key = id ?? galleryLocalDevicePath(copy);
+      if (key is String && key.isEmpty) return;
+      if (!seen.add(key ?? copy)) return;
+      out.add(copy);
+    }
+
+    for (final a in source) {
+      add(a);
+    }
+    if (out.isEmpty) add(current);
+    return out;
+  }
+
+  List<Map<String, dynamic>> _galleryFromMessage(Map<String, dynamic> message) {
+    final atts = message['attachments'];
+    if (atts is! List) return const [];
+    return atts
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .where(isGalleryMediaAttachment)
+        .toList(growable: false);
   }
 
   Future<void> _openSearch() async {
@@ -6453,6 +6638,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   @override
   Widget build(BuildContext context) {
     final wallpaperId = ref.watch(chatWallpaperIdProvider);
+    // Rebuild ticks when TDLib last_read_outbox advances for this peer.
+    final tdlibChatId = _tdlibPeerChatId;
+    if (tdlibChatId != null && tdlibChatId != 0) {
+      ref.watch(telegramTdlibServiceProvider);
+    }
     return PopScope(
       canPop: !_selectionMode,
       onPopInvokedWithResult: (didPop, _) {
@@ -6821,12 +7011,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                         _viewerIndividualPremium,
                                     isGroupLike: _isGroupLike,
                                     readStatus: isMine
-                                        ? m['read_status']?.toString() ??
-                                            (m['_scheduled'] == true
-                                                ? 'scheduled'
-                                                : m['_pending'] == true
-                                                    ? 'sending'
-                                                    : 'sent')
+                                        ? _mineReadStatus(m)
                                         : null,
                                     onRetrySend: isMine &&
                                             m['read_status']?.toString() ==
@@ -6893,6 +7078,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                             : (a) => _openImageFromAttachment(
                                                   a,
                                                   messageId: msgId,
+                                                  galleryAttachments:
+                                                      _galleryFromMessage(m),
                                                 ),
                                     pendingMessageId: m['_pending'] == true
                                         ? msgId

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../telegram_tdlib/telegram_link_navigation.dart';
 import '../../data/link_preview_service.dart';
 
 /// Превью ссылки в пузыре: сайт, заголовок страницы и фото со ссылки.
@@ -12,11 +13,14 @@ class ChatLinkPreviewCard extends StatefulWidget {
     required this.url,
     required this.isMine,
     this.maxWidth,
+    this.onOpenUrl,
   });
 
   final String url;
   final bool isMine;
   final double? maxWidth;
+  /// Return true if the URL was handled (skip external launch).
+  final Future<bool> Function(String url)? onOpenUrl;
 
   @override
   State<ChatLinkPreviewCard> createState() => _ChatLinkPreviewCardState();
@@ -50,9 +54,27 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
     final raw = LinkPreviewService.isUnusablePageUrl(_preview?.canonicalUrl)
         ? widget.url
         : (_preview?.canonicalUrl ?? widget.url).trim();
-    final uri = Uri.tryParse(raw.startsWith('http') ? raw : 'https://$raw');
+    final normalized = raw.startsWith('http') ? raw : 'https://$raw';
+    if (widget.onOpenUrl != null) {
+      try {
+        if (await widget.onOpenUrl!(normalized)) return;
+      } catch (_) {}
+    }
+    try {
+      if (await TelegramLinkNavigation.tryOpen(normalized)) return;
+    } catch (_) {}
+    final uri = Uri.tryParse(normalized);
     if (uri == null) return;
     await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  static bool _looksLikeVideoUrl(String url) {
+    final u = url.toLowerCase();
+    return u.contains('youtu.be/') ||
+        u.contains('youtube.com/') ||
+        u.contains('vimeo.com/') ||
+        u.contains('tiktok.com/') ||
+        u.contains('rutube.ru/');
   }
 
   @override
@@ -161,17 +183,50 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
                   ),
                   child: AspectRatio(
                     aspectRatio: 16 / 9,
-                    child: CachedNetworkImage(
-                      imageUrl: imageUrl,
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      httpHeaders: kIsWeb
-                          ? const {}
-                          : const {
-                              'Accept':
-                                  'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-                            },
-                      errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        CachedNetworkImage(
+                          imageUrl: imageUrl,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          httpHeaders: kIsWeb
+                              ? const {}
+                              : const {
+                                  'Accept':
+                                      'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                                },
+                          placeholder: (_, __) => ColoredBox(
+                            color: titleColor.withValues(alpha: 0.08),
+                          ),
+                          errorWidget: (_, __, ___) => ColoredBox(
+                            color: titleColor.withValues(alpha: 0.08),
+                            child: Icon(
+                              Icons.play_circle_outline,
+                              size: 48,
+                              color: titleColor.withValues(alpha: 0.45),
+                            ),
+                          ),
+                        ),
+                        if (_looksLikeVideoUrl(widget.url) ||
+                            _looksLikeVideoUrl(imageUrl))
+                          const Center(
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: Color(0x73000000),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Padding(
+                                padding: EdgeInsets.all(10),
+                                child: Icon(
+                                  Icons.play_arrow_rounded,
+                                  color: Colors.white,
+                                  size: 28,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                   ),
                 ),

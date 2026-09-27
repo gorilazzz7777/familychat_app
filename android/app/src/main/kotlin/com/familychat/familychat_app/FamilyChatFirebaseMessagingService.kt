@@ -7,11 +7,12 @@ import io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService
 /**
  * Снимаем notification-ключи у чатов, чтобы Android не рисовал свой баннер
  * без «Ответить», а Dart показал локальный пуш с MessagingStyle и историей.
+ * То же для Telegram TDLib data-pushes — баннер рисует TDLib Notification API.
  */
 class FamilyChatFirebaseMessagingService : FlutterFirebaseMessagingService() {
     override fun handleIntent(intent: Intent) {
         val extras = intent.extras
-        if (extras != null && isChatPush(extras)) {
+        if (extras != null && (isChatPush(extras) || isTelegramTdlibPush(extras))) {
             val clean = Intent(intent)
             clean.replaceExtras(stripNotificationDisplayKeys(extras))
             super.handleIntent(clean)
@@ -26,6 +27,14 @@ class FamilyChatFirebaseMessagingService : FlutterFirebaseMessagingService() {
         val deeplink = extraString(extras, "deeplink")
         val threadId = extraString(extras, "thread_id")
         return deeplink == "chat" && threadId.isNotEmpty()
+    }
+
+    private fun isTelegramTdlibPush(extras: Bundle): Boolean {
+        val type = extraString(extras, "type")
+        if (type.startsWith("familychat")) return false
+        if (extraString(extras, "p").isNotEmpty()) return true
+        if (extraString(extras, "loc_key").isNotEmpty()) return true
+        return false
     }
 
     private fun extraString(extras: Bundle, key: String): String {

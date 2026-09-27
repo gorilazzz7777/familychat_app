@@ -12,6 +12,7 @@ import '../../../core/providers/app_providers.dart';
 import '../../auth/presentation/social_account_link.dart';
 import '../../auth/presentation/widgets/google_registration_warning.dart';
 import '../../auth/presentation/widgets/social_login_panel.dart';
+import '../../auth/session/ensure_remote_session_for_write.dart';
 import '../../auth/utils/guest_status.dart';
 import '../../members/family_invite_share.dart';
 import '../../members/presentation/family_join_code_dialog.dart';
@@ -77,8 +78,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   void initState() {
     super.initState();
     _inviteToken = widget.pendingInviteToken;
-    final friendToken = widget.pendingFriendInviteToken?.trim();
-    _fromFriendInvite = friendToken != null && friendToken.isNotEmpty;
+    // Out-of-family friend invites are disabled — ignore pending friend tokens.
+    _fromFriendInvite = false;
     final transfer = widget.transferSession;
     if (transfer != null) {
       _joinByInvite = true;
@@ -106,10 +107,20 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   Future<void> _loadGuestFlag() async {
     try {
+      final auth = ref.read(authRepositoryProvider);
+      if (!await auth.hasSession()) {
+        if (!mounted) return;
+        setState(() => _isGuest = true);
+        return;
+      }
       final st = await ref.read(familychatRepositoryProvider).status();
       if (!mounted) return;
       setState(() => _isGuest = GuestStatus.fromStatusMap(st));
     } catch (_) {}
+  }
+
+  Future<bool> _ensureRemoteSession() async {
+    return ensureRemoteSessionForWrite(ref: ref, context: context);
   }
 
   Future<void> _linkSocial(String provider) async {
@@ -264,6 +275,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _loading = true;
     });
     try {
+      if (!await _ensureRemoteSession()) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
       await ref.read(familychatRepositoryProvider).saveProfile(
             firstName: _firstName.text.trim(),
             lastName: _lastName.text.trim(),
@@ -292,6 +308,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _continueInviteFlow() async {
     final token = _inviteToken!;
     try {
+      if (!await _ensureRemoteSession()) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
       var accept =
           await ref.read(familychatRepositoryProvider).acceptInvite(token);
       if (!mounted) return;
@@ -379,6 +400,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _loading = true;
     });
     try {
+      if (!await _ensureRemoteSession()) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
       final name = 'Семья ${_lastName.text.trim()}'.trim();
       await ref.read(familychatRepositoryProvider).createFamily(name: name);
       if (!mounted) return;
@@ -411,6 +437,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _loading = true;
     });
     try {
+      if (!await _ensureRemoteSession()) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
       if (!mounted) return;
       await FamilyInviteShare.openScreen(
         context,
@@ -437,6 +468,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _loading = true;
     });
     try {
+      if (!await _ensureRemoteSession()) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
       final resolved =
           await ref.read(familychatRepositoryProvider).resolveInviteCode(code);
       if (!mounted) return;
@@ -485,6 +521,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _loading = true;
     });
     try {
+      if (!await _ensureRemoteSession()) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        return;
+      }
       final result =
           await ref.read(familychatRepositoryProvider).completeOnboarding(
                 sessionId: _sessionId!,

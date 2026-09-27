@@ -9,24 +9,35 @@ import '../../features/chat/data/chat_local_reads.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../../features/calendar/presentation/calendar_screen.dart';
 import '../../features/chat/presentation/chat_conversation_screen.dart';
+import '../../features/telegram_tdlib/presentation/telegram_conversation_screen.dart';
+import '../../features/telegram_tdlib/telegram_tdlib_push.dart';
 
 final familyChatNavigatorKey = GlobalKey<NavigatorState>();
 
 /// Отложенный переход, если приложение ещё не готово (cold start по push).
 Map<String, dynamic>? pendingChatPushData;
+Map<String, dynamic>? pendingTdlibChatPushData;
 Map<String, dynamic>? pendingCalendarPushData;
 Map<String, dynamic>? pendingCallPushData;
 Map<String, dynamic>? pendingFeedPushData;
 VoidCallback? onOpenFeedFromPush;
 bool _chatPushRetryScheduled = false;
+bool _tdlibPushRetryScheduled = false;
 int? _openingThreadId;
 DateTime? _openingThreadAt;
+int? _openingTdlibChatId;
+DateTime? _openingTdlibChatAt;
 
 void flushPendingChatPush() {
   final data = pendingChatPushData;
   if (data != null) {
     pendingChatPushData = null;
     openChatFromPushData(data);
+  }
+  final tdlib = pendingTdlibChatPushData;
+  if (tdlib != null) {
+    pendingTdlibChatPushData = null;
+    openTdlibChatFromPushData(tdlib);
   }
   final calendar = pendingCalendarPushData;
   if (calendar != null) {
@@ -73,6 +84,10 @@ bool _isChatPushData(Map<String, dynamic> data) {
 
 void openChatFromPushData(Map<String, dynamic> data) {
   final payload = _unwrapPushData(Map<String, dynamic>.from(data));
+  if (payload['type']?.toString() == kTdlibPushType) {
+    openTdlibChatFromPushData(payload);
+    return;
+  }
   if (!_isChatPushData(payload)) return;
 
   final threadId = int.tryParse(payload['thread_id']?.toString() ?? '');
@@ -266,6 +281,60 @@ void openAcceptedCallFromPushData(Map<String, dynamic> data) {
           callId: callId,
           isCaller: false,
           isVideo: isVideo,
+        ),
+      ),
+    );
+  });
+}
+
+void openTdlibChatFromPushData(Map<String, dynamic> data) {
+  final payload = _unwrapPushData(Map<String, dynamic>.from(data));
+  if (payload['type']?.toString() != kTdlibPushType) return;
+
+  final chatId = int.tryParse(payload['chat_id']?.toString() ?? '');
+  if (chatId == null || chatId == 0) return;
+
+  final now = DateTime.now();
+  if (_openingTdlibChatId == chatId &&
+      _openingTdlibChatAt != null &&
+      now.difference(_openingTdlibChatAt!) < const Duration(milliseconds: 800)) {
+    return;
+  }
+  _openingTdlibChatId = chatId;
+  _openingTdlibChatAt = now;
+
+  unawaited(
+    FamilyChatNotifications.clearTdlibChatNotifications(chatId: chatId),
+  );
+
+  final nav = familyChatNavigatorKey.currentState;
+  if (nav == null) {
+    pendingTdlibChatPushData = payload;
+    if (!_tdlibPushRetryScheduled) {
+      _tdlibPushRetryScheduled = true;
+      Future<void>.delayed(const Duration(milliseconds: 400), () {
+        _tdlibPushRetryScheduled = false;
+        if (pendingTdlibChatPushData == null) return;
+        flushPendingChatPush();
+      });
+    }
+    return;
+  }
+
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final current = familyChatNavigatorKey.currentState;
+    if (current == null) {
+      pendingTdlibChatPushData = payload;
+      return;
+    }
+    final title = payload['title']?.toString().trim() ??
+        payload['thread_title']?.toString().trim() ??
+        'Telegram';
+    current.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => TelegramConversationScreen(
+          chatId: chatId,
+          title: title.isNotEmpty ? title : 'Telegram',
         ),
       ),
     );

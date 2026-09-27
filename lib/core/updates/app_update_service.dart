@@ -66,13 +66,10 @@ class AppUpdateService {
         case AppDistributionStore.appstore:
           await _checkAppStore(context);
         case AppDistributionStore.unknown:
+          // Sideload / debug / App Distribution: only probe Play. Calling
+          // RuStore Update SDK without RuStore installed throws
+          // "Service not registered" (ServiceExt.unbindServiceSafely).
           if (_isAndroid) {
-            final rustore = await _rustoreUpdateAvailable();
-            if (!context.mounted) return;
-            if (rustore) {
-              await _checkRustore(context);
-              return;
-            }
             await _checkPlay(context);
           }
       }

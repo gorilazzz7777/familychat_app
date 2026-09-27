@@ -374,6 +374,9 @@ abstract final class MediaLocalIndex {
 
   /// Накладывает локальный путь на payload. Не ходит в сеть.
   static void hydrateAttachment(Map<String, dynamic> attachment) {
+    // TDLib / external locals own their path — do not rewrite or strip it.
+    if (attachment['skip_age_defer'] == true) return;
+
     final id = attachment['id'] is int
         ? attachment['id'] as int
         : int.tryParse('${attachment['id']}');
@@ -403,6 +406,9 @@ abstract final class MediaLocalIndex {
       attachment['local_media_kind'] = rec.kind;
       return;
     }
+    // Keep an already-valid on-disk path (e.g. just-downloaded TDLib file).
+    final existing = attachment['local_device_path']?.toString().trim() ?? '';
+    if (existing.isNotEmpty && localDeviceFileExists(existing)) return;
     attachment.remove('local_device_path');
     attachment.remove('local_asset_id');
   }

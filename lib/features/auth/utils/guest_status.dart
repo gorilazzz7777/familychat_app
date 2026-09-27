@@ -1,9 +1,11 @@
 import '../../../core/storage/guest_session_storage.dart';
 import '../data/auth_repository.dart';
+import '../session/local_anonymous.dart';
 
 abstract final class GuestStatus {
   static bool fromStatusMap(Map<String, dynamic>? status) {
     if (status == null) return false;
+    if (isLocalAnonymousStatus(status)) return true;
     final v = status['is_guest'];
     return v == true || v == 1 || v?.toString().toLowerCase() == 'true';
   }

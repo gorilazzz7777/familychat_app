@@ -9,6 +9,8 @@ import '../notifications/familychat_foreground_bridge.dart';
 import '../../features/chat/data/familychat_realtime.dart';
 import '../../features/chat/data/chat_sync_service.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
+import '../../features/telegram_tdlib/telegram_tdlib_push.dart';
+import '../../features/telegram_tdlib/telegram_tdlib_service.dart';
 import 'push_navigation.dart';
 import 'web_push_bridge.dart';
 
@@ -22,6 +24,27 @@ void handleFamilyChatRemoteMessage(
   final data = message.data;
   final type = data['type']?.toString() ?? '';
   final isForeground = FamilyChatForegroundBridge.isAppInForeground();
+
+  if (isTelegramRemoteMessage(message)) {
+    if (openedFromTap) {
+      // Encrypted TG pushes have no FC chat_id; TDLib will raise local banner.
+      return;
+    }
+    unawaited(
+      TelegramTdlibService.instance.processPushNotificationPayload(
+        buildTdlibProcessPushPayload(message),
+      ),
+    );
+    return;
+  }
+
+  if (type == kTdlibPushType) {
+    if (openedFromTap) {
+      openTdlibChatFromPushData(Map<String, dynamic>.from(data));
+      return;
+    }
+    return;
+  }
 
   if (type == 'familychat_chat' ||
       (data['deeplink']?.toString() == 'chat' &&
