@@ -47,6 +47,18 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
   Future<void> _load() async {
     final preview = await LinkPreviewService.instance.load(widget.url);
     if (!mounted) return;
+    if (preview == null &&
+        LinkPreviewService.instance.shouldDeferNetwork &&
+        _preview == null) {
+      // Scroll/boot deferred the scrape — retry after settle.
+      Future<void>.delayed(const Duration(milliseconds: 700), () {
+        if (mounted && _preview == null) {
+          _load();
+        }
+      });
+      return;
+    }
+    if (preview == _preview) return;
     setState(() => _preview = preview);
   }
 

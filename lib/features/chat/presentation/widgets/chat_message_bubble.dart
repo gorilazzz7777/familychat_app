@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 
@@ -17,9 +20,11 @@ import '../../../../core/media/gallery_media_utils.dart';
 import '../../../../core/media/gallery_video_thumbnail.dart';
 import '../../../../core/media/local_device_file.dart';
 import '../../../../core/media/media_local_index.dart';
+import '../../../../core/media/pdf_page_preview.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
+import '../../../telegram_tdlib/telegram_tdlib_providers.dart';
 import '../../data/chat_location_utils.dart';
 import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_voice_utils.dart';
@@ -85,6 +90,7 @@ class ChatMessageBubble extends StatelessWidget {
     this.bodyExpanded = false,
     this.onToggleBodyExpand,
     this.onOpenUrl,
+    this.showLinkPreview = true,
   });
 
   final int threadId;
@@ -133,6 +139,8 @@ class ChatMessageBubble extends StatelessWidget {
   final VoidCallback? onToggleBodyExpand;
   /// Return true if the URL was handled in-app (e.g. t.me → TDLib jump).
   final Future<bool> Function(String url)? onOpenUrl;
+  /// When false, skip OG card (open/scroll settle) — host links still work.
+  final bool showLinkPreview;
 
   static const double _avatarSize = 32;
 
@@ -449,7 +457,7 @@ class ChatMessageBubble extends StatelessWidget {
                     maxWidth: contentMaxWidth,
                   ),
                 ],
-                if (_linkPreviewUrl() != null) ...[
+                if (showLinkPreview && _linkPreviewUrl() != null) ...[
                   if (hasCaption || location != null) const SizedBox(height: 8),
                   ChatLinkPreviewCard(
                     url: _linkPreviewUrl()!,
@@ -1378,7 +1386,7 @@ class _ChatVideoAttachmentPreviewState
       }
       unawaited(_ensureThumb());
     }
-    // Download finished while we were waiting → play inline with sound.
+    // Download finished while we were waiting → start muted inline playback.
     if (_waitingForDownload && newPath.isNotEmpty) {
       _waitingForDownload = false;
       if (!_playing && mounted) {
@@ -1560,8 +1568,8 @@ class _ChatVideoAttachmentPreviewState
               localPath: videoPath.isNotEmpty ? videoPath : null,
               fit: BoxFit.cover,
               autoplay: true,
-              looping: true,
-              muted: false,
+              looping: false,
+              muted: true,
               showControls: false,
               showScrubber: true,
               placeholder: const SizedBox.shrink(),
@@ -1571,6 +1579,10 @@ class _ChatVideoAttachmentPreviewState
                   return;
                 }
                 _applyAspect(resolved.width / resolved.height);
+              },
+              onEnded: () {
+                if (!mounted) return;
+                setState(() => _playing = false);
               },
             ),
           if (_playing && canPlay && widget.onOpenFullscreen != null)
@@ -1658,10 +1670,28 @@ class _ChatFileAttachmentRow extends ConsumerStatefulWidget {
 }
 
 class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> {
+  String? _generatedPdfPreviewPath;
+  bool _pdfPreviewTried = false;
+
   @override
   void initState() {
     super.initState();
     _scheduleAutoDownload();
+    _schedulePdfPreview();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatFileAttachmentRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.attachment['id'] != widget.attachment['id'] ||
+        oldWidget.attachment['local_device_path'] !=
+            widget.attachment['local_device_path'] ||
+        oldWidget.attachment['thumbnail_local_path'] !=
+            widget.attachment['thumbnail_local_path']) {
+      _generatedPdfPreviewPath = null;
+      _pdfPreviewTried = false;
+      _schedulePdfPreview();
+    }
   }
 
   void _scheduleAutoDownload() {
@@ -1669,6 +1699,7 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
       if (!mounted) return;
       final attachmentId = chatAsInt(widget.attachment['id']);
       if (attachmentId == null || attachmentId <= 0) return;
+      if (widget.attachment['tdlib_file_id'] != null) return;
       final settings = ref.read(appSettingsProvider);
       final network = ref.read(chatNetworkLinkProvider).value ??
           ChatNetworkLinkKind.unknown;
@@ -1684,19 +1715,83 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
     });
   }
 
+  void _schedulePdfPreview() {
+    if (!_isPdf) return;
+    if (_hasServerOrTdlibThumb) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _pdfPreviewTried) return;
+      _pdfPreviewTried = true;
+      unawaited(_ensureLocalPdfPreview());
+    });
+  }
+
+  bool get _isPdf => PdfPagePreview.looksLikePdf(
+        filename: widget.attachment['filename']?.toString(),
+        contentType: widget.attachment['content_type']?.toString(),
+        path: galleryLocalDevicePath(widget.attachment),
+      );
+
+  bool get _hasServerOrTdlibThumb {
+    final thumbPath =
+        widget.attachment['thumbnail_local_path']?.toString().trim() ?? '';
+    if (thumbPath.isNotEmpty) return true;
+    if (isSafeUiPreviewBytes(widget.attachment['thumbnail_bytes'])) {
+      return true;
+    }
+    final thumbUrl =
+        widget.attachment['thumbnail_url']?.toString().trim() ?? '';
+    return thumbUrl.isNotEmpty;
+  }
+
+  Future<void> _ensureLocalPdfPreview() async {
+    final local = galleryLocalDevicePath(widget.attachment);
+    if (local.isEmpty) return;
+    final preview = await PdfPagePreview.firstPageJpegPath(local);
+    if (!mounted || preview == null || preview.isEmpty) return;
+    setState(() => _generatedPdfPreviewPath = preview);
+  }
+
   Future<void> _openFile() async {
+    var local = galleryLocalDevicePath(widget.attachment);
+
+    final tdlibId = chatAsInt(widget.attachment['tdlib_file_id']);
+    if ((local.isEmpty) && tdlibId != null && tdlibId > 0) {
+      final path = await ref
+          .read(telegramTdlibServiceProvider)
+          .downloadFile(tdlibId);
+      if (path != null && path.isNotEmpty) local = path;
+    }
+
+    if (local.isNotEmpty) {
+      final result = await OpenFilex.open(local);
+      if (!mounted) return;
+      if (result.type != ResultType.done) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              result.message.isNotEmpty
+                  ? result.message
+                  : 'Не удалось открыть файл',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
     final url = widget.attachment['file_url']?.toString();
     if (url != null && url.isNotEmpty) {
-      await launchUrl(Uri.parse(url));
+      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
       return;
     }
     final attachmentId = chatAsInt(widget.attachment['id']);
     if (attachmentId == null) return;
-    final bytes = await ref.read(chatAttachmentDownloadManagerProvider).startDownload(
-          threadId: widget.threadId,
-          attachmentId: attachmentId,
-          manual: true,
-        );
+    final bytes =
+        await ref.read(chatAttachmentDownloadManagerProvider).startDownload(
+              threadId: widget.threadId,
+              attachmentId: attachmentId,
+              manual: true,
+            );
     if (!mounted || bytes == null) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Файл загружен')),
@@ -1705,6 +1800,8 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
 
   bool _skipDownloadOverlay() {
     MediaLocalIndex.hydrateAttachment(widget.attachment);
+    if (galleryLocalDevicePath(widget.attachment).isNotEmpty) return true;
+    if (widget.attachment['tdlib_file_id'] != null) return true;
     return ChatMediaAutoDownloadPolicy.isLocallyAvailable(
           threadId: widget.threadId,
           attachment: widget.attachment,
@@ -1787,11 +1884,107 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
     return parts.join(' · ');
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget? _previewImage() {
+    final generated = _generatedPdfPreviewPath;
+    if (generated != null && generated.isNotEmpty) {
+      return Image.file(
+        File(generated),
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      );
+    }
+    final thumbPath =
+        widget.attachment['thumbnail_local_path']?.toString().trim() ?? '';
+    if (thumbPath.isNotEmpty) {
+      return Image.file(
+        File(thumbPath),
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      );
+    }
+    final bytes = widget.attachment['thumbnail_bytes'];
+    if (isSafeUiPreviewBytes(bytes)) {
+      final raw = bytes is Uint8List ? bytes : Uint8List.fromList(bytes as List<int>);
+      return Image.memory(
+        raw,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      );
+    }
+    final thumbUrl =
+        widget.attachment['thumbnail_url']?.toString().trim() ?? '';
+    if (thumbUrl.isNotEmpty) {
+      return Image.network(
+        thumbUrl,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      );
+    }
+    return null;
+  }
+
+  Widget _extensionBadge({double size = 48}) {
     final badgeFg = _badgeColor.computeLuminance() > 0.55
         ? const Color(0xFF1A237E)
         : Colors.white;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: _badgeColor,
+        borderRadius: BorderRadius.circular(size > 56 ? 10 : 12),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        _extension,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          color: badgeFg,
+          fontSize: _extension.length > 3 ? 10 : 12,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.2,
+          height: 1,
+        ),
+      ),
+    );
+  }
+
+  Widget _metaColumn() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          _filename,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: widget.textColor,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            height: 1.2,
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          _subtitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: widget.metaColor,
+            fontSize: 12,
+            height: 1.15,
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final preview = _isPdf ? _previewImage() : null;
+    final showPdfCard = _isPdf;
 
     return ChatMediaTransferOverlay(
       threadId: widget.threadId,
@@ -1804,66 +1997,52 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
         onTap: _openFile,
         borderRadius: BorderRadius.circular(12),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(minWidth: 180, maxWidth: 280),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: _badgeColor,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  _extension,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: badgeFg,
-                    fontSize: _extension.length > 3 ? 10 : 12,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.2,
-                    height: 1,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+          constraints: BoxConstraints(
+            minWidth: 180,
+            maxWidth: showPdfCard ? 260 : 280,
+          ),
+          child: showPdfCard
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      _filename,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: widget.textColor,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        height: 1.2,
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: AspectRatio(
+                        aspectRatio: 3 / 4,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            ColoredBox(color: Colors.grey.shade200),
+                            if (preview != null) preview,
+                            if (preview == null)
+                              Center(child: _extensionBadge(size: 56)),
+                            if (preview != null)
+                              Positioned(
+                                left: 8,
+                                bottom: 8,
+                                child: _extensionBadge(size: 36),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      _subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: widget.metaColor,
-                        fontSize: 12,
-                        height: 1.15,
-                      ),
-                    ),
+                    const SizedBox(height: 8),
+                    _metaColumn(),
+                  ],
+                )
+              : Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    _extensionBadge(),
+                    const SizedBox(width: 10),
+                    Expanded(child: _metaColumn()),
                   ],
                 ),
-              ),
-            ],
-          ),
         ),
       ),
     );
   }
 }
+
 

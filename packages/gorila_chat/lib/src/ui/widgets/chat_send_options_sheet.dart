@@ -111,9 +111,35 @@ class _ChatSendOptionsBodyState extends State<_ChatSendOptionsBody> {
     );
   }
 
+  void _selectChannel(ChatDeliveryChannel channel) {
+    setState(() => _channel = channel);
+    Navigator.pop(
+      context,
+      ChatSendOptions(
+        deliveryChannel: channel,
+        preferenceOnly: true,
+      ),
+    );
+  }
+
+  String get _channelHint => switch (_channel) {
+        ChatDeliveryChannel.auto =>
+          'В оба чата; звук — куда отвечал собеседник (иначе Family Space)',
+        ChatDeliveryChannel.notifyFamilychat =>
+          'В оба чата; уведомление в Family Space, Telegram без звука',
+        ChatDeliveryChannel.telegram =>
+          'В оба чата; уведомление в Telegram, Family Space без звука',
+        ChatDeliveryChannel.familychatOnly =>
+          'Только Family Space — в Telegram не отправлять',
+      };
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Segmented row excludes familychatOnly (shown as a separate tile).
+    final segmentChannel = _channel == ChatDeliveryChannel.familychatOnly
+        ? ChatDeliveryChannel.auto
+        : _channel;
     return SafeArea(
       child: SingleChildScrollView(
         child: Column(
@@ -126,7 +152,7 @@ class _ChatSendOptionsBodyState extends State<_ChatSendOptionsBody> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      'Куда отправить',
+                      'Куда уведомить',
                       style: theme.textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
@@ -141,44 +167,48 @@ class _ChatSendOptionsBodyState extends State<_ChatSendOptionsBody> {
                           tooltip: 'Авто',
                         ),
                         ButtonSegment(
-                          value: ChatDeliveryChannel.familychat,
+                          value: ChatDeliveryChannel.notifyFamilychat,
                           icon: _channelLogo('assets/logo/logo.png'),
-                          tooltip: 'Family Space',
+                          tooltip: 'Уведомить в Family Space',
                         ),
                         ButtonSegment(
                           value: ChatDeliveryChannel.telegram,
                           icon: _channelLogo('assets/logo/tg.png'),
-                          tooltip: 'Telegram',
+                          tooltip: 'Уведомить в Telegram',
                         ),
                       ],
-                      selected: {_channel},
+                      selected: {segmentChannel},
                       showSelectedIcon: false,
-                      onSelectionChanged: (s) {
-                        final channel = s.first;
-                        setState(() => _channel = channel);
-                        Navigator.pop(
-                          context,
-                          ChatSendOptions(
-                            deliveryChannel: channel,
-                            preferenceOnly: true,
-                          ),
-                        );
-                      },
+                      onSelectionChanged: (s) => _selectChannel(s.first),
                       style: const ButtonStyle(
                         visualDensity: VisualDensity.compact,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                     ),
                     const SizedBox(height: 4),
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        LucideIcons.lock,
+                        size: 20,
+                        color: _channel == ChatDeliveryChannel.familychatOnly
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                      title: const Text('Только Family Space'),
+                      subtitle: const Text('Без зеркала в Telegram'),
+                      trailing: _channel == ChatDeliveryChannel.familychatOnly
+                          ? Icon(
+                              LucideIcons.check,
+                              color: theme.colorScheme.primary,
+                            )
+                          : null,
+                      onTap: () =>
+                          _selectChannel(ChatDeliveryChannel.familychatOnly),
+                    ),
                     Text(
-                      switch (_channel) {
-                        ChatDeliveryChannel.auto =>
-                          'Авто: если последний ответ был в Telegram — туда',
-                        ChatDeliveryChannel.familychat =>
-                          'Только Family Space, без Telegram',
-                        ChatDeliveryChannel.telegram =>
-                          'Доставить в Telegram от вашего имени',
-                      },
+                      _channelHint,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),

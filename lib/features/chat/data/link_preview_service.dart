@@ -1,6 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../telegram_tdlib/tg_jank_log.dart';
+
 class ChatLinkPreview {
   const ChatLinkPreview({
     required this.url,
@@ -88,7 +90,7 @@ class _CacheEntry {
 
   bool get isFresh {
     final ttl = preview == null
-        ? const Duration(minutes: 2)
+        ? const Duration(minutes: 30)
         : const Duration(hours: 6);
     return DateTime.now().difference(at) < ttl;
   }
@@ -101,6 +103,35 @@ class LinkPreviewService {
   static final LinkPreviewService instance = LinkPreviewService._();
 
   LinkPreviewBackendFetcher? backendFetcher;
+
+  /// Set while a conversation is dragging/flinging — skip new network scrapes
+  /// so link-heavy groups (ТП НСИС…) don't stall ballistic scroll.
+  bool deferNetworkFetches = false;
+
+  /// Conversation flips this after open-settle; until then scroll-busy must
+  /// not clear [deferNetworkFetches] (open still owns the gate).
+  bool linkPreviewGateOpen = false;
+
+  /// Wall-clock until which new scrapes stay off (open-settle).
+  DateTime? _bootDeferUntil;
+
+  void deferNetworkFor(Duration duration) {
+    final until = DateTime.now().add(duration);
+    if (_bootDeferUntil == null || until.isAfter(_bootDeferUntil!)) {
+      _bootDeferUntil = until;
+    }
+    deferNetworkFetches = true;
+  }
+
+  bool get shouldDeferNetwork => deferNetworkFetches || _bootDeferActive;
+
+  bool get _bootDeferActive {
+    final until = _bootDeferUntil;
+    if (until == null) return false;
+    if (DateTime.now().isBefore(until)) return true;
+    _bootDeferUntil = null;
+    return false;
+  }
 
   static final Dio _dio = Dio(
     BaseOptions(
@@ -244,6 +275,12 @@ class LinkPreviewService {
     if (cached != null && cached.isFresh) {
       return Future<ChatLinkPreview?>.value(cached.preview);
     }
+    if (shouldDeferNetwork) {
+      // Keep host-only card until scroll settles; avoid Dio mid-fling.
+      TgJankLog.linkPreview(url, phase: 'deferred');
+      return Future<ChatLinkPreview?>.value(null);
+    }
+    TgJankLog.linkPreview(url, phase: 'fetch-start');
     final pending = _inFlight[url];
     if (pending != null) return pending;
     final future = _fetch(url);
@@ -341,7 +378,13 @@ class LinkPreviewService {
       return stored;
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('[LinkPreview] $url: $e');
+        if (e is DioException) {
+          debugPrint(
+            '[LinkPreview] $url: ${e.response?.statusCode ?? e.type}',
+          );
+        } else {
+          debugPrint('[LinkPreview] $url: $e');
+        }
       }
       _cache[url] = _CacheEntry(null, DateTime.now());
       return null;

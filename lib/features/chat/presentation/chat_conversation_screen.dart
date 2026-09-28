@@ -51,6 +51,7 @@ import '../data/chat_offline_sync.dart';
 import '../data/chat_message_preview.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/chat_scheduled_send_service.dart';
+import '../data/chat_delivery_channel_store.dart';
 import '../data/chat_send_options.dart';
 import '../data/chat_gif_item.dart';
 import '../data/chat_typing_utils.dart';
@@ -351,6 +352,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     unawaited(
       FamilyChatNotifications.clearChatNotifications(threadId: widget.threadId),
     );
+    unawaited(_loadStickyDeliveryChannel());
     if (_hasLeft) {
       _loading = false;
     } else {
@@ -677,21 +679,57 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   /// Unmatched Telegram hub thread — only TG peer, always deliver there.
   bool get _isUnmatchedTelegramThread => widget.kind == 'telegram';
 
-  /// Show Авто/Space/TG sheet: linked DM owner only (not pure TG threads).
+  /// Show Авто / уведомить FC·TG / только FC: matched DM owner + dual groups.
   bool get _showDeliveryChannelPicker =>
-      _telegramCanForce && !_isUnmatchedTelegramThread && !_telegramLinkedGroup;
+      _telegramCanForce && !_isUnmatchedTelegramThread;
+
+  Future<void> _loadStickyDeliveryChannel() async {
+    if (_isUnmatchedTelegramThread) return;
+    final saved = await ChatDeliveryChannelStore.load(widget.threadId);
+    if (!mounted || saved == null) return;
+    if (saved == _deliveryChannel) return;
+    setState(() => _deliveryChannel = saved);
+  }
+
+  void _persistStickyDeliveryChannel(ChatDeliveryChannel channel) {
+    unawaited(ChatDeliveryChannelStore.save(widget.threadId, channel));
+  }
 
   bool get _shouldMirrorLinkedGroupToTelegram {
     if (!_telegramLinkedGroup) return false;
+    if (_deliveryChannel == ChatDeliveryChannel.familychatOnly) return false;
     final mode = _telegramBridgeMode ?? 'tdlib';
     if (mode != 'tdlib') return false;
     final chatId = _tdlibPeerChatId;
     return chatId != null && chatId != 0;
   }
 
+  /// TG should be silent for dual modes when FC is the notify target.
+  bool _telegramDisableNotification(ChatSendOptions options) {
+    if (options.silent) return true;
+    return switch (options.deliveryChannel) {
+      ChatDeliveryChannel.telegram => false,
+      ChatDeliveryChannel.notifyFamilychat => true,
+      ChatDeliveryChannel.familychatOnly => true,
+      ChatDeliveryChannel.auto => !_telegramWillSend,
+    };
+  }
+
+  /// FC push silent when TG is the notify target (or user asked silent).
+  bool _familychatNotifySilent(ChatSendOptions options) {
+    if (options.silent) return true;
+    return switch (options.deliveryChannel) {
+      ChatDeliveryChannel.telegram => true,
+      ChatDeliveryChannel.notifyFamilychat => false,
+      ChatDeliveryChannel.familychatOnly => false,
+      ChatDeliveryChannel.auto => _telegramWillSend,
+    };
+  }
+
   void _maybeMirrorLinkedGroup({
     required Map<String, dynamic> message,
     required String text,
+    bool disableNotification = false,
   }) {
     if (!_shouldMirrorLinkedGroupToTelegram) return;
     final body = text.trim();
@@ -711,6 +749,56 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         tgChatId: tgChatId,
         fcMessageId: fcId,
         text: body,
+        disableNotification: disableNotification,
+      ),
+    );
+  }
+
+  void _maybeSyncLinkedGroupEdit({
+    required int fcMessageId,
+    required String text,
+  }) {
+    if (!_telegramLinkedGroup) return;
+    final tgChatId = _tdlibPeerChatId;
+    if (tgChatId == null || tgChatId == 0) return;
+    final msg = _messageById(fcMessageId);
+    if (msg == null) return;
+    final meta = msg['metadata'];
+    if (meta is! Map) return;
+    final tgMsgId = (meta['telegram_message_id'] as num?)?.toInt() ??
+        int.tryParse('${meta['telegram_message_id'] ?? ''}') ??
+        0;
+    if (tgMsgId <= 0) return;
+    unawaited(
+      TelegramTdlibService.instance.editMessageText(
+        tgChatId,
+        tgMsgId,
+        text,
+      ),
+    );
+  }
+
+  void _maybeSyncLinkedGroupDeleteFromMessages(
+    List<Map<String, dynamic>> messages,
+  ) {
+    if (!_telegramLinkedGroup || messages.isEmpty) return;
+    final tgChatId = _tdlibPeerChatId;
+    if (tgChatId == null || tgChatId == 0) return;
+    final tgIds = <int>[];
+    for (final msg in messages) {
+      final meta = msg['metadata'];
+      if (meta is! Map) continue;
+      final tgMsgId = (meta['telegram_message_id'] as num?)?.toInt() ??
+          int.tryParse('${meta['telegram_message_id'] ?? ''}') ??
+          0;
+      if (tgMsgId > 0) tgIds.add(tgMsgId);
+    }
+    if (tgIds.isEmpty) return;
+    unawaited(
+      TelegramTdlibService.instance.deleteMessages(
+        tgChatId,
+        tgIds,
+        revoke: true,
       ),
     );
   }
@@ -806,7 +894,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         }
         return;
       }
-      final canForce = tg['can_force_telegram'] == true && tg['owner'] == true;
+      final canForce = tg['can_force_telegram'] == true;
       final willSend = tg['will_send_to_telegram'] == true &&
           (canForce || widget.kind == 'group');
       final tgChatId = (tg['tg_chat_id'] as num?)?.toInt() ??
@@ -4119,6 +4207,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
+    bool deliverToTelegram = false,
+    String? deliveryChannel,
     int? voiceDurationMs,
     String? voiceTranscript,
     int? videoNoteDurationMs,
@@ -4143,6 +4233,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       replyToMessageId: replyToMessageId,
       mentionedUserIds: mentionedUserIds,
       notifySilent: notifySilent,
+      deliverToTelegram: deliverToTelegram,
+      deliveryChannel: deliveryChannel,
       voiceDurationMs: voiceDurationMs,
       voiceTranscript: voiceTranscript,
       videoNoteDurationMs: videoNoteDurationMs,
@@ -4213,6 +4305,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     bool notifySilent = false,
     bool deliverToTelegram = false,
     String? deliveryChannel,
+    bool telegramDisableNotification = false,
   }) async {
     if (_localFirst) {
       await _persistMessageCache();
@@ -4264,7 +4357,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             source: 'ui',
           );
           _replaceOptimisticMessage(tempId, ack);
-          _maybeMirrorLinkedGroup(message: ack, text: body);
+          _maybeMirrorLinkedGroup(
+            message: ack,
+            text: body,
+            disableNotification: telegramDisableNotification,
+          );
           _scrollToBottom();
           await _persistMessageCache();
           return true;
@@ -4284,6 +4381,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         replyToMessageId: replyToMessageId,
         mentionedUserIds: mentionedUserIds,
         notifySilent: notifySilent,
+        deliverToTelegram: deliverToTelegram,
+        deliveryChannel: deliveryChannel,
         clientMsgId: tempId,
         markQueued: true,
       );
@@ -4324,12 +4423,22 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     int? replyToMessageId,
     List<int> mentionedUserIds = const [],
     bool notifySilent = false,
-    bool deliverToTelegram = false,
-    String? deliveryChannel,
     int? voiceDurationMs,
     String? voiceTranscript,
     int? videoNoteDurationMs,
   }) async {
+    final channel = _isUnmatchedTelegramThread
+        ? ChatDeliveryChannel.telegram
+        : (_telegramCanForce ? _deliveryChannel : ChatDeliveryChannel.auto);
+    final routeOpts = ChatSendOptions(
+      silent: notifySilent,
+      deliveryChannel: channel,
+    );
+    final effectiveSilent = _familychatNotifySilent(routeOpts);
+    final effectiveDeliverToTelegram = routeOpts.deliverToTelegram;
+    final effectiveDeliveryChannel = routeOpts.deliveryChannelApi;
+    final effectiveTgSilent = _telegramDisableNotification(routeOpts);
+
     final wsEligible = ChatWsTextSend.isEligible(
       attachments: attachments,
       voiceDurationMs: voiceDurationMs,
@@ -4348,9 +4457,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         body: caption.trim(),
         replyToMessageId: replyToMessageId,
         mentionedUserIds: mentionedUserIds,
-        notifySilent: notifySilent,
-        deliverToTelegram: deliverToTelegram,
-        deliveryChannel: deliveryChannel,
+        notifySilent: effectiveSilent,
+        deliverToTelegram: effectiveDeliverToTelegram,
+        deliveryChannel: effectiveDeliveryChannel,
+        telegramDisableNotification: effectiveTgSilent,
       );
       if (sentViaWs) return true;
     }
@@ -4362,7 +4472,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         attachments: attachments,
         replyToMessageId: replyToMessageId,
         mentionedUserIds: mentionedUserIds,
-        notifySilent: notifySilent,
+        notifySilent: effectiveSilent,
+        deliverToTelegram: effectiveDeliverToTelegram,
+        deliveryChannel: effectiveDeliveryChannel,
         voiceDurationMs: voiceDurationMs,
         voiceTranscript: voiceTranscript,
         videoNoteDurationMs: videoNoteDurationMs,
@@ -4382,6 +4494,15 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         attachments: attachments,
         replyToMessageId: replyToMessageId,
         mentionedUserIds: mentionedUserIds,
+        notifySilent: effectiveSilent,
+        deliverToTelegram: effectiveDeliverToTelegram,
+        deliveryChannel: effectiveDeliveryChannel,
+        voiceDurationMs: voiceDurationMs,
+        voiceTranscript: voiceTranscript,
+        videoNoteDurationMs: videoNoteDurationMs,
+      );
+      ChatMutationCoordinator.scheduleSync(
+        ref.read(familychatRepositoryProvider),
       );
       return true;
     }
@@ -4435,9 +4556,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         replyToMessageId: replyToMessageId,
         mentionedUserIds:
             mentionedUserIds.isEmpty ? null : mentionedUserIds,
-        notifySilent: notifySilent,
-        deliverToTelegram: deliverToTelegram,
-        deliveryChannel: deliveryChannel,
+        notifySilent: effectiveSilent,
+        deliverToTelegram: effectiveDeliverToTelegram,
+        deliveryChannel: effectiveDeliveryChannel,
         clientMsgId: tempId,
         voiceDurationMs: voiceDurationMs,
         voiceTranscript: voiceTranscript,
@@ -4448,6 +4569,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       _maybeMirrorLinkedGroup(
         message: msg,
         text: caption.isEmpty ? (msg['body']?.toString() ?? '') : caption,
+        disableNotification: effectiveTgSilent,
       );
       unawaited(_refreshTelegramRouting());
       _scrollToBottom();
@@ -4523,6 +4645,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           attachments: attachments,
           replyToMessageId: replyToMessageId,
           mentionedUserIds: mentionedUserIds,
+          notifySilent: effectiveSilent,
+          deliverToTelegram: effectiveDeliverToTelegram,
+          deliveryChannel: effectiveDeliveryChannel,
         );
         return true;
       }
@@ -5190,6 +5315,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   }) async {
     if (_showDeliveryChannelPicker) {
       setState(() => _deliveryChannel = options.deliveryChannel);
+      _persistStickyDeliveryChannel(options.deliveryChannel);
     }
     if (options.preferenceOnly) return;
     if (options.aiAssist) {
@@ -5215,7 +5341,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (!_telegramCanForce) return false;
     return switch (_deliveryChannel) {
       ChatDeliveryChannel.telegram => true,
-      ChatDeliveryChannel.familychat => false,
+      ChatDeliveryChannel.notifyFamilychat => false,
+      ChatDeliveryChannel.familychatOnly => false,
       ChatDeliveryChannel.auto => _telegramWillSend,
     };
   }
@@ -5258,6 +5385,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         ChatMutationCoordinator.scheduleSync(
           ref.read(familychatRepositoryProvider),
         );
+        _maybeSyncLinkedGroupEdit(fcMessageId: editingId, text: body);
         return;
       }
       try {
@@ -5277,6 +5405,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             return m;
           }).toList();
         });
+        _maybeSyncLinkedGroupEdit(fcMessageId: editingId, text: body);
       } catch (_) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -5363,8 +5492,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         replyToMessageId: replyId,
         mentionedUserIds: mentionedUserIds,
         notifySilent: options.silent,
-        deliverToTelegram: options.deliverToTelegram,
-        deliveryChannel: options.deliveryChannelApi,
       );
       return;
     }
@@ -5382,8 +5509,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       replyToMessageId: replyId,
       mentionedUserIds: mentionedUserIds,
       notifySilent: options.silent,
-      deliverToTelegram: options.deliverToTelegram,
-      deliveryChannel: options.deliveryChannelApi,
     );
   }
 
@@ -6156,6 +6281,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
     final snapshots = _snapshotMessages(messageIds);
     if (snapshots.isEmpty) return;
+    _maybeSyncLinkedGroupDeleteFromMessages(snapshots);
     await _startMessageRemovalUndo(
       snapshots: snapshots,
       forEveryone: true,
@@ -6190,7 +6316,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       sourceThreadId: widget.threadId,
       messageIds: ids,
     );
-    if (targets != null && targets.isNotEmpty && mounted) {
+    if (targets == true && mounted) {
       _exitSelection();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Переслано')),

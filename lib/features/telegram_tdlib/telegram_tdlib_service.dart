@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -14,9 +13,13 @@ import '../../core/network/api_client.dart';
 import '../../core/notifications/familychat_notifications.dart';
 import '../../firebase_options.dart';
 import '../chat/data/chat_media_display_policy.dart';
+import '../chat/data/link_preview_service.dart';
 import '../familychat/data/familychat_repository.dart';
+import 'tdlib_chat_folder.dart';
 import 'tdlib_config.dart';
+import 'tdlib_io.dart';
 import 'tdlib_json_client.dart';
+import 'tg_jank_log.dart';
 import 'telegram_link_utils.dart';
 import 'telegram_match_store.dart';
 import 'telegram_tdlib_push.dart';
@@ -199,6 +202,25 @@ class TdlibChatProfile {
   }
 }
 
+/// Member row for TG group info sheet.
+class TdlibChatMember {
+  const TdlibChatMember({
+    required this.userId,
+    required this.displayName,
+    this.avatarLocalPath,
+    this.avatarMinithumbnailBytes,
+    this.isCreator = false,
+    this.isAdmin = false,
+  });
+
+  final int userId;
+  final String displayName;
+  final String? avatarLocalPath;
+  final List<int>? avatarMinithumbnailBytes;
+  final bool isCreator;
+  final bool isAdmin;
+}
+
 /// Active live stream / video chat bound to a chat (TDLib `videoChat` + `groupCall`).
 class TdlibVideoChat {
   const TdlibVideoChat({
@@ -280,6 +302,16 @@ class TdlibMessage {
     this.videoThumbLocalPath,
     this.videoThumbBytes,
     this.isAnimation = false,
+    this.isSticker = false,
+    this.stickerEmoji,
+    this.documentFileId,
+    this.documentLocalPath,
+    this.documentFileName,
+    this.documentMimeType,
+    this.documentSizeBytes,
+    this.documentThumbFileId,
+    this.documentThumbLocalPath,
+    this.documentThumbBytes,
     this.reactions = const [],
     this.replyToMessageId,
     this.replyPreviewText = '',
@@ -341,6 +373,18 @@ class TdlibMessage {
   final String? videoThumbLocalPath;
   final List<int>? videoThumbBytes;
   final bool isAnimation;
+  /// Telegram sticker (webp / tgs / webm) — media via photo* or video* fields.
+  final bool isSticker;
+  final String? stickerEmoji;
+  /// Generic file (messageDocument) — PDF, zip, etc.
+  final int? documentFileId;
+  final String? documentLocalPath;
+  final String? documentFileName;
+  final String? documentMimeType;
+  final int? documentSizeBytes;
+  final int? documentThumbFileId;
+  final String? documentThumbLocalPath;
+  final List<int>? documentThumbBytes;
   final List<TdlibReaction> reactions;
   final int? replyToMessageId;
   final String replyPreviewText;
@@ -355,9 +399,22 @@ class TdlibMessage {
       videoNoteFileId != null || videoNoteLocalPath != null;
   bool get isVideo =>
       !isVideoNote &&
-      (videoFileId != null ||
+      (isAnimation ||
+          videoFileId != null ||
           videoLocalPath != null ||
-          videoThumbFileId != null);
+          videoThumbFileId != null ||
+          (videoThumbBytes != null && videoThumbBytes!.isNotEmpty));
+  bool get isDocument =>
+      documentFileId != null ||
+      (documentLocalPath != null && documentLocalPath!.isNotEmpty) ||
+      (documentFileName != null && documentFileName!.isNotEmpty);
+  bool get isPdfDocument {
+    if (!isDocument) return false;
+    final mime = (documentMimeType ?? '').toLowerCase();
+    if (mime.contains('pdf')) return true;
+    final name = (documentFileName ?? documentLocalPath ?? '').toLowerCase();
+    return name.endsWith('.pdf');
+  }
   bool get isForwarded =>
       forwardOriginName != null ||
       forwardFromChatId != null ||
@@ -407,6 +464,13 @@ class TelegramTdlibService extends ChangeNotifier {
   final Map<int, Map<String, dynamic>> _supergroups = {};
   final Set<int> _supergroupFetchQueued = {};
   final List<int> _chatOrder = [];
+  /// Folder tabs from [updateChatFolders] (id → basic info).
+  final Map<int, TdlibChatFolderInfo> _chatFolderInfos = {};
+  /// Full [chatFolder] payloads from [getChatFolder].
+  final Map<int, Map<String, dynamic>> _chatFolderDetails = {};
+  /// chat_folder_id → chat ids known to belong to that folder.
+  final Map<int, Set<int>> _folderChatIds = {};
+  int _chatFoldersEpoch = 0;
   /// TG user ids (and private chat ids) matched to an FC peer — excluded from
   /// [notifiedUnreadTotal] so Chat-tab badges do not double-count FC DMs.
   final Set<int> _matchedTgUserIds = {};
@@ -414,6 +478,7 @@ class TelegramTdlibService extends ChangeNotifier {
   final Map<String, Map<String, dynamic>> _scopeNotificationSettings = {};
 
   int? _openChatId;
+  final Set<int> _historyWarmInFlight = {};
   int? _myUserId;
   /// Self [chatMember.status] per chat — used for send permissions.
   final Map<int, Map<String, dynamic>> _chatMemberStatus = {};
@@ -464,7 +529,10 @@ class TelegramTdlibService extends ChangeNotifier {
   static const warmHubMediaPerChat = 0;
   /// Open-chat: only the focused message (no band prefetch).
   /// Open-chat: focused photo first; one neighbor max after focus starts.
-  static const viewportMediaRadius = 1;
+  /// How many message-ids above/below focus to warm. Albums span several
+  /// consecutive ids — radius 1 only hit the next album sibling, leaving the
+  /// following post stuck on soft `m` / minithumb.
+  static const viewportMediaRadius = 4;
   /// Ordered exclusive focus queue (first = actively downloading).
   List<int> _focusDownloadOrder = const [];
   int? _focusMessageId;
@@ -482,6 +550,11 @@ class TelegramTdlibService extends ChangeNotifier {
   bool _uiNotifyPending = false;
   bool _uiScrollBusy = false;
   DateTime? _uiScrollBusyUntil;
+  /// Cached [hubChats] until the next [notifyListeners] — build() used to
+  /// re-walk/sort/decode minithumbs dozens of times per frame.
+  List<TdlibChatPreview>? _hubChatsCache;
+  /// chatId → decoded JPEG minithumb (null = known missing).
+  final Map<int, List<int>?> _miniThumbByChatId = {};
   /// Per-chat last outgoing message id that peer has read.
   final Map<int, int> _lastReadOutboxId = {};
   final Map<int, int> _pinnedMessageId = {};
@@ -515,18 +588,13 @@ class TelegramTdlibService extends ChangeNotifier {
 
   /// Sum of unread messages in main-list chats that are not muted.
   ///
-  /// Matched private DMs are omitted — those unreads live on the FC DM row
-  /// (and in [chatUnreadTotalProvider]), so counting them here would inflate
-  /// the Chat tab / folder totals.
+  /// Includes matched private DMs: the hub shows the FC DM row (TG synthetic
+  /// hidden), but FC `unread_count` often stays 0 for Telegram-delivered
+  /// messages — TDLib is the source of truth for those unreads.
   int get notifiedUnreadTotal {
     var total = 0;
     for (final c in hubChats) {
       if (isChatMuted(c.chatId)) continue;
-      if (!c.isGroup &&
-          !c.isChannel &&
-          _matchedTgUserIds.contains(c.userId)) {
-        continue;
-      }
       total += c.unreadCount;
     }
     return total;
@@ -535,7 +603,10 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Private DMs + groups + channels for the TG hub tab.
   /// Only chats that are actually on the main Telegram chat list
   /// (not archived / left / deleted / folder-only).
-  List<TdlibChatPreview> get hubChats {
+  List<TdlibChatPreview> get hubChats =>
+      _hubChatsCache ??= _buildHubChats();
+
+  List<TdlibChatPreview> _buildHubChats() {
     final out = <TdlibChatPreview>[];
     for (final id in _chatOrder) {
       final chat = _chats[id];
@@ -553,6 +624,8 @@ class TelegramTdlibService extends ChangeNotifier {
       if (typeName == 'chatTypePrivate') {
         userId = (type['user_id'] as num?)?.toInt() ?? 0;
         if (userId <= 0) continue;
+        // Saved Messages (chat-with-self) merges into FC «Избранное».
+        if (_myUserId != null && userId == _myUserId) continue;
         user = _users[userId];
         // Keep bots (e.g. BotFather) and service chats visible in the hub.
       } else if (typeName == 'chatTypeBasicGroup') {
@@ -562,7 +635,11 @@ class TelegramTdlibService extends ChangeNotifier {
         isGroup = !isChannel;
         final sgId = (type['supergroup_id'] as num?)?.toInt();
         if (sgId != null) {
-          _ensureSupergroupCached(sgId);
+          // Never kick network from a getter used during build — schedule.
+          if (!_supergroups.containsKey(sgId) &&
+              !_supergroupFetchQueued.contains(sgId)) {
+            scheduleMicrotask(() => _ensureSupergroupCached(sgId));
+          }
           if (_shouldHideLinkedChannelSideChat(
             isChannel: isChannel,
             supergroupId: sgId,
@@ -576,7 +653,7 @@ class TelegramTdlibService extends ChangeNotifier {
       }
 
       final last = chat['last_message'];
-      final miniBytes = _photoMinithumbnailBytes(chat);
+      final miniBytes = _photoMinithumbnailBytesCached(id, chat);
       // Hub tiles are ~48dp — prefer `small`, and any already-cached size.
       final smallId = _tdlibPhotoFileId(chat['photo'], 'small') ??
           (user != null
@@ -592,15 +669,15 @@ class TelegramTdlibService extends ChangeNotifier {
       );
       int? photoId;
       String? photoPath;
-      for (final id in [smallId, bigId, resolvedId]) {
-        if (id == null || id <= 0) continue;
-        final path = _filePathCache[id];
+      for (final fid in [smallId, bigId, resolvedId]) {
+        if (fid == null || fid <= 0) continue;
+        final path = _filePathCache[fid];
         if (path != null && path.isNotEmpty) {
-          photoId = id;
+          photoId = fid;
           photoPath = path;
           break;
         }
-        photoId ??= id;
+        photoId ??= fid;
       }
       final lastOutbox = _lastReadOutboxId[id] ??
           (chat['last_read_outbox_message_id'] as num?)?.toInt() ??
@@ -639,11 +716,497 @@ class TelegramTdlibService extends ChangeNotifier {
           lastMessageReadStatus: lastReadStatus,
         ),
       );
-      // Do not enqueue downloads here — hubChats is a getter and may rebuild
-      // often. Visible-row prefetch: [prefetchVisibleHubAvatars].
     }
     out.sort((a, b) => b.lastMessageDate.compareTo(a.lastMessageDate));
     return out;
+  }
+
+  /// Bumps when Telegram folder list / membership changes (hub watches this).
+  int get chatFoldersEpoch => _chatFoldersEpoch;
+
+  /// Manual user folders only (no Unread/Channels-style filters).
+  List<TdlibChatFolderInfo> get manualChatFolders {
+    final out = _chatFolderInfos.values.where((f) => f.isManual).toList();
+    out.sort((a, b) => a.id.compareTo(b.id));
+    return out;
+  }
+
+  String? chatFolderTitle(int folderId) => _chatFolderInfos[folderId]?.title;
+
+  bool hasChatFolder(int folderId) => _chatFolderInfos.containsKey(folderId);
+
+  bool isChatInFolder(int chatId, int folderId) {
+    final set = _folderChatIds[folderId];
+    if (set != null && set.contains(chatId)) return true;
+    final details = _chatFolderDetails[folderId];
+    if (details != null) {
+      if (TdlibChatFolderCodec.intIdList(details['included_chat_ids'])
+          .contains(chatId)) {
+        return true;
+      }
+      if (TdlibChatFolderCodec.intIdList(details['pinned_chat_ids'])
+          .contains(chatId)) {
+        return true;
+      }
+    }
+    final chat = _chats[chatId];
+    if (chat == null) return false;
+    return _folderIdsFromChat(chat).contains(folderId);
+  }
+
+  Set<int> chatIdsInFolder(int folderId) {
+    final out = <int>{};
+    final tracked = _folderChatIds[folderId];
+    if (tracked != null) out.addAll(tracked);
+    final details = _chatFolderDetails[folderId];
+    if (details != null) {
+      out.addAll(TdlibChatFolderCodec.intIdList(details['included_chat_ids']));
+      out.addAll(TdlibChatFolderCodec.intIdList(details['pinned_chat_ids']));
+    }
+    for (final entry in _chats.entries) {
+      if (_folderIdsFromChat(entry.value).contains(folderId)) {
+        out.add(entry.key);
+      }
+    }
+    return out;
+  }
+
+  /// Build a hub preview for any known chat (main list or folder-only).
+  TdlibChatPreview? chatPreviewById(int chatId) {
+    final chat = _chats[chatId];
+    if (chat == null) return null;
+    final type = chat['type'];
+    if (type is! Map) return null;
+    final typeName = type['@type']?.toString() ?? '';
+    var userId = 0;
+    var isGroup = false;
+    var isChannel = false;
+    Map<String, dynamic>? user;
+    if (typeName == 'chatTypePrivate') {
+      userId = (type['user_id'] as num?)?.toInt() ?? 0;
+      if (userId <= 0) return null;
+      user = _users[userId];
+    } else if (typeName == 'chatTypeBasicGroup') {
+      isGroup = true;
+    } else if (typeName == 'chatTypeSupergroup') {
+      isChannel = type['is_channel'] == true;
+      isGroup = !isChannel;
+    } else {
+      return null;
+    }
+    final last = chat['last_message'];
+    final miniBytes = _photoMinithumbnailBytes(chat);
+    final smallId = _tdlibPhotoFileId(chat['photo'], 'small') ??
+        (user != null
+            ? _tdlibPhotoFileId(user['profile_photo'], 'small')
+            : null);
+    final bigId = _tdlibPhotoFileId(chat['photo'], 'big') ??
+        (user != null
+            ? _tdlibPhotoFileId(user['profile_photo'], 'big')
+            : null);
+    final resolvedId = _resolveChatAvatarFileId(
+      chat,
+      user: (isGroup || isChannel) ? null : user,
+    );
+    int? photoId;
+    String? photoPath;
+    for (final id in [smallId, bigId, resolvedId]) {
+      if (id == null || id <= 0) continue;
+      final path = _filePathCache[id];
+      if (path != null && path.isNotEmpty) {
+        photoId = id;
+        photoPath = path;
+        break;
+      }
+      photoId ??= id;
+    }
+    final lastOutbox = _lastReadOutboxId[chatId] ??
+        (chat['last_read_outbox_message_id'] as num?)?.toInt() ??
+        0;
+    var lastOutgoing = false;
+    String? lastReadStatus;
+    if (last is Map) {
+      lastOutgoing = last['is_outgoing'] == true;
+      if (lastOutgoing) {
+        final mid = (last['id'] as num?)?.toInt() ?? 0;
+        if (mid > 0 && lastOutbox > 0 && mid <= lastOutbox) {
+          lastReadStatus = 'read';
+        } else {
+          lastReadStatus = 'sent';
+        }
+      }
+    }
+    return TdlibChatPreview(
+      chatId: chatId,
+      userId: userId,
+      isGroup: isGroup,
+      isChannel: isChannel,
+      title: _chatTitle(chat, user),
+      photoFileId: photoId,
+      photoLocalPath: photoPath,
+      photoMinithumbnailBytes: miniBytes,
+      lastMessageText: _previewText(last),
+      lastMessageDate:
+          (last is Map ? last['date'] as num? : null)?.toInt() ?? 0,
+      unreadCount: (chat['unread_count'] as num?)?.toInt() ?? 0,
+      lastMessageOutgoing: lastOutgoing,
+      lastMessageReadStatus: lastReadStatus,
+    );
+  }
+
+  Future<int> createChatFolder({
+    required String name,
+    List<int> includedChatIds = const [],
+  }) async {
+    final c = _client;
+    if (c == null || !isReady) {
+      throw StateError('TDLib not ready');
+    }
+    Map<String, dynamic> res;
+    try {
+      res = await c.sendAwait({
+        '@type': 'createChatFolder',
+        'folder': TdlibChatFolderCodec.folderPayload(
+          title: name,
+          includedChatIds: includedChatIds,
+        ),
+      });
+    } catch (e) {
+      // Fallback for older tdjson builds that still use `title: string`.
+      debugPrint('[tdlib] createChatFolder modern payload failed: $e');
+      res = await c.sendAwait({
+        '@type': 'createChatFolder',
+        'folder': {
+          '@type': 'chatFolder',
+          'title': TdlibChatFolderCodec.truncateTitle(name),
+          'icon': {'@type': 'chatFolderIcon', 'name': ''},
+          'is_shareable': false,
+          'pinned_chat_ids': <int>[],
+          'included_chat_ids': includedChatIds,
+          'excluded_chat_ids': <int>[],
+          'exclude_muted': false,
+          'exclude_read': false,
+          'exclude_archived': true,
+          'include_contacts': false,
+          'include_non_contacts': false,
+          'include_bots': false,
+          'include_groups': false,
+          'include_channels': false,
+        },
+      });
+    }
+    final id = _tdlibInt(res['id']);
+    if (id == 0) {
+      throw StateError('createChatFolder returned no id');
+    }
+    await _refreshChatFolderDetails(id);
+    unawaited(_loadChatsForFolder(id));
+    _chatFoldersEpoch++;
+    notifyListeners();
+    return id;
+  }
+
+  Future<void> renameChatFolder(int folderId, String name) async {
+    final details = await _ensureChatFolderDetails(folderId);
+    final included = TdlibChatFolderCodec.intIdList(details['included_chat_ids']);
+    final c = _client;
+    if (c == null || !isReady) return;
+    await c.sendAwait({
+      '@type': 'editChatFolder',
+      'chat_folder_id': folderId,
+      'folder': TdlibChatFolderCodec.folderPayload(
+        title: name,
+        includedChatIds: included,
+        base: details,
+      ),
+    });
+    await _refreshChatFolderDetails(folderId);
+    _chatFoldersEpoch++;
+    notifyListeners();
+  }
+
+  Future<void> deleteChatFolder(int folderId) async {
+    final c = _client;
+    if (c == null || !isReady) return;
+    await c.sendAwait({
+      '@type': 'deleteChatFolder',
+      'chat_folder_id': folderId,
+      'leave_chat_ids': <int>[],
+    });
+    _chatFolderInfos.remove(folderId);
+    _chatFolderDetails.remove(folderId);
+    _folderChatIds.remove(folderId);
+    _chatFoldersEpoch++;
+    notifyListeners();
+  }
+
+  Future<void> setChatIncludedInFolder({
+    required int folderId,
+    required int chatId,
+    required bool included,
+  }) async {
+    final details = await _ensureChatFolderDetails(folderId);
+    final set = TdlibChatFolderCodec.intIdList(details['included_chat_ids'])
+        .toSet();
+    final pinned = TdlibChatFolderCodec.intIdList(details['pinned_chat_ids'])
+        .toSet();
+    if (included) {
+      set.add(chatId);
+    } else {
+      set.remove(chatId);
+      pinned.remove(chatId);
+    }
+    final title = TdlibChatFolderCodec.titleFromInfo(details);
+    final infoTitle = _chatFolderInfos[folderId]?.title ?? title;
+    final c = _client;
+    if (c == null || !isReady) return;
+    await c.sendAwait({
+      '@type': 'editChatFolder',
+      'chat_folder_id': folderId,
+      'folder': TdlibChatFolderCodec.folderPayload(
+        title: infoTitle.isNotEmpty ? infoTitle : title,
+        includedChatIds: set.toList(),
+        pinnedChatIds: pinned.toList(),
+        base: details,
+      ),
+    });
+    final tracked = _folderChatIds.putIfAbsent(folderId, () => <int>{});
+    if (included) {
+      tracked.add(chatId);
+    } else {
+      tracked.remove(chatId);
+    }
+    await _refreshChatFolderDetails(folderId);
+    _chatFoldersEpoch++;
+    notifyListeners();
+  }
+
+  Future<void> replaceFolderIncludedChats({
+    required int folderId,
+    required List<int> includedChatIds,
+  }) async {
+    final details = await _ensureChatFolderDetails(folderId);
+    final title = TdlibChatFolderCodec.titleFromInfo(details);
+    final infoTitle = _chatFolderInfos[folderId]?.title ?? title;
+    final pinned = TdlibChatFolderCodec.intIdList(details['pinned_chat_ids'])
+        .where(includedChatIds.contains)
+        .toList();
+    final c = _client;
+    if (c == null || !isReady) return;
+    await c.sendAwait({
+      '@type': 'editChatFolder',
+      'chat_folder_id': folderId,
+      'folder': TdlibChatFolderCodec.folderPayload(
+        title: infoTitle.isNotEmpty ? infoTitle : title,
+        includedChatIds: includedChatIds,
+        pinnedChatIds: pinned,
+        base: details,
+      ),
+    });
+    _folderChatIds[folderId] = includedChatIds.toSet();
+    await _refreshChatFolderDetails(folderId);
+    _chatFoldersEpoch++;
+    notifyListeners();
+  }
+
+  Set<int> _folderIdsFromChat(Map chat) {
+    final positions = chat['positions'];
+    if (positions is! List) return const {};
+    final out = <int>{};
+    for (final p in positions) {
+      if (p is! Map) continue;
+      if (!_tdlibInt64NonZero(p['order'])) continue;
+      final id = TdlibChatFolderCodec.folderIdFromPositionList(p['list']);
+      if (id != null && id != 0) out.add(id);
+    }
+    return out;
+  }
+
+  void _reindexFolderMembership(int chatId) {
+    final chat = _chats[chatId];
+    // Don't wipe ids that still come from getChatFolder included/pinned —
+    // positions alone are incomplete until loadChats(folder) finishes, and
+    // updateChatPosition used to clobber other folders' chatListFolder slots.
+    for (final entry in _folderChatIds.entries) {
+      final folderId = entry.key;
+      final set = entry.value;
+      final inDetails = () {
+        final details = _chatFolderDetails[folderId];
+        if (details == null) return false;
+        return TdlibChatFolderCodec.intIdList(details['included_chat_ids'])
+                .contains(chatId) ||
+            TdlibChatFolderCodec.intIdList(details['pinned_chat_ids'])
+                .contains(chatId);
+      }();
+      final inPositions =
+          chat != null && _folderIdsFromChat(chat).contains(folderId);
+      if (inDetails || inPositions) {
+        set.add(chatId);
+      } else {
+        set.remove(chatId);
+      }
+    }
+    if (chat == null) return;
+    for (final folderId in _folderIdsFromChat(chat)) {
+      _folderChatIds.putIfAbsent(folderId, () => <int>{}).add(chatId);
+    }
+  }
+
+  /// Fetch missing [chat] objects so hub rows can render folder membership.
+  Future<void> ensureFolderChatsLoaded(int folderId) async {
+    if (!isReady || folderId <= 0) return;
+    await _refreshChatFolderDetails(folderId);
+    unawaited(_loadChatsForFolder(folderId));
+    // Don't await the full loadChats loop — getChat for known ids fills the
+    // hub immediately even if the folder chat list is still paging in.
+    final ids = chatIdsInFolder(folderId).toList();
+    var fetched = 0;
+    for (final chatId in ids) {
+      if (_chats.containsKey(chatId)) continue;
+      final ok = await _fetchChatIntoCache(chatId);
+      if (ok) fetched++;
+      if (fetched >= 80) break;
+    }
+    if (fetched > 0 || ids.isNotEmpty) {
+      _chatFoldersEpoch++;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> _fetchChatIntoCache(int chatId) async {
+    final c = _client;
+    if (c == null || chatId == 0) return false;
+    try {
+      final raw = await c.sendAwait({
+        '@type': 'getChat',
+        'chat_id': chatId,
+      });
+      if (raw['@type'] != 'chat') return false;
+      final chat = Map<String, dynamic>.from(raw);
+      _chats[chatId] = chat;
+      _syncChatOrderMembership(chatId);
+      _reindexFolderMembership(chatId);
+      _resolveChatAvatarFileId(chat);
+      return true;
+    } catch (e) {
+      debugPrint('[tdlib] getChat($chatId) for folder failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> _onChatFoldersUpdate(Map<String, dynamic> update) async {
+    final raw = update['chat_folders'];
+    final nextInfos = <int, TdlibChatFolderInfo>{};
+    if (raw is List) {
+      for (final item in raw) {
+        if (item is! Map) continue;
+        final map = Map<String, dynamic>.from(item);
+        final id = _tdlibInt(map['id']);
+        if (id == 0) continue;
+        final title = TdlibChatFolderCodec.titleFromInfo(map);
+        // Assume manual until details arrive; hide if details say otherwise.
+        final cached = _chatFolderDetails[id];
+        final isManual = cached == null
+            ? true
+            : TdlibChatFolderCodec.isManualFolder(cached);
+        nextInfos[id] = TdlibChatFolderInfo(
+          id: id,
+          title: title.isNotEmpty
+              ? title
+              : (_chatFolderInfos[id]?.title ?? 'Папка'),
+          isManual: isManual,
+        );
+      }
+    }
+    final removed = _chatFolderInfos.keys
+        .where((id) => !nextInfos.containsKey(id))
+        .toList();
+    for (final id in removed) {
+      _chatFolderDetails.remove(id);
+      _folderChatIds.remove(id);
+    }
+    _chatFolderInfos
+      ..clear()
+      ..addAll(nextInfos);
+    _chatFoldersEpoch++;
+    notifyListeners();
+    for (final id in nextInfos.keys) {
+      unawaited(ensureFolderChatsLoaded(id));
+    }
+  }
+
+  Future<Map<String, dynamic>> _ensureChatFolderDetails(int folderId) async {
+    final cached = _chatFolderDetails[folderId];
+    if (cached != null) return cached;
+    return _refreshChatFolderDetails(folderId);
+  }
+
+  Future<Map<String, dynamic>> _refreshChatFolderDetails(int folderId) async {
+    final c = _client;
+    if (c == null || !isReady) {
+      return _chatFolderDetails[folderId] ?? <String, dynamic>{};
+    }
+    try {
+      final res = await c.sendAwait({
+        '@type': 'getChatFolder',
+        'chat_folder_id': folderId,
+      });
+      final details = Map<String, dynamic>.from(res);
+      _chatFolderDetails[folderId] = details;
+      final title = TdlibChatFolderCodec.titleFromInfo(details);
+      final isManual = TdlibChatFolderCodec.isManualFolder(details);
+      final prev = _chatFolderInfos[folderId];
+      _chatFolderInfos[folderId] = TdlibChatFolderInfo(
+        id: folderId,
+        title: title.isNotEmpty ? title : (prev?.title ?? 'Папка'),
+        isManual: isManual,
+      );
+      final included = TdlibChatFolderCodec.intIdList(details['included_chat_ids']);
+      final pinned = TdlibChatFolderCodec.intIdList(details['pinned_chat_ids']);
+      final set = _folderChatIds.putIfAbsent(folderId, () => <int>{});
+      set.addAll(included);
+      set.addAll(pinned);
+      _chatFoldersEpoch++;
+      notifyListeners();
+      return details;
+    } catch (e) {
+      debugPrint('[tdlib] getChatFolder($folderId) failed: $e');
+      return _chatFolderDetails[folderId] ?? <String, dynamic>{};
+    }
+  }
+
+  Future<void> _loadChatsForFolder(int folderId) async {
+    final c = _client;
+    if (c == null || !isReady) return;
+    var timeoutStreak = 0;
+    for (var i = 0; i < 20; i++) {
+      try {
+        await c.sendAwait(
+          {
+            '@type': 'loadChats',
+            'chat_list': {
+              '@type': 'chatListFolder',
+              'chat_folder_id': folderId,
+            },
+            'limit': 100,
+          },
+          timeout: const Duration(seconds: 30),
+        );
+        timeoutStreak = 0;
+      } on TdlibApiException catch (e) {
+        if (e.code == 404) break;
+        debugPrint('[tdlib] loadChats folder=$folderId failed: $e');
+        break;
+      } on TimeoutException catch (e) {
+        timeoutStreak++;
+        debugPrint('[tdlib] loadChats folder=$folderId timeout: $e');
+        if (timeoutStreak >= 3) break;
+      } catch (e) {
+        debugPrint('[tdlib] loadChats folder=$folderId failed: $e');
+        break;
+      }
+    }
+    notifyListeners();
   }
 
   /// Sharp avatars for hub rows currently on screen (not the whole 500+ list).
@@ -652,8 +1215,14 @@ class TelegramTdlibService extends ChangeNotifier {
     Iterable<int> chatIds, {
     int limit = 16,
   }) {
-    if (_openChatId != null) return;
-    if (!_tdlibReadyForMedia) return;
+    if (_openChatId != null) {
+      _mediaLog('hub-avatar skip: openChat=$_openChatId');
+      return;
+    }
+    if (!_tdlibReadyForMedia) {
+      _mediaLog('hub-avatar skip: conn=$_connectionState');
+      return;
+    }
 
     // Cap how many hub-avatar jobs sit waiting — otherwise scroll floods the
     // queue while the first two CDN downloads sit at 0B.
@@ -666,11 +1235,17 @@ class TelegramTdlibService extends ChangeNotifier {
     }).length;
     final hubBudget = limit - hubQueued - hubInflight;
     if (hubBudget <= 0) {
+      _mediaLog(
+        'hub-avatar budget-full queued=$hubQueued inflight=$hubInflight '
+        '${_downloadQueueStats()}',
+      );
       _pumpDownloadQueue();
       return;
     }
 
     var n = 0;
+    var alreadyCached = 0;
+    var missingId = 0;
     for (final chatId in chatIds) {
       if (n >= hubBudget) break;
       if (chatId == 0) continue;
@@ -691,10 +1266,31 @@ class TelegramTdlibService extends ChangeNotifier {
               : null) ??
           _resolveChatAvatarFileId(chat, user: user);
       if (photoId == null || photoId <= 0) {
+        missingId++;
+        // Diagnose once per chat: minithumb without small/big means we never
+        // queue a download and the hub stays soft forever.
+        if (!_hubAvatarMissingLogged.contains(chatId)) {
+          _hubAvatarMissingLogged.add(chatId);
+          final photo = chat['photo'];
+          final keys = photo is Map
+              ? photo.keys.map((k) => k.toString()).join(',')
+              : 'null';
+          final small = photo is Map ? photo['small'] : null;
+          final smallId = small is Map ? small['id'] : null;
+          final hasMini = photo is Map && photo['minithumbnail'] is Map;
+          _mediaLog(
+            'hub-avatar missing-id chat=$chatId photoKeys=$keys '
+            'smallId=$smallId hasMini=$hasMini '
+            'type=${(chat['type'] as Map?)?['@type']}',
+          );
+        }
         _refreshChatPhotoIfMissing(chatId);
         continue;
       }
-      if (_filePathCache.containsKey(photoId)) continue;
+      if (_filePathCache.containsKey(photoId)) {
+        alreadyCached++;
+        continue;
+      }
       if (_downloadInFlight.contains(photoId) ||
           _downloadQueued.contains(photoId)) {
         continue;
@@ -709,13 +1305,12 @@ class TelegramTdlibService extends ChangeNotifier {
       );
       n++;
     }
-    if (n > 0) {
-      _mediaLog(
-        'hub-avatar prefetch queued=$n '
-        'budget=$hubBudget inflight=$hubInflight waiting=$hubQueued',
-      );
-      _pumpDownloadQueue();
-    }
+    _mediaLog(
+      'hub-avatar prefetch queued=$n cached=$alreadyCached '
+      'missingId=$missingId visible=${chatIds.length} '
+      'budget=$hubBudget ${_downloadQueueStats()}',
+    );
+    if (n > 0) _pumpDownloadQueue();
   }
 
   /// True if chat has a non-zero order on Telegram's main list (not archive/folder-only).
@@ -777,7 +1372,6 @@ class TelegramTdlibService extends ChangeNotifier {
     final chat = _chats[chatId];
     if (chat == null) return;
     final list = position['list'];
-    final listType = list is Map ? list['@type']?.toString() ?? '' : '';
     final keep = _tdlibInt64NonZero(position['order']);
 
     final existing = chat['positions'];
@@ -785,9 +1379,9 @@ class TelegramTdlibService extends ChangeNotifier {
     if (existing is List) {
       for (final p in existing) {
         if (p is! Map) continue;
-        final pl = p['list'];
-        final pt = pl is Map ? pl['@type']?.toString() ?? '' : '';
-        if (pt == listType) continue; // replace this list's position
+        // Match main/archive by @type, folder lists by folder id — otherwise
+        // one chatListFolder update wiped every other folder position.
+        if (_sameChatList(p['list'], list)) continue;
         next.add(Map<String, dynamic>.from(p));
       }
     }
@@ -796,6 +1390,18 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     chat['positions'] = next;
     _syncChatOrderMembership(chatId);
+    _reindexFolderMembership(chatId);
+  }
+
+  static bool _sameChatList(dynamic a, dynamic b) {
+    if (a is! Map || b is! Map) return false;
+    final ta = a['@type']?.toString() ?? '';
+    final tb = b['@type']?.toString() ?? '';
+    if (ta != tb) return false;
+    if (ta == 'chatListFolder') {
+      return _tdlibInt(a['chat_folder_id']) == _tdlibInt(b['chat_folder_id']);
+    }
+    return true;
   }
 
   /// Discussion group / channel DM side-chat linked to a channel — hide from hub.
@@ -827,9 +1433,9 @@ class TelegramTdlibService extends ChangeNotifier {
           '@type': 'getSupergroup',
           'supergroup_id': supergroupId,
         });
-        if (res['@type'] == 'supergroup') {
+          if (res['@type'] == 'supergroup') {
           _supergroups[supergroupId] = Map<String, dynamic>.from(res);
-          notifyListeners();
+          _notifyUi();
         }
       } catch (e) {
         debugPrint('[tdlib] getSupergroup failed: $e');
@@ -1010,6 +1616,17 @@ class TelegramTdlibService extends ChangeNotifier {
 
   /// Local path for a message photo, including stall-fallback `m` sizes.
   String? resolvedPhotoPath(TdlibMessage m) {
+    final soft = m.photoSizeType == null ||
+        m.photoSizeType == 'm' ||
+        m.photoSizeType == 's';
+    // Soft primary path must not hide a sharper fallback already on disk —
+    // that left album cells blurry until the viewer rebound the path.
+    if (soft) {
+      for (final id in m.photoFallbackFileIds) {
+        final p = cachedFilePath(id);
+        if (p != null && p.isNotEmpty) return p;
+      }
+    }
     if (m.photoLocalPath != null && m.photoLocalPath!.isNotEmpty) {
       return m.photoLocalPath;
     }
@@ -1047,11 +1664,36 @@ class TelegramTdlibService extends ChangeNotifier {
       // Extend window on every scroll tick (drag + fling).
       _uiScrollBusyUntil =
           DateTime.now().add(const Duration(milliseconds: 520));
+      LinkPreviewService.instance.deferNetworkFetches = true;
       return;
     }
     _uiScrollBusy = false;
     _uiScrollBusyUntil = null;
+    if (LinkPreviewService.instance.linkPreviewGateOpen) {
+      LinkPreviewService.instance.deferNetworkFetches = false;
+    }
     _flushPendingUiNotify();
+  }
+
+  @override
+  void notifyListeners() {
+    _hubChatsCache = null;
+    if (TgJankLog.focusChatId != null && _openChatId == TgJankLog.focusChatId) {
+      final tip = StackTrace.current
+          .toString()
+          .split('\n')
+          .map((l) => l.trim())
+          .where(
+            (l) =>
+                l.contains('telegram_tdlib') ||
+                l.contains('TelegramTdlib') ||
+                l.contains('_notify'),
+          )
+          .take(3)
+          .join(' ← ');
+      TgJankLog.notify(reason: tip.isEmpty ? 'ChangeNotifier' : tip);
+    }
+    super.notifyListeners();
   }
 
   bool get _deferMediaUiNotify {
@@ -1065,7 +1707,9 @@ class TelegramTdlibService extends ChangeNotifier {
   }
 
   /// Coalesce high-frequency media notifies. [immediate] bypasses throttle
-  /// (auth / new messages). [media] respects scroll-busy deferral.
+  /// (auth / new messages). While the open conversation is scrolling/flinging,
+  /// defer ALL non-immediate notifies — any rebuild mid-ballistic feels like
+  /// "inertia won't start" in media-heavy groups.
   void _notifyUi({bool immediate = false, bool media = false}) {
     if (immediate) {
       _uiNotifyTimer?.cancel();
@@ -1074,14 +1718,14 @@ class TelegramTdlibService extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (media && _deferMediaUiNotify) {
+    if (_deferMediaUiNotify) {
       _uiNotifyPending = true;
       _uiNotifyTimer?.cancel();
       _uiNotifyTimer = Timer(const Duration(milliseconds: 160), () {
         _uiNotifyTimer = null;
         if (_deferMediaUiNotify) {
           // Still flinging — wait again.
-          _notifyUi(media: true);
+          _notifyUi(media: media);
           return;
         }
         _flushPendingUiNotify();
@@ -1093,6 +1737,23 @@ class TelegramTdlibService extends ChangeNotifier {
       _uiNotifyTimer = null;
       _flushPendingUiNotify();
     });
+  }
+
+  /// Hub-row / other-chat noise must not rebuild an open conversation.
+  /// Busy groups (ТП НСИС…) otherwise hitch scroll+buttons on every
+  /// updateChatLastMessage / updateUserStatus from the rest of the account.
+  void _notifyListenersForChat(int? chatId, {bool hubOnly = false}) {
+    final openId = _openChatId;
+    if (openId != null) {
+      if (hubOnly) return;
+      if (chatId != null && chatId != openId) return;
+      // Open-chat updates: coalesce and defer while flinging.
+      _notifyUi();
+      return;
+    }
+    // Hub: same coalesce/scroll-busy gate — avatar completes + last-message
+    // spam must not rebuild the whole list mid-fling.
+    _notifyUi();
   }
 
   void _flushPendingUiNotify() {
@@ -1170,9 +1831,19 @@ class TelegramTdlibService extends ChangeNotifier {
   }
 
   void _queueAvatarDownload(int fileId) {
-    // Mass hub enqueue is disabled (see prefetchVisibleHubAvatars).
-    // Keep this as a no-op so stray callers cannot refill the queue.
     if (fileId <= 0) return;
+    // Don't compete with exclusive focus downloads inside an open chat.
+    if (_openChatId != null) return;
+    if (_filePathCache.containsKey(fileId)) return;
+    if (_downloadInFlight.contains(fileId) || _downloadQueued.contains(fileId)) {
+      return;
+    }
+    _queueFileDownload(
+      fileId,
+      priority: prioHubAvatar,
+      background: true,
+      reason: 'hub-avatar',
+    );
   }
 
   void _mediaLog(String msg) {
@@ -1277,9 +1948,15 @@ class TelegramTdlibService extends ChangeNotifier {
       }
       if (stalled) {
         if (!_tdlibReadyForMedia) {
-          _mediaLog(
-            'stall-defer file=$id (conn=$_connectionState, wait Ready)',
-          );
+          // Hub avatars: still free the slot so the next Ready cycle can
+          // try another face instead of blocking on the same 0B CDN id.
+          if (isHubAvatar) {
+            unawaited(_recoverStalledDownload(id));
+          } else {
+            _mediaLog(
+              'stall-defer file=$id (conn=$_connectionState, wait Ready)',
+            );
+          }
         } else {
           unawaited(_recoverStalledDownload(id));
         }
@@ -1321,7 +1998,10 @@ class TelegramTdlibService extends ChangeNotifier {
   /// TDLib maintainers instead of waiting forever on synchronous downloads.
   Future<void> _recoverStalledDownload(int fileId) async {
     if (!_downloadInFlight.contains(fileId)) return;
-    if (!_tdlibReadyForMedia) {
+    final tEarly = _downloadTrace[fileId];
+    final reasonEarly = tEarly?.reason ?? '';
+    final isHubAvatarEarly = reasonEarly == 'hub-avatar';
+    if (!_tdlibReadyForMedia && !isHubAvatarEarly) {
       _mediaLog('stall-recover-skip file=$fileId conn=$_connectionState');
       return;
     }
@@ -1336,7 +2016,7 @@ class TelegramTdlibService extends ChangeNotifier {
     // exclusive media slot from the focused photo.
     // Hub-avatar 0B: drop and let the next visible row take the slot
     // (retrying the same CDN id just blocks the list longer).
-    if (isAvatar && (_openChatId != null || reason == 'hub-avatar') &&
+    if (isAvatar && (reason == 'hub-avatar' || _openChatId != null) &&
         !hadProgress) {
       _mediaLog('stall-drop-avatar file=$fileId reason=$reason');
       _downloadInFlight.remove(fileId);
@@ -1345,11 +2025,15 @@ class TelegramTdlibService extends ChangeNotifier {
       _downloadTrace.remove(fileId);
       _fileDownloadProgress.remove(fileId);
       await _cancelTdlibDownload(fileId);
-      if (reason == 'hub-avatar') {
+      if (reason == 'hub-avatar' && _tdlibReadyForMedia) {
         unawaited(_nudgeCdnAfterStall('hub-avatar-0B'));
       }
       _pumpDownloadQueue();
       notifyListeners();
+      return;
+    }
+    if (!_tdlibReadyForMedia) {
+      _mediaLog('stall-recover-skip file=$fileId conn=$_connectionState');
       return;
     }
     final chatId = t?.chatId ?? _openChatId;
@@ -1633,11 +2317,8 @@ class TelegramTdlibService extends ChangeNotifier {
     }
 
     // While a chat is open, ignore new background work (hub avatars etc.).
+    // Silent: group ListView itemBuilders call sender-avatar every rebuild.
     if (background && _openChatId != null) {
-      _mediaLog(
-        'skip file=$fileId reason=$reason bgBlockedWhileChatOpen '
-        'open=$_openChatId',
-      );
       return;
     }
 
@@ -2108,14 +2789,12 @@ class TelegramTdlibService extends ChangeNotifier {
     );
   }
 
-  /// True if we already know a local path (RAM cache) and the file exists.
+  /// True if we already know a local path (RAM cache).
+  /// Do NOT existsSync here — download/queue paths call this often; sync disk
+  /// I/O on the UI isolate stalls fling in photo-heavy chats.
   bool _hasCachedPath(int fileId) {
     final path = _filePathCache[fileId];
-    if (path == null || path.isEmpty) return false;
-    if (File(path).existsSync()) return true;
-    // Stale TDLib path — drop so focus/tap can re-download.
-    _filePathCache.remove(fileId);
-    return false;
+    return path != null && path.isNotEmpty;
   }
 
   /// Ask TDLib whether the file is already on disk; seeds [_filePathCache].
@@ -2450,15 +3129,22 @@ class TelegramTdlibService extends ChangeNotifier {
             _mediaLog(
               'focus-upgrade-soft msg=${msg.id} from=$fileId → $upgrades',
             );
-            for (final id in upgrades) {
-              _queueFileDownload(
-                id,
-                priority: prioFocused,
-                background: false,
-                chatId: chatId,
-                reason: 'focus-upgrade:${msg.id}',
-              );
-            }
+            // One upgrade at a time — parallel x/y/w starved the CDN slot.
+            final id = upgrades.first;
+            _queueFileDownload(
+              id,
+              priority: prioFocused,
+              background: false,
+              chatId: chatId,
+              reason: 'focus-upgrade:${msg.id}',
+            );
+          } else if (msg.photoSizeType == 'm' ||
+              msg.photoSizeType == 's' ||
+              msg.photoSizeType == null) {
+            // Soft-only sizes list — refresh after open so TDLib exposes x/y.
+            unawaited(
+              _enqueueNeighborMediaAsync(chatId: chatId, messageId: msg.id),
+            );
           }
         } else if (!softDone &&
             (msg.photoRemoteId == fileId ||
@@ -2487,6 +3173,14 @@ class TelegramTdlibService extends ChangeNotifier {
     int fileId,
     String path,
   ) {
+    if (m.documentThumbFileId == fileId) {
+      if (m.documentThumbLocalPath == path) return null;
+      return _copyMessage(m, documentThumbLocalPath: path);
+    }
+    if (m.documentFileId == fileId) {
+      if (m.documentLocalPath == path) return null;
+      return _copyMessage(m, documentLocalPath: path);
+    }
     if (m.videoThumbFileId == fileId) {
       if (m.videoThumbLocalPath == path) return null;
       return _copyMessage(m, videoThumbLocalPath: path);
@@ -2508,8 +3202,19 @@ class TelegramTdlibService extends ChangeNotifier {
       return _copyMessage(m, voiceLocalPath: path);
     }
     if (m.photoRemoteId == fileId || m.photoFallbackFileIds.contains(fileId)) {
-      if (m.photoLocalPath == path) return null;
-      return _copyMessage(m, photoLocalPath: path);
+      // Fallback ids are x/y/w upgrades — stamp type so the bubble stops
+      // treating a sharp file as soft `m` (same path may already be set).
+      final upgraded = m.photoFallbackFileIds.contains(fileId) &&
+          m.photoRemoteId != fileId &&
+          (m.photoSizeType == null ||
+              m.photoSizeType == 'm' ||
+              m.photoSizeType == 's');
+      if (m.photoLocalPath == path && !upgraded) return null;
+      return _copyMessage(
+        m,
+        photoLocalPath: path,
+        photoSizeType: upgraded ? 'x' : null,
+      );
     }
     // Fallback: treat as photo path (legacy callers).
     if (m.photoLocalPath == path) return null;
@@ -2519,11 +3224,14 @@ class TelegramTdlibService extends ChangeNotifier {
   TdlibMessage _copyMessage(
     TdlibMessage m, {
     String? photoLocalPath,
+    String? photoSizeType,
     String? voiceLocalPath,
     String? videoNoteLocalPath,
     String? videoNoteThumbLocalPath,
     String? videoLocalPath,
     String? videoThumbLocalPath,
+    String? documentLocalPath,
+    String? documentThumbLocalPath,
   }) {
     return TdlibMessage(
       id: m.id,
@@ -2535,7 +3243,7 @@ class TelegramTdlibService extends ChangeNotifier {
       textEntities: m.textEntities,
       photoLocalPath: photoLocalPath ?? m.photoLocalPath,
       photoRemoteId: m.photoRemoteId,
-      photoSizeType: m.photoSizeType,
+      photoSizeType: photoSizeType ?? m.photoSizeType,
       photoWidth: m.photoWidth,
       photoHeight: m.photoHeight,
       photoFallbackFileIds: m.photoFallbackFileIds,
@@ -2559,6 +3267,17 @@ class TelegramTdlibService extends ChangeNotifier {
       videoThumbLocalPath: videoThumbLocalPath ?? m.videoThumbLocalPath,
       videoThumbBytes: m.videoThumbBytes,
       isAnimation: m.isAnimation,
+      isSticker: m.isSticker,
+      stickerEmoji: m.stickerEmoji,
+      documentFileId: m.documentFileId,
+      documentLocalPath: documentLocalPath ?? m.documentLocalPath,
+      documentFileName: m.documentFileName,
+      documentMimeType: m.documentMimeType,
+      documentSizeBytes: m.documentSizeBytes,
+      documentThumbFileId: m.documentThumbFileId,
+      documentThumbLocalPath:
+          documentThumbLocalPath ?? m.documentThumbLocalPath,
+      documentThumbBytes: m.documentThumbBytes,
       reactions: m.reactions,
       replyToMessageId: m.replyToMessageId,
       replyPreviewText: m.replyPreviewText,
@@ -2727,8 +3446,40 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Own Telegram user id after getMe (null until ready).
   int? get myUserId => _myUserId;
 
+  /// True when [chatId] is Telegram Saved Messages (private chat with self).
+  bool isSavedMessagesChat(int chatId) {
+    final myId = _myUserId;
+    if (myId == null || myId <= 0) return false;
+    final peer = _privateUserId(chatId);
+    return peer != null && peer == myId;
+  }
+
+  /// Chat id for Saved Messages when known (usually equals [myUserId]).
+  int? get savedMessagesChatId {
+    final myId = _myUserId;
+    if (myId == null || myId <= 0) return null;
+    return privateChatIdForUser(myId) ?? myId;
+  }
+
   /// Optional hook for FC↔TG group bridge (TG→FC ingest).
-  void Function(TdlibMessage msg)? onBridgeNewMessage;
+  final List<void Function(TdlibMessage msg)> _bridgeNewMessageListeners = [];
+
+  /// Register a TG→FC bridge listener (group / saved). Multicast-safe.
+  void addBridgeNewMessageListener(void Function(TdlibMessage msg) listener) {
+    if (!_bridgeNewMessageListeners.contains(listener)) {
+      _bridgeNewMessageListeners.add(listener);
+    }
+  }
+
+  void removeBridgeNewMessageListener(void Function(TdlibMessage msg) listener) {
+    _bridgeNewMessageListeners.remove(listener);
+  }
+
+  /// Legacy single-slot setter — prefer [addBridgeNewMessageListener].
+  set onBridgeNewMessage(void Function(TdlibMessage msg)? listener) {
+    _bridgeNewMessageListeners.clear();
+    if (listener != null) _bridgeNewMessageListeners.add(listener);
+  }
 
   /// True when MTProto can carry media bytes (Ready / Updating).
   bool get isMtprotoReadyForMedia => _tdlibReadyForMedia;
@@ -3113,6 +3864,10 @@ class TelegramTdlibService extends ChangeNotifier {
     _supergroups.clear();
     _supergroupFetchQueued.clear();
     _chatOrder.clear();
+    _chatFolderInfos.clear();
+    _chatFolderDetails.clear();
+    _folderChatIds.clear();
+    _chatFoldersEpoch = 0;
     _messagesByChat.clear();
     _chatActions.clear();
     _notifGroupChatId.clear();
@@ -3135,6 +3890,8 @@ class TelegramTdlibService extends ChangeNotifier {
     _uiNotifyPending = false;
     _uiScrollBusy = false;
     _uiScrollBusyUntil = null;
+    _hubChatsCache = null;
+    _miniThumbByChatId.clear();
     _connectingTimeoutTimer?.cancel();
     _connectingTimeoutTimer = null;
     _connectingSince = null;
@@ -3466,6 +4223,8 @@ class TelegramTdlibService extends ChangeNotifier {
       }
     }
     notifyListeners();
+    // Prefetch history for a few unread hub chats so open can jump faster.
+    warmUnreadChatsFromHub();
   }
 
   Future<void> openChat(int chatId) async {
@@ -3651,6 +4410,7 @@ class TelegramTdlibService extends ChangeNotifier {
     int chatId, {
     int minCount = 20,
     bool? preferLocal,
+    bool silent = false,
   }) async {
     final c = _client;
     if (c == null) return;
@@ -3688,7 +4448,7 @@ class TelegramTdlibService extends ChangeNotifier {
     if (byId.isNotEmpty) {
       _messagesByChat[chatId] = byId.values.toList()
         ..sort((a, b) => a.id.compareTo(b.id));
-      notifyListeners();
+      if (!silent) notifyListeners();
     }
 
     var fromMessageId = 0;
@@ -3712,13 +4472,14 @@ class TelegramTdlibService extends ChangeNotifier {
 
     _mediaLog(
       'loadHistory chat=$chatId onlyLocal=$onlyLocal '
-      'seed=${byId.length} conn=$_connectionState',
+      'seed=${byId.length} conn=$_connectionState silent=$silent',
     );
 
     for (var attempt = 0;
         attempt < maxAttempts && byId.length < maxCount && !reachedAgeFloor();
         attempt++) {
-      if (_openChatId != chatId) return;
+      // Allow background warm when no chat is open; abort if another is open.
+      if (_openChatId != null && _openChatId != chatId) return;
       Map<String, dynamic> res;
       final t0 = DateTime.now();
       try {
@@ -3796,7 +4557,8 @@ class TelegramTdlibService extends ChangeNotifier {
       final sorted = byId.values.toList()
         ..sort((a, b) => a.id.compareTo(b.id));
       _messagesByChat[chatId] = sorted;
-      notifyListeners();
+      // No notifyListeners per page — rebuilding the open conversation on
+      // every getChatHistory chunk skips 50–150 frames and kills fling.
 
       _mediaLog(
         'getChatHistory ok chat=$chatId attempt=$attempt '
@@ -3833,12 +4595,73 @@ class TelegramTdlibService extends ChangeNotifier {
     final finalList = byId.values.toList()
       ..sort((a, b) => a.id.compareTo(b.id));
     _messagesByChat[chatId] = finalList;
-    notifyListeners();
+    // One coalesce after the full window is ready (skip for silent warm).
+    if (!silent) _notifyUi();
     _mediaLog(
       'history-done chat=$chatId count=${finalList.length} '
       'channel=$isChannel onlyLocal=$onlyLocal '
-      'ageFloor=${reachedAgeFloor()}',
+      'ageFloor=${reachedAgeFloor()} silent=$silent',
     );
+  }
+
+  /// Prefetch local (+ a few older pages) for unread chats while the user is
+  /// still on the hub — so open can jump to the unread frontier without a long
+  /// empty wait. No-op when a conversation is already open (don't compete).
+  Future<void> warmUnreadChatHistory(int chatId) async {
+    if (chatId == 0 || !isReady) return;
+    if (_openChatId != null) return;
+    if (unreadCountFor(chatId) <= 0) return;
+    if (_historyWarmInFlight.contains(chatId)) return;
+
+    final lastRead = lastReadInboxMessageId(chatId);
+    final list = _messagesByChat[chatId];
+    // Already have enough history spanning the read marker → open can jump.
+    if (list != null &&
+        list.length >= 40 &&
+        lastRead > 0 &&
+        list.first.id <= lastRead) {
+      return;
+    }
+
+    _historyWarmInFlight.add(chatId);
+    _mediaLog(
+      'warm-history start chat=$chatId unread=${unreadCountFor(chatId)}',
+    );
+    try {
+      await _loadChatHistory(chatId, preferLocal: true, silent: true);
+      if (_openChatId != null) return;
+      if (_tdlibReadyForMedia) {
+        await _loadChatHistory(chatId, preferLocal: false, silent: true);
+      }
+      // Walk older pages until we cover last_read (unread divider target).
+      for (var i = 0; i < 5; i++) {
+        if (_openChatId != null) break;
+        final msgs = _messagesByChat[chatId];
+        if (msgs == null || msgs.isEmpty) break;
+        if (lastRead > 0 && msgs.first.id <= lastRead) break;
+        final added =
+            await loadOlderMessages(chatId, pageSize: 40, silent: true);
+        if (added <= 0) break;
+      }
+      _mediaLog(
+        'warm-history done chat=$chatId '
+        'msgs=${_messagesByChat[chatId]?.length ?? 0}',
+      );
+    } finally {
+      _historyWarmInFlight.remove(chatId);
+    }
+  }
+
+  /// Warm a few hub chats that already have unreads (after list load).
+  void warmUnreadChatsFromHub({int maxChats = 3}) {
+    if (_openChatId != null || !isReady) return;
+    var n = 0;
+    for (final id in _chatOrder) {
+      if (unreadCountFor(id) <= 0) continue;
+      unawaited(warmUnreadChatHistory(id));
+      n++;
+      if (n >= maxChats) break;
+    }
   }
 
   /// Pull newest page and merge (never replaces existing messages wholesale).
@@ -4018,10 +4841,14 @@ class TelegramTdlibService extends ChangeNotifier {
     final ids = _pendingNeighborMessageIds;
     _pendingNeighborMessageIds = const [];
     if (ids.isEmpty) return;
-    // Only queue neighbors when focus already owns at least one slot / queue
-    // head — otherwise they start first again.
+    // Serialize soft→sharp refresh; parallel getMessage races TDLib receive.
+    unawaited(_flushPendingNeighborsAsync(chatId, ids));
+  }
+
+  Future<void> _flushPendingNeighborsAsync(int chatId, List<int> ids) async {
     for (final mid in ids) {
-      _enqueueNeighborMedia(chatId: chatId, messageId: mid);
+      if (_openChatId != chatId) return;
+      await _enqueueNeighborMediaAsync(chatId: chatId, messageId: mid);
     }
   }
 
@@ -4079,6 +4906,16 @@ class TelegramTdlibService extends ChangeNotifier {
     required int chatId,
     required int messageId,
   }) {
+    unawaited(
+      _enqueueNeighborMediaAsync(chatId: chatId, messageId: messageId),
+    );
+  }
+
+  Future<void> _enqueueNeighborMediaAsync({
+    required int chatId,
+    required int messageId,
+  }) async {
+    if (_openChatId != chatId) return;
     final list = _messagesByChat[chatId];
     if (list == null) return;
     TdlibMessage? m;
@@ -4088,7 +4925,34 @@ class TelegramTdlibService extends ChangeNotifier {
         break;
       }
     }
-    if (m == null || _photoHasUsablePath(m)) return;
+    if (m == null || _photoBubbleSharp(m)) return;
+
+    final softPhoto = m.isPhoto &&
+        (m.photoSizeType == null ||
+            m.photoSizeType == 'm' ||
+            m.photoSizeType == 's' ||
+            m.photoFallbackFileIds.isEmpty);
+    if (softPhoto) {
+      await _openMessageContent(chatId, messageId);
+      if (_openChatId != chatId) return;
+      final c = _client;
+      if (c != null) {
+        try {
+          final res = await c.sendAwait({
+            '@type': 'getMessage',
+            'chat_id': chatId,
+            'message_id': messageId,
+          }, timeout: const Duration(seconds: 6));
+          final parsed = _parseMessage(res);
+          if (parsed != null) {
+            _upsertMessage(parsed);
+            m = parsed;
+          }
+        } catch (_) {}
+      }
+      if (_photoBubbleSharp(m!)) return;
+    }
+
     final ids = <int>[];
     void addId(int? id) {
       if (id == null || id <= 0) return;
@@ -4096,10 +4960,16 @@ class TelegramTdlibService extends ChangeNotifier {
       if (ids.contains(id)) return;
       ids.add(id);
     }
-    if (m.photoRemoteId != null) {
-      addId(m.photoRemoteId);
-    } else if (m.photoFallbackFileIds.isNotEmpty) {
-      addId(m.photoFallbackFileIds.first);
+
+    if (m.isPhoto || m.photoRemoteId != null) {
+      final soft = m.photoSizeType == null ||
+          m.photoSizeType == 'm' ||
+          m.photoSizeType == 's';
+      if (soft && m.photoFallbackFileIds.isNotEmpty) {
+        addId(m.photoFallbackFileIds.first);
+      } else {
+        addId(m.photoRemoteId);
+      }
     }
     addId(m.videoThumbFileId);
     for (final id in ids) {
@@ -4114,6 +4984,7 @@ class TelegramTdlibService extends ChangeNotifier {
         reason: 'neighbor:$messageId',
       );
     }
+    if (ids.isNotEmpty) _pumpDownloadQueue();
   }
 
   /// Exclusive media focus: download only this message's light media (1 at a time).
@@ -4285,7 +5156,18 @@ class TelegramTdlibService extends ChangeNotifier {
           claimed.photoSizeType == 's';
       if (soft && claimed.photoFallbackFileIds.isNotEmpty) {
         // One upgrade (x) — not y/w flood that starves the slot.
-        addId(claimed.photoFallbackFileIds.first);
+        final up = claimed.photoFallbackFileIds.first;
+        if (_hasCachedPath(up)) {
+          // Already on disk but message still typed soft — rebind + mark x.
+          final path = _filePathCache[up]!;
+          final patched = _messageWithDownloadedFile(claimed, up, path);
+          if (patched != null) {
+            _upsertMessage(patched);
+            notifyListeners();
+          }
+        } else {
+          addId(up);
+        }
       } else if (claimed.photoRemoteId != null) {
         addId(claimed.photoRemoteId);
       }
@@ -4297,7 +5179,14 @@ class TelegramTdlibService extends ChangeNotifier {
             m.photoSizeType == 'm' ||
             m.photoSizeType == 's';
         if (soft && m.photoFallbackFileIds.isNotEmpty) {
-          addId(m.photoFallbackFileIds.first);
+          final up = m.photoFallbackFileIds.first;
+          if (_hasCachedPath(up)) {
+            final path = _filePathCache[up]!;
+            final patched = _messageWithDownloadedFile(m, up, path);
+            if (patched != null) _upsertMessage(patched);
+          } else {
+            addId(up);
+          }
         } else {
           addId(m.photoRemoteId);
         }
@@ -4343,6 +5232,23 @@ class TelegramTdlibService extends ChangeNotifier {
         final id = m.videoNoteThumbFileId!;
         if (!ordered.contains(id)) ordered.add(id);
       }
+      // PDF / document first-page thumbnails (Telegram server-side).
+      if (thumbNeedsDownload(
+        m.documentThumbFileId,
+        m.documentThumbLocalPath,
+      )) {
+        final id = m.documentThumbFileId!;
+        if (!ordered.contains(id)) ordered.add(id);
+      }
+      // GIF / animated sticker — download full media for inline autoplay.
+      if (m.isAnimation || m.isSticker) {
+        addId(m.videoFileId);
+        addId(m.photoRemoteId);
+      }
+      // PDF body so first-page pdfrx preview can render when TG has no thumb.
+      if (m.isPdfDocument) {
+        addId(m.documentFileId);
+      }
     }
     if (ordered.isEmpty) {
       for (final m in members) {
@@ -4382,6 +5288,7 @@ class TelegramTdlibService extends ChangeNotifier {
         for (final id in <int?>[
           mem.videoThumbFileId,
           mem.videoNoteThumbFileId,
+          mem.documentThumbFileId,
           mem.photoRemoteId,
           ...mem.photoFallbackFileIds,
         ]) {
@@ -4412,6 +5319,8 @@ class TelegramTdlibService extends ChangeNotifier {
         // Fall through to enqueue tiny requeues below.
       } else if (stamped) {
         _mediaLog('focus-bind-cached msg=$messageId');
+        // Focus already local — still warm soft neighbors (albums span ids).
+        _flushPendingNeighbors(chatId);
         notifyListeners();
         return;
       } else {
@@ -4419,7 +5328,9 @@ class TelegramTdlibService extends ChangeNotifier {
         final hasThumbId = members.any(
           (x) =>
               (x.videoThumbFileId != null && x.videoThumbFileId! > 0) ||
-              (x.videoNoteThumbFileId != null && x.videoNoteThumbFileId! > 0),
+              (x.videoNoteThumbFileId != null &&
+                  x.videoNoteThumbFileId! > 0) ||
+              (x.documentThumbFileId != null && x.documentThumbFileId! > 0),
         );
         if (!hasThumbId) {
           final list = _messagesByChat[chatId];
@@ -4444,7 +5355,10 @@ class TelegramTdlibService extends ChangeNotifier {
         }
         addId(m.videoThumbFileId);
         addId(m.videoNoteThumbFileId);
-        if (ordered.isEmpty) return;
+        if (ordered.isEmpty) {
+          _flushPendingNeighbors(chatId);
+          return;
+        }
       }
     }
 
@@ -4495,6 +5409,9 @@ class TelegramTdlibService extends ChangeNotifier {
       if (m.videoFileId == fileId ||
           m.videoNoteFileId == fileId ||
           m.photoRemoteId == fileId ||
+          m.documentFileId == fileId ||
+          m.documentThumbFileId == fileId ||
+          m.videoThumbFileId == fileId ||
           m.photoFallbackFileIds.contains(fileId)) {
         await _openMessageContent(chatId, m.id);
         return;
@@ -4557,6 +5474,28 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     final vt = m.videoThumbFileId;
     if (vt != null && vt > 0 && !_hasCachedPath(vt)) return true;
+    final dt = m.documentThumbFileId;
+    if (dt != null && dt > 0 && !_hasCachedPath(dt)) return true;
+    if (m.isAnimation &&
+        m.videoFileId != null &&
+        m.videoFileId! > 0 &&
+        !_hasCachedPath(m.videoFileId!)) {
+      return true;
+    }
+    if (m.isSticker &&
+        m.photoRemoteId != null &&
+        m.photoRemoteId! > 0 &&
+        !_hasCachedPath(m.photoRemoteId!)) {
+      return true;
+    }
+    if (m.isPdfDocument &&
+        m.documentFileId != null &&
+        m.documentFileId! > 0 &&
+        !_hasCachedPath(m.documentFileId!) &&
+        (m.documentThumbFileId == null ||
+            !_hasCachedPath(m.documentThumbFileId!))) {
+      return true;
+    }
     return false;
   }
 
@@ -4575,16 +5514,24 @@ class TelegramTdlibService extends ChangeNotifier {
 
   /// Sharp enough for a chat bubble — soft s/m alone is not.
   bool _photoBubbleSharp(TdlibMessage m) {
-    if (!_photoHasUsablePath(m)) return false;
     final type = m.photoSizeType;
-    if (type == 'x' || type == 'y' || type == 'w') return true;
-    // Soft/unknown type: accept only if the on-disk file is already large
-    // (upgrade stamped onto photoLocalPath).
+    if (type == 'x' || type == 'y' || type == 'w') {
+      return _photoHasUsablePath(m);
+    }
+    // Soft s/m: sharp only when a fallback upgrade is already on disk.
+    if (type == 'm' || type == 's' || type == null) {
+      for (final id in m.photoFallbackFileIds) {
+        if (_hasCachedPath(id)) return true;
+      }
+      return false;
+    }
+    // Unknown type: accept only a clearly large on-disk file.
+    if (!_photoHasUsablePath(m)) return false;
     final path = m.photoLocalPath ??
         (m.photoRemoteId != null ? _filePathCache[m.photoRemoteId!] : null);
     if (path != null && path.isNotEmpty) {
       try {
-        if (File(path).lengthSync() >= 30 * 1024) return true;
+        if (File(path).lengthSync() >= 40 * 1024) return true;
       } catch (_) {}
     }
     return false;
@@ -4726,12 +5673,16 @@ class TelegramTdlibService extends ChangeNotifier {
   }
 
   /// Load older messages (scroll-up). Returns how many new messages were added.
-  Future<int> loadOlderMessages(int chatId, {int pageSize = 50}) async {
+  Future<int> loadOlderMessages(
+    int chatId, {
+    int pageSize = 50,
+    bool silent = false,
+  }) async {
     final c = _client;
     if (c == null || !isReady) return 0;
     final existing = _messagesByChat[chatId] ?? const <TdlibMessage>[];
     if (existing.isEmpty) {
-      await _loadChatHistory(chatId);
+      await _loadChatHistory(chatId, silent: silent);
       return _messagesByChat[chatId]?.length ?? 0;
     }
     final isChannel = isChannelChat(chatId);
@@ -4775,9 +5726,11 @@ class TelegramTdlibService extends ChangeNotifier {
           if (!beforeIds.contains(msg.id)) newly.add(msg);
         }
         // Scroll-up: no bulk download — exclusive focus handles visible media.
-        notifyListeners();
+        if (!silent) notifyListeners();
         added = (_messagesByChat[chatId]?.length ?? 0) - before;
-        if (added > 0 || newly.isNotEmpty) return newly.isNotEmpty ? newly.length : added;
+        if (added > 0 || newly.isNotEmpty) {
+          return newly.isNotEmpty ? newly.length : added;
+        }
         if (attempt + 1 >= retries) break;
         await Future<void>.delayed(
           Duration(milliseconds: 280 + attempt * 120),
@@ -4924,6 +5877,7 @@ class TelegramTdlibService extends ChangeNotifier {
     int chatId,
     String text, {
     int? replyToMessageId,
+    bool disableNotification = false,
   }) async {
     final c = _client;
     if (c == null || text.trim().isEmpty) return null;
@@ -4935,6 +5889,7 @@ class TelegramTdlibService extends ChangeNotifier {
           '@type': 'inputMessageReplyToMessage',
           'message_id': replyToMessageId,
         },
+      'disable_notification': disableNotification,
       'input_message_content': {
         '@type': 'inputMessageText',
         'text': {
@@ -5158,18 +6113,43 @@ class TelegramTdlibService extends ChangeNotifier {
   ) async {
     final c = _client;
     if (c == null || text.trim().isEmpty) return;
-    await c.sendAwait({
-      '@type': 'editMessageText',
-      'chat_id': chatId,
-      'message_id': messageId,
-      'input_message_content': {
-        '@type': 'inputMessageText',
-        'text': {
+    final trimmed = text.trim();
+    final existing = () {
+      final list = _messagesByChat[chatId];
+      if (list == null) return null;
+      for (final m in list) {
+        if (m.id == messageId) return m;
+      }
+      return null;
+    }();
+    final useCaption = existing != null &&
+        (existing.isPhoto ||
+            existing.videoFileId != null ||
+            existing.isAnimation);
+    if (useCaption) {
+      await c.sendAwait({
+        '@type': 'editMessageCaption',
+        'chat_id': chatId,
+        'message_id': messageId,
+        'caption': {
           '@type': 'formattedText',
-          'text': text.trim(),
+          'text': trimmed,
         },
-      },
-    });
+      });
+    } else {
+      await c.sendAwait({
+        '@type': 'editMessageText',
+        'chat_id': chatId,
+        'message_id': messageId,
+        'input_message_content': {
+          '@type': 'inputMessageText',
+          'text': {
+            '@type': 'formattedText',
+            'text': trimmed,
+          },
+        },
+      });
+    }
   }
 
   Future<void> deleteMessages(
@@ -5340,6 +6320,32 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     final muteFor = (settings['mute_for'] as num?)?.toInt() ?? 0;
     return muteFor > 0;
+  }
+
+  /// Text search in a chat (AppBar / message search sheet).
+  Future<List<TdlibMessage>> searchChatTextMessages(
+    int chatId,
+    String query, {
+    int limit = 50,
+  }) async {
+    final c = _client;
+    final q = query.trim();
+    if (c == null || !isReady || q.isEmpty) return const [];
+    try {
+      final res = await c.sendAwait({
+        '@type': 'searchChatMessages',
+        'chat_id': chatId,
+        'query': q,
+        'from_message_id': 0,
+        'offset': 0,
+        'limit': limit.clamp(1, 100),
+        'filter': {'@type': 'searchMessagesFilterEmpty'},
+      });
+      return _parseMessagesList(res);
+    } catch (e) {
+      debugPrint('[tdlib] searchChatTextMessages($chatId): $e');
+      return const [];
+    }
   }
 
   /// Media / link search for profile sheet tabs.
@@ -5868,6 +6874,186 @@ class TelegramTdlibService extends ChangeNotifier {
     });
   }
 
+  /// Whether the current user is the group/channel creator.
+  Future<bool> amChatCreator(int chatId) async {
+    final c = _client;
+    final myId = _myUserId;
+    if (c == null || !isReady || myId == null || myId <= 0 || chatId == 0) {
+      return false;
+    }
+    try {
+      final res = await c.sendAwait({
+        '@type': 'getChatMember',
+        'chat_id': chatId,
+        'member_id': {'@type': 'messageSenderUser', 'user_id': myId},
+      });
+      if (res['@type'] != 'chatMember') return false;
+      final status = res['status'];
+      if (status is! Map) return false;
+      return status['@type']?.toString() == 'chatMemberStatusCreator';
+    } catch (e) {
+      debugPrint('[tdlib] amChatCreator($chatId): $e');
+      return false;
+    }
+  }
+
+  Future<List<TdlibChatMember>> chatMembers(
+    int chatId, {
+    int limit = 100,
+  }) async {
+    final c = _client;
+    if (c == null || !isReady || chatId == 0) return const [];
+    final chat = _chats[chatId];
+    if (chat == null) return const [];
+    final type = chat['type'];
+    if (type is! Map) return const [];
+    final typeName = type['@type']?.toString() ?? '';
+    final out = <TdlibChatMember>[];
+
+    try {
+      if (typeName == 'chatTypeBasicGroup') {
+        final bgId = _tdlibInt(type['basic_group_id']);
+        if (bgId <= 0) return const [];
+        final full = await c.sendAwait({
+          '@type': 'getBasicGroupFullInfo',
+          'basic_group_id': bgId,
+        });
+        final members = full['members'];
+        if (members is! List) return const [];
+        for (final raw in members) {
+          if (raw is! Map) continue;
+          final m = Map<String, dynamic>.from(raw);
+          final memberId = m['member_id'];
+          var userId = 0;
+          if (memberId is Map) {
+            userId = _tdlibInt(memberId['user_id']);
+          } else {
+            userId = _tdlibInt(m['user_id']);
+          }
+          if (userId <= 0) continue;
+          final status = m['status'];
+          final statusType =
+              status is Map ? status['@type']?.toString() ?? '' : '';
+          out.add(_chatMemberFromUserId(
+            userId,
+            isCreator: statusType == 'chatMemberStatusCreator',
+            isAdmin: statusType == 'chatMemberStatusAdministrator',
+          ));
+        }
+      } else if (typeName == 'chatTypeSupergroup') {
+        final isChannel = type['is_channel'] == true;
+        if (isChannel) return const [];
+        var offset = '';
+        while (out.length < limit) {
+          final res = await c.sendAwait({
+            '@type': 'getSupergroupMembers',
+            'supergroup_id': _tdlibInt(type['supergroup_id']),
+            'filter': {'@type': 'supergroupMembersFilterRecent'},
+            'offset': offset.isEmpty ? 0 : int.tryParse(offset) ?? out.length,
+            'limit': (limit - out.length).clamp(1, 200),
+          });
+          if (res['@type'] != 'chatMembers') break;
+          final members = res['members'];
+          if (members is! List || members.isEmpty) break;
+          for (final raw in members) {
+            if (raw is! Map) continue;
+            final m = Map<String, dynamic>.from(raw);
+            final memberId = m['member_id'];
+            var userId = 0;
+            if (memberId is Map) {
+              userId = _tdlibInt(memberId['user_id']);
+            } else {
+              userId = _tdlibInt(m['user_id']);
+            }
+            if (userId <= 0) continue;
+            final status = m['status'];
+            final statusType =
+                status is Map ? status['@type']?.toString() ?? '' : '';
+            out.add(_chatMemberFromUserId(
+              userId,
+              isCreator: statusType == 'chatMemberStatusCreator',
+              isAdmin: statusType == 'chatMemberStatusAdministrator',
+            ));
+            if (out.length >= limit) break;
+          }
+          final total = (res['total_count'] as num?)?.toInt() ?? out.length;
+          if (out.length >= total || members.isEmpty) break;
+          // getSupergroupMembers uses numeric offset in recent TDLib.
+          offset = '${out.length}';
+          if (members.length < 10) break;
+        }
+      }
+    } catch (e) {
+      debugPrint('[tdlib] chatMembers($chatId): $e');
+    }
+
+    out.sort((a, b) {
+      if (a.isCreator != b.isCreator) return a.isCreator ? -1 : 1;
+      if (a.isAdmin != b.isAdmin) return a.isAdmin ? -1 : 1;
+      return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
+    });
+    return out;
+  }
+
+  TdlibChatMember _chatMemberFromUserId(
+    int userId, {
+    required bool isCreator,
+    required bool isAdmin,
+  }) {
+    final name = senderDisplayName(userId);
+    final user = _users[userId];
+    final photo = user?['profile_photo'];
+    int? fileId;
+    List<int>? mini;
+    if (photo is Map) {
+      fileId = _tdlibPhotoFileId(photo, 'small');
+      final mt = photo['minithumbnail'];
+      if (mt is Map) {
+        final data = mt['data'];
+        if (data is List) {
+          mini = [
+            for (final e in data)
+              if (e is num) e.toInt(),
+          ];
+          if (mini.isEmpty) mini = null;
+        }
+      }
+    }
+    String? path;
+    if (fileId != null && fileId > 0) {
+      path = _filePathCache[fileId];
+      if (path == null || path.isEmpty) {
+        _queueFileDownload(
+          fileId,
+          priority: prioBackground,
+          background: true,
+          reason: 'member-avatar',
+        );
+      }
+    }
+    return TdlibChatMember(
+      userId: userId,
+      displayName: name.isEmpty ? 'User $userId' : name,
+      avatarLocalPath: path,
+      avatarMinithumbnailBytes: mini,
+      isCreator: isCreator,
+      isAdmin: isAdmin,
+    );
+  }
+
+  /// Kick member; messages are kept (`revoke_messages: false`).
+  Future<void> removeChatMember(int chatId, int userId) async {
+    final c = _client;
+    if (c == null || !isReady || chatId == 0 || userId <= 0) return;
+    await c.sendAwait({
+      '@type': 'banChatMember',
+      'chat_id': chatId,
+      'member_id': {'@type': 'messageSenderUser', 'user_id': userId},
+      'banned_until_date': 0,
+      'revoke_messages': false,
+    });
+  }
+
   String peerTitle(int chatId) {
     final chat = _chats[chatId];
     if (chat == null) return 'Telegram';
@@ -5923,6 +7109,9 @@ class TelegramTdlibService extends ChangeNotifier {
   }
 
   final Set<int> _chatPhotoRefreshQueued = {};
+  /// getChat already tried and still no photo — stop the rebuild loop.
+  final Set<int> _chatPhotoRefreshDone = {};
+  final Set<int> _hubAvatarMissingLogged = {};
 
   /// Download / cache chat (or private-peer) avatar. Use [foreground] while the
   /// chat is open so the header upgrades off the minithumbnail quickly.
@@ -5993,9 +7182,16 @@ class TelegramTdlibService extends ChangeNotifier {
   }
 
   void _refreshChatPhotoIfMissing(int chatId) {
-    if (chatId == 0 || _chatPhotoRefreshQueued.contains(chatId)) return;
+    if (chatId == 0) return;
+    if (_chatPhotoRefreshQueued.contains(chatId)) return;
+    if (_chatPhotoRefreshDone.contains(chatId)) return;
     final existing = _chats[chatId];
-    if (existing != null && _resolveChatAvatarFileId(existing) != null) return;
+    final beforeId =
+        existing == null ? null : _resolveChatAvatarFileId(existing);
+    if (beforeId != null) {
+      _chatPhotoRefreshDone.add(chatId);
+      return;
+    }
     final c = _client;
     if (c == null) return;
     _chatPhotoRefreshQueued.add(chatId);
@@ -6005,17 +7201,56 @@ class TelegramTdlibService extends ChangeNotifier {
           '@type': 'getChat',
           'chat_id': chatId,
         });
-        if (chat['@type'] == 'chat') {
-          _chats[chatId] = Map<String, dynamic>.from(chat);
-          _ensurePeerAvatarDownloading(
-            chatId,
-            foreground: _openChatId == chatId,
-          );
-          notifyListeners();
+        if (chat['@type'] != 'chat') return;
+        _chats[chatId] = Map<String, dynamic>.from(chat);
+
+        // Private peers: profile_photo often carries small/big when chat.photo
+        // only has a minithumbnail stub.
+        final type = chat['type'];
+        if (type is Map && type['@type'] == 'chatTypePrivate') {
+          final uid = _tdlibInt(type['user_id']);
+          if (uid > 0) {
+            try {
+              final user = await c.sendAwait({
+                '@type': 'getUser',
+                'user_id': uid,
+              });
+              if (user['@type'] == 'user') {
+                _users[uid] = Map<String, dynamic>.from(user);
+              }
+            } catch (_) {}
+          }
         }
-      } catch (_) {
+
+        final afterId = _resolveChatAvatarFileId(
+          _chats[chatId]!,
+          user: _privateUserId(chatId) == null
+              ? null
+              : _users[_privateUserId(chatId)!],
+        );
+        final photo = _chats[chatId]!['photo'];
+        final keys = photo is Map
+            ? photo.keys.map((k) => k.toString()).join(',')
+            : 'null';
+        _mediaLog(
+          'photo-refresh chat=$chatId afterId=$afterId photoKeys=$keys',
+        );
+        _ensurePeerAvatarDownloading(
+          chatId,
+          foreground: _openChatId == chatId,
+        );
+        // Critical: do NOT notify when photo is still missing. Otherwise
+        // peerAvatarPath → refresh → notify → rebuild loops forever for
+        // groups without a resolvable profile photo (ТП НСИС…) — ~320ms
+        // FRAME every ~330ms and fling never starts.
+        if (afterId != null && afterId != beforeId) {
+          _notifyUi();
+        }
+      } catch (e) {
+        _mediaLog('photo-refresh fail chat=$chatId err=$e');
       } finally {
         _chatPhotoRefreshQueued.remove(chatId);
+        _chatPhotoRefreshDone.add(chatId);
       }
     }());
   }
@@ -6061,6 +7296,57 @@ class TelegramTdlibService extends ChangeNotifier {
     return null;
   }
 
+  /// Ensure Saved Messages private chat exists; returns its chat id.
+  Future<int?> ensureSavedMessagesChatId() async {
+    final c = _client;
+    final myId = _myUserId;
+    if (c == null || !isReady || myId == null || myId <= 0) return null;
+    final existing = privateChatIdForUser(myId);
+    if (existing != null && existing != 0) return existing;
+    try {
+      final res = await c.sendAwait({
+        '@type': 'createPrivateChat',
+        'user_id': myId,
+        'force': true,
+      }, timeout: const Duration(seconds: 15));
+      final chatId = (res['id'] as num?)?.toInt() ??
+          (res['chat_id'] as num?)?.toInt();
+      if (chatId != null && chatId != 0) return chatId;
+    } catch (e) {
+      debugPrint('[tdlib] ensureSavedMessagesChatId: $e');
+    }
+    return myId;
+  }
+
+  /// Pull a page of recent messages without opening the chat UI.
+  Future<List<TdlibMessage>> fetchRecentChatMessages(
+    int chatId, {
+    int limit = 80,
+  }) async {
+    final c = _client;
+    if (c == null || !isReady || chatId == 0) return const [];
+    try {
+      final res = await c.sendAwait({
+        '@type': 'getChatHistory',
+        'chat_id': chatId,
+        'from_message_id': 0,
+        'offset': 0,
+        'limit': limit.clamp(1, 100),
+        'only_local': false,
+      }, timeout: const Duration(seconds: 25));
+      if (res['@type'] != 'messages') return const [];
+      final parsed = _parseMessagesList(res);
+      for (final m in parsed) {
+        _upsertMessage(m);
+      }
+      if (parsed.isNotEmpty) notifyListeners();
+      return parsed;
+    } catch (e) {
+      debugPrint('[tdlib] fetchRecentChatMessages($chatId): $e');
+      return const [];
+    }
+  }
+
   Future<void> _refreshUser(int userId, {bool queueAvatar = true}) async {
     if (userId <= 0) return;
     final c = _client;
@@ -6088,11 +7374,13 @@ class TelegramTdlibService extends ChangeNotifier {
                 reason: 'peer-avatar',
               );
             }
-          } else {
+          } else if (_openChatId == null) {
             _queueAvatarDownload(photoId);
           }
+          // Open group: skip sender-avatar enqueue — exclusive focus owns slots.
         }
-        notifyListeners();
+        // Batch many getUser completions (large groups) into one frame.
+        _notifyUi();
       }
     } catch (_) {}
   }
@@ -6112,9 +7400,19 @@ class TelegramTdlibService extends ChangeNotifier {
         'id': userId,
         'status': Map<String, dynamic>.from(status),
       };
-      unawaited(_refreshUser(userId));
+      unawaited(_refreshUser(userId, queueAvatar: false));
     }
-    notifyListeners();
+    // UI only shows online status for the open private peer. Groups show
+    // "группа" — notifying here rebuilt the whole NSIS transcript on every
+    // member going online/offline.
+    final openId = _openChatId;
+    if (openId != null) {
+      if (_privateUserId(openId) == userId) {
+        _notifyUi();
+      }
+      return;
+    }
+    // Hub has no online dots — keep data warm, skip rebuilds.
   }
 
   String _formatChatAction(dynamic action) {
@@ -6390,6 +7688,8 @@ class TelegramTdlibService extends ChangeNotifier {
 
   void _ensureSenderAvatarDownloading(int userId) {
     if (userId <= 0) return;
+    // Open chat owns download slots — don't even attempt hub/sender avatars.
+    if (_openChatId != null) return;
     final id = _resolveUserAvatarFileId(_users[userId]);
     if (id == null || _filePathCache.containsKey(id)) return;
     // Prefer small for list bubbles — cheaper than big profile photo.
@@ -6402,7 +7702,7 @@ class TelegramTdlibService extends ChangeNotifier {
       idToFetch,
       priority: prioBackground,
       background: true,
-      chatId: _openChatId,
+      chatId: null,
       reason: 'sender-avatar',
     );
   }
@@ -6420,11 +7720,12 @@ class TelegramTdlibService extends ChangeNotifier {
           if (id != null) {
             _chats[id] = Map<String, dynamic>.from(chat);
             _syncChatOrderMembership(id);
+            _reindexFolderMembership(id);
             final lastOut =
                 (chat['last_read_outbox_message_id'] as num?)?.toInt();
             if (lastOut != null) _lastReadOutboxId[id] = lastOut;
             _resolveChatAvatarFileId(_chats[id]!);
-            notifyListeners();
+            _notifyListenersForChat(id, hubOnly: true);
           }
         }
         break;
@@ -6433,8 +7734,11 @@ class TelegramTdlibService extends ChangeNotifier {
         final position = update['position'];
         if (chatId != null && position is Map) {
           _applyChatPosition(chatId, Map<String, dynamic>.from(position));
-          notifyListeners();
+          _notifyListenersForChat(chatId, hubOnly: true);
         }
+        break;
+      case 'updateChatFolders':
+        unawaited(_onChatFoldersUpdate(update));
         break;
       case 'updateChatTitle':
       case 'updateChatLastMessage':
@@ -6458,6 +7762,7 @@ class TelegramTdlibService extends ChangeNotifier {
                 .map((e) => Map<String, dynamic>.from(e))
                 .toList();
             _syncChatOrderMembership(chatId);
+            _reindexFolderMembership(chatId);
             if (_isInMainChatList(chat)) {
               // Move chat to front of hub order.
               _chatOrder.remove(chatId);
@@ -6488,6 +7793,9 @@ class TelegramTdlibService extends ChangeNotifier {
           if (lastIn > 0) {
             chat['last_read_inbox_message_id'] = lastIn;
           }
+          if (unreadCountFor(chatId) > 0) {
+            unawaited(warmUnreadChatHistory(chatId));
+          }
         } else if (type == 'updateChatReadOutbox') {
           final lastOut =
               (update['last_read_outbox_message_id'] as num?)?.toInt();
@@ -6497,6 +7805,7 @@ class TelegramTdlibService extends ChangeNotifier {
           }
         } else if (type == 'updateChatPhoto') {
           chat['photo'] = update['photo'];
+          _miniThumbByChatId.remove(chatId);
           _ensurePeerAvatarDownloading(
             chatId,
             foreground: _openChatId == chatId,
@@ -6510,7 +7819,7 @@ class TelegramTdlibService extends ChangeNotifier {
             _canSendMessages[chatId] = next;
           }
         }
-        notifyListeners();
+        _notifyListenersForChat(chatId);
         break;
       case 'updateScopeNotificationSettings': {
         final scope = update['scope'];
@@ -6618,10 +7927,12 @@ class TelegramTdlibService extends ChangeNotifier {
         final action = update['action'];
         final label = _formatChatAction(action);
         if (label.isEmpty) {
-          if (_chatActions.remove(chatId) != null) notifyListeners();
+          if (_chatActions.remove(chatId) != null) {
+            _notifyListenersForChat(chatId);
+          }
         } else if (_chatActions[chatId] != label) {
           _chatActions[chatId] = label;
-          notifyListeners();
+          _notifyListenersForChat(chatId);
         }
         break;
       case 'updateActiveNotifications':
@@ -6648,16 +7959,19 @@ class TelegramTdlibService extends ChangeNotifier {
                 chatId: msg.chatId,
                 messageId: msg.id,
               );
+            } else if (!msg.isOutgoing && !msg.isService) {
+              unawaited(warmUnreadChatHistory(msg.chatId));
             }
-            final bridgeHook = onBridgeNewMessage;
-            if (bridgeHook != null && !msg.isService) {
-              try {
-                bridgeHook(msg);
-              } catch (e) {
-                debugPrint('[tdlib] onBridgeNewMessage: $e');
+            if (!msg.isService && _bridgeNewMessageListeners.isNotEmpty) {
+              for (final bridgeHook in List.of(_bridgeNewMessageListeners)) {
+                try {
+                  bridgeHook(msg);
+                } catch (e) {
+                  debugPrint('[tdlib] onBridgeNewMessage: $e');
+                }
               }
             }
-            notifyListeners();
+            _notifyListenersForChat(msg.chatId);
           }
         }
         break;
@@ -7246,7 +8560,17 @@ class TelegramTdlibService extends ChangeNotifier {
     String? videoThumbPath;
     List<int>? videoThumbBytes;
     var isAnimation = false;
+    var isSticker = false;
+    String? stickerEmoji;
     var isService = false;
+    int? documentFileId;
+    String? documentPath;
+    String? documentFileName;
+    String? documentMimeType;
+    int? documentSizeBytes;
+    int? documentThumbFileId;
+    String? documentThumbPath;
+    List<int>? documentThumbBytes;
     if (content is Map) {
       final ctype = content['@type']?.toString() ?? '';
       if (ctype == 'messageText') {
@@ -7298,11 +8622,8 @@ class TelegramTdlibService extends ChangeNotifier {
           if (durationSec > 0) voiceDurationMs = durationSec * 1000;
           final voice = vn['voice'];
           if (voice is Map) {
-            voiceFileId = (voice['id'] as num?)?.toInt();
-            final local = voice['local'];
-            if (local is Map && local['is_downloading_completed'] == true) {
-              voicePath = local['path']?.toString();
-            }
+            voiceFileId = _tdlibFileId(voice);
+            voicePath = _tdlibLocalPath(voice);
           }
         }
         final parsed = _parseFormattedText(content['caption']);
@@ -7317,11 +8638,8 @@ class TelegramTdlibService extends ChangeNotifier {
           if (durationSec > 0) videoNoteDurationMs = durationSec * 1000;
           final video = vn['video'];
           if (video is Map) {
-            videoNoteFileId = (video['id'] as num?)?.toInt();
-            final local = video['local'];
-            if (local is Map && local['is_downloading_completed'] == true) {
-              videoNotePath = local['path']?.toString();
-            }
+            videoNoteFileId = _tdlibFileId(video);
+            videoNotePath = _tdlibLocalPath(video);
           }
           videoNoteThumbBytes = _minithumbnailBytes(vn['minithumbnail']);
           final thumbParsed = _parseThumbnailFile(vn['thumbnail']);
@@ -7335,19 +8653,16 @@ class TelegramTdlibService extends ChangeNotifier {
         textEntities = parsed.entities;
         final media = isAnimation ? content['animation'] : content['video'];
         if (media is Map) {
-          final durationSec = (media['duration'] as num?)?.toInt() ?? 0;
+          final durationSec = _tdlibInt(media['duration']);
           if (durationSec > 0) videoDurationMs = durationSec * 1000;
-          final w = (media['width'] as num?)?.toInt() ?? 0;
-          final h = (media['height'] as num?)?.toInt() ?? 0;
+          final w = _tdlibInt(media['width']);
+          final h = _tdlibInt(media['height']);
           if (w > 0) videoWidth = w;
           if (h > 0) videoHeight = h;
-          final file = media['video'] ?? media['animation'];
-          if (file is Map) {
-            videoFileId = (file['id'] as num?)?.toInt();
-            final local = file['local'];
-            if (local is Map && local['is_downloading_completed'] == true) {
-              videoPath = local['path']?.toString();
-            }
+          final file = _tdlibNestedFile(media);
+          if (file != null) {
+            videoFileId = _tdlibFileId(file);
+            videoPath = _tdlibLocalPath(file);
           }
           videoThumbBytes = _minithumbnailBytes(media['minithumbnail']);
           final thumbParsed = _parseThumbnailFile(media['thumbnail']);
@@ -7363,11 +8678,26 @@ class TelegramTdlibService extends ChangeNotifier {
         text = parsed.text;
         textEntities = parsed.entities;
         final doc = content['document'];
-        var name = '';
         if (doc is Map) {
-          name = doc['file_name']?.toString() ?? '';
+          documentFileName = doc['file_name']?.toString();
+          documentMimeType = doc['mime_type']?.toString();
+          documentThumbBytes = _minithumbnailBytes(doc['minithumbnail']);
+          final thumbParsed = _parseThumbnailFile(doc['thumbnail']);
+          documentThumbFileId = thumbParsed.fileId;
+          documentThumbPath = thumbParsed.localPath;
+          final file = _tdlibNestedFile(doc);
+          if (file != null) {
+            documentFileId = _tdlibFileId(file);
+            final size = _tdlibInt(file['size']);
+            final expected = _tdlibInt(file['expected_size']);
+            documentSizeBytes = size > 0 ? size : (expected > 0 ? expected : null);
+            documentPath = _tdlibLocalPath(file);
+          }
         }
+        // Keep a stable non-empty label for list/reply previews when there is
+        // no caption — the bubble itself uses the file card, not this text.
         if (text.isEmpty) {
+          final name = (documentFileName ?? '').trim();
           text = name.isNotEmpty ? 'Файл: $name' : 'Файл';
           textEntities = const [];
         }
@@ -7387,10 +8717,50 @@ class TelegramTdlibService extends ChangeNotifier {
           textEntities = const [];
         }
       } else if (ctype == 'messageSticker') {
+        isSticker = true;
         final sticker = content['sticker'];
-        var emoji = '';
-        if (sticker is Map) emoji = sticker['emoji']?.toString() ?? '';
+        if (sticker is Map) {
+          stickerEmoji = sticker['emoji']?.toString();
+          final w = _tdlibInt(sticker['width']);
+          final h = _tdlibInt(sticker['height']);
+          final format = sticker['format'];
+          final formatType =
+              format is Map ? (format['@type']?.toString() ?? '') : '';
+          final miniBytes = _minithumbnailBytes(sticker['minithumbnail']);
+          final thumbParsed = _parseThumbnailFile(sticker['thumbnail']);
+          final file = _tdlibNestedFile(sticker);
+          final fileId = _tdlibFileId(file);
+          final filePath = file == null ? null : _tdlibLocalPath(file);
+          if (formatType == 'stickerFormatWebm') {
+            // Animated sticker — muted looping video (same path as GIF).
+            isAnimation = true;
+            videoFileId = fileId;
+            videoPath = filePath;
+            videoThumbBytes = miniBytes;
+            videoThumbFileId = thumbParsed.fileId;
+            videoThumbPath = thumbParsed.localPath;
+            if (w > 0) videoWidth = w;
+            if (h > 0) videoHeight = h;
+          } else if (formatType == 'stickerFormatTgs') {
+            // Lottie — show static thumbnail (full TGS not played in bubble).
+            photoId = thumbParsed.fileId ?? fileId;
+            photoPath = thumbParsed.localPath ?? filePath;
+            photoThumbBytes = miniBytes;
+            if (w > 0) photoWidth = w;
+            if (h > 0) photoHeight = h;
+          } else {
+            // webp / default — static image sticker.
+            photoId = fileId ?? thumbParsed.fileId;
+            photoPath = filePath ?? thumbParsed.localPath;
+            photoThumbBytes = miniBytes;
+            if (w > 0) photoWidth = w;
+            if (h > 0) photoHeight = h;
+          }
+        }
+        // Placeholder for list/reply; bubble hides it when media is present.
+        final emoji = (stickerEmoji ?? '').trim();
         text = emoji.isNotEmpty ? emoji : 'Стикер';
+        textEntities = const [];
       } else if (ctype == 'messagePoll') {
         final poll = content['poll'];
         var q = '';
@@ -7499,6 +8869,16 @@ class TelegramTdlibService extends ChangeNotifier {
         videoThumbPath.isNotEmpty) {
       _filePathCache[videoThumbFileId] = videoThumbPath;
     }
+    if (documentFileId != null &&
+        documentPath != null &&
+        documentPath.isNotEmpty) {
+      _filePathCache[documentFileId] = documentPath;
+    }
+    if (documentThumbFileId != null &&
+        documentThumbPath != null &&
+        documentThumbPath.isNotEmpty) {
+      _filePathCache[documentThumbFileId] = documentThumbPath;
+    }
 
     if (senderUserId > 0) _ensureUserCached(senderUserId);
 
@@ -7565,6 +8945,20 @@ class TelegramTdlibService extends ChangeNotifier {
               : _filePathCache[videoThumbFileId]),
       videoThumbBytes: videoThumbBytes,
       isAnimation: isAnimation,
+      isSticker: isSticker,
+      stickerEmoji: stickerEmoji,
+      documentFileId: documentFileId,
+      documentLocalPath: documentPath ??
+          (documentFileId == null ? null : _filePathCache[documentFileId]),
+      documentFileName: documentFileName,
+      documentMimeType: documentMimeType,
+      documentSizeBytes: documentSizeBytes,
+      documentThumbFileId: documentThumbFileId,
+      documentThumbLocalPath: documentThumbPath ??
+          (documentThumbFileId == null
+              ? null
+              : _filePathCache[documentThumbFileId]),
+      documentThumbBytes: documentThumbBytes,
       reactions: reactions,
       replyToMessageId: replyToId,
       replyPreviewText: replyPreview,
@@ -7848,12 +9242,7 @@ class TelegramTdlibService extends ChangeNotifier {
 
     final chosen = bestLocalGood ?? bestRemote ?? bestAnyLocal;
     if (chosen != null) {
-      if (chosen.type == 'm' || chosen.type == 's') {
-        _mediaLog(
-          'photo-pick-soft type=${chosen.type} ${chosen.width}x${chosen.height} '
-          'file=${chosen.fileId} all=[${typeSummary.join(",")}]',
-        );
-      }
+      // Soft picks are common; logging every ListView rebuild stalls scroll.
       return (
         fileId: chosen.fileId,
         localPath: chosen.localPath,
@@ -7961,13 +9350,52 @@ class TelegramTdlibService extends ChangeNotifier {
     if (thumb is! Map) return (fileId: null, localPath: null);
     final file = thumb['file'] ?? thumb['photo'];
     if (file is! Map) return (fileId: null, localPath: null);
-    final id = (file['id'] as num?)?.toInt();
+    final id = _tdlibFileId(file);
     String? path;
     final local = file['local'];
     if (local is Map && local['is_downloading_completed'] == true) {
       path = local['path']?.toString();
     }
     return (fileId: id, localPath: path);
+  }
+
+  /// TDLib `file` id — JSON may send int or string.
+  static int? _tdlibFileId(dynamic file) {
+    if (file is! Map) return null;
+    final id = _tdlibInt(file['id']);
+    return id > 0 ? id : null;
+  }
+
+  /// File object nested under video / animation / document / sticker / …
+  static Map? _tdlibNestedFile(dynamic media) {
+    if (media is! Map) return null;
+    for (final key in [
+      'video',
+      'animation',
+      'document',
+      'sticker',
+      'photo',
+      'voice',
+      'file',
+    ]) {
+      final f = media[key];
+      if (f is Map && (f['id'] != null || f['@type']?.toString() == 'file')) {
+        return f;
+      }
+    }
+    if (media['@type']?.toString() == 'file' || media['local'] is Map) {
+      return media;
+    }
+    return null;
+  }
+
+  static String? _tdlibLocalPath(Map file) {
+    final local = file['local'];
+    if (local is Map && local['is_downloading_completed'] == true) {
+      final path = local['path']?.toString();
+      if (path != null && path.isNotEmpty) return path;
+    }
+    return null;
   }
 
   List<int>? _minithumbnailBytes(dynamic mini) {
@@ -8257,6 +9685,18 @@ class TelegramTdlibService extends ChangeNotifier {
     return null;
   }
 
+  List<int>? _photoMinithumbnailBytesCached(
+    int chatId,
+    Map<String, dynamic> chat,
+  ) {
+    if (_miniThumbByChatId.containsKey(chatId)) {
+      return _miniThumbByChatId[chatId];
+    }
+    final decoded = _photoMinithumbnailBytes(chat);
+    _miniThumbByChatId[chatId] = decoded;
+    return decoded;
+  }
+
   List<int>? _photoMinithumbnailBytes(Map<String, dynamic> chat) {
     final photo = chat['photo'];
     if (photo is! Map) return null;
@@ -8324,7 +9764,11 @@ class TelegramTdlibService extends ChangeNotifier {
       return captionLine ?? 'GIF';
     }
     if (type == 'messageDocument') {
-      return captionLine ?? '📎 Файл';
+      final doc = content['document'];
+      var name = '';
+      if (doc is Map) name = doc['file_name']?.toString() ?? '';
+      if (captionLine != null) return captionLine;
+      return name.isNotEmpty ? '📎 $name' : '📎 Файл';
     }
     if (type == 'messageAudio') {
       return captionLine ?? '🎵 Аудио';

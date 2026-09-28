@@ -173,7 +173,7 @@ class _ChatMessageActionsSheetBodyState
             if (widget.canEdit)
               ListTile(
                 leading: const Icon(LucideIcons.pencil),
-                title: const Text('Редактировать'),
+                title: const Text('Изменить'),
                 onTap: () => Navigator.pop(
                   context,
                   const ChatMessageMenuResult.action('edit'),

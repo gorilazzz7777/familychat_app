@@ -74,6 +74,8 @@ dependencies:
   flutter_lucide: ^1.47.0
   ffi: ^2.2.0
   flutter_tts: ^4.2.5
+  pdfrx: ^2.4.7
+  open_filex: ^4.7.0
 
 # sqlite3 3.x hooks download prebuilt .so from GitHub by default — that fails
 # when github.com is unreachable. Compile vendored amalgamation instead.

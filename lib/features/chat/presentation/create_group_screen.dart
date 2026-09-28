@@ -51,6 +51,8 @@ class CreateGroupScreen extends ConsumerStatefulWidget {
   ConsumerState<CreateGroupScreen> createState() => _CreateGroupScreenState();
 }
 
+enum _ContactFilter { all, family, telegram }
+
 class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   final _title = TextEditingController();
   final _search = TextEditingController();
@@ -60,6 +62,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   bool _loading = true;
   bool _saving = false;
   String? _hint;
+  _ContactFilter _contactFilter = _ContactFilter.all;
 
   @override
   void initState() {
@@ -146,20 +149,23 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
         );
       }
 
-      for (final f in friends) {
-        final uid = _asInt(f['user_id'] ?? f['peer_user_id']);
-        if (uid == null) continue;
-        if (byKey.containsKey('fc:$uid')) continue;
-        addFc(
-          userId: uid,
-          name: f['display_name']?.toString() ?? f['title']?.toString() ?? '',
-          subtitle: 'Друг',
-          avatar: f['avatar_url']?.toString() ?? '',
-        );
-      }
-
       final tdlib = ref.read(telegramTdlibServiceProvider);
-      if (TdlibConfig.isEnabled && tdlib.isReady) {
+      final tgReady = TdlibConfig.isEnabled && tdlib.isReady;
+
+      // Friends only when TG is connected (shown under «Все»).
+      if (tgReady) {
+        for (final f in friends) {
+          final uid = _asInt(f['user_id'] ?? f['peer_user_id']);
+          if (uid == null) continue;
+          if (byKey.containsKey('fc:$uid')) continue;
+          addFc(
+            userId: uid,
+            name: f['display_name']?.toString() ?? f['title']?.toString() ?? '',
+            subtitle: 'Друг',
+            avatar: f['avatar_url']?.toString() ?? '',
+          );
+        }
+
         for (final chat in tdlib.privateChats) {
           if (chat.userId <= 0) continue;
           if (myId != null && chat.userId == tdlib.myUserId) continue;
@@ -210,7 +216,8 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
               if (_asInt(m['user_id']) != null) _asInt(m['user_id'])!,
           });
         _loading = false;
-        _hint = tdlib.isReady
+        _contactFilter = _ContactFilter.all;
+        _hint = tgReady
             ? null
             : 'Telegram не подключён — можно создать только группу FamilyChat';
       });
@@ -248,15 +255,90 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
     return !_selectedCandidates.any((c) => c.kind == _PickKind.tgOnly);
   }
 
+  bool get _tgConnected {
+    if (!TdlibConfig.isEnabled) return false;
+    return ref.watch(telegramTdlibServiceProvider).isReady;
+  }
+
+  bool _isFamilyContact(_PickCandidate c) {
+    final fc = c.fcUserId;
+    return fc != null && fc > 0 && _familyUserIds.contains(fc);
+  }
+
   List<_PickCandidate> get _filtered {
+    Iterable<_PickCandidate> base = _candidates;
+    if (!_tgConnected) {
+      // Without TG: family contacts only, no tabs.
+      base = base.where(_isFamilyContact);
+    } else {
+      switch (_contactFilter) {
+        case _ContactFilter.all:
+          break;
+        case _ContactFilter.family:
+          base = base.where(_isFamilyContact);
+        case _ContactFilter.telegram:
+          base = base.where((c) => c.hasTg);
+      }
+    }
     final q = _search.text.trim().toLowerCase();
-    if (q.isEmpty) return _candidates;
+    if (q.isEmpty) return base.toList();
     return [
-      for (final c in _candidates)
+      for (final c in base)
         if (c.displayName.toLowerCase().contains(q) ||
             c.subtitle.toLowerCase().contains(q))
           c,
     ];
+  }
+
+  Widget _buildContactFilterTabs(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    Widget tab(_ContactFilter value, String label) {
+      final active = _contactFilter == value;
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          if (_contactFilter == value) return;
+          setState(() => _contactFilter = value);
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+          child: Text(
+            label,
+            style: theme.textTheme.titleSmall?.copyWith(
+              color: active ? scheme.onSurface : scheme.onSurfaceVariant,
+              fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+              decoration: active ? TextDecoration.underline : TextDecoration.none,
+              decorationColor: scheme.onSurface,
+              decorationThickness: 2,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final sepStyle = theme.textTheme.titleSmall?.copyWith(
+      color: scheme.onSurfaceVariant.withValues(alpha: 0.45),
+      fontWeight: FontWeight.w400,
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      child: Row(
+        children: [
+          tab(_ContactFilter.all, 'Все'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text('|', style: sepStyle),
+          ),
+          tab(_ContactFilter.family, 'Семья'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text('|', style: sepStyle),
+          ),
+          tab(_ContactFilter.telegram, 'Телеграмм'),
+        ],
+      ),
+    );
   }
 
   Future<void> _create() async {
@@ -332,8 +414,8 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                 'telegram': {
                   'linked': true,
                   'owner': true,
-                  'will_send_to_telegram': true,
-                  'can_force_telegram': false,
+                  'will_send_to_telegram': false,
+                  'can_force_telegram': true,
                   'bridge_mode': 'tdlib',
                   'tg_chat_id': tgChatId,
                   'family_folder_eligible': _familyFolderEligible,
@@ -374,6 +456,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   @override
   Widget build(BuildContext context) {
     final dual = _allHaveTg && _selected.isNotEmpty;
+    final showTabs = _tgConnected;
     return Scaffold(
       appBar: FamilyAppBar.build(
         title: 'Новая группа',
@@ -402,6 +485,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                     ),
                   ),
                 ),
+                if (showTabs) _buildContactFilterTabs(context),
                 if (_hint != null)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),

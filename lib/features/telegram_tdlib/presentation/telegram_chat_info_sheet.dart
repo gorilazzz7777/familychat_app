@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../tdlib_local_file.dart';
 import '../telegram_link_navigation.dart';
 import '../telegram_tdlib_providers.dart';
 import '../telegram_tdlib_service.dart';
@@ -55,22 +55,28 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
   late TdlibChatProfile _profile;
   bool _muted = false;
   bool _loadingMedia = true;
+  bool _loadingMembers = true;
   List<TdlibMessage> _media = const [];
   List<({int messageId, String url})> _links = const [];
+  List<TdlibChatMember> _members = const [];
+  bool _amCreator = false;
+
+  bool get _showMembers => !_profile.isChannel;
+
+  int get _tabCount => _showMembers ? 3 : 2;
 
   bool get _hasExpandedPhoto {
-    final p = _profile.avatarLocalPath;
-    return p != null && p.isNotEmpty && File(p).existsSync();
+    return tdlibLocalFileExists(_profile.avatarLocalPath);
   }
 
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 2, vsync: this);
+    _profile = widget.profile;
+    _tabs = TabController(length: _tabCount, vsync: this);
     _tabs.addListener(() {
       if (!_tabs.indexIsChanging && mounted) setState(() {});
     });
-    _profile = widget.profile;
     _muted =
         ref.read(telegramTdlibServiceProvider).isChatMuted(widget.chatId);
     unawaited(_loadTabs());
@@ -84,14 +90,104 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
 
   Future<void> _loadTabs() async {
     final svc = ref.read(telegramTdlibServiceProvider);
-    final media = await svc.searchChatMedia(widget.chatId);
-    final links = await svc.searchChatLinks(widget.chatId);
+    final mediaFut = svc.searchChatMedia(widget.chatId);
+    final linksFut = svc.searchChatLinks(widget.chatId);
+    final membersFut =
+        _showMembers ? svc.chatMembers(widget.chatId) : Future.value(const <TdlibChatMember>[]);
+    final creatorFut =
+        _showMembers ? svc.amChatCreator(widget.chatId) : Future.value(false);
+    final media = await mediaFut;
+    final links = await linksFut;
+    final members = await membersFut;
+    final amCreator = await creatorFut;
     if (!mounted) return;
     setState(() {
       _media = media;
       _links = links;
+      _members = members;
+      _amCreator = amCreator;
       _loadingMedia = false;
+      _loadingMembers = false;
     });
+  }
+
+  Future<void> _reloadMembers() async {
+    if (!_showMembers) return;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final members = await svc.chatMembers(widget.chatId);
+    final amCreator = await svc.amChatCreator(widget.chatId);
+    if (!mounted) return;
+    setState(() {
+      _members = members;
+      _amCreator = amCreator;
+      _loadingMembers = false;
+    });
+  }
+
+  Future<void> _confirmRemoveMember(TdlibChatMember member) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить участника'),
+        content: Text(
+          'Удалить ${member.displayName} из группы? Сообщения останутся в истории.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ref
+          .read(telegramTdlibServiceProvider)
+          .removeChatMember(widget.chatId, member.userId);
+      if (!mounted) return;
+      await _reloadMembers();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${member.displayName} удалён(а) из группы')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось удалить: $e')),
+      );
+    }
+  }
+
+  Future<void> _onMemberLongPress(TdlibChatMember member) async {
+    final myId = ref.read(telegramTdlibServiceProvider).myUserId;
+    final canRemove = _amCreator &&
+        !member.isCreator &&
+        member.userId != myId;
+    if (!canRemove) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.user_minus),
+              title: const Text('Удалить участника'),
+              subtitle: Text(member.displayName),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_confirmRemoveMember(member));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _toggleMute() async {
@@ -205,8 +301,8 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
                           backgroundColor: theme.colorScheme.surface,
                           flexibleSpace: FlexibleSpaceBar(
                             collapseMode: CollapseMode.pin,
-                            background: Image.file(
-                              File(_profile.avatarLocalPath!),
+                            background: tdlibLocalFileImage(
+                              _profile.avatarLocalPath!,
                               fit: BoxFit.cover,
                             ),
                           ),
@@ -380,9 +476,10 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
                             color: theme.colorScheme.surface,
                             child: FamilyTabBar.build(
                               controller: _tabs,
-                              tabs: const [
-                                Tab(text: 'Медиа'),
-                                Tab(text: 'Ссылки'),
+                              tabs: [
+                                if (_showMembers) const Tab(text: 'Участники'),
+                                const Tab(text: 'Медиа'),
+                                const Tab(text: 'Ссылки'),
                               ],
                             ),
                           ),
@@ -423,7 +520,14 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
   }
 
   List<Widget> _tabSlivers() {
-    if (_tabs.index == 1) {
+    final membersOffset = _showMembers ? 1 : 0;
+    final mediaIndex = membersOffset;
+    final linksIndex = membersOffset + 1;
+
+    if (_showMembers && _tabs.index == 0) {
+      return _membersSlivers();
+    }
+    if (_tabs.index == linksIndex) {
       if (_loadingMedia) {
         return const [
           SliverFillRemaining(
@@ -460,6 +564,9 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
           ),
         ),
       ];
+    }
+    if (_tabs.index != mediaIndex) {
+      return const [SliverToBoxAdapter(child: SizedBox.shrink())];
     }
     if (_loadingMedia) {
       return const [
@@ -517,7 +624,7 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Image.file(File(path), fit: BoxFit.cover),
+                    tdlibLocalFileImage(path, fit: BoxFit.cover),
                     if (m.isVideo)
                       const Align(
                         alignment: Alignment.center,
@@ -533,6 +640,67 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
             },
             childCount: _media.length,
           ),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _membersSlivers() {
+    if (_loadingMembers) {
+      return const [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ];
+    }
+    if (_members.isEmpty) {
+      return const [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(child: Text('Нет участников')),
+        ),
+      ];
+    }
+    final myId = ref.read(telegramTdlibServiceProvider).myUserId;
+    return [
+      SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) {
+            if (index.isOdd) {
+              return Divider(
+                height: 1,
+                indent: 72,
+                color: Theme.of(context)
+                    .colorScheme
+                    .outlineVariant
+                    .withValues(alpha: 0.4),
+              );
+            }
+            final member = _members[index ~/ 2];
+            final canRemove = _amCreator &&
+                !member.isCreator &&
+                member.userId != myId;
+            final role = member.isCreator
+                ? 'Создатель'
+                : (member.isAdmin ? 'Админ' : null);
+            return ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              leading: ChatAvatar(
+                name: member.displayName,
+                localFilePath: member.avatarLocalPath,
+                memoryBytes: member.avatarMinithumbnailBytes,
+                radius: 24,
+              ),
+              title: Text(member.displayName),
+              subtitle: role == null ? null : Text(role),
+              onLongPress: canRemove
+                  ? () => unawaited(_onMemberLongPress(member))
+                  : null,
+            );
+          },
+          childCount: _members.length * 2 - 1,
         ),
       ),
     ];

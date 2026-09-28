@@ -61,29 +61,28 @@ class ChatAvatar extends StatelessWidget {
       );
     }
 
-    // Prefer full local photo over URL / minithumbnail whenever the file exists.
+    // Prefer full local photo over URL / minithumbnail whenever we have a path.
+    // Trust TDLib path cache — no sync existsSync on the UI thread (hub scroll).
     if (!kIsWeb && local != null && local.isNotEmpty) {
       final file = File(local);
-      if (file.existsSync()) {
-        final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
-        final px = (size * dpr).round();
-        return CircleAvatar(
-          radius: radius,
-          backgroundColor: bg.withValues(alpha: 0.15),
-          child: ClipOval(
-            child: Image.file(
-              file,
-              width: size,
-              height: size,
-              cacheWidth: px,
-              cacheHeight: px,
-              fit: BoxFit.cover,
-              filterQuality: FilterQuality.medium,
-              errorBuilder: (_, __, ___) => _initialsBox(bg, size, radius),
-            ),
+      final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+      final px = (size * dpr).round();
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: bg.withValues(alpha: 0.15),
+        child: ClipOval(
+          child: Image.file(
+            file,
+            width: size,
+            height: size,
+            cacheWidth: px,
+            cacheHeight: px,
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.medium,
+            errorBuilder: (_, __, ___) => _initialsBox(bg, size, radius),
           ),
-        );
-      }
+        ),
+      );
     }
 
     // Network URL before TDLib minithumbnail — mini is ~40px and looks blurry.
@@ -107,14 +106,20 @@ class ChatAvatar extends StatelessWidget {
 
     final bytes = memoryBytes;
     if (bytes != null && bytes.isNotEmpty) {
+      final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+      final px = (size * dpr).round().clamp(32, 128);
+      final raw =
+          bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
       return CircleAvatar(
         radius: radius,
         backgroundColor: bg.withValues(alpha: 0.15),
         child: ClipOval(
           child: Image.memory(
-            Uint8List.fromList(bytes),
+            raw,
             width: size,
             height: size,
+            cacheWidth: px,
+            cacheHeight: px,
             fit: BoxFit.cover,
             gaplessPlayback: true,
             filterQuality: FilterQuality.low,

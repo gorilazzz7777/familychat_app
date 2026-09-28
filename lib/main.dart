@@ -27,6 +27,11 @@ import 'core/theme/theme_seed_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Cap decoded-image RAM — hub avatars + chat media otherwise grow until
+  // Android suggests clearing the app cache / reports "many errors".
+  final imageCache = PaintingBinding.instance.imageCache;
+  imageCache.maximumSize = 120;
+  imageCache.maximumSizeBytes = 48 << 20; // 48 MB
   // Не блокируем первый кадр: даты и Firebase догружаются параллельно.
   unawaited(initializeDateFormatting('ru', null));
   if (!kIsWeb) {

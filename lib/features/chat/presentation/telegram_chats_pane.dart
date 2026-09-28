@@ -38,7 +38,9 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
   Map<int, TelegramMatch> _matches = {};
   final _listScroll = ScrollController();
   Timer? _avatarPrefetchTimer;
+  Timer? _scrollBusyClearTimer;
   List<int> _lastAvatarPrefetchIds = const [];
+  var _didInitialAvatarPrefetch = false;
 
   @override
   void initState() {
@@ -53,12 +55,20 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
   @override
   void dispose() {
     _avatarPrefetchTimer?.cancel();
+    _scrollBusyClearTimer?.cancel();
+    ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
     _listScroll.removeListener(_onListScroll);
     _listScroll.dispose();
     super.dispose();
   }
 
   void _onListScroll() {
+    ref.read(telegramTdlibServiceProvider).setUiScrollBusy(true);
+    _scrollBusyClearTimer?.cancel();
+    _scrollBusyClearTimer = Timer(const Duration(milliseconds: 420), () {
+      if (!mounted) return;
+      ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
+    });
     _avatarPrefetchTimer?.cancel();
     _avatarPrefetchTimer = Timer(const Duration(milliseconds: 120), () {
       if (!mounted) return;
@@ -83,13 +93,27 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
             .toList();
     if (list.isEmpty) return;
 
-    // ~72px ListTile — prefetch ~1.5 viewports starting at first visible.
+    // Prefer soft minithumb rows (visible blur) over chats with no photo.
+    final needSharp = <int>[];
+    final noPhoto = <int>[];
     const rowExtent = 72.0;
     var first = 0;
     if (_listScroll.hasClients) {
       first = (_listScroll.offset / rowExtent).floor().clamp(0, list.length - 1);
     }
-    final ids = list.skip(first).take(16).map((c) => c.chatId).toList();
+    for (final c in list.skip(first).take(24)) {
+      final path = c.photoLocalPath?.trim() ?? '';
+      if (path.isNotEmpty) continue;
+      final hasMini =
+          c.photoMinithumbnailBytes != null &&
+          c.photoMinithumbnailBytes!.isNotEmpty;
+      if (hasMini) {
+        needSharp.add(c.chatId);
+      } else {
+        noPhoto.add(c.chatId);
+      }
+    }
+    final ids = <int>[...needSharp, ...noPhoto];
     if (ids.isEmpty) return;
     if (ids.length == _lastAvatarPrefetchIds.length) {
       var same = true;
@@ -102,7 +126,7 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
       if (same) return;
     }
     _lastAvatarPrefetchIds = List<int>.from(ids);
-    svc.prefetchVisibleHubAvatars(ids);
+    svc.prefetchVisibleHubAvatars(ids.take(16));
   }
 
   Future<void> _reloadMatches() async {
@@ -187,7 +211,10 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
     final q = widget.searchQuery.trim().toLowerCase();
     final chats = svc.hubChats
         .where((c) =>
-            c.isGroup || c.isChannel || !_matches.containsKey(c.userId))
+            !svc.isSavedMessagesChat(c.chatId) &&
+            (c.isGroup ||
+                c.isChannel ||
+                !_matches.containsKey(c.userId)))
         .where((c) {
           if (q.isEmpty) return true;
           return c.title.toLowerCase().contains(q) ||
@@ -203,7 +230,9 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
       color: scheme.onSurfaceVariant.withValues(alpha: 0.72),
     );
 
-    if (chats.isNotEmpty) {
+    // One-shot warm for first viewport — not on every rebuild.
+    if (chats.isNotEmpty && !_didInitialAvatarPrefetch) {
+      _didInitialAvatarPrefetch = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _scheduleVisibleAvatarPrefetch(chats);
@@ -229,7 +258,27 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                 ),
               ],
             )
-          : ListView.builder(
+          : NotificationListener<ScrollNotification>(
+              onNotification: (n) {
+                if (n is ScrollUpdateNotification) {
+                  ref
+                      .read(telegramTdlibServiceProvider)
+                      .setUiScrollBusy(true);
+                } else if (n is ScrollEndNotification) {
+                  _scrollBusyClearTimer?.cancel();
+                  _scrollBusyClearTimer = Timer(
+                    const Duration(milliseconds: 280),
+                    () {
+                      if (!mounted) return;
+                      ref
+                          .read(telegramTdlibServiceProvider)
+                          .setUiScrollBusy(false);
+                    },
+                  );
+                }
+                return false;
+              },
+              child: ListView.builder(
               controller: _listScroll,
               itemCount: chats.length,
               itemBuilder: (context, i) {
@@ -253,28 +302,14 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                     memoryBytes: c.photoMinithumbnailBytes,
                     radius: 24,
                   ),
-                  title: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          c.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight:
-                                unread > 0 ? FontWeight.w600 : FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                      if (muted) ...[
-                        const SizedBox(width: 4),
-                        Icon(
-                          LucideIcons.bell_off,
-                          size: 14,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ],
-                    ],
+                  title: Text(
+                    c.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight:
+                          unread > 0 ? FontWeight.w600 : FontWeight.w500,
+                    ),
                   ),
                   subtitle: Padding(
                     padding: const EdgeInsets.only(top: 2),
@@ -347,6 +382,7 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                   },
                 );
               },
+            ),
             ),
     );
   }

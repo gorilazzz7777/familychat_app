@@ -125,6 +125,8 @@ class ChatOfflineOutbox {
     List<int> mentionedUserIds = const [],
     List<ChatOutboxAttachment> attachments = const [],
     bool notifySilent = false,
+    bool deliverToTelegram = false,
+    String? deliveryChannel,
     int? voiceDurationMs,
     String? voiceTranscript,
     int? videoNoteDurationMs,
@@ -156,6 +158,9 @@ class ChatOfflineOutbox {
         if (mentionedUserIds.isNotEmpty) 'mentioned_user_ids': mentionedUserIds,
         if (attachmentMeta.isNotEmpty) 'attachments': attachmentMeta,
         if (notifySilent) 'notify_silent': true,
+        if (deliverToTelegram) 'deliver_to_telegram': true,
+        if (deliveryChannel != null && deliveryChannel.isNotEmpty)
+          'delivery_channel': deliveryChannel,
         if (voiceDurationMs != null) 'voice_duration_ms': voiceDurationMs,
         if (voiceTranscript != null && voiceTranscript.isNotEmpty)
           'voice_transcript': voiceTranscript,
@@ -992,6 +997,8 @@ class ChatOfflineOutbox {
         replyToMessageId: replyTo,
         mentionedUserIds: mentioned.isEmpty ? null : mentioned,
         notifySilent: item['notify_silent'] == true,
+        deliverToTelegram: item['deliver_to_telegram'] == true,
+        deliveryChannel: item['delivery_channel']?.toString(),
         clientMsgId: clientMsgId,
         voiceDurationMs: chatAsInt(item['voice_duration_ms']),
         voiceTranscript: item['voice_transcript']?.toString(),

@@ -12,6 +12,7 @@ import '../../../../core/media/local_device_file.dart';
 import '../../../../core/media/media_local_index.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
+import '../../../chat/presentation/widgets/chat_media_layout.dart';
 import '../../../chat/presentation/widgets/chat_network_image.dart';
 import '../../../gallery/presentation/widgets/gallery_carousel_thumbnail_strip.dart';
 
@@ -20,6 +21,9 @@ import '../../../gallery/presentation/widgets/gallery_carousel_thumbnail_strip.d
 /// - одно фото → рамка по его aspect (clamp 4:5 … ~16:9);
 /// - карусель → по самому «высокому» (меньший w/h);
 /// - [BoxFit.cover] — без серых полос.
+///
+/// Высота рамки фиксируется после первого известного aspect — иначе
+/// async decode + AnimatedSize дёргают инерционный скролл ленты.
 class FeedEventMediaBlock extends ConsumerStatefulWidget {
   const FeedEventMediaBlock({
     super.key,
@@ -50,9 +54,12 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
   late int _index;
   late List<double?> _aspects;
   double _frameAspect = FeedEventMediaBlock.fallbackAspect;
+  /// After the first non-fallback aspect is applied, do not resize again.
+  bool _frameLocked = false;
   bool _stripVisible = false;
   bool _stripHeld = false;
   Timer? _hideStripTimer;
+  bool _resolveScheduled = false;
 
   static final Map<String, double> _aspectCache = {};
   static const _stripItem = 48.0;
@@ -65,8 +72,8 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     _index = widget.initialIndex.clamp(0, widget.photos.length - 1);
     _pageController = PageController(initialPage: _index);
     _aspects = List<double?>.filled(widget.photos.length, null);
-    _hydrateFromCache();
-    _resolveAspects();
+    _hydrateFromKnown();
+    _scheduleResolveAspects();
   }
 
   @override
@@ -74,9 +81,9 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     super.didUpdateWidget(oldWidget);
     if (!_samePhotos(oldWidget.photos, widget.photos)) {
       _aspects = List<double?>.filled(widget.photos.length, null);
-      _hydrateFromCache();
-      _recomputeFrameAspect();
-      _resolveAspects();
+      _frameLocked = false;
+      _hydrateFromKnown();
+      _scheduleResolveAspects();
     }
   }
 
@@ -151,15 +158,25 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     );
   }
 
-  void _hydrateFromCache() {
-    for (var i = 0; i < widget.photos.length; i++) {
-      final cached = _aspectCache[_photoCacheKey(widget.photos[i])];
-      if (cached != null) _aspects[i] = cached;
-    }
-    _recomputeFrameAspect();
+  double? _aspectFromPhoto(Map<String, dynamic> photo) {
+    final fromMeta = chatAttachmentAspectRatio(photo);
+    if (fromMeta != null && fromMeta > 0) return fromMeta;
+    return _aspectCache[_photoCacheKey(photo)];
   }
 
-  void _recomputeFrameAspect() {
+  void _hydrateFromKnown() {
+    for (var i = 0; i < widget.photos.length; i++) {
+      final known = _aspectFromPhoto(widget.photos[i]);
+      if (known != null) {
+        final clamped = _clampAspect(known);
+        _aspects[i] = clamped;
+        _aspectCache[_photoCacheKey(widget.photos[i])] = clamped;
+      }
+    }
+    _recomputeFrameAspect(lockIfKnown: true);
+  }
+
+  void _recomputeFrameAspect({bool lockIfKnown = false}) {
     final known = _aspects.whereType<double>().toList();
     if (known.isEmpty) {
       _frameAspect = FeedEventMediaBlock.fallbackAspect;
@@ -171,29 +188,57 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
       if (c < best) best = c;
     }
     _frameAspect = best;
+    if (lockIfKnown) _frameLocked = true;
+  }
+
+  void _scheduleResolveAspects() {
+    if (_frameLocked || _resolveScheduled) return;
+    _resolveScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _resolveScheduled = false;
+      if (!mounted || _frameLocked) return;
+      unawaited(_resolveAspects());
+    });
   }
 
   Future<void> _resolveAspects() async {
+    if (_frameLocked) return;
+    // Don't decode images mid-fling — wait until scroll slows.
+    if (Scrollable.recommendDeferredLoadingForContext(context)) {
+      _scheduleResolveAspects();
+      return;
+    }
     final photos = List<Map<String, dynamic>>.from(widget.photos);
+    var changed = false;
     for (var i = 0; i < photos.length; i++) {
+      if (!mounted || _frameLocked) return;
       if (_aspects[i] != null) continue;
+      if (Scrollable.recommendDeferredLoadingForContext(context)) {
+        _scheduleResolveAspects();
+        return;
+      }
       final ar = await _resolveOne(photos[i]);
-      if (!mounted) return;
+      if (!mounted || _frameLocked) return;
       if (ar == null) continue;
       if (i >= widget.photos.length) return;
       if (_photoCacheKey(widget.photos[i]) != _photoCacheKey(photos[i])) return;
-      setState(() {
-        _aspects[i] = ar;
-        _aspectCache[_photoCacheKey(photos[i])] = ar;
-        _recomputeFrameAspect();
-      });
+      final clamped = _clampAspect(ar);
+      _aspects[i] = clamped;
+      _aspectCache[_photoCacheKey(photos[i])] = clamped;
+      changed = true;
     }
+    if (!changed || !mounted || _frameLocked) return;
+    setState(() {
+      _recomputeFrameAspect(lockIfKnown: true);
+    });
   }
 
   Future<double?> _resolveOne(Map<String, dynamic> photo) async {
     final key = _photoCacheKey(photo);
     final cached = _aspectCache[key];
     if (cached != null) return cached;
+    final fromMeta = chatAttachmentAspectRatio(photo);
+    if (fromMeta != null && fromMeta > 0) return fromMeta;
 
     final local = photo['local_bytes'];
     if (local is Uint8List &&
@@ -344,18 +389,15 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
       return const Center(child: Icon(LucideIcons.image_off));
     }
 
-    return AnimatedSize(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      alignment: Alignment.topCenter,
-      child: ColoredBox(
-        color: cs.surfaceContainerHighest,
-        child: SizedBox(
-          height: height,
-          width: double.infinity,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
+    // No AnimatedSize: height animation during list fling fights scroll physics.
+    return ColoredBox(
+      color: cs.surfaceContainerHighest,
+      child: SizedBox(
+        height: height,
+        width: double.infinity,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
               if (widget.photos.length == 1)
                 GestureDetector(
                   onTap: () => widget.onPhotoTap(0),
@@ -447,8 +489,7 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
                     onSelect: _goToPhoto,
                   ),
                 ),
-            ],
-          ),
+          ],
         ),
       ),
     );

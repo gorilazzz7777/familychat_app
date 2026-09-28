@@ -419,7 +419,7 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
         messageIds: [messageId],
       );
       if (!mounted) return;
-      if (targets != null && targets.isNotEmpty) {
+      if (targets == true) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Переслано')),
         );

@@ -1,13 +1,16 @@
-/// Канал доставки для тредов со связкой Telegram Secretary.
+/// Канал доставки для тредов со связкой Telegram Secretary / dual-групп.
 enum ChatDeliveryChannel {
-  /// Как last_counterpart на сервере.
+  /// Dual-write: пуш по last_counterpart (пусто → FC).
   auto,
 
-  /// Только Family Space (не зеркалить в Telegram).
-  familychat,
+  /// Dual-write: пуш в Family Space, Telegram без звука.
+  notifyFamilychat,
 
-  /// Принудительно в Telegram.
+  /// Dual-write: пуш в Telegram, Family Space без звука.
   telegram,
+
+  /// Только Family Space — в Telegram не зеркалить (приватность).
+  familychatOnly,
 }
 
 /// Параметры отправки (обычная / без звука / отложенная / AI / канал).
@@ -35,11 +38,21 @@ class ChatSendOptions {
   bool get deliverToTelegram =>
       deliveryChannel == ChatDeliveryChannel.telegram;
 
+  /// Dual-write modes (history in both FC and Telegram).
+  bool get mirrorsToTelegram => switch (deliveryChannel) {
+        ChatDeliveryChannel.familychatOnly => false,
+        ChatDeliveryChannel.auto ||
+        ChatDeliveryChannel.notifyFamilychat ||
+        ChatDeliveryChannel.telegram =>
+          true,
+      };
+
   String? get deliveryChannelApi {
     return switch (deliveryChannel) {
       ChatDeliveryChannel.auto => null,
-      ChatDeliveryChannel.familychat => 'familychat',
+      ChatDeliveryChannel.notifyFamilychat => 'notify_familychat',
       ChatDeliveryChannel.telegram => 'telegram',
+      ChatDeliveryChannel.familychatOnly => 'familychat',
     };
   }
 

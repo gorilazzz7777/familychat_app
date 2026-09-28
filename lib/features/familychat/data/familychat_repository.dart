@@ -961,6 +961,39 @@ class FamilyChatRepository {
     return res.data ?? {};
   }
 
+  /// Link TG Saved Messages ↔ FC «Избранное» (TG→FC only).
+  Future<Map<String, dynamic>> linkTelegramSavedMessages({
+    required int tgChatId,
+    String title = '',
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/telegram/saved-messages/link/',
+      data: {
+        'tg_chat_id': tgChatId,
+        if (title.isNotEmpty) 'title': title,
+      },
+    );
+    return res.data ?? {};
+  }
+
+  Future<Map<String, dynamic>> ingestTelegramSavedMessage({
+    required int tgChatId,
+    required int tgMessageId,
+    String text = '',
+    int? dateUnix,
+  }) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      'familychat/telegram/saved-messages/ingest/',
+      data: {
+        'tg_chat_id': tgChatId,
+        'tg_message_id': tgMessageId,
+        if (text.isNotEmpty) 'text': text,
+        if (dateUnix != null && dateUnix > 0) 'date': dateUnix,
+      },
+    );
+    return res.data ?? {};
+  }
+
   Future<List<Map<String, dynamic>>> chatFolders() async {
     final res =
         await _dio.get<Map<String, dynamic>>('familychat/chat/folders/');
@@ -1063,6 +1096,13 @@ class FamilyChatRepository {
     final raw = res.data?['participants'];
     if (raw is! List) return [];
     return raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  Future<void> removeChatThreadMember(int threadId, int userId) async {
+    await _dio.delete(
+      'familychat/chat/threads/$threadId/members/',
+      queryParameters: {'user_id': userId},
+    );
   }
 
   Future<ThreadMessagesPage> threadMessages(

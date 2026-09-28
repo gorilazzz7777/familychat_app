@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,8 +13,11 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/data/chat_location_utils.dart';
 import '../../chat/data/chat_send_options.dart';
 import '../../chat/data/chat_voice_utils.dart';
+import '../../chat/data/link_preview_service.dart';
+import '../tdlib_io.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../chat/presentation/record_video_circle_screen.dart';
+import '../../chat/presentation/widgets/chat_animated_media_scope.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../../chat/presentation/widgets/chat_compose_input.dart';
@@ -31,8 +34,10 @@ import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../telegram_tdlib_providers.dart';
 import '../telegram_tdlib_service.dart';
 import '../telegram_link_navigation.dart';
+import '../tg_jank_log.dart';
 import 'telegram_chat_info_sheet.dart';
 import 'telegram_live_stream_bar.dart';
+import 'telegram_message_search_sheet.dart';
 import 'telegram_user_info_sheet.dart';
 
 class TelegramConversationScreen extends ConsumerStatefulWidget {
@@ -65,6 +70,7 @@ class _TelegramConversationScreenState
   final _textCtrl = TextEditingController();
   final _inputFocus = FocusNode();
   final _scroll = ScrollController();
+  final _animatedMediaController = ChatAnimatedMediaController();
   final _tts = FlutterTts();
   bool _sending = false;
   bool _loadingOlder = false;
@@ -86,40 +92,103 @@ class _TelegramConversationScreenState
   /// Unread count frozen at open — keeps divider placement stable mid-visit.
   int _openUnreadCount = 0;
   bool _initialScrollDone = false;
+  /// True once the unread frontier is on-screen (or there were no unreads).
+  /// Until then we must not call viewMessages — a tip-side viewport would
+  /// mark everything above the sticky divider as read.
+  bool _unreadFrontierReady = false;
+  /// Hide the message list until open positioning finishes — avoids tip→unread
+  /// bounce while history pages in and ensureVisible retries.
+  bool _contentReady = false;
+  bool _linkPreviewsEnabled = false;
+  /// Spinner only after 1s still waiting — avoid 100ms flash on fast opens.
+  bool _showOpenLoader = false;
+  Timer? _openLoaderTimer;
   bool _caughtUpMarked = false;
   /// Ignore tip mark-read while we jump to the unread frontier.
   bool _suppressMarkRead = true;
   bool _suppressViewportPrefetch = true;
   bool _showScrollToBottom = false;
   double _lastScrollPixels = 0;
+  int _msgsLenAtUnreadJump = -1;
   Timer? _scrollToBottomHintTimer;
   Timer? _viewportPrefetchTimer;
   Timer? _markVisibleReadTimer;
   Timer? _scrollBusyClearTimer;
+  Timer? _reassertUnreadScrollTimer;
+  Timer? _openRevealTimeout;
+  Timer? _stickyDayThrottle;
+  String? _stickyDayLabel;
+  bool _showStickyDay = false;
   /// Highest message id we already sent to viewMessages this session.
   int _maxMarkedReadId = 0;
   DateTime? _lastUserScrollAt;
   final Set<int> _expandedBodyIds = {};
   final Map<int, GlobalKey> _messageKeys = {};
+  final GlobalKey _unreadSeparatorKey = GlobalKey();
 
+  static const _stickyDayAwayPx = 40.0;
   static const _scrollToBottomAwayPx = 280.0;
   static const _scrollToBottomHintDelay = Duration(milliseconds: 420);
   static const _viewportPrefetchDebounce = Duration(milliseconds: 900);
   static const _markVisibleReadDebounce = Duration(milliseconds: 180);
+
+  DateTime? _lastItemBuilderFlushAt;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_onScroll);
+    TgJankLog.resetForChat(widget.chatId);
+    WidgetsBinding.instance.addTimingsCallback(_onFrameTimings);
+    // Stay deferred until reveal+settle — timed boot defer expires mid-open
+    // on slow proxy and then OG scrapes nuke the first fling (~100+ frames).
+    LinkPreviewService.instance.deferNetworkFetches = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_openAndWatch());
     });
   }
 
+  void _onFrameTimings(List<FrameTiming> timings) {
+    if (TgJankLog.focusChatId != widget.chatId) return;
+    for (final t in timings) {
+      final buildMs = t.buildDuration.inMilliseconds;
+      final rasterMs = t.rasterDuration.inMilliseconds;
+      final totalMs = t.totalSpan.inMilliseconds;
+      if (buildMs < 18 && rasterMs < 18 && totalMs < 22) continue;
+      TgJankLog.log(
+        'FRAME build=${buildMs}ms raster=${rasterMs}ms '
+        'total=${totalMs}ms vsync=${t.vsyncOverhead.inMilliseconds}ms',
+      );
+    }
+    final now = DateTime.now();
+    final last = _lastItemBuilderFlushAt;
+    if (last == null || now.difference(last).inMilliseconds >= 250) {
+      _lastItemBuilderFlushAt = now;
+      TgJankLog.flushItemBuilderWindow();
+    }
+  }
+
   void _onScroll() {
     if (!_scroll.hasClients) return;
     _lastUserScrollAt = DateTime.now();
+    _animatedMediaController.noteUserScroll();
+    final pos = _scroll.position;
+    final activity = pos.activity;
+    final actName = activity is BallisticScrollActivity
+        ? 'ballistic'
+        : activity is DragScrollActivity
+            ? 'drag'
+            : activity is IdleScrollActivity
+                ? 'idle'
+                : activity?.runtimeType.toString() ?? 'none';
+    TgJankLog.scroll(
+      chatId: widget.chatId,
+      pixels: pos.pixels,
+      max: pos.maxScrollExtent,
+      activity: actName,
+      busy: true,
+    );
     // Defer media-driven ListView rebuilds while dragging/flinging — otherwise
     // download progress/completes hitch ballistic scroll every few frames.
     ref.read(telegramTdlibServiceProvider).setUiScrollBusy(true);
@@ -127,8 +196,20 @@ class _TelegramConversationScreenState
     _scrollBusyClearTimer = Timer(const Duration(milliseconds: 420), () {
       if (!mounted || _isUserActivelyScrolling) return;
       ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
+      TgJankLog.log('scroll-busy cleared');
     });
+    // User took over before we finished the unread jump — allow progressive
+    // read from whatever is on screen, but only after intentional scroll.
+    if (_initialScrollDone &&
+        _suppressMarkRead &&
+        _isUserActivelyScrolling &&
+        _openUnreadCount > 0) {
+      _unreadFrontierReady = true;
+      _suppressMarkRead = false;
+      _revealChatContent();
+    }
     _updateScrollToBottomVisibility();
+    _scheduleStickyDayUpdate();
     _scheduleViewportPrefetch();
     _scheduleMarkVisibleRead();
     if (_loadingOlder) return;
@@ -137,6 +218,78 @@ class _TelegramConversationScreenState
       return;
     }
     unawaited(_loadOlder());
+  }
+
+  DateTime? _dayOfTopmostVisibleMessage() {
+    if (!_scroll.hasClients) return null;
+    final msgs = ref.read(telegramTdlibServiceProvider).messagesFor(widget.chatId);
+    if (msgs.isEmpty) return null;
+    final scrollCtx = _scroll.position.context.notificationContext;
+    final viewport = scrollCtx?.findRenderObject() as RenderBox?;
+    if (viewport == null || !viewport.hasSize) return null;
+
+    final listTop = viewport.localToGlobal(Offset.zero).dy;
+    final listBottom = listTop + viewport.size.height;
+
+    DateTime? bestDay;
+    var bestTop = double.infinity;
+    for (final m in msgs) {
+      final ctx = _messageKeys[m.id]?.currentContext;
+      if (ctx == null) continue;
+      final box = ctx.findRenderObject() as RenderBox?;
+      if (box == null || !box.attached || !box.hasSize) continue;
+      final top = box.localToGlobal(Offset.zero).dy;
+      final bottom = top + box.size.height;
+      if (bottom <= listTop || top >= listBottom) continue;
+      if (top < bestTop) {
+        bestTop = top;
+        bestDay = _messageLocalDay(m);
+      }
+    }
+    return bestDay;
+  }
+
+  void _updateStickyDayHeader() {
+    if (!_scroll.hasClients || !_contentReady) {
+      if (_showStickyDay || _stickyDayLabel != null) {
+        setState(() {
+          _showStickyDay = false;
+          _stickyDayLabel = null;
+        });
+      }
+      return;
+    }
+    final pos = _scroll.position;
+    // Near older edge the in-list day chip sits at the top — sticky doubles it.
+    final nearOlder = pos.maxScrollExtent > 0 &&
+        (pos.pixels >= pos.maxScrollExtent - 120 ||
+            (pos.pixels / pos.maxScrollExtent) >= 0.90);
+    if (nearOlder || _loadingOlder) {
+      if (_showStickyDay || _stickyDayLabel != null) {
+        setState(() {
+          _showStickyDay = false;
+          _stickyDayLabel = null;
+        });
+      }
+      return;
+    }
+    final away = pos.pixels > _stickyDayAwayPx;
+    final day = away ? _dayOfTopmostVisibleMessage() : null;
+    final label = day == null ? null : formatChatDayLabel(day);
+    final show = away && label != null;
+    if (show == _showStickyDay && label == _stickyDayLabel) return;
+    setState(() {
+      _showStickyDay = show;
+      _stickyDayLabel = label;
+    });
+  }
+
+  void _scheduleStickyDayUpdate() {
+    if (_stickyDayThrottle?.isActive ?? false) return;
+    _stickyDayThrottle = Timer(const Duration(milliseconds: 48), () {
+      if (!mounted) return;
+      _updateStickyDayHeader();
+    });
   }
 
   void _scheduleViewportPrefetch() {
@@ -327,7 +480,7 @@ class _TelegramConversationScreenState
     }
 
     if (settle) {
-      scheduleSettle(4);
+      scheduleSettle(1);
       return;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => apply());
@@ -335,6 +488,7 @@ class _TelegramConversationScreenState
 
   Future<void> _scrollToLiveTail() async {
     _hideScrollToBottomButton();
+    _unreadFrontierReady = true;
     _suppressMarkRead = false;
     // Keep visit sticky unread divider; it resets only on leave + re-enter.
     _scrollToBottom(jump: false);
@@ -344,6 +498,10 @@ class _TelegramConversationScreenState
   /// Mark only what's on screen (progressive). Not a bulk tip dump.
   Future<void> _markVisibleMessagesRead() async {
     if (_suppressMarkRead || !_scroll.hasClients) return;
+    // Opening with unreads: never mark until the frontier row is on screen.
+    // Otherwise a tip-side viewport marks the whole gap as read while the
+    // sticky divider still paints at the old anchor.
+    if (_openUnreadCount > 0 && !_unreadFrontierReady) return;
     final svc = ref.read(telegramTdlibServiceProvider);
     final msgs = svc.messagesFor(widget.chatId);
     if (msgs.isEmpty) return;
@@ -378,6 +536,32 @@ class _TelegramConversationScreenState
     _maxMarkedReadId = highestVisibleUnread;
     await svc.markMessagesRead(widget.chatId, [highestVisibleUnread]);
     // Unread divider stays for this visit even after reading past the anchor.
+  }
+
+  bool _isUnreadAnchorInViewport() {
+    if (!_scroll.hasClients) return false;
+    final sepCtx = _unreadSeparatorKey.currentContext;
+    final ctx = (sepCtx != null && sepCtx.mounted)
+        ? sepCtx
+        : () {
+            final anchorId = _unreadAnchorMessageId;
+            if (anchorId == null) return null;
+            final svc = ref.read(telegramTdlibServiceProvider);
+            final timeline = _buildTimeline(svc.messagesFor(widget.chatId));
+            final keyId = _visibleKeyMessageId(anchorId, timeline);
+            return _keyForMessage(keyId).currentContext;
+          }();
+    if (ctx == null || !ctx.mounted) return false;
+    final box = ctx.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return false;
+    final listBox = _scroll.position.context.storageContext.findRenderObject()
+        as RenderBox?;
+    if (listBox == null || !listBox.hasSize) return false;
+    final topLeft = box.localToGlobal(Offset.zero, ancestor: listBox);
+    final bottom = topLeft.dy + box.size.height;
+    final viewH = listBox.size.height;
+    // Overlap the viewport at all (divider near top is fine).
+    return bottom > 0 && topLeft.dy < viewH;
   }
 
   /// Explicit catch-up (FAB / open with no unreads) — tip only.
@@ -415,11 +599,18 @@ class _TelegramConversationScreenState
         : svc.unreadCountFor(widget.chatId);
     if (unread <= 0) return;
 
-    for (var i = 0; i < 60; i++) {
+    // Cap pages — busy support groups can report hundreds of unreads; loading
+    // them all at once freezes scroll/buttons. User can load older on scroll.
+    const maxPages = 4;
+    const pageSize = 40;
+    for (var i = 0; i < maxPages; i++) {
       if (!mounted) return;
       final msgs = svc.messagesFor(widget.chatId);
       if (msgs.isEmpty) {
-        final added = await svc.loadOlderMessages(widget.chatId, pageSize: 50);
+        final added = await svc.loadOlderMessages(
+          widget.chatId,
+          pageSize: pageSize,
+        );
         if (added <= 0) return;
         continue;
       }
@@ -430,8 +621,13 @@ class _TelegramConversationScreenState
           ? msgs.where((m) => m.id > lastRead).length
           : msgs.length;
       if (loadedUnread >= unread) return;
+      // Soft cap: enough context around the frontier for a smooth open.
+      if (msgs.length >= 120) return;
 
-      final added = await svc.loadOlderMessages(widget.chatId, pageSize: 50);
+      final added = await svc.loadOlderMessages(
+        widget.chatId,
+        pageSize: pageSize,
+      );
       if (added <= 0) return;
     }
   }
@@ -492,6 +688,36 @@ class _TelegramConversationScreenState
     return rows;
   }
 
+  int _timelineLen = -1;
+  int _timelineFirstId = 0;
+  int _timelineLastId = 0;
+  List<_TgTimelineRow>? _cachedTimeline;
+  List<_TgTimelineRow>? _cachedReversedTimeline;
+
+  /// Reuse album grouping across rebuilds when the message window is unchanged.
+  List<_TgTimelineRow> _timelineCached(List<TdlibMessage> chronological) {
+    final first = chronological.isEmpty ? 0 : chronological.first.id;
+    final last = chronological.isEmpty ? 0 : chronological.last.id;
+    if (_cachedTimeline != null &&
+        chronological.length == _timelineLen &&
+        first == _timelineFirstId &&
+        last == _timelineLastId) {
+      return _cachedTimeline!;
+    }
+    _timelineLen = chronological.length;
+    _timelineFirstId = first;
+    _timelineLastId = last;
+    _cachedTimeline = _buildTimeline(chronological);
+    _cachedReversedTimeline =
+        _cachedTimeline!.reversed.toList(growable: false);
+    return _cachedTimeline!;
+  }
+
+  List<_TgTimelineRow> _reversedTimelineCached(List<TdlibMessage> msgs) {
+    _timelineCached(msgs);
+    return _cachedReversedTimeline ?? const [];
+  }
+
   List<Map<String, dynamic>> _attachmentsForRow(_TgTimelineRow row) {
     if (!row.isAlbum) return _attachments(row.primary);
     final ordered = [...row.members]..sort((a, b) => a.id.compareTo(b.id));
@@ -504,7 +730,9 @@ class _TelegramConversationScreenState
 
   Map<String, dynamic> _messageMetadataForRow(_TgTimelineRow row) {
     for (final m in row.members) {
-      if (m.isVideo) return _messageMetadata(m);
+      if (m.isSticker || m.isAnimation || m.isVideo) {
+        return _messageMetadata(m);
+      }
     }
     return _messageMetadata(row.primary);
   }
@@ -512,10 +740,18 @@ class _TelegramConversationScreenState
   String _bubbleBodyForRow(_TgTimelineRow row) {
     if (row.isAlbum) return row.caption;
     final m = row.primary;
+    if (m.isSticker) return '';
     if (m.isVoiceNote || m.isVideoNote || m.isVideo || m.isPhoto) {
-      if (m.text == 'Видео' || m.text == 'GIF' || m.text == 'Фото') {
+      if (m.text == 'Видео' ||
+          m.text == 'GIF' ||
+          m.text == 'Фото' ||
+          m.text == 'Стикер') {
         return '';
       }
+    }
+    if (m.isDocument) {
+      // Filename lives on the file card; keep only a real caption.
+      if (m.text.startsWith('Файл:') || m.text == 'Файл') return '';
     }
     return m.text;
   }
@@ -544,6 +780,70 @@ class _TelegramConversationScreenState
   void _jumpToMessage(int messageId) {
     if (_isUserActivelyScrolling) return;
     unawaited(_jumpToLinkedMessage(messageId));
+  }
+
+  /// Keep the message top fixed when expanding/collapsing «ещё».
+  /// reverse:true ListView anchors the bottom, so growth would otherwise
+  /// push the visible head off-screen and land on the end of the post.
+  void _toggleBodyExpand(int messageId) {
+    final key = _keyForMessage(messageId);
+    final beforeTop = _globalTopY(key);
+    setState(() {
+      if (_expandedBodyIds.contains(messageId)) {
+        _expandedBodyIds.remove(messageId);
+      } else {
+        _expandedBodyIds.add(messageId);
+      }
+    });
+    if (beforeTop == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _keepGlobalTopY(key, beforeTop);
+    });
+  }
+
+  double? _globalTopY(GlobalKey key) {
+    final ctx = key.currentContext;
+    if (ctx == null) return null;
+    final box = ctx.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero).dy;
+  }
+
+  void _keepGlobalTopY(GlobalKey key, double anchorTop) {
+    if (!_scroll.hasClients) return;
+    final afterTop = _globalTopY(key);
+    if (afterTop == null) return;
+    final delta = afterTop - anchorTop;
+    if (delta.abs() < 0.5) return;
+    final pos = _scroll.position;
+    // reverse:true — larger pixels shifts content down on screen.
+    // If the top moved up (delta < 0), increase pixels to push it back down.
+    final target = (pos.pixels - delta).clamp(0.0, pos.maxScrollExtent);
+    if ((target - pos.pixels).abs() < 0.5) return;
+    pos.jumpTo(target);
+  }
+
+  Future<void> _openSearch() async {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.65,
+        minChildSize: 0.35,
+        maxChildSize: 0.92,
+        builder: (_, __) => TelegramMessageSearchSheet(
+          chatId: widget.chatId,
+          service: svc,
+          onSelect: (id) {
+            Navigator.pop(ctx);
+            unawaited(_jumpToLinkedMessage(id));
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _jumpToLinkedMessage(int messageId) async {
@@ -591,9 +891,62 @@ class _TelegramConversationScreenState
     return false;
   }
 
+  void _revealChatContent() {
+    if (!mounted || _contentReady) return;
+    _openRevealTimeout?.cancel();
+    _openRevealTimeout = null;
+    _openLoaderTimer?.cancel();
+    _openLoaderTimer = null;
+    TgJankLog.log('reveal content');
+    setState(() {
+      _contentReady = true;
+      _showOpenLoader = false;
+    });
+    // Link-preview cards + Dio after first flings have a chance.
+    Timer(const Duration(milliseconds: 2800), () {
+      if (!mounted || _isUserActivelyScrolling) {
+        // Try again shortly after fling ends.
+        Timer(const Duration(milliseconds: 800), () {
+          if (!mounted || _isUserActivelyScrolling) return;
+          _enableLinkPreviews();
+        });
+        return;
+      }
+      _enableLinkPreviews();
+    });
+  }
+
+  void _enableLinkPreviews() {
+    if (!mounted || _linkPreviewsEnabled) return;
+    TgJankLog.log('enable link previews');
+    LinkPreviewService.instance.linkPreviewGateOpen = true;
+    LinkPreviewService.instance.deferNetworkFetches = false;
+    setState(() => _linkPreviewsEnabled = true);
+  }
+
+  void _armDelayedOpenLoader() {
+    _openLoaderTimer?.cancel();
+    _openLoaderTimer = Timer(const Duration(seconds: 1), () {
+      if (!mounted || _contentReady) return;
+      setState(() => _showOpenLoader = true);
+    });
+  }
+
+  void _armOpenRevealTimeout() {
+    _openRevealTimeout?.cancel();
+    _openRevealTimeout = Timer(const Duration(milliseconds: 2800), () {
+      if (!mounted || _contentReady) return;
+      _initialScrollDone = true;
+      _unreadFrontierReady = true;
+      _suppressMarkRead = false;
+      _revealChatContent();
+    });
+  }
+
   Future<bool> _ensureVisibleMessage(
     int messageId, {
     double alignment = 0.12,
+    bool instant = false,
   }) async {
     if (!mounted) return false;
     if (_isUserActivelyScrolling) return false;
@@ -609,10 +962,17 @@ class _TelegramConversationScreenState
     if (_scroll.hasClients && !_isUserActivelyScrolling) {
       final listIndex = timeline.length - 1 - rowIndex;
       final max = _scroll.position.maxScrollExtent;
-      const avgItemExtent = 140.0;
-      final estimated = (listIndex * avgItemExtent).clamp(0.0, max);
+      // Proportional jump beats a fixed avg height on media-heavy channels
+      // (fixed 140px under-shoots → lands near the tip / “too low”).
+      final t = timeline.length <= 1
+          ? 0.0
+          : listIndex / (timeline.length - 1);
+      final estimated = (t * max).clamp(0.0, max);
       _scroll.jumpTo(estimated);
     }
+
+    // Opening path must never animate — animations are the visible “jumps”.
+    final useInstant = instant || !_contentReady;
 
     for (var attempt = 0; attempt < 16; attempt++) {
       await WidgetsBinding.instance.endOfFrame;
@@ -622,32 +982,54 @@ class _TelegramConversationScreenState
       if (ctx != null && ctx.mounted) {
         await Scrollable.ensureVisible(
           ctx,
-          duration: attempt == 0
+          duration: useInstant || attempt == 0
               ? Duration.zero
               : const Duration(milliseconds: 220),
           curve: Curves.easeOutCubic,
           alignment: alignment,
         );
+        // Pin the unread bar flush to the top of the chat viewport when
+        // opening on the frontier (alignment 0).
+        if (alignment <= 0.001) {
+          await _pinUnreadSeparatorToTop();
+        }
         return true;
       }
       if (_scroll.hasClients && !_isUserActivelyScrolling) {
         final pos = _scroll.position;
         final listIndex = timeline.length - 1 - rowIndex;
-        const avgItemExtent = 140.0;
-        final base =
-            (listIndex * avgItemExtent).clamp(0.0, pos.maxScrollExtent);
+        final max = pos.maxScrollExtent;
+        final t = timeline.length <= 1
+            ? 0.0
+            : listIndex / (timeline.length - 1);
+        final base = (t * max).clamp(0.0, max);
         final drift =
-            180.0 * ((attempt ~/ 2) + 1) * (attempt.isEven ? 1 : -1);
-        _scroll.jumpTo((base + drift).clamp(0.0, pos.maxScrollExtent));
+            220.0 * ((attempt ~/ 2) + 1) * (attempt.isEven ? 1 : -1);
+        _scroll.jumpTo((base + drift).clamp(0.0, max));
       }
       await Future<void>.delayed(const Duration(milliseconds: 40));
     }
     return false;
   }
 
+  /// Scroll so «Непрочитанные сообщения» sits at the top of the chat area.
+  Future<void> _pinUnreadSeparatorToTop() async {
+    if (!mounted || _isUserActivelyScrolling) return;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || _isUserActivelyScrolling) return;
+    final ctx = _unreadSeparatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    await Scrollable.ensureVisible(
+      ctx,
+      alignment: 0.0,
+      duration: Duration.zero,
+    );
+  }
+
   Future<void> _positionInitialScroll(TelegramTdlibService svc) async {
     if (_initialScrollDone || !mounted) return;
     _suppressMarkRead = true;
+    _unreadFrontierReady = false;
 
     await _ensureUnreadHistoryLoaded(svc);
     if (!mounted) return;
@@ -660,7 +1042,10 @@ class _TelegramConversationScreenState
 
     if (unread <= 0 || firstUnread == null || msgs.isEmpty) {
       _initialScrollDone = true;
+      _unreadFrontierReady = true;
       _scrollToBottom(jump: true, settle: true);
+      await WidgetsBinding.instance.endOfFrame;
+      if (mounted) _revealChatContent();
       _suppressMarkRead = false;
       _scheduleViewportPrefetch();
       _scheduleMarkVisibleRead();
@@ -695,13 +1080,90 @@ class _TelegramConversationScreenState
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
 
-    await _ensureVisibleMessage(anchorId, alignment: 0.08);
+    var ok = await _ensureVisibleMessage(
+      anchorId,
+      alignment: 0.0,
+      instant: true,
+    );
+    if (!ok && mounted) {
+      // History may still be growing — retry a few times before giving up.
+      for (var i = 0; i < 5 && mounted && !ok; i++) {
+        await Future<void>.delayed(Duration(milliseconds: 120 + i * 80));
+        if (!mounted) return;
+        await _ensureUnreadHistoryLoaded(svc);
+        ok = await _ensureVisibleMessage(
+          anchorId,
+          alignment: 0.0,
+          instant: true,
+        );
+      }
+    }
     _initialScrollDone = true;
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    if (mounted) _suppressMarkRead = false;
-    _scheduleViewportPrefetch();
-    _scheduleMarkVisibleRead();
+    _msgsLenAtUnreadJump = svc.messagesFor(widget.chatId).length;
+    if (ok) {
+      _unreadFrontierReady = true;
+      await WidgetsBinding.instance.endOfFrame;
+      if (mounted) _revealChatContent();
+      // Let layout settle before progressive read.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (mounted) _suppressMarkRead = false;
+      _scheduleViewportPrefetch();
+      _scheduleMarkVisibleRead();
+    } else {
+      // Stay suppressed — tip viewport must not wipe unreads. Reassert when
+      // more history arrives / user scrolls. Keep list hidden until then.
+      _scheduleReassertUnreadScroll();
+    }
     if (mounted) _updateScrollToBottomVisibility();
+  }
+
+  void _scheduleReassertUnreadScroll() {
+    _reassertUnreadScrollTimer?.cancel();
+    _reassertUnreadScrollTimer =
+        Timer(const Duration(milliseconds: 280), () {
+      if (!mounted || _unreadFrontierReady) return;
+      unawaited(_reassertUnreadScroll());
+    });
+  }
+
+  Future<void> _reassertUnreadScroll() async {
+    if (!mounted || _unreadFrontierReady) return;
+    if (_openUnreadCount <= 0 || _unreadAnchorMessageId == null) {
+      _unreadFrontierReady = true;
+      _suppressMarkRead = false;
+      _revealChatContent();
+      return;
+    }
+    if (_isUserActivelyScrolling) return;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final len = svc.messagesFor(widget.chatId).length;
+    // Always retry until frontier is visible — remote history fill often
+    // resets reverse ListView back to the tip after the first jump.
+    final ok = await _ensureVisibleMessage(
+      _unreadAnchorMessageId!,
+      alignment: 0.0,
+      instant: true,
+    );
+    if (!mounted) return;
+    _msgsLenAtUnreadJump = len;
+    if (ok && _isUnreadAnchorInViewport()) {
+      _unreadFrontierReady = true;
+      _suppressMarkRead = false;
+      _revealChatContent();
+      _scheduleViewportPrefetch();
+      _scheduleMarkVisibleRead();
+      if (mounted) _updateScrollToBottomVisibility();
+      return;
+    }
+    _scheduleReassertUnreadScroll();
+  }
+
+  /// Call from build when message list length changes during open settle.
+  void _maybeReassertUnreadAfterHistoryGrowth(int messageCount) {
+    if (_unreadFrontierReady || _openUnreadCount <= 0) return;
+    if (!_initialScrollDone) return;
+    if (messageCount == _msgsLenAtUnreadJump) return;
+    _scheduleReassertUnreadScroll();
   }
 
   Future<void> _loadOlder() async {
@@ -948,6 +1410,15 @@ class _TelegramConversationScreenState
     if (preUnread != null) {
       _unreadAnchorMessageId = preUnread;
     }
+    final deepLink = widget.initialMessageId != null && widget.initialMessageId! > 0;
+    final needsPositionGate = _openUnreadCount > 0 || deepLink;
+    if (!needsPositionGate) {
+      // Tip is already correct for reverse lists — show immediately, no spinner.
+      _revealChatContent();
+    } else {
+      _armDelayedOpenLoader();
+      _armOpenRevealTimeout();
+    }
     await svc.openChat(widget.chatId);
     // Catch anything that raced during history load.
     await svc.syncChatTail(widget.chatId);
@@ -957,6 +1428,7 @@ class _TelegramConversationScreenState
     final jumpId = widget.initialMessageId;
     if (jumpId != null && jumpId > 0) {
       await _jumpToLinkedMessage(jumpId);
+      if (mounted) _revealChatContent();
     }
     // Focus the on-screen / unread photo — not the newest tip (that stole the
     // exclusive slot and left the visible spinner spinning forever).
@@ -990,11 +1462,17 @@ class _TelegramConversationScreenState
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    WidgetsBinding.instance.removeTimingsCallback(_onFrameTimings);
+    TgJankLog.clearFocus();
     _tailSyncTimer?.cancel();
     _scrollToBottomHintTimer?.cancel();
     _viewportPrefetchTimer?.cancel();
     _markVisibleReadTimer?.cancel();
     _scrollBusyClearTimer?.cancel();
+    _reassertUnreadScrollTimer?.cancel();
+    _openRevealTimeout?.cancel();
+    _openLoaderTimer?.cancel();
+    _stickyDayThrottle?.cancel();
     _scroll.removeListener(_onScroll);
     final chatId = widget.chatId;
     // Defer: closeChat → notifyListeners must not run during unmount
@@ -1002,9 +1480,12 @@ class _TelegramConversationScreenState
     Future(() {
       unawaited(TelegramTdlibService.instance.closeChat(chatId));
     });
+    LinkPreviewService.instance.deferNetworkFetches = false;
+    LinkPreviewService.instance.linkPreviewGateOpen = false;
     _textCtrl.dispose();
     _inputFocus.dispose();
     _scroll.dispose();
+    _animatedMediaController.dispose();
     unawaited(_tts.stop());
     super.dispose();
   }
@@ -1017,7 +1498,11 @@ class _TelegramConversationScreenState
     try {
       if (_editing != null) {
         await svc.editMessageText(widget.chatId, _editing!.id, text);
-        _editing = null;
+        if (mounted) {
+          setState(() => _editing = null);
+        } else {
+          _editing = null;
+        }
       } else {
         await svc.sendText(
           widget.chatId,
@@ -1029,8 +1514,15 @@ class _TelegramConversationScreenState
       _textCtrl.clear();
     } catch (e) {
       if (!mounted) return;
+      final wasEditing = _editing != null;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось отправить: $e')),
+        SnackBar(
+          content: Text(
+            wasEditing
+                ? 'Не удалось изменить: $e'
+                : 'Не удалось отправить: $e',
+          ),
+        ),
       );
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -1314,7 +1806,9 @@ class _TelegramConversationScreenState
       context,
       showReactions: true,
       canReply: true,
-      canEdit: m.isOutgoing && m.canBeEdited && m.text.isNotEmpty,
+      canEdit: m.isOutgoing &&
+          !m.isService &&
+          m.text.trim().isNotEmpty,
       canCopy: m.text.isNotEmpty,
       canForward: true,
       canSelect: true,
@@ -1596,15 +2090,57 @@ class _TelegramConversationScreenState
       ];
     }
 
+    if (m.isDocument) {
+      final fileId = m.documentFileId;
+      final path = m.documentLocalPath ??
+          (fileId == null ? null : svc.cachedFilePath(fileId));
+      final thumbPath = m.documentThumbLocalPath ??
+          (m.documentThumbFileId == null
+              ? null
+              : svc.cachedFilePath(m.documentThumbFileId!));
+      final thumbBytes =
+          m.documentThumbBytes != null && m.documentThumbBytes!.isNotEmpty
+              ? Uint8List.fromList(m.documentThumbBytes!)
+              : null;
+      final name = (m.documentFileName ?? '').trim();
+      final mime = (m.documentMimeType ?? '').trim();
+      final downloading = fileId != null &&
+          (path == null || path.isEmpty) &&
+          svc.isFileDownloading(fileId);
+      final progress = fileId == null ? null : svc.fileDownloadProgress(fileId);
+      return [
+        {
+          'id': fileId ?? m.id,
+          'kind': 'file',
+          'content_type': mime.isNotEmpty
+              ? mime
+              : (name.toLowerCase().endsWith('.pdf')
+                  ? 'application/pdf'
+                  : 'application/octet-stream'),
+          'filename': name.isNotEmpty ? name : 'file_${fileId ?? m.id}',
+          'skip_age_defer': true,
+          'tdlib_file_id': fileId,
+          if (m.documentSizeBytes != null && m.documentSizeBytes! > 0)
+            'size_bytes': m.documentSizeBytes,
+          if (path != null && path.isNotEmpty) 'local_device_path': path,
+          if (thumbPath != null && thumbPath.isNotEmpty)
+            'thumbnail_local_path': thumbPath,
+          if ((thumbPath == null || thumbPath.isEmpty) && thumbBytes != null)
+            'thumbnail_bytes': thumbBytes,
+          if (downloading) 'is_downloading': true,
+          if (downloading && progress != null) 'download_progress': progress,
+        },
+      ];
+    }
+
     final path = svc.resolvedPhotoPath(m);
     final fileId = m.photoRemoteId;
     final hasPath = path != null && path.isNotEmpty;
-    var readyPath = hasPath ? path : null;
-    // Stale TDLib cache entry (file deleted) — re-queue download.
-    if (readyPath != null && !File(readyPath).existsSync()) {
-      if (fileId != null) svc.invalidateCachedFile(fileId);
-      readyPath = null;
-    }
+    final readyPath = hasPath ? path : null;
+    // Never File.existsSync() here — itemBuilder runs for every photo in
+    // cacheExtent on each scroll frame; sync disk I/O kills ballistic fling
+    // in media-heavy groups (ТП НСИС…). Stale paths fail in Image and
+    // re-queue via invalidateCachedFile on error / focus.
     // Do NOT seed focus from every ListView tile — that raced openMessageContent
     // and cancelled CDN downloads. Viewport scroll owns exclusive focus.
 
@@ -1664,11 +2200,37 @@ class _TelegramConversationScreenState
         },
       };
     }
+    if (m.isSticker) {
+      return {
+        'sticker': {
+          'source': 'telegram',
+          if (m.stickerEmoji != null && m.stickerEmoji!.isNotEmpty)
+            'emoji': m.stickerEmoji,
+        },
+      };
+    }
+    if (m.isAnimation) {
+      final durationMs = m.videoDurationMs;
+      return {
+        'gif': {
+          'source': 'telegram',
+          if (durationMs != null && durationMs > 0) 'duration_ms': durationMs,
+        },
+      };
+    }
     if (m.isVideo) {
       final durationMs = m.videoDurationMs;
       return {
         'video': {
           if (durationMs != null && durationMs > 0) 'duration_ms': durationMs,
+        },
+      };
+    }
+    if (m.isDocument) {
+      return {
+        'file': {
+          if (m.documentFileName != null) 'filename': m.documentFileName,
+          if (m.documentMimeType != null) 'mime_type': m.documentMimeType,
         },
       };
     }
@@ -1678,16 +2240,27 @@ class _TelegramConversationScreenState
   String _messagePreviewLabel(TdlibMessage m) {
     if (m.isVoiceNote) return 'Голосовое сообщение';
     if (m.isVideoNote) return 'Видеосообщение';
+    if (m.isSticker) {
+      final e = (m.stickerEmoji ?? '').trim();
+      return e.isNotEmpty ? e : 'Стикер';
+    }
     if (m.isVideo) return m.isAnimation ? 'GIF' : 'Видео';
+    if (m.isDocument) {
+      final name = (m.documentFileName ?? '').trim();
+      return name.isNotEmpty ? name : 'Файл';
+    }
     return m.text;
   }
 
-  Map<String, dynamic>? _replyMap(TdlibMessage m, TelegramTdlibService svc) {
+  Map<String, dynamic>? _replyMap(
+    TdlibMessage m,
+    TelegramTdlibService svc, [
+    Map<int, TdlibMessage>? byId,
+  ]) {
     final id = m.replyToMessageId;
     if (id == null) return null;
-    final found = svc.messagesFor(widget.chatId)
-        .where((x) => x.id == id)
-        .firstOrNull;
+    final found = byId?[id] ??
+        svc.messagesFor(widget.chatId).where((x) => x.id == id).firstOrNull;
     final preview = m.replyPreviewText.isNotEmpty
         ? m.replyPreviewText
         : (found == null ? '' : _messagePreviewLabel(found));
@@ -1705,8 +2278,10 @@ class _TelegramConversationScreenState
 
   @override
   Widget build(BuildContext context) {
+    final sw = Stopwatch()..start();
     final svc = ref.watch(telegramTdlibServiceProvider);
     final messages = svc.messagesFor(widget.chatId);
+    _maybeReassertUnreadAfterHistoryGrowth(messages.length);
     final wallpaperId = ref.watch(chatWallpaperIdProvider);
     final title = svc.peerTitle(widget.chatId);
     final displayTitle = title == 'Telegram' ? widget.title : title;
@@ -1720,12 +2295,20 @@ class _TelegramConversationScreenState
     final isGroup = svc.isGroupChat(widget.chatId);
     final isChannel = svc.isChannelChat(widget.chatId);
     final isGroupLike = isGroup || isChannel;
-    final timeline = _buildTimeline(messages);
-    final reversedRows = timeline.reversed.toList(growable: false);
+    final reversedRows = _reversedTimelineCached(messages);
+    final messagesById = <int, TdlibMessage>{
+      for (final m in messages) m.id: m,
+    };
+    TgJankLog.build(
+      chatId: widget.chatId,
+      ms: sw.elapsedMilliseconds,
+      msgs: messages.length,
+      rows: reversedRows.length,
+      contentReady: _contentReady,
+      linkPreviews: _linkPreviewsEnabled,
+    );
     final pinnedId = svc.pinnedMessageId(widget.chatId);
-    final pinnedMsg = pinnedId == null
-        ? null
-        : messages.where((m) => m.id == pinnedId).firstOrNull;
+    final pinnedMsg = pinnedId == null ? null : messagesById[pinnedId];
     final canSend = svc.canSendMessages(widget.chatId);
     final showCompose = !_selectionMode && canSend;
     final composePad = !showCompose
@@ -1787,9 +2370,13 @@ class _TelegramConversationScreenState
                         avatarUrl: widget.peerAvatarUrl.isEmpty
                             ? null
                             : widget.peerAvatarUrl,
-                        localFilePath: avatarPath,
-                        memoryBytes:
-                            svc.peerAvatarMinithumbnailBytes(widget.chatId),
+                        // FC photo wins when linked; TG only if FC has none.
+                        localFilePath: widget.peerAvatarUrl.isEmpty
+                            ? avatarPath
+                            : null,
+                        memoryBytes: widget.peerAvatarUrl.isEmpty
+                            ? svc.peerAvatarMinithumbnailBytes(widget.chatId)
+                            : null,
                         userId: widget.fcUserId,
                         radius: 20,
                       ),
@@ -1843,6 +2430,13 @@ class _TelegramConversationScreenState
                     ],
                   ),
                 ),
+                actions: [
+                  IconButton(
+                    tooltip: 'Поиск',
+                    onPressed: () => unawaited(_openSearch()),
+                    icon: const Icon(LucideIcons.search),
+                  ),
+                ],
               ),
         body: ChatWallpaperBackdrop(
           wallpaperId: wallpaperId,
@@ -1886,19 +2480,37 @@ class _TelegramConversationScreenState
                   clipBehavior: Clip.none,
                   children: [
                     Positioned.fill(
-                      child: ListView.builder(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Opacity(
+                            opacity: _contentReady ? 1 : 0,
+                            child: IgnorePointer(
+                              ignoring: !_contentReady,
+                              child: ChatAnimatedMediaScope(
+                                controller: _animatedMediaController,
+                                child: NotificationListener<ScrollNotification>(
+                                  onNotification: (n) {
+                                    if (n is ScrollUpdateNotification &&
+                                        n.dragDetails != null) {
+                                      _animatedMediaController.noteUserScroll();
+                                    } else if (n is ScrollEndNotification) {
+                                      _animatedMediaController.noteScrollEnd();
+                                    }
+                                    return false;
+                                  },
+                                  child: ListView.builder(
                         controller: _scroll,
                         reverse: true,
-                        // Tall full-width media: keep more off-screen rows warm
-                        // so ballistic flings don't hitch on first layout/decode.
-                        cacheExtent: 2800,
+                        // Modest cache — photo rows are tall; 2800px kept too
+                        // many decodes warm and blocked ballistic fling.
+                        cacheExtent: 1200,
                         addAutomaticKeepAlives: false,
-                        physics: const ClampingScrollPhysics(
-                          parent: AlwaysScrollableScrollPhysics(),
-                        ),
+                        physics: const AlwaysScrollableScrollPhysics(),
                         padding: EdgeInsets.fromLTRB(8, 8, 8, 8 + composePad),
                         itemCount: reversedRows.length,
                         itemBuilder: (context, i) {
+                          TgJankLog.itemBuilderTick();
                           final rowItem = reversedRows[i];
                           final m = rowItem.primary;
                           final created = m.date > 0
@@ -1976,7 +2588,7 @@ class _TelegramConversationScreenState
                             messageMetadata: _messageMetadataForRow(rowItem),
                             createdAt: created,
                             reactions: _reactionMaps(m),
-                            replyTo: _replyMap(m, svc),
+                            replyTo: _replyMap(m, svc, messagesById),
                             forward: forwardMap,
                             isGroupLike: isGroupLike,
                             showGroupAvatarColumn: isGroup,
@@ -2008,6 +2620,7 @@ class _TelegramConversationScreenState
                               ),
                             ),
                             onOpenUrl: _handleOpenUrl,
+                            showLinkPreview: _linkPreviewsEnabled,
                             onReplyTap: replyId == null
                                 ? null
                                 : () => _jumpToMessage(replyId),
@@ -2025,13 +2638,7 @@ class _TelegramConversationScreenState
                             collapseBodyAfterLines: isChannel ? 10 : null,
                             bodyExpanded: _expandedBodyIds.contains(m.id),
                             onToggleBodyExpand: isChannel
-                                ? () => setState(() {
-                                      if (_expandedBodyIds.contains(m.id)) {
-                                        _expandedBodyIds.remove(m.id);
-                                      } else {
-                                        _expandedBodyIds.add(m.id);
-                                      }
-                                    })
+                                ? () => _toggleBodyExpand(m.id)
                                 : null,
                           );
                           }
@@ -2043,12 +2650,15 @@ class _TelegramConversationScreenState
                                   crossAxisAlignment:
                                       CrossAxisAlignment.stretch,
                                   children: [
+                                    if (showUnread)
+                                      KeyedSubtree(
+                                        key: _unreadSeparatorKey,
+                                        child: const ChatUnreadSeparator(),
+                                      ),
                                     if (day != null && showDay)
                                       ChatDaySeparator(
                                         label: formatChatDayLabel(day),
                                       ),
-                                    if (showUnread)
-                                      const ChatUnreadSeparator(),
                                     messageBody,
                                   ],
                                 );
@@ -2059,12 +2669,38 @@ class _TelegramConversationScreenState
                           );
                         },
                       ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (_showOpenLoader && !_contentReady)
+                            const Center(child: CircularProgressIndicator()),
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            top: 8,
+                            child: IgnorePointer(
+                              child: AnimatedOpacity(
+                                opacity: _showStickyDay &&
+                                        (_stickyDayLabel?.isNotEmpty ?? false)
+                                    ? 1
+                                    : 0,
+                                duration: const Duration(milliseconds: 160),
+                                child: ChatDaySeparator(
+                                  label: _stickyDayLabel ?? '',
+                                  compact: true,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                     Positioned(
                       right: 12,
                       bottom: 12 + (showCompose ? composePad : 0),
                       child: IgnorePointer(
-                        ignoring: !_showScrollToBottom,
+                        ignoring: !_showScrollToBottom || !_contentReady,
                         child: AnimatedOpacity(
                           opacity: _showScrollToBottom ? 1 : 0,
                           duration: const Duration(milliseconds: 180),

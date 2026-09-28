@@ -10,7 +10,7 @@ import 'telegram_tdlib_service.dart';
 /// Client-side bridge for TDLib-linked FC groups.
 ///
 /// - FC→TG: [mirrorOutboundText] (+ local pending queue when TDLib offline)
-/// - TG→FC: listens [TelegramTdlibService.onBridgeNewMessage] → ingest API
+/// - TG→FC: listens [TelegramTdlibService.addBridgeNewMessageListener] → ingest API
 class TelegramGroupBridge {
   TelegramGroupBridge._();
   static final instance = TelegramGroupBridge._();
@@ -67,7 +67,7 @@ class TelegramGroupBridge {
   void _ensureHook() {
     if (_hooked) return;
     _hooked = true;
-    TelegramTdlibService.instance.onBridgeNewMessage = _onTdlibMessage;
+    TelegramTdlibService.instance.addBridgeNewMessageListener(_onTdlibMessage);
     // Flush pending when TDLib becomes ready.
     TelegramTdlibService.instance.addListener(_onTdlibChanged);
   }
@@ -111,6 +111,7 @@ class TelegramGroupBridge {
     required int tgChatId,
     required int fcMessageId,
     required String text,
+    bool disableNotification = false,
   }) async {
     final body = text.trim();
     if (body.isEmpty || threadId <= 0 || tgChatId == 0) return;
@@ -123,12 +124,17 @@ class TelegramGroupBridge {
         tgChatId: tgChatId,
         fcMessageId: fcMessageId,
         text: body,
+        disableNotification: disableNotification,
       );
       return;
     }
 
     try {
-      final tgMsgId = await svc.sendTextReturningId(tgChatId, body);
+      final tgMsgId = await svc.sendTextReturningId(
+        tgChatId,
+        body,
+        disableNotification: disableNotification,
+      );
       if (tgMsgId != null && tgMsgId > 0 && _repo != null) {
         await _repo!.registerTelegramGroupOutboundMap(
           threadId: threadId,
@@ -144,6 +150,7 @@ class TelegramGroupBridge {
         tgChatId: tgChatId,
         fcMessageId: fcMessageId,
         text: body,
+        disableNotification: disableNotification,
       );
     }
   }
@@ -153,6 +160,7 @@ class TelegramGroupBridge {
     required int tgChatId,
     required int fcMessageId,
     required String text,
+    bool disableNotification = false,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     final list = _readPending(prefs);
@@ -165,6 +173,7 @@ class TelegramGroupBridge {
       'tg_chat_id': tgChatId,
       'fc_message_id': fcMessageId,
       'text': text,
+      'disable_notification': disableNotification,
       'enqueued_at': DateTime.now().toUtc().toIso8601String(),
       'attempts': 0,
     });
@@ -203,9 +212,14 @@ class TelegramGroupBridge {
         final fcMessageId = (item['fc_message_id'] as num?)?.toInt() ?? 0;
         final text = item['text']?.toString() ?? '';
         final attempts = (item['attempts'] as num?)?.toInt() ?? 0;
+        final disableNotification = item['disable_notification'] == true;
         if (threadId <= 0 || tgChatId == 0 || text.isEmpty) continue;
         try {
-          final tgMsgId = await svc.sendTextReturningId(tgChatId, text);
+          final tgMsgId = await svc.sendTextReturningId(
+            tgChatId,
+            text,
+            disableNotification: disableNotification,
+          );
           if (tgMsgId != null &&
               tgMsgId > 0 &&
               fcMessageId > 0 &&

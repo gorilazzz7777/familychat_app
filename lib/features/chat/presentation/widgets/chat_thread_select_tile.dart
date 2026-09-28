@@ -95,6 +95,12 @@ class ChatThreadSelectTile extends StatelessWidget {
       color: subFg.withValues(alpha: 0.8),
     );
 
+    final fcAvatar = avatarAsset != null
+        ? null
+        : dmAvatarUrl(thread, memberByUserId);
+    final useTgPhoto = fcAvatar == null || fcAvatar.isEmpty;
+    final tdlibBytes = thread['tdlib_photo_bytes'];
+
     return Material(
       color: bg,
       child: ListTile(
@@ -103,11 +109,14 @@ class ChatThreadSelectTile extends StatelessWidget {
             ? const SavedMessagesAvatar(radius: 24)
             : ChatAvatar(
                 name: title,
-                avatarUrl: avatarAsset != null
-                    ? null
-                    : dmAvatarUrl(thread, memberByUserId),
+                avatarUrl: fcAvatar,
                 userId: avatarAsset != null ? null : dmPeerUserId(thread),
                 assetPath: avatarAsset,
+                localFilePath:
+                    useTgPhoto ? thread['tdlib_photo_path']?.toString() : null,
+                memoryBytes: useTgPhoto && tdlibBytes is List<int>
+                    ? tdlibBytes
+                    : null,
                 radius: 24,
               ),
         title: Text(

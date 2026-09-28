@@ -27,6 +27,7 @@ import '../core/share/share_direct_target_service.dart';
 import '../core/settings/app_settings_controller.dart';
 import '../core/settings/shell_nav_layout.dart';
 import '../features/telegram_tdlib/telegram_match_store.dart';
+import '../features/telegram_tdlib/telegram_saved_bridge.dart';
 import '../features/telegram_tdlib/telegram_tdlib_providers.dart';
 import '../features/telegram_tdlib/telegram_tdlib_service.dart';
 import 'app_actions_scope.dart';
@@ -511,6 +512,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       await ref
           .read(telegramTdlibServiceProvider)
           .reconcileFamilyIdentities();
+      // Merge TG Saved Messages → FC «Избранное» (TG→FC only).
+      final repo = ref.read(familychatRepositoryProvider);
+      TelegramSavedBridge.instance.bindRepository(repo);
+      unawaited(TelegramSavedBridge.instance.ensureLinkedAndSync());
     } catch (e) {
       debugPrint('[tdlib] secretary match import failed: $e');
       // Allow retry on next ready rebuild.

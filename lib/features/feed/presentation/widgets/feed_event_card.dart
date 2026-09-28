@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -76,6 +78,13 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
 
   Future<void> _markViewed() async {
     if (_viewMarked || !mounted) return;
+    // Skip network/setState while the feed is flinging.
+    if (Scrollable.recommendDeferredLoadingForContext(context)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_markViewed());
+      });
+      return;
+    }
     final eventId = _event['id'];
     final id = eventId is int ? eventId : int.tryParse('$eventId');
     // Optimistic / локальные id (<0) на сервер не отправляем — URL не матчится.

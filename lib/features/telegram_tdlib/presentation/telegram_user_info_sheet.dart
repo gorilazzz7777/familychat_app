@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -7,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../tdlib_local_file.dart';
 import '../telegram_link_navigation.dart';
 import '../telegram_tdlib_providers.dart';
 import '../telegram_tdlib_service.dart';
@@ -60,8 +60,7 @@ class _TelegramUserInfoSheetState extends ConsumerState<TelegramUserInfoSheet>
   List<({int messageId, String url})> _links = const [];
 
   bool get _hasExpandedPhoto {
-    final p = _profile.avatarLocalPath;
-    return p != null && p.isNotEmpty && File(p).existsSync();
+    return tdlibLocalFileExists(_profile.avatarLocalPath);
   }
 
   @override
@@ -157,8 +156,8 @@ class _TelegramUserInfoSheetState extends ConsumerState<TelegramUserInfoSheet>
                           backgroundColor: theme.colorScheme.surface,
                           flexibleSpace: FlexibleSpaceBar(
                             collapseMode: CollapseMode.pin,
-                            background: Image.file(
-                              File(_profile.avatarLocalPath!),
+                            background: tdlibLocalFileImage(
+                              _profile.avatarLocalPath!,
                               fit: BoxFit.cover,
                             ),
                           ),
@@ -418,7 +417,7 @@ class _TelegramUserInfoSheetState extends ConsumerState<TelegramUserInfoSheet>
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Image.file(File(path), fit: BoxFit.cover),
+                    tdlibLocalFileImage(path, fit: BoxFit.cover),
                     if (m.isVideo)
                       const Align(
                         alignment: Alignment.center,

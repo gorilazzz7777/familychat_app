@@ -326,8 +326,79 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 widget.threadId,
               );
       if (!mounted) return;
-      setState(() => _participants = list);
+      setState(() {
+        _participants = list;
+        _headerSubtitle = chatParticipantCountLabel(list.length);
+      });
     } catch (_) {}
+  }
+
+  Future<void> _confirmRemoveParticipant(Map<String, dynamic> participant) async {
+    final name = participant['display_name']?.toString() ?? 'Участник';
+    final uid = participant['user_id'];
+    final userId = uid is int ? uid : int.tryParse('$uid');
+    if (userId == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить участника'),
+        content: Text(
+          'Удалить $name из чата? Сообщения останутся в истории.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await ref
+          .read(familychatRepositoryProvider)
+          .removeChatThreadMember(widget.threadId, userId);
+      if (!mounted) return;
+      await _reloadParticipants();
+      widget.onMembershipChanged?.call();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$name удалён(а) из чата')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось удалить: $e')),
+      );
+    }
+  }
+
+  Future<void> _onParticipantLongPress(Map<String, dynamic> participant) async {
+    if (participant['can_remove'] != true) return;
+    final name = participant['display_name']?.toString() ?? 'Участник';
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(LucideIcons.user_minus),
+              title: const Text('Удалить участника'),
+              subtitle: Text(name),
+              onTap: () {
+                Navigator.pop(ctx);
+                unawaited(_confirmRemoveParticipant(participant));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _mute(String key) async {
@@ -912,6 +983,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
             final uid = participant['user_id'];
             final userId = uid is int ? uid : int.tryParse('$uid');
             if (userId == null) return const SizedBox.shrink();
+            final isCreator = participant['is_creator'] == true;
+            final canRemove = participant['can_remove'] == true;
             return ListTile(
               contentPadding:
                   const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
@@ -921,8 +994,12 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 radius: 24,
               ),
               title: Text(name),
+              subtitle: isCreator ? const Text('Создатель') : null,
               trailing: const Icon(LucideIcons.chevron_right, size: 20),
               onTap: () => _openParticipantProfile(userId),
+              onLongPress: canRemove
+                  ? () => unawaited(_onParticipantLongPress(participant))
+                  : null,
             );
           },
           childCount: _participants.length * 2 - 1,

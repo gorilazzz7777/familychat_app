@@ -59,6 +59,8 @@ class GalleryVideoPlayer extends StatefulWidget {
     this.showScrubber = false,
     this.placeholder,
     this.onResolvedSize,
+    /// Fired once when playback reaches the end (non-looping only).
+    this.onEnded,
   });
 
   final String url;
@@ -72,6 +74,7 @@ class GalleryVideoPlayer extends StatefulWidget {
   final bool showScrubber;
   final Widget? placeholder;
   final ValueChanged<Size>? onResolvedSize;
+  final VoidCallback? onEnded;
 
   @override
   State<GalleryVideoPlayer> createState() => _GalleryVideoPlayerState();
@@ -84,8 +87,10 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
   bool _scrubbing = false;
   double _scrubValue = 0;
   late bool _muted;
+  bool _endedNotified = false;
 
-  bool get _wantTicker => widget.showControls || widget.showScrubber;
+  bool get _wantTicker =>
+      widget.showControls || widget.showScrubber || widget.onEnded != null;
 
   @override
   void initState() {
@@ -164,6 +169,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     try {
       await controller.initialize();
       if (!mounted) return;
+      _endedNotified = false;
       await controller.setLooping(widget.looping);
       await controller.setVolume(_muted ? 0 : 1);
       if (widget.autoplay) {
@@ -184,8 +190,22 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
   }
 
   void _onTick() {
-    if (!mounted || _scrubbing) return;
-    setState(() {});
+    if (!mounted) return;
+    if (!_scrubbing) setState(() {});
+    _maybeNotifyEnded();
+  }
+
+  void _maybeNotifyEnded() {
+    if (widget.looping || widget.onEnded == null) return;
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (controller.value.isPlaying) {
+      _endedNotified = false;
+      return;
+    }
+    if (!controller.value.isCompleted || _endedNotified) return;
+    _endedNotified = true;
+    widget.onEnded!();
   }
 
   void _disposeController() {

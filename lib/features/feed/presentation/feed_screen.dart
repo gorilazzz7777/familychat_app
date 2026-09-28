@@ -89,6 +89,7 @@ class FeedScreen extends ConsumerStatefulWidget {
 class FeedScreenState extends ConsumerState<FeedScreen> {
   final List<Map<String, dynamic>> _events = [];
   final ScrollController _scrollController = ScrollController();
+  final ValueNotifier<bool> _showScrollToTop = ValueNotifier(false);
   List<Map<String, dynamic>> _filterPeople = [];
   bool _loading = true;
   bool _loadingMore = false;
@@ -97,7 +98,6 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   int? _personUserId;
   String? _lastReadAt;
   bool _hasMore = false;
-  bool _showScrollToTop = false;
   int _feedLoadGen = 0;
   static const _pageSize = 30;
   static const _deltaLimit = 50;
@@ -116,6 +116,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   void dispose() {
     ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
     _scrollController.dispose();
+    _showScrollToTop.dispose();
     super.dispose();
   }
 
@@ -150,8 +151,9 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     final position = _scrollController.position;
     final canScroll = position.maxScrollExtent > _scrollToTopThreshold;
     final show = canScroll && position.pixels > _scrollToTopThreshold;
-    if (show != _showScrollToTop) {
-      setState(() => _showScrollToTop = show);
+    if (show != _showScrollToTop.value) {
+      // ValueNotifier — no setState, so ListView is not rebuilt mid-fling.
+      _showScrollToTop.value = show;
     }
   }
 
@@ -159,6 +161,8 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     _updateScrollToTopVisibility();
     if (_loadingMore || _loading) return;
     if (!_hasMore) return;
+    // Avoid pagination work during high-velocity fling.
+    if (Scrollable.recommendDeferredLoadingForContext(context)) return;
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent - 200) {
       _loadMore();
@@ -176,8 +180,8 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     if (!mounted) return;
     await refresh(silent: true);
     if (!mounted) return;
-    if (_showScrollToTop) {
-      setState(() => _showScrollToTop = false);
+    if (_showScrollToTop.value) {
+      _showScrollToTop.value = false;
     }
   }
 
@@ -1001,7 +1005,8 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
         return Padding(
           key: ValueKey(eventKey ?? 'feed_idx_$index'),
           padding: const EdgeInsets.only(bottom: 12),
-          child: FeedEventCard(
+          child: RepaintBoundary(
+            child: FeedEventCard(
             event: event,
             onOpenSource: () => _openSource(event),
             onOpenProfile: () async {
@@ -1046,6 +1051,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                 currentUserId: currentUserId,
               );
             },
+          ),
           ),
         );
     }
@@ -1102,6 +1108,8 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                   child: ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+                    cacheExtent: 900,
+                    addAutomaticKeepAlives: false,
                     itemCount: entries.length,
                     itemBuilder: (context, index) => _buildEntry(entries[index]),
                   ),
@@ -1110,19 +1118,25 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                 left: 0,
                 right: 0,
                 bottom: 20,
-                child: IgnorePointer(
-                  ignoring: !_showScrollToTop,
-                  child: AnimatedOpacity(
-                    opacity: _showScrollToTop ? 1 : 0,
-                    duration: const Duration(milliseconds: 180),
-                    child: AnimatedSlide(
-                      offset: _showScrollToTop ? Offset.zero : const Offset(0, 0.4),
-                      duration: const Duration(milliseconds: 180),
-                      curve: Curves.easeOut,
-                      child: Center(
-                        child: _FeedScrollToTopButton(onPressed: _scrollToTop),
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: _showScrollToTop,
+                  builder: (context, show, child) {
+                    return IgnorePointer(
+                      ignoring: !show,
+                      child: AnimatedOpacity(
+                        opacity: show ? 1 : 0,
+                        duration: const Duration(milliseconds: 180),
+                        child: AnimatedSlide(
+                          offset: show ? Offset.zero : const Offset(0, 0.4),
+                          duration: const Duration(milliseconds: 180),
+                          curve: Curves.easeOut,
+                          child: child,
+                        ),
                       ),
-                    ),
+                    );
+                  },
+                  child: Center(
+                    child: _FeedScrollToTopButton(onPressed: _scrollToTop),
                   ),
                 ),
               ),

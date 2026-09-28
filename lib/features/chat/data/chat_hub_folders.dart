@@ -1,27 +1,43 @@
-/// Hub chip: system filter (Все / Семья / Telegram) or a server custom folder.
+/// Hub chip: system filter (Все / Семья / Telegram), server custom folder,
+/// or a manual Telegram folder from TDLib.
 class HubChip {
   const HubChip.system(this.system)
       : folderId = null,
-        folderName = null;
+        folderName = null,
+        tgFolderId = null;
 
   const HubChip.custom({
     required int id,
     required String name,
   })  : system = null,
         folderId = id,
-        folderName = name;
+        folderName = name,
+        tgFolderId = null;
+
+  const HubChip.telegram({
+    required int id,
+    required String name,
+  })  : system = null,
+        folderId = null,
+        folderName = name,
+        tgFolderId = id;
 
   final ChatHubSystemFilter? system;
   final int? folderId;
+  final int? tgFolderId;
   final String? folderName;
 
   bool get isCustom => folderId != null;
+  bool get isTelegramFolder => tgFolderId != null;
 
-  String get key =>
-      isCustom ? 'custom:$folderId' : (system?.name ?? 'all');
+  String get key {
+    if (isTelegramFolder) return 'tg:$tgFolderId';
+    if (isCustom) return 'custom:$folderId';
+    return system?.name ?? 'all';
+  }
 
   String get label {
-    if (isCustom) return folderName ?? 'Папка';
+    if (isCustom || isTelegramFolder) return folderName ?? 'Папка';
     return switch (system!) {
       ChatHubSystemFilter.all => 'Все',
       ChatHubSystemFilter.family => 'Семья',
@@ -119,5 +135,26 @@ class ChatFolderData {
   bool containsHubRow(Map<String, dynamic> thread) {
     final key = ChatFolderMemberKey.forHubRow(thread);
     return key != null && memberKeys.contains(key);
+  }
+
+  /// True if [memberKeys] contains a Telegram chat not matched to an FC contact.
+  bool hasUnmatchedTgMember(Set<int> matchedTgChatIds) {
+    for (final key in memberKeys) {
+      if (!key.startsWith('tg:')) continue;
+      final id = int.tryParse(key.substring(3));
+      if (id == null || id == 0) continue;
+      if (!matchedTgChatIds.contains(id)) return true;
+    }
+    return false;
+  }
+
+  List<int> tgChatIds() {
+    final out = <int>[];
+    for (final key in memberKeys) {
+      if (!key.startsWith('tg:')) continue;
+      final id = int.tryParse(key.substring(3));
+      if (id != null && id != 0) out.add(id);
+    }
+    return out;
   }
 }
