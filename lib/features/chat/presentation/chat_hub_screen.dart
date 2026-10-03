@@ -53,12 +53,12 @@ class ChatHubScreen extends ConsumerStatefulWidget {
     this.onProfileTap,
   });
 
-  /// Individual Premium gates TG features (folder when disconnected, rows in «Все»).
-  /// friend_dm threads remain visible under «Все».
+  /// Enables TG hub features (folder when disconnected, rows in «Все»).
+  /// Always true from shell — TG is available to all users.
   final bool hasIndividualPremium;
   /// TDLib authorization ready (logged in). When true, «Telegram» folder is hidden.
   final bool telegramConnected;
-  /// Grace после окончания Premium (read-only TG).
+  /// Grace / read-only TG mode from backend status.
   final bool telegramGrace;
   final String profileName;
   final String profileAvatarUrl;
@@ -72,7 +72,7 @@ class ChatHubScreen extends ConsumerStatefulWidget {
 
 class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  /// System chips: «Telegram» only while Premium and TDLib is not logged in.
+  /// System chips: «Telegram» while TDLib is not logged in.
   static List<HubChip> _systemChipsFor({
     required bool hasIndividualPremium,
     required bool telegramConnected,

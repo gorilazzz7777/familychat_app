@@ -749,41 +749,36 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
             );
           },
         ),
-        if (() {
-          final entitlements = widget.status['entitlements'];
-          return entitlements is Map &&
-              entitlements['individual_premium'] == true;
-        }())
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(
-              LucideIcons.send,
-              color: theme.colorScheme.primary,
-            ),
-            title: const Text('Telegram'),
-            subtitle: Text(
-              () {
-                final tg = widget.status['telegram'];
-                if (tg is Map && tg['connected'] == true) {
-                  if (tg['status']?.toString() == 'grace') {
-                    return 'Только чтение';
-                  }
-                  return 'Подключён';
-                }
-                return 'Подключить чаты Telegram';
-              }(),
-            ),
-            trailing: const Icon(LucideIcons.chevron_right),
-            onTap: () {
-              Navigator.of(context)
-                  .push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const TelegramSettingsScreen(),
-                    ),
-                  )
-                  .then((_) => widget.onStatusChanged());
-            },
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            LucideIcons.send,
+            color: theme.colorScheme.primary,
           ),
+          title: const Text('Telegram'),
+          subtitle: Text(
+            () {
+              final tg = widget.status['telegram'];
+              if (tg is Map && tg['connected'] == true) {
+                if (tg['status']?.toString() == 'grace') {
+                  return 'Только чтение';
+                }
+                return 'Подключён';
+              }
+              return 'Подключить чаты Telegram';
+            }(),
+          ),
+          trailing: const Icon(LucideIcons.chevron_right),
+          onTap: () {
+            Navigator.of(context)
+                .push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const TelegramSettingsScreen(),
+                  ),
+                )
+                .then((_) => widget.onStatusChanged());
+          },
+        ),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(LucideIcons.layout_list,

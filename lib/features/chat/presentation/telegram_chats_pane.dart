@@ -151,15 +151,6 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.hasIndividualPremium) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('Telegram доступен с Individual Premium'),
-        ),
-      );
-    }
-
     final svc = ref.watch(telegramTdlibServiceProvider);
     final scheme = Theme.of(context).colorScheme;
     final theme = Theme.of(context);

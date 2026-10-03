@@ -513,10 +513,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     setState(() => _profileAvatarLocalPath = next);
   }
 
-  bool get _hasIndividualPremium {
-    final entitlements = _status['entitlements'];
-    return entitlements is Map && entitlements['individual_premium'] == true;
-  }
+  /// TG hub features are available to everyone (no Individual Premium gate).
+  bool get _telegramFeaturesEnabled => true;
 
   bool get _telegramConnected {
     // TDLib client-side auth (Business Secretary UI hidden).
@@ -658,7 +656,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       case _chatTabIndex:
         return ChatHubScreen(
           key: _chatHubKey,
-          hasIndividualPremium: _hasIndividualPremium,
+          hasIndividualPremium: _telegramFeaturesEnabled,
           telegramConnected: _telegramConnected,
           telegramGrace: _telegramGrace,
           profileName: _displayName,
