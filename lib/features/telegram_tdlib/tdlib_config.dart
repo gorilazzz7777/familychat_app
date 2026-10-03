@@ -40,28 +40,33 @@ class TdlibConfig {
   /// Ordered MTProto endpoints. Index 0 = preferred; later entries are
   /// automatic failover when Wi‑Fi stays wedged on Connecting.
   ///
-  /// 1) DNS hostname via nginx stream :443 → mtg
-  /// 2) Same path by VPS IP (skips DNS / captive-portal hostname quirks)
+  /// Prefer VPS IP first: with a hostname as [TdlibProxyEndpoint.server],
+  /// TDLib often puts that hostname into TLS SNI, while FakeTLS secret
+  /// requires SNI `www.cloudflare.com`. mtg then rejects the hello
+  /// (`cannot find www.cloudflare.com in [cdn.remont-tracker.ru]`).
+  /// IP as server keeps SNI = domain from the secret.
   ///
-  /// Keep [proxySecretEpoch] in sync when secrets change so TDLib drops
-  /// stale proxy rows.
+  /// Hostname remains failover (DNS / some networks prefer it).
+  ///
+  /// Keep [proxySecretEpoch] in sync when secrets or preferred server change
+  /// so TDLib drops stale proxy rows.
   static const proxyEndpoints = <TdlibProxyEndpoint>[
-    TdlibProxyEndpoint(
-      server: 'cdn.remont-tracker.ru',
-      port: 443,
-      secret: _fakeTlsCfSecret,
-      label: 'cdn-443-cf',
-    ),
     TdlibProxyEndpoint(
       server: '159.194.200.164',
       port: 443,
       secret: _fakeTlsCfSecret,
       label: 'ip-443-cf',
     ),
+    TdlibProxyEndpoint(
+      server: 'cdn.remont-tracker.ru',
+      port: 443,
+      secret: _fakeTlsCfSecret,
+      label: 'cdn-443-cf',
+    ),
   ];
 
-  /// Bump whenever any [proxyEndpoints] secret changes.
-  static const proxySecretEpoch = 3;
+  /// Bump whenever any [proxyEndpoints] secret or preferred server changes.
+  static const proxySecretEpoch = 4;
 
   /// Primary endpoint helpers (call sites / docs).
   static String get proxyServer => proxyEndpoints.first.server;
