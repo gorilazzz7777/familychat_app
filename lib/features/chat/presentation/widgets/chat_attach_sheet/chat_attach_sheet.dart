@@ -91,6 +91,9 @@ class ChatAttachSheet extends ConsumerStatefulWidget {
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: Colors.transparent,
+      // Content grid must not dismiss the modal — only the grabber resizes
+      // via DraggableScrollableSheet (and tap-outside still closes).
+      enableDrag: false,
       builder: (sheetContext) => ChatAttachSheet(
         onSendMedia: onSendMedia,
         onSendLocation: onSendLocation,
@@ -126,8 +129,13 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
   final Map<int, int> _familyLinkIds = {};
   final _captionCtrl = TextEditingController();
   final _sheetCtrl = DraggableScrollableController();
+  /// Content lists/grids — never the DraggableScrollableSheet controller.
+  /// Sheet resize is driven only by the grabber ListView below.
+  final _contentScroll = ScrollController();
   bool _sending = false;
   bool _expanded = false;
+  /// While gallery mass-select is armed, freeze sheet (grabber never-scrollable).
+  bool _sheetSizeLocked = false;
 
   bool get _phoneOnly => widget.style == ChatAttachSheetStyle.phoneMedia;
   bool get _albumMode => widget.style == ChatAttachSheetStyle.albumMedia;
@@ -150,10 +158,17 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
     }
   }
 
+  void _onMassSelectActiveChanged(bool active) {
+    if (!mounted) return;
+    if (active == _sheetSizeLocked) return;
+    setState(() => _sheetSizeLocked = active);
+  }
+
   @override
   void dispose() {
     _sheetCtrl.removeListener(_onSheetSize);
     _sheetCtrl.dispose();
+    _contentScroll.dispose();
     _captionCtrl.dispose();
     super.dispose();
   }
@@ -304,60 +319,84 @@ class _ChatAttachSheetState extends ConsumerState<ChatAttachSheet> {
         initialChildSize: 0.67,
         minChildSize: 0.40,
         maxChildSize: 0.95,
-        builder: (context, scrollController) {
+        builder: (context, sheetScroll) {
+          // Only the grabber ListView is attached to [sheetScroll]. Content
+          // tabs use [_contentScroll] so grid drag never collapses the sheet.
+          final grabberHeight = _phoneOnly ? 52.0 : 36.0;
           return Material(
             color: scheme.surface,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
             clipBehavior: Clip.antiAlias,
             child: Column(
               children: [
-                const SizedBox(height: 8),
-                Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: scheme.outlineVariant,
-                    borderRadius: BorderRadius.circular(999),
+                SizedBox(
+                  height: grabberHeight,
+                  child: ListView(
+                    controller: sheetScroll,
+                    physics: _sheetSizeLocked
+                        ? const NeverScrollableScrollPhysics()
+                        : const ClampingScrollPhysics(),
+                    padding: EdgeInsets.zero,
+                    children: [
+                      SizedBox(
+                        height: grabberHeight,
+                        child: Column(
+                          children: [
+                            const SizedBox(height: 8),
+                            Container(
+                              width: 40,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: scheme.outlineVariant,
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                            if (_phoneOnly)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'С телефона',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
+                                ),
+                              )
+                            else
+                              const SizedBox(height: 8),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                if (_phoneOnly)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'С телефона',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                    ),
-                  )
-                else
-                  const SizedBox(height: 8),
                 Expanded(
                   child: switch (_mode) {
                     ChatAttachMode.gallery => AttachGalleryTab(
                         selected: _selected,
                         onSelectedChanged: _setSelected,
-                        scrollController: scrollController,
+                        scrollController: _contentScroll,
                         expanded: _expanded,
                         highlightKnownAssets: _albumMode || _phoneOnly,
+                        onMassSelectActiveChanged: _onMassSelectActiveChanged,
                       ),
                     ChatAttachMode.file => AttachFileTab(
                         selected: _selected,
                         onSelectedChanged: _setSelected,
-                        scrollController: scrollController,
+                        scrollController: _contentScroll,
                       ),
                     ChatAttachMode.location => AttachLocationTab(
                         onSend: _sendLocation,
-                        scrollController: scrollController,
+                        scrollController: _contentScroll,
                       ),
                     ChatAttachMode.familyGallery => AttachFamilyGalleryTab(
                         userId: widget.familyGalleryUserId!,
                         selected: _familySelected,
                         onSelectedChanged: _setFamilySelected,
-                        scrollController: scrollController,
+                        scrollController: _contentScroll,
                         excludeAttachmentIds: widget.excludeFamilyAttachmentIds,
                         childId: widget.familyGalleryChildId,
                         childName: widget.familyGalleryChildName,

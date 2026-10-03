@@ -193,11 +193,15 @@ abstract final class MediaLocalIndex {
   }
 
   /// Подсказки для подсветки «уже добавляли» в пикере телефона.
+  ///
+  /// Только записи с server [MediaLocalRecord.attachmentId] — то есть фото
+  /// реально ушло на бэкенд. Выбор в пикере без отправки бейдж не ставит.
   static GalleryKnownMediaHints knownHints() {
     final assetIds = <String>{};
     final fingerprints = <String>{};
     final filenames = <String>{};
     for (final rec in _mem.values) {
+      if (rec.attachmentId == null) continue;
       final assetId = (rec.assetId ?? '').trim();
       if (assetId.isNotEmpty) assetIds.add(assetId);
       final fp = (rec.fingerprint ?? '').trim();

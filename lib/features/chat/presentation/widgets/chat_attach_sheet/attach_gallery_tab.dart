@@ -37,6 +37,7 @@ class AttachGalleryTab extends StatefulWidget {
     required this.scrollController,
     required this.expanded,
     this.highlightKnownAssets = false,
+    this.onMassSelectActiveChanged,
   });
 
   final List<ChatAttachSelectionItem> selected;
@@ -45,6 +46,8 @@ class AttachGalleryTab extends StatefulWidget {
   final bool expanded;
   /// Пометить превью, которые уже есть в FamilyChat (локальный asset id / альбом на телефоне).
   final bool highlightKnownAssets;
+  /// True while long-press range-select is armed (finger still down).
+  final ValueChanged<bool>? onMassSelectActiveChanged;
 
   @override
   State<AttachGalleryTab> createState() => _AttachGalleryTabState();
@@ -68,7 +71,10 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   static const _gridCrossAxisCount = 3;
   static const _gridSpacing = 2.0;
   static const _gridPadH = 2.0;
-  static const _dragSlop = 18.0;
+  /// Finger must stay still this long before drag range-select arms.
+  static const _longPressDuration = Duration(milliseconds: 350);
+  /// Movement beyond this cancels the pending long-press (scroll wins).
+  static const _longPressCancelSlop = 12.0;
   static const _dragAutoScrollEdge = 76.0;
   static const _dragAutoScrollMaxSpeed = 22.0;
 
@@ -84,6 +90,10 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
   final Set<String> _pendingSelectIds = {};
   final Set<String> _loadingSelectIds = {};
   Timer? _dragAutoScrollTimer;
+  Timer? _longPressTimer;
+  /// While range-select is armed, pin grid scroll so vertical drag changes
+  /// cells under the finger instead of scrolling the same row away.
+  double? _pinnedScrollPixels;
 
   @override
   void initState() {
@@ -128,7 +138,12 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
 
   @override
   void dispose() {
+    _cancelLongPressTimer();
     _stopDragAutoScroll();
+    if (_dragSelectActive) {
+      widget.onMassSelectActiveChanged?.call(false);
+    }
+    _dragSelectActive = false;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -495,42 +510,103 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     return assetIndex;
   }
 
+  void _cancelLongPressTimer() {
+    _longPressTimer?.cancel();
+    _longPressTimer = null;
+  }
+
+  void _pinScrollAtCurrent() {
+    if (!widget.scrollController.hasClients) {
+      _pinnedScrollPixels = null;
+      return;
+    }
+    final pos = widget.scrollController.position;
+    _pinnedScrollPixels = pos.pixels;
+    // End ballistic / in-progress drag so the next moves select cells.
+    pos.jumpTo(pos.pixels);
+  }
+
+  void _enforcePinnedScroll() {
+    final pinned = _pinnedScrollPixels;
+    if (pinned == null || !widget.scrollController.hasClients) return;
+    final pos = widget.scrollController.position;
+    final target = pinned.clamp(0.0, pos.maxScrollExtent);
+    if ((pos.pixels - target).abs() > 0.1) {
+      pos.jumpTo(target);
+    }
+  }
+
+  void _armDragSelectFromLongPress() {
+    if (!mounted || kIsWeb) return;
+    if (_activePointer == null || _dragAnchorAssetIndex == null) return;
+    if (_dragSelectActive) return;
+    final index = _dragAnchorAssetIndex!;
+    if (index < 0 || index >= _assets.length) return;
+
+    final anchor = _assets[index];
+    final anchorId = 'asset_${anchor.id}';
+    _ignoreTapAfterDrag = true;
+    _dragBaselineIds = {
+      for (final item in widget.selected) item.id,
+    };
+    _dragSelectAdds = !_dragBaselineIds.contains(anchorId);
+    _pinScrollAtCurrent();
+    HapticFeedback.selectionClick();
+    _setMassSelectActive(true);
+    setState(() {});
+    _applyDragRange(index);
+  }
+
+  void _setMassSelectActive(bool active) {
+    if (_dragSelectActive == active) return;
+    _dragSelectActive = active;
+    widget.onMassSelectActiveChanged?.call(active);
+  }
+
   void _onGridPointerDown(PointerDownEvent event) {
     if (kIsWeb) return;
+    _cancelLongPressTimer();
     _activePointer = event.pointer;
     _pointerDownGlobal = event.position;
     _dragPointerGlobal = event.position;
-    _dragSelectActive = false;
+    if (_dragSelectActive) {
+      _setMassSelectActive(false);
+    }
     _ignoreTapAfterDrag = false;
+    _pinnedScrollPixels = null;
     _dragAnchorAssetIndex = _assetIndexAtGlobal(event.position);
     _stopDragAutoScroll();
+    // Camera tile / empty area: no drag-select arm.
+    if (_dragAnchorAssetIndex == null) return;
+    final pointer = event.pointer;
+    _longPressTimer = Timer(_longPressDuration, () {
+      _longPressTimer = null;
+      if (_activePointer != pointer) return;
+      _armDragSelectFromLongPress();
+    });
   }
 
   void _onGridPointerMove(PointerMoveEvent event) {
     if (kIsWeb) return;
     if (event.pointer != _activePointer || _pointerDownGlobal == null) return;
-    if (_dragAnchorAssetIndex == null) return;
 
     _dragPointerGlobal = event.position;
-    final delta = event.position - _pointerDownGlobal!;
     if (!_dragSelectActive) {
-      if (delta.distance < _dragSlop) return;
-      // Keep vertical scroll when the gesture is clearly upward.
-      final mostlyUp =
-          delta.dy < 0 && delta.dy.abs() > delta.dx.abs() + 4;
-      if (mostlyUp) return;
-      final anchor = _assets[_dragAnchorAssetIndex!];
-      final anchorId = 'asset_${anchor.id}';
-      _dragSelectActive = true;
-      _ignoreTapAfterDrag = true;
-      _dragBaselineIds = {
-        for (final item in widget.selected) item.id,
-      };
-      _dragSelectAdds = !_dragBaselineIds.contains(anchorId);
-      HapticFeedback.selectionClick();
-      setState(() {});
+      // Pan/fling scrolls normally; only long-press arms range-select.
+      if (_longPressTimer != null) {
+        final delta = event.position - _pointerDownGlobal!;
+        if (delta.distance > _longPressCancelSlop) {
+          _cancelLongPressTimer();
+        }
+      }
+      return;
     }
+    if (_dragAnchorAssetIndex == null) return;
 
+    // Keep grid frozen under the finger; edge auto-scroll updates the pin.
+    if (_dragAutoScrollTimer == null) {
+      _enforcePinnedScroll();
+    }
     _updateDragAutoScroll();
     final current =
         _assetIndexAtGlobal(event.position) ?? _dragAnchorAssetIndex!;
@@ -539,13 +615,15 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
 
   void _onGridPointerUp(PointerEvent event) {
     if (event.pointer != _activePointer) return;
+    _cancelLongPressTimer();
     _activePointer = null;
     _pointerDownGlobal = null;
     _dragPointerGlobal = null;
     _dragAnchorAssetIndex = null;
+    _pinnedScrollPixels = null;
     _stopDragAutoScroll();
     if (_dragSelectActive) {
-      _dragSelectActive = false;
+      _setMassSelectActive(false);
       setState(() {});
       // Keep _ignoreTapAfterDrag until the competing tap is swallowed.
       Future<void>.delayed(const Duration(milliseconds: 50), () {
@@ -608,6 +686,7 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
     if (next != pos.pixels) {
       widget.scrollController.jumpTo(next);
     }
+    _pinnedScrollPixels = next;
     final current =
         _assetIndexAtGlobal(_dragPointerGlobal!) ?? _dragAnchorAssetIndex!;
     _applyDragRange(current);
@@ -810,17 +889,8 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
       kind: kind,
       geo: geo,
     );
-    if (widget.highlightKnownAssets) {
-      unawaited(
-        MediaLocalIndex.rememberPickerAsset(
-          filename: filename,
-          kind: kind,
-          assetId: asset.id,
-          fingerprint: item.assetFingerprint,
-          localPath: filePath,
-        ),
-      );
-    }
+    // Do not rememberPickerAsset here — badge means "already uploaded",
+    // not "was selected in the picker". saveOutgoing / album hints cover that.
     if (!mounted) return;
     if (widget.selected.any((e) => e.id == id)) return;
     // Drag range no longer wants this asset.
@@ -1069,51 +1139,55 @@ class _AttachGalleryTabState extends State<AttachGalleryTab>
               onPointerMove: _onGridPointerMove,
               onPointerUp: _onGridPointerUp,
               onPointerCancel: _onGridPointerUp,
-              child: GridView.builder(
-                key: _gridKey,
-                controller: widget.scrollController,
-                physics: _dragSelectActive
-                    ? const NeverScrollableScrollPhysics()
-                    : null,
-                cacheExtent: 240,
-                padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 2,
-                  crossAxisSpacing: 2,
+              child: AbsorbPointer(
+                absorbing: _dragSelectActive,
+                child: GridView.builder(
+                  key: _gridKey,
+                  controller: widget.scrollController,
+                  physics: _dragSelectActive
+                      ? const NeverScrollableScrollPhysics()
+                      : null,
+                  cacheExtent: 240,
+                  padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    mainAxisSpacing: 2,
+                    crossAxisSpacing: 2,
+                  ),
+                  itemCount: _assets.length + 1 + (_loadingMore ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (index == 0) {
+                      return AttachCameraTile(
+                        onTap: () => unawaited(_openCameraCapture()),
+                        onLongPress: kIsWeb
+                            ? () => unawaited(_openCameraVideoWeb())
+                            : () => unawaited(_openCameraCapture()),
+                      );
+                    }
+                    final assetIndex = index - 1;
+                    if (assetIndex >= _assets.length) {
+                      return const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(12),
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      );
+                    }
+                    final asset = _assets[assetIndex];
+                    final id = 'asset_${asset.id}';
+                    final selected = _isSelected(id);
+                    final order = _selectionOrder[id];
+                    return _AssetThumb(
+                      asset: asset,
+                      selected: selected,
+                      order: order,
+                      alreadyInAlbum: widget.highlightKnownAssets &&
+                          _knownHints.matchesAsset(asset),
+                      onTap: () => _toggleAsset(asset),
+                    );
+                  },
                 ),
-                itemCount: _assets.length + 1 + (_loadingMore ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (index == 0) {
-                    return AttachCameraTile(
-                      onTap: () => unawaited(_openCameraCapture()),
-                      onLongPress: kIsWeb
-                          ? () => unawaited(_openCameraVideoWeb())
-                          : () => unawaited(_openCameraCapture()),
-                    );
-                  }
-                  final assetIndex = index - 1;
-                  if (assetIndex >= _assets.length) {
-                    return const Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(12),
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    );
-                  }
-                  final asset = _assets[assetIndex];
-                  final id = 'asset_${asset.id}';
-                  final selected = _isSelected(id);
-                  final order = _selectionOrder[id];
-                  return _AssetThumb(
-                    asset: asset,
-                    selected: selected,
-                    order: order,
-                    alreadyInAlbum: widget.highlightKnownAssets &&
-                        _knownHints.matchesAsset(asset),
-                    onTap: () => _toggleAsset(asset),
-                  );
-                },
               ),
             ),
           ),
