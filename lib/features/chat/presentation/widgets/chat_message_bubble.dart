@@ -651,12 +651,11 @@ class ChatMessageBubble extends StatelessWidget {
 
     if (!canCollapse) return text;
 
+    // Telegram-style text affordance (not a centered pill): sits in the text
+    // flow, left-aligned, with a generous hit target and no chip fill.
     final expandLabel = bodyExpanded ? 'Свернуть' : 'Ещё';
-    final chipBg = isMine
-        ? Colors.white.withValues(alpha: 0.16)
-        : theme.colorScheme.primary.withValues(alpha: 0.10);
-    final chipFg = isMine
-        ? Colors.white.withValues(alpha: 0.95)
+    final linkFg = isMine
+        ? const Color(0xFF8FD3FF)
         : theme.colorScheme.primary;
 
     return Column(
@@ -664,30 +663,22 @@ class ChatMessageBubble extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         text,
-        const SizedBox(height: 10),
-        Center(
-          child: Material(
-            color: chipBg,
-            borderRadius: BorderRadius.circular(18),
-            child: InkWell(
-              onTap: onToggleBodyExpand,
-              borderRadius: BorderRadius.circular(18),
-              child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
-                child: Text(
-                  expandLabel,
-                  style: theme.textTheme.labelLarge?.copyWith(
-                        color: chipFg,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 13.5,
-                        letterSpacing: 0.2,
-                      ) ??
-                      TextStyle(
-                        color: chipFg,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 13.5,
-                      ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: InkWell(
+            onTap: onToggleBodyExpand,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              // ~44dp tap height; horizontal pad keeps the label easy to hit
+              // without looking like a full-width button slab.
+              padding: const EdgeInsets.fromLTRB(0, 6, 12, 4),
+              child: Text(
+                expandLabel,
+                style: (theme.textTheme.bodyMedium ?? const TextStyle())
+                    .copyWith(
+                  color: linkFg,
+                  fontWeight: FontWeight.w600,
+                  height: 1.25,
                 ),
               ),
             ),

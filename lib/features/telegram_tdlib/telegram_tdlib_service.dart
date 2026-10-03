@@ -560,9 +560,11 @@ class TelegramTdlibService extends ChangeNotifier {
   static const prioOpenChatMedia = 16;
   /// Hub list avatars (visible rows only) — above generic background warm.
   static const prioHubAvatar = 10;
-  /// Alt-size / delayed retry after a hub-avatar 0B stall — jump the queue
-  /// ahead of the remaining first-pass prefetch jobs.
-  static const prioHubAvatarRetry = 18;
+  /// Alt-size / delayed retry after a hub-avatar 0B stall.
+  /// Keep BELOW first-pass (10): poison remotes were jumping the queue at prio
+  /// 18 and starving never-tried faces in the visible viewport for tens of
+  /// seconds while Telegram/Шарий VPN etc. sat at 0B forever.
+  static const prioHubAvatarRetry = 6;
   static const prioBackground = 4;
   /// Hang with no new bytes → cancelDownloadFile + size fallback.
   ///
@@ -574,8 +576,9 @@ class TelegramTdlibService extends ChangeNotifier {
   static const _stallZeroBytesFocus = Duration(seconds: 25);
   /// Full videos are larger; give origin-DC pull more time before give-up.
   static const _stallZeroBytesVideo = Duration(seconds: 90);
-  /// Hub list avatars are tiny — don't hold both download slots for 45s at 0B.
-  static const _stallZeroBytesHubAvatar = Duration(seconds: 12);
+  /// Hub avatars are tiny; with proxy some remotes never leave 0B — rotate
+  /// the single/dual slot quickly so the rest of the viewport can paint.
+  static const _stallZeroBytesHubAvatar = Duration(seconds: 4);
   static const _stallProgressIdle = Duration(seconds: 45);
   /// Auto-download / background warm window (same as FamilyChat media policy).
   static const mediaAutoAge = ChatMediaDisplayPolicy.deferredFullMediaAge;
@@ -2160,8 +2163,15 @@ class TelegramTdlibService extends ChangeNotifier {
         timeout: const Duration(milliseconds: 800),
       );
       _mediaLog('cdn-nudge pingProxy ok why=$why');
+      _hubAvatarPingFailStreak = 0;
     } catch (e) {
       _mediaLog('cdn-nudge pingProxy soft-fail why=$why err=$e');
+      // Do NOT bounce setNetworkType here while Ready — SessionLog 23:33 showed
+      // hub-avatar ping fails → reopen → Ready→Connecting flap. pingProxy soft
+      // timeout is common under load; media recoveries already cancel/retry.
+      if (why.startsWith('hub-avatar')) {
+        _hubAvatarPingFailStreak++;
+      }
     }
   }
 
@@ -2415,6 +2425,11 @@ class TelegramTdlibService extends ChangeNotifier {
     required int attempts,
   }) async {
     _hubAvatarStallAttempts[fileId] = attempts + 1;
+    // Next start for this id flips offset=1 → offset=0 once (if not tried).
+    if (_enabledProxyId != null &&
+        !_hubAvatarTriedCdnOffset.contains(fileId)) {
+      _hubAvatarFlipToCdnOffset.add(fileId);
+    }
 
     // Prefer switching small ↔ big — different CDN remote, often unblocks.
     if (attempts == 0 && chatId != null && chatId != 0) {
@@ -2430,6 +2445,10 @@ class TelegramTdlibService extends ChangeNotifier {
         );
         // Seed attempt=1 so a stall on alt goes to delayed retry, not another alt.
         _hubAvatarStallAttempts[alt] = 1;
+        if (_enabledProxyId != null &&
+            !_hubAvatarTriedCdnOffset.contains(alt)) {
+          _hubAvatarFlipToCdnOffset.add(alt);
+        }
         _queueFileDownload(
           alt,
           priority: prioHubAvatarRetry,
@@ -2443,7 +2462,7 @@ class TelegramTdlibService extends ChangeNotifier {
 
     // One delayed retry of the same file (proxy/CDN often recovers).
     if (attempts < 2) {
-      const delay = Duration(seconds: 4);
+      const delay = Duration(seconds: 2);
       _hubAvatarCooldownUntil[fileId] = DateTime.now().add(delay);
       _mediaLog(
         'stall-avatar-retry-sched file=$fileId chat=$chatId in=${delay.inSeconds}s',
@@ -2834,9 +2853,11 @@ class TelegramTdlibService extends ChangeNotifier {
       minGap = Duration.zero;
     } else if (_connectionKickCount == 1) {
       // Stage 2 = proxy failover (or cycle if single endpoint).
+      // Stage 1 is now a soft enableProxy nudge — cycle sooner on Wi‑Fi so a
+      // wedged FakeTLS socket is not left alone for another half-minute.
       nextStage = 2;
-      minWait = Duration(seconds: mobile ? 90 : 70);
-      minGap = Duration(seconds: mobile ? 30 : 35);
+      minWait = Duration(seconds: mobile ? 90 : 55);
+      minGap = Duration(seconds: mobile ? 30 : 18);
     } else if (_connectionKickCount == 2) {
       nextStage = 3;
       minWait = Duration(seconds: mobile ? 180 : 150);
@@ -2877,6 +2898,30 @@ class TelegramTdlibService extends ChangeNotifier {
     );
     switch (stage) {
       case 1:
+        // Prefer a soft nudge over None→WiFi: the hard bounce aborts FakeTLS
+        // mid-handshake and often adds another 40s of Connecting (mtg sees
+        // half-open "cannot read frame" timeouts). Real cycle is stage 2.
+        if (_enabledProxyId != null && _useMtprotoProxy) {
+          _mediaLog('mtproto-kick #1 soft-nudge (skip none-bounce)');
+          await _setTdlibOnline(true);
+          await _applyNetworkTypeFromDevice(
+            why: 'stuck-connecting-soft',
+            force: true,
+          );
+          try {
+            await c.sendAwait({
+              '@type': 'enableProxy',
+              'proxy_id': _enabledProxyId,
+            }, timeout: const Duration(seconds: 5));
+            _mediaLog(
+              'mtproto-kick #1 enableProxy id=$_enabledProxyId ok',
+            );
+          } catch (e) {
+            _mediaLog('mtproto-kick #1 enableProxy err=$e');
+            await _ensureProxy();
+          }
+          return;
+        }
         await _reopenNetworkConnections(why: 'stuck-connecting');
         return;
       case 2:
@@ -3136,12 +3181,18 @@ class TelegramTdlibService extends ChangeNotifier {
       await _ensureProxy();
     }
     if (_tearingDown || _client == null) return;
-    if (mobile) {
-      // Let FakeTLS complete; soft-restart at ~45s if still wedged.
-      _mediaLog('bearer-recover skip-none-bounce (mobile)');
+    // None→WiFi aborts an in-flight FakeTLS handshake (SessionLog 23:51:
+    // resume bounce → WaitingForNetwork → another 40s+ Connecting). Mobile
+    // already skipped this; same for app-resume while still Connecting —
+    // online=true + enableProxy above is enough; kicks handle a true wedge.
+    if (mobile || why.startsWith('app-resume')) {
+      _mediaLog(
+        'bearer-recover skip-none-bounce '
+        '(${mobile ? 'mobile' : 'app-resume'}) why=$why',
+      );
       return;
     }
-    // Wi‑Fi (incl. return from mobile): bounce sockets even if briefly Ready.
+    // Real bearer change on Wi‑Fi (mobile→wifi): bounce sockets.
     await _reopenNetworkConnections(why: 'bearer-recover:$why');
   }
 
@@ -3349,16 +3400,22 @@ class TelegramTdlibService extends ChangeNotifier {
 
     while (_downloadActive < _downloadSlotLimit && _downloadQueue.isNotEmpty) {
       // Skip background jobs while a chat is open.
-      // With MTProto proxy: only one hub-avatar in flight — parallel avatar
-      // downloads often sit at 0B forever while a single one completes.
-      final hubInflight = _enabledProxyId != null &&
-          _downloadInFlight.any((id) {
-            final r = _downloadTrace[id]?.reason ?? '';
-            return r == 'hub-avatar';
-          });
+      // With MTProto proxy: cap hub-avatar parallelism at 2 (slot limit).
+      // Serial-only was worse — one 0B poison remote blocked the whole
+      // viewport for 12s+ while good remotes waited unused behind it.
+      final hubInflightCount = _enabledProxyId == null
+          ? 0
+          : _downloadInFlight.where((id) {
+              final r = _downloadTrace[id]?.reason ?? '';
+              return r == 'hub-avatar';
+            }).length;
       final idx = _downloadQueue.indexWhere((j) {
         if (_openChatId != null && j.background) return false;
-        if (hubInflight && j.reason == 'hub-avatar') return false;
+        if (_enabledProxyId != null &&
+            j.reason == 'hub-avatar' &&
+            hubInflightCount >= 2) {
+          return false;
+        }
         return true;
       });
       if (idx < 0) break;
@@ -3606,12 +3663,19 @@ class TelegramTdlibService extends ChangeNotifier {
       // TDLib sets cdn_supported only when downloadFile offset==0
       // (FileDownloader.cpp); offset=1 disables CDN for every part while the
       // parts manager still fills the full file from byte 0.
-      final bypassCdn = _enabledProxyId != null;
+      // After a hub-avatar 0B stall on offset=1, flip once to offset=0 —
+      // some remotes only flow via CDN through this proxy (and vice versa).
+      final flipToCdn = reasonNow == 'hub-avatar' &&
+          _hubAvatarFlipToCdnOffset.remove(fileId);
+      if (flipToCdn) {
+        _hubAvatarTriedCdnOffset.add(fileId);
+      }
+      final bypassCdn = _enabledProxyId != null && !flipToCdn;
       final dlOffset = bypassCdn ? 1 : 0;
       _mediaLog(
         'net-downloadFile file=$fileId reason=$reasonNow '
         'prio=$priority size=${t != null && t.expectedSize > 0 ? _fmtBytes(t.expectedSize) : '?'} '
-        'offset=$dlOffset cdnBypass=$bypassCdn sync=false '
+        'offset=$dlOffset cdnBypass=$bypassCdn flipCdn=$flipToCdn sync=false '
         '${_downloadQueueStats()}',
       );
       await c.sendAwait(
@@ -3696,6 +3760,8 @@ class TelegramTdlibService extends ChangeNotifier {
     _fileDownloadProgress.remove(fileId);
     _hubAvatarStallAttempts.remove(fileId);
     _hubAvatarCooldownUntil.remove(fileId);
+    _hubAvatarFlipToCdnOffset.remove(fileId);
+    _hubAvatarTriedCdnOffset.remove(fileId);
     final waiter = _downloadWaiters.remove(fileId);
     if (waiter != null && !waiter.isCompleted) {
       waiter.complete(path);
@@ -8599,6 +8665,11 @@ class TelegramTdlibService extends ChangeNotifier {
   final Map<int, int> _hubAvatarStallAttempts = {};
   /// fileId → do not re-enqueue hub-avatar until this time (after give-up).
   final Map<int, DateTime> _hubAvatarCooldownUntil = {};
+  /// After a 0B stall with CDN-bypass (offset=1), retry once with offset=0.
+  final Set<int> _hubAvatarFlipToCdnOffset = {};
+  /// fileIds that already tried offset=0 — don't flip again on every stall.
+  final Set<int> _hubAvatarTriedCdnOffset = {};
+  int _hubAvatarPingFailStreak = 0;
 
 
   /// Download / cache chat (or private-peer) avatar. Use [foreground] while the
