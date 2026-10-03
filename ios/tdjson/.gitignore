@@ -1,0 +1,2 @@
+# Prebuilt TDLib (run scripts/fetch_tdlib_ios.ps1).
+libtdjson-static.xcframework/

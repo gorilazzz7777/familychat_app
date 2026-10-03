@@ -28,12 +28,25 @@ flutter run
 
 ## Сборка iOS
 
+Prebuilt `libtdjson-static.xcframework` **не в git** (тяжёлый бинарь).
+В репо есть `ios/tdjson/tdjson.podspec` + `TdlibKeepSymbols.m`.
+
+**macOS:**
+
+```bash
+chmod +x scripts/fetch_tdlib_ios.sh
+./scripts/fetch_tdlib_ios.sh
+cd ios && pod install && cd ..
+```
+
+**Windows (только скачать xcframework, pod — на Mac):**
+
 ```powershell
 .\scripts\fetch_tdlib_ios.ps1
 ```
 
-Кладёт prebuilt `tdjson` framework / dylib под `ios/` (в `.gitignore`).
-FFI загружает библиотеку на `Platform.isIOS`.
+После этого CocoaPods находит `pod 'tdjson', :path => 'tdjson'`.
+FFI грузит символы через `DynamicLibrary.process()` (static lib).
 
 ## Прокси
 
