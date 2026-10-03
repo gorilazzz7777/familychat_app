@@ -5,6 +5,7 @@ import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/storage/token_storage.dart';
 import '../../familychat/data/familychat_repository.dart';
+import 'hub_first_paint_snapshot.dart';
 
 /// Runs inside FCM background isolate: HTTP-fetch thread into SQLite.
 abstract final class ChatBackgroundSync {
@@ -45,6 +46,18 @@ abstract final class ChatBackgroundSync {
         await db.upsertThread(copy);
         break;
       }
+
+      final pushTitle = data['thread_title']?.toString() ??
+          data['title']?.toString();
+      final pushBody = data['body']?.toString() ??
+          message.notification?.body;
+      await HubFirstPaintSnapshot.patchRow(
+        threadId: threadId,
+        title: pushTitle,
+        lastBody: pushBody,
+        lastCreatedAt: DateTime.now().toUtc().toIso8601String(),
+        bumpUnread: true,
+      );
 
       // Don't close: on the UI isolate this is the app DB; the FCM isolate
       // is torn down after the handler anyway.

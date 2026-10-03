@@ -63,6 +63,8 @@ class ChatAvatar extends StatelessWidget {
 
     // Prefer full local photo over URL / minithumbnail whenever we have a path.
     // Trust TDLib path cache — no sync existsSync on the UI thread (hub scroll).
+    // If the file is empty/corrupt (e.g. 0-byte shell profile.jpg), fall back
+    // to the network URL instead of locking on initials forever.
     if (!kIsWeb && local != null && local.isNotEmpty) {
       final file = File(local);
       final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
@@ -78,8 +80,21 @@ class ChatAvatar extends StatelessWidget {
             cacheWidth: px,
             cacheHeight: px,
             fit: BoxFit.cover,
-            filterQuality: FilterQuality.medium,
-            errorBuilder: (_, __, ___) => _initialsBox(bg, size, radius),
+            filterQuality: FilterQuality.high,
+            errorBuilder: (_, __, ___) {
+              if (url != null && url.isNotEmpty) {
+                return FamilyPublicImage(
+                  url: url,
+                  userId: userId,
+                  width: size,
+                  height: size,
+                  fit: BoxFit.cover,
+                  placeholder: _loadingAvatar(bg, size, radius),
+                  error: _initialsBox(bg, size, radius),
+                );
+              }
+              return _initialsBox(bg, size, radius);
+            },
           ),
         ),
       );

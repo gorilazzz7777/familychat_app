@@ -22,6 +22,7 @@ import '../data/chat_message_preview.dart';
 import '../data/chat_realtime_utils.dart';
 import '../data/familychat_realtime.dart';
 import '../data/chat_sync_service.dart';
+import '../data/hub_first_paint_snapshot.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/share/share_direct_target_service.dart';
 import '../data/chat_local_mutations.dart';
@@ -48,6 +49,7 @@ class ChatHubScreen extends ConsumerStatefulWidget {
     this.telegramGrace = false,
     this.profileName = '',
     this.profileAvatarUrl = '',
+    this.profileAvatarLocalPath = '',
     this.onProfileTap,
   });
 
@@ -60,6 +62,8 @@ class ChatHubScreen extends ConsumerStatefulWidget {
   final bool telegramGrace;
   final String profileName;
   final String profileAvatarUrl;
+  /// Cold-start local copy of profile avatar (hub snapshot).
+  final String profileAvatarLocalPath;
   final VoidCallback? onProfileTap;
 
   @override
@@ -92,6 +96,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Map<int, TelegramMatch> _tdlibMatches = {};
   bool _loading = true;
   bool _hubBootstrapDone = false;
+  /// Hold first paint until FC folders + TG list/folders/matches are ready.
+  bool _pendingFirstPaint = false;
+  bool _fcFoldersLoaded = false;
+  bool _tdlibMatchesLoaded = false;
+  bool _mirrorStateLoaded = false;
+  Timer? _tdlibRevealTimeout;
   bool _lastKnownOnline = true;
   bool _searchVisible = false;
   bool _folderReorderMode = false;
@@ -108,6 +118,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   bool get _localFirst => ChatSyncService.isSupported;
   Timer? _hubAvatarPrefetchTimer;
   Timer? _hubScrollBusyClearTimer;
+  Timer? _snapshotPersistTimer;
+  String? _lastHubAvatarPrefetchKey;
+  /// Approximate scroll offset of the active hub ListView (for viewport prefetch).
+  double _hubListScrollPixels = 0;
+  /// TG synthetics from last-session snapshot until live TDLib hub is ready.
+  List<Map<String, dynamic>> _snapshotTgRows = const [];
+  /// First frame came from [HubFirstPaintSnapshot] (skip skeleton / gates).
+  bool _paintedFromSnapshot = false;
 
   void toggleSearch() {
     setState(() {
@@ -150,14 +168,29 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   @override
   void initState() {
     super.initState();
+    // Premium hubs wait for TG surface so FC rows/folders don't flash alone —
+    // unless we have a frozen last-session snapshot (paint immediately).
+    _pendingFirstPaint = widget.hasIndividualPremium;
+    if (_pendingFirstPaint) {
+      _tdlibRevealTimeout = Timer(const Duration(seconds: 12), () {
+        if (!mounted || !_pendingFirstPaint) return;
+        debugPrint('[hub] first-paint timeout — revealing anyway');
+        _forceFirstPaintReveal();
+      });
+    } else {
+      _fcFoldersLoaded = true;
+      _tdlibMatchesLoaded = true;
+      _mirrorStateLoaded = true;
+    }
+    unawaited(_hydrateFromSnapshot());
     unawaited(_reloadTdlibMatches());
     TelegramMatchStore.instance.revision.addListener(_onTdlibMatchesChanged);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(ref.read(telegramTdlibServiceProvider).ensureStarted());
-      unawaited(
-        ref.read(telegramTdlibServiceProvider).reconcileFamilyIdentities(),
-      );
-    });
+    // Start TDLib immediately — post-frame was too late and let FC paint
+    // first while phase was still unavailable.
+    unawaited(ref.read(telegramTdlibServiceProvider).ensureStarted());
+    unawaited(
+      ref.read(telegramTdlibServiceProvider).reconcileFamilyIdentities(),
+    );
     WidgetsBinding.instance.addObserver(this);
     _chips = _systemChipsFor(
       hasIndividualPremium: widget.hasIndividualPremium,
@@ -182,13 +215,169 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     }
   }
 
+  /// Cold start: paint last-session top-15 (FC+TG) without waiting for TDLib.
+  Future<void> _hydrateFromSnapshot() async {
+    final data = await HubFirstPaintSnapshot.read();
+    if (!mounted || data == null || data.rows.isEmpty) return;
+    final fc = <Map<String, dynamic>>[];
+    final tg = <Map<String, dynamic>>[];
+    for (final row in data.rows) {
+      final kind = row['kind']?.toString() ?? '';
+      if (kind == 'tdlib_dm' || kind == 'tdlib_chat') {
+        if (widget.hasIndividualPremium) {
+          tg.add(Map<String, dynamic>.from(row));
+        }
+      } else {
+        fc.add(Map<String, dynamic>.from(row));
+      }
+    }
+    if (fc.isEmpty && tg.isEmpty) return;
+    _tdlibRevealTimeout?.cancel();
+    _tdlibRevealTimeout = null;
+    setState(() {
+      if (fc.isNotEmpty) {
+        _threads = _sortedThreads(fc);
+      }
+      _snapshotTgRows = tg;
+      _paintedFromSnapshot = true;
+      _loading = false;
+      _pendingFirstPaint = false;
+      _fcFoldersLoaded = true;
+      _tdlibMatchesLoaded = true;
+      _mirrorStateLoaded = true;
+    });
+    if (fc.isNotEmpty) {
+      unawaited(_seedMatchesFromFcThreads(fc));
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _lastHubAvatarPrefetchKey = null;
+      _debounceHubAvatarPrefetch(_filteredBy(_selectedChip));
+    });
+  }
+
+  /// Drop frozen TG overlay once live hub surface is ready (same-frame swap).
+  void _releaseSnapshotOverlayIfReady([TelegramTdlibService? tdlib]) {
+    if (!_paintedFromSnapshot || !mounted) return;
+    if (widget.hasIndividualPremium) {
+      final TelegramTdlibService svc =
+          tdlib ?? ref.read(telegramTdlibServiceProvider);
+      if (!svc.hubSurfaceReady) return;
+    }
+    setState(() {
+      _snapshotTgRows = const [];
+      _paintedFromSnapshot = false;
+    });
+    _scheduleSnapshotPersist();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _lastHubAvatarPrefetchKey = null;
+      _debounceHubAvatarPrefetch(_filteredBy(_selectedChip));
+    });
+  }
+
+  bool get _showHubSkeleton => _loading || _pendingFirstPaint;
+
+  /// Reveal FC+TG hub in one paint: sync folder chips, then drop the skeleton.
+  void _forceFirstPaintReveal() {
+    if (!mounted || !_pendingFirstPaint) return;
+    _fcFoldersLoaded = true;
+    _tdlibMatchesLoaded = true;
+    _mirrorStateLoaded = true;
+    _applyFirstPaintReveal();
+  }
+
+  void _tryFirstPaintReveal([TelegramTdlibService? tdlib]) {
+    if (!_pendingFirstPaint || !mounted) return;
+    if (_loading) return;
+    if (!_fcFoldersLoaded || !_tdlibMatchesLoaded || !_mirrorStateLoaded) {
+      return;
+    }
+
+    if (widget.hasIndividualPremium) {
+      final TelegramTdlibService svc =
+          tdlib ?? ref.read(telegramTdlibServiceProvider);
+      // Initial phase is [TdlibAuthPhase.unavailable] with hubSurfaceReady=false
+      // until ensureStarted finishes. Requiring hubSurfaceReady alone covers
+      // starting/ready-hydration AND the pre-start gap (old gate revealed FC
+      // while phase was still unavailable, then TG flashed in).
+      if (!svc.hubSurfaceReady) return;
+    }
+    _applyFirstPaintReveal();
+  }
+
+  void _applyFirstPaintReveal() {
+    if (!mounted || !_pendingFirstPaint) return;
+    _tdlibRevealTimeout?.cancel();
+    _tdlibRevealTimeout = null;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    _lastTgFoldersEpoch = svc.chatFoldersEpoch;
+    final next = _composeChips(orderKeys: _chips.map((c) => c.key).toList());
+    final selected = _selectedChip;
+    final same = next.length == _chips.length &&
+        List.generate(next.length, (i) => next[i] == _chips[i])
+            .every((ok) => ok);
+    if (same) {
+      setState(() {
+        _pendingFirstPaint = false;
+        _snapshotTgRows = const [];
+        _paintedFromSnapshot = false;
+      });
+      unawaited(_pullMirroredMembershipFromTg());
+      ref.read(telegramTdlibServiceProvider).warmUnreadChatsFromHub();
+      // First paint: force avatar prefetch (key gate may have armed with
+      // need=0 before TG rows existed).
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _lastHubAvatarPrefetchKey = null;
+        _debounceHubAvatarPrefetch(
+          _filteredBy(_selectedChip),
+        );
+      });
+      _scheduleSnapshotPersist();
+      return;
+    }
+    final oldController = _tabController;
+    oldController.removeListener(_onFilterTabChanged);
+    final allChip = const HubChip.system(ChatHubSystemFilter.all);
+    final initialIndex = next.contains(selected)
+        ? next.indexOf(selected)
+        : (next.contains(allChip) ? next.indexOf(allChip) : 0);
+    final newController = TabController(
+      length: next.length,
+      vsync: this,
+      initialIndex: initialIndex.clamp(0, next.isEmpty ? 0 : next.length - 1),
+    );
+    newController.addListener(_onFilterTabChanged);
+    setState(() {
+      _pendingFirstPaint = false;
+      _snapshotTgRows = const [];
+      _paintedFromSnapshot = false;
+      _chips = next;
+      _tabController = newController;
+    });
+    oldController.dispose();
+    unawaited(_pullMirroredMembershipFromTg());
+    ref.read(telegramTdlibServiceProvider).warmUnreadChatsFromHub();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _lastHubAvatarPrefetchKey = null;
+      _debounceHubAvatarPrefetch(_filteredBy(_selectedChip));
+    });
+    _scheduleSnapshotPersist();
+  }
+
   Future<void> _reloadTdlibMatches() async {
     final matches = await TelegramMatchStore.instance.loadAll();
     if (!mounted) return;
-    setState(() => _tdlibMatches = matches);
+    setState(() {
+      _tdlibMatches = matches;
+      _tdlibMatchesLoaded = true;
+    });
     unawaited(
       ref.read(telegramTdlibServiceProvider).refreshMatchedTgUserIds(),
     );
+    _tryFirstPaintReveal();
   }
 
   void _onTdlibMatchesChanged() {
@@ -232,6 +421,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         if (memberAvatar.isEmpty) ...{
           'tdlib_photo_path': preview?.photoLocalPath,
           'tdlib_photo_bytes': preview?.photoMinithumbnailBytes,
+          'tdlib_photo_file_id': preview?.photoFileId,
         },
         'telegram': {'linked': true},
         'notifications_enabled': !svc.isChatMuted(m.tgChatId),
@@ -256,7 +446,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     if (!widget.hasIndividualPremium) return const [];
     final svc = ref.read(telegramTdlibServiceProvider);
     if (svc.phase != TdlibAuthPhase.ready) return const [];
-    final linkedTgChatIds = _linkedTelegramGroupChatIds();
+    final linkedTgChatIds = _fcLinkedTgChatIds();
     final out = <Map<String, dynamic>>[];
     for (final c in svc.hubChats) {
       // Same gate as TelegramChatsPane: groups/channels always; privates only
@@ -264,6 +454,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       final isPrivate = !c.isGroup && !c.isChannel;
       if (isPrivate && _tdlibMatches.containsKey(c.userId)) continue;
       if (linkedTgChatIds.contains(c.chatId)) continue;
+      if (_matchedTgChatIds.contains(c.chatId)) continue;
       if (svc.isSavedMessagesChat(c.chatId)) continue;
       final created = c.lastMessageDate > 0
           ? DateTime.fromMillisecondsSinceEpoch(c.lastMessageDate * 1000)
@@ -277,6 +468,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         if (!c.isGroup && !c.isChannel) 'tdlib_user_id': c.userId,
         'tdlib_photo_path': c.photoLocalPath,
         'tdlib_photo_bytes': c.photoMinithumbnailBytes,
+        'tdlib_photo_file_id': c.photoFileId,
         'notifications_enabled': !svc.isChatMuted(c.chatId),
         'unread_count': c.unreadCount,
         'last_message': {
@@ -291,10 +483,18 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     return out;
   }
 
-  Set<int> _linkedTelegramGroupChatIds() {
+  Set<int> _fcLinkedTgChatIds() {
     final out = <int>{};
     for (final t in _threads) {
-      if (t['kind']?.toString() != 'group') continue;
+      final kind = t['kind']?.toString() ?? '';
+      // Groups + DMs that the server already linked to a TG chat must not
+      // also appear as a raw TDLib row (Киса: FC dm + tdlib_chat split).
+      if (kind != 'group' &&
+          kind != 'dm' &&
+          kind != 'friend_dm' &&
+          kind != 'saved') {
+        continue;
+      }
       final tg = t['telegram'];
       if (tg is! Map || tg['linked'] != true) continue;
       final id = (tg['tg_chat_id'] as num?)?.toInt() ??
@@ -315,19 +515,36 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       await _load(silent: false);
       return;
     }
-    await ChatSyncService.instance.syncHub(
-      prefetchMessages: true,
-      force: true,
-    );
+    // Paint SQLite first — do not await network sync before first frame.
+    final localThreads = await ChatLocalReads.threads();
     if (!mounted) return;
-    final repo = ref.read(familychatRepositoryProvider);
-    unawaited(ChatOfflineSync.instance.run(repo));
     _hubBootstrapDone = true;
-    final threads = await ChatLocalReads.threads();
-    if (!mounted) return;
-    await _onThreadsUpdated(threads);
-    if (!mounted || !_loading) return;
-    setState(() => _loading = false);
+    if (localThreads.isNotEmpty) {
+      await _onThreadsUpdated(localThreads);
+    } else if (_paintedFromSnapshot) {
+      if (_loading) setState(() => _loading = false);
+      _tryFirstPaintReveal();
+    }
+    final members = await ChatLocalReads.members();
+    if (mounted && members.isNotEmpty) {
+      setState(() => _applyMembers(members));
+    }
+
+    unawaited(() async {
+      await ChatSyncService.instance.syncHub(
+        prefetchMessages: true,
+        force: true,
+      );
+      if (!mounted) return;
+      final repo = ref.read(familychatRepositoryProvider);
+      unawaited(ChatOfflineSync.instance.run(repo));
+      final threads = await ChatLocalReads.threads();
+      if (!mounted) return;
+      await _onThreadsUpdated(threads);
+      if (!mounted) return;
+      if (_loading) setState(() => _loading = false);
+      _tryFirstPaintReveal();
+    }());
   }
 
   @override
@@ -335,6 +552,25 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.hasIndividualPremium != widget.hasIndividualPremium ||
         oldWidget.telegramConnected != widget.telegramConnected) {
+      if (widget.hasIndividualPremium && !oldWidget.hasIndividualPremium) {
+        _pendingFirstPaint = true;
+        _fcFoldersLoaded = false;
+        _tdlibMatchesLoaded = false;
+        _mirrorStateLoaded = false;
+        _tdlibRevealTimeout?.cancel();
+        _tdlibRevealTimeout = Timer(const Duration(seconds: 12), () {
+          if (!mounted || !_pendingFirstPaint) return;
+          _forceFirstPaintReveal();
+        });
+        unawaited(_reloadTdlibMatches());
+        unawaited(_loadMirrorState());
+        unawaited(_loadCustomFolders());
+      } else if (!widget.hasIndividualPremium) {
+        _pendingFirstPaint = false;
+        _fcFoldersLoaded = true;
+        _tdlibMatchesLoaded = true;
+        _mirrorStateLoaded = true;
+      }
       _syncFiltersWithPremium();
     }
   }
@@ -345,6 +581,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     TelegramMatchStore.instance.revision.removeListener(_onTdlibMatchesChanged);
     _hubAvatarPrefetchTimer?.cancel();
     _hubScrollBusyClearTimer?.cancel();
+    _snapshotPersistTimer?.cancel();
+    _tdlibRevealTimeout?.cancel();
     ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
     _tabController.dispose();
     FamilyChatRealtime.instance.removeListener(_onRealtime);
@@ -422,11 +660,17 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     setState(() {
       _fcToTgFolder = fcToTg;
       _tgFolderExtras = extras;
+      _mirrorStateLoaded = true;
     });
-    _rebuildChips(preferSelected: _selectedChip);
+    if (!_pendingFirstPaint) {
+      _rebuildChips(preferSelected: _selectedChip);
+    }
+    _tryFirstPaintReveal();
   }
 
   void _rebuildChips({HubChip? preferSelected}) {
+    // Chip churn during first-paint hold is what the user sees as "flash".
+    if (_pendingFirstPaint) return;
     final next = _composeChips(orderKeys: _chips.map((c) => c.key).toList());
     _replaceChips(next, preferSelected: preferSelected);
   }
@@ -507,22 +751,36 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           final c = a.position.compareTo(b.position);
           return c != 0 ? c : a.id.compareTo(b.id);
         });
-      setState(() => _customFolders = folders);
-      _rebuildChips(preferSelected: _selectedChip);
+      setState(() {
+        _customFolders = folders;
+        _fcFoldersLoaded = true;
+      });
+      if (!_pendingFirstPaint) {
+        _rebuildChips(preferSelected: _selectedChip);
+      }
       for (final f in folders) {
         if (f.hasUnmatchedTgMember(_matchedTgChatIds) &&
             !_fcToTgFolder.containsKey(f.id)) {
           unawaited(_ensureFcFolderMirroredToTg(f.id));
         }
       }
+      _tryFirstPaintReveal();
     } catch (_) {
       // Hub still works with system folders only.
+      if (!mounted) return;
+      setState(() => _fcFoldersLoaded = true);
+      _tryFirstPaintReveal();
     }
   }
 
   Future<void> _restoreTabOrder() async {
     final saved = await ChatHubTabOrderStorage.load();
     if (!mounted || saved == null || saved.isEmpty) return;
+    if (_pendingFirstPaint) {
+      // Applied together with TG folders on first paint.
+      _chips = _composeChips(orderKeys: saved);
+      return;
+    }
     final next = _composeChips(orderKeys: saved);
     _replaceChips(next);
   }
@@ -1484,7 +1742,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       // enrich of a populated snapshot.
       if (_threads.isNotEmpty) return;
       if (!_hubBootstrapDone) return;
-      if (_loading) setState(() => _loading = false);
+      if (_loading) {
+        setState(() => _loading = false);
+        _tryFirstPaintReveal();
+      }
       return;
     }
     final gen = ++_threadsEnrichGen;
@@ -1495,17 +1756,68 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     final sorted = _sortedThreads(enriched);
     final same = _threadsFingerprint(_threads) == _threadsFingerprint(sorted);
     final nextLoading = false;
-    if (same && _loading == nextLoading) return;
+    if (same && _loading == nextLoading) {
+      _tryFirstPaintReveal();
+      return;
+    }
     setState(() {
       if (!same) _threads = sorted;
       _loading = nextLoading;
     });
+    unawaited(_seedMatchesFromFcThreads(sorted));
     unawaited(
       ShareDirectTargetService.syncFromThreads(
         sorted,
         memberByUserId: _memberByUserId,
       ),
     );
+    _tryFirstPaintReveal();
+    if (!_pendingFirstPaint) {
+      _scheduleSnapshotPersist();
+    }
+  }
+
+  Future<void> _seedMatchesFromFcThreads(
+    List<Map<String, dynamic>> threads,
+  ) async {
+    try {
+      final n =
+          await TelegramMatchStore.instance.seedFromFcLinkedThreads(threads);
+      if (n > 0 && mounted) {
+        await _reloadTdlibMatches();
+      }
+    } catch (e) {
+      debugPrint('[hub] seed matches from FC threads failed: $e');
+    }
+  }
+
+  void _scheduleSnapshotPersist() {
+    _snapshotPersistTimer?.cancel();
+    _snapshotPersistTimer = Timer(const Duration(milliseconds: 1500), () {
+      unawaited(_persistHubSnapshot());
+    });
+  }
+
+  Future<void> _persistHubSnapshot() async {
+    if (!mounted) return;
+    if (widget.hasIndividualPremium) {
+      final svc = ref.read(telegramTdlibServiceProvider);
+      if (!svc.hubSurfaceReady) return;
+    }
+    if (_showHubSkeleton) return;
+    final rows = _filteredBy(const HubChip.system(ChatHubSystemFilter.all));
+    if (rows.isEmpty) return;
+    try {
+      await HubFirstPaintSnapshot.write(
+        rows: rows,
+        profileAvatarUrl: widget.profileAvatarUrl,
+        profileAvatarSourcePath: widget.profileAvatarLocalPath.isNotEmpty
+            ? widget.profileAvatarLocalPath
+            : null,
+      );
+    } catch (e) {
+      debugPrint('[hub] snapshot persist failed: $e');
+    }
   }
 
   void _applyMembers(List<Map<String, dynamic>> members) {
@@ -1607,6 +1919,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         ),
       );
       unawaited(ChatOfflineSync.instance.refreshOnline(repo));
+      _tryFirstPaintReveal();
     } catch (_) {
       if (!mounted || gen != _threadsEnrichGen) return;
       if (_threads.isEmpty) {
@@ -1616,6 +1929,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       setState(() {
         _loading = false;
       });
+      _tryFirstPaintReveal();
     }
   }
 
@@ -1664,15 +1978,25 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         break;
       }
     }
-    if (match == null) return thread;
+    var tgChatId = match?.tgChatId ?? 0;
+    // Server-linked FC DM (secretary/tdlib) even when MatchStore is empty.
+    if (tgChatId == 0) {
+      final tg = thread['telegram'];
+      if (tg is Map && tg['linked'] == true) {
+        tgChatId = (tg['tg_chat_id'] as num?)?.toInt() ??
+            int.tryParse('${tg['tg_chat_id'] ?? ''}') ??
+            0;
+      }
+    }
+    if (tgChatId == 0) return thread;
     final svc = ref.read(telegramTdlibServiceProvider);
     if (svc.phase != TdlibAuthPhase.ready) return thread;
-    final preview = svc.chatPreviewById(match.tgChatId);
+    final preview = svc.chatPreviewById(tgChatId);
     if (preview == null) return thread;
 
     final fcUnread = chatAsInt(thread['unread_count']) ?? 0;
     final tgUnread = preview.unreadCount;
-    final muted = svc.isChatMuted(match.tgChatId);
+    final muted = svc.isChatMutedIfKnown(tgChatId);
     var changed = false;
     final next = Map<String, dynamic>.from(thread);
 
@@ -1680,10 +2004,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       next['unread_count'] = tgUnread;
       changed = true;
     }
-    final tgNotifications = !muted;
-    if (thread['notifications_enabled'] != tgNotifications) {
-      next['notifications_enabled'] = tgNotifications;
-      changed = true;
+    // Don't invent "unmuted" while TDLib mute is still unknown — that
+    // turned gray snapshot badges blue on cold start.
+    if (muted != null) {
+      final tgNotifications = !muted;
+      if (thread['notifications_enabled'] != tgNotifications) {
+        next['notifications_enabled'] = tgNotifications;
+        changed = true;
+      }
     }
 
     if (preview.lastMessageDate > 0) {
@@ -1722,10 +2050,17 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         next['tdlib_photo_bytes'] = bytes;
         changed = true;
       }
-      if (next['tdlib_chat_id'] != match.tgChatId) {
-        next['tdlib_chat_id'] = match.tgChatId;
+      final fid = preview.photoFileId;
+      if (fid != null &&
+          fid > 0 &&
+          next['tdlib_photo_file_id'] != fid) {
+        next['tdlib_photo_file_id'] = fid;
         changed = true;
       }
+    }
+    if (next['tdlib_chat_id'] != tgChatId) {
+      next['tdlib_chat_id'] = tgChatId;
+      changed = true;
     }
 
     return changed ? next : thread;
@@ -1832,24 +2167,52 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     required bool includeTelegramList,
     int? tgFolderId,
   }) {
+    // Prefer hubSurfaceReady over phase alone — otherwise snapshot TG would
+    // vanish mid-hydration while the live list is still incomplete.
+    final liveTg = widget.hasIndividualPremium &&
+        ref.read(telegramTdlibServiceProvider).hubSurfaceReady;
+    final linkedTgChatIds = _fcLinkedTgChatIds();
+    final snapshotTg = (!liveTg && _snapshotTgRows.isNotEmpty)
+        ? [
+            for (final r in _snapshotTgRows)
+              if (!_snapshotTgCoveredByFc(r, linkedTgChatIds)) r,
+          ]
+        : const <Map<String, dynamic>>[];
     return [
       ..._threads,
-      ..._tdlibHubEntries(),
-      if (includeTelegramList) ..._telegramListEntries(),
-      if (tgFolderId != null) ..._tdlibFolderEntries(tgFolderId),
+      if (liveTg) ..._tdlibHubEntries(),
+      if (liveTg && includeTelegramList) ..._telegramListEntries(),
+      // Frozen TG rows until live surface replaces them (no FC-only flash).
+      if (snapshotTg.isNotEmpty) ...snapshotTg,
+      if (liveTg && tgFolderId != null) ..._tdlibFolderEntries(tgFolderId),
     ];
+  }
+
+  /// Snapshot TG private/group already mirrored by an FC linked row.
+  bool _snapshotTgCoveredByFc(
+    Map<String, dynamic> row,
+    Set<int> linkedTgChatIds,
+  ) {
+    final tgId = (row['tdlib_chat_id'] as num?)?.toInt() ??
+        chatAsInt(row['tdlib_chat_id']);
+    if (tgId != null && linkedTgChatIds.contains(tgId)) return true;
+    if (tgId != null && _matchedTgChatIds.contains(tgId)) return true;
+    final tgUser = (row['tdlib_user_id'] as num?)?.toInt();
+    if (tgUser != null && _tdlibMatches.containsKey(tgUser)) return true;
+    return false;
   }
 
   /// Rows for chats that live in a TG folder (may be absent from main list).
   List<Map<String, dynamic>> _tdlibFolderEntries(int folderId) {
     if (!widget.hasIndividualPremium || !_tdlibReady) return const [];
     final svc = ref.read(telegramTdlibServiceProvider);
-    final linkedTgChatIds = _linkedTelegramGroupChatIds();
+    final linkedTgChatIds = _fcLinkedTgChatIds();
     final out = <Map<String, dynamic>>[];
     final seen = <int>{};
     for (final chatId in svc.chatIdsInFolder(folderId)) {
       if (!seen.add(chatId)) continue;
       if (linkedTgChatIds.contains(chatId)) continue;
+      if (_matchedTgChatIds.contains(chatId)) continue;
       if (svc.isSavedMessagesChat(chatId)) continue;
       final c = svc.chatPreviewById(chatId);
       if (c == null) continue;
@@ -1870,6 +2233,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         if (!c.isGroup && !c.isChannel) 'tdlib_user_id': c.userId,
         'tdlib_photo_path': c.photoLocalPath,
         'tdlib_photo_bytes': c.photoMinithumbnailBytes,
+        'tdlib_photo_file_id': c.photoFileId,
         'notifications_enabled': !svc.isChatMuted(c.chatId),
         'unread_count': c.unreadCount,
         'last_message': {
@@ -1918,12 +2282,19 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   /// Whether this hub row should contribute to folder / tab unread badges.
   bool _threadNotificationsEnabled(Map<String, dynamic> thread) {
     final kind = thread['kind']?.toString();
+    final snapOn = thread['notifications_enabled'] as bool?;
     if (_isTdlibHubKind(kind)) {
       final chatId = (thread['tdlib_chat_id'] as num?)?.toInt();
-      if (chatId == null) return true;
-      return !ref.read(telegramTdlibServiceProvider).isChatMuted(chatId);
+      if (chatId != null) {
+        final muted =
+            ref.read(telegramTdlibServiceProvider).isChatMutedIfKnown(chatId);
+        // Prefer live mute once known; until then keep first-paint snapshot
+        // so muted rows don't flash blue on cold start.
+        if (muted != null) return !muted;
+      }
+      return snapOn ?? true;
     }
-    final fcOn = thread['notifications_enabled'] as bool? ?? true;
+    final fcOn = snapOn ?? true;
     if (!fcOn) return false;
     // Matched FC DM: honor Telegram mute so the row stays gray and is
     // excluded from folder totals even when FC notifications_enabled is true.
@@ -1932,11 +2303,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       final svc = ref.read(telegramTdlibServiceProvider);
       for (final m in _tdlibMatches.values) {
         if (m.fcUserId != peer || m.tgChatId == 0) continue;
-        if (svc.isChatMuted(m.tgChatId)) return false;
+        final muted = svc.isChatMutedIfKnown(m.tgChatId);
+        if (muted == true) return false;
+        if (muted == false) return true;
         break;
       }
     }
-    return true;
+    return fcOn;
   }
 
   /// Unread total for a folder chip: unmuted chats only (no search filter).
@@ -2005,6 +2378,26 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       return;
     }
 
+    // Matched FC↔TG DM: hub overlays TG last_message / unread onto the FC row.
+    // Opening FC then shows an older transcript without the preview tip (Киса).
+    // When TG is ahead, open the TG chat that actually owns that message.
+    final matchedTg = _matchedTgOpenTarget(thread);
+    if (matchedTg != null) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => TelegramConversationScreen(
+            chatId: matchedTg.chatId,
+            title: thread['title']?.toString() ?? 'Telegram',
+            tgUserId: matchedTg.tgUserId,
+            fcUserId: _dmPeerUserId(thread),
+            peerAvatarUrl: _dmAvatarUrl(thread) ?? '',
+          ),
+        ),
+      );
+      await _reloadTdlibMatches();
+      return;
+    }
+
     // FC «Избранное» linked to TG Saved Messages — open the TDLib chat so
     // GIF / stickers / PDF render (the text bridge only stores placeholders).
     if (thread['kind']?.toString() == 'saved') {
@@ -2054,6 +2447,60 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       ),
     );
     await refresh();
+  }
+
+  /// When FC DM hub preview/unread is driven by TG, open that TG chat instead.
+  ({int chatId, int? tgUserId})? _matchedTgOpenTarget(
+    Map<String, dynamic> thread,
+  ) {
+    final kind = thread['kind']?.toString() ?? '';
+    if (kind != 'dm' && kind != 'friend_dm') return null;
+    if (!widget.hasIndividualPremium) return null;
+    final peer = _dmPeerUserId(thread);
+    if (peer == null || peer <= 0) return null;
+    TelegramMatch? match;
+    for (final m in _tdlibMatches.values) {
+      if (m.fcUserId == peer && m.tgChatId != 0) {
+        match = m;
+        break;
+      }
+    }
+    if (match == null) return null;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.phase != TdlibAuthPhase.ready) return null;
+    final preview = svc.chatPreviewById(match.tgChatId);
+    if (preview == null) return null;
+
+    final last = thread['last_message'];
+    var fcMs = 0;
+    if (last is Map) {
+      // Prefer raw FC timestamp — enrichment may already have swapped body.
+      final raw = last['created_at']?.toString() ?? '';
+      final parsed = DateTime.tryParse(raw);
+      if (parsed != null) fcMs = parsed.millisecondsSinceEpoch;
+    }
+    // Re-read FC thread for an un-enriched timestamp when possible.
+    Map<String, dynamic>? rawFc;
+    for (final t in _threads) {
+      if (t['id'] == thread['id']) {
+        rawFc = t;
+        break;
+      }
+    }
+    if (rawFc != null) {
+      final rawLast = rawFc['last_message'];
+      if (rawLast is Map) {
+        final parsed =
+            DateTime.tryParse(rawLast['created_at']?.toString() ?? '');
+        if (parsed != null) fcMs = parsed.millisecondsSinceEpoch;
+      }
+    }
+
+    final tgMs = preview.lastMessageDate * 1000;
+    final tgUnread = preview.unreadCount;
+    final tgAhead = tgMs > fcMs + 500 || tgUnread > 0;
+    if (!tgAhead) return null;
+    return (chatId: match.tgChatId, tgUserId: match.tgUserId);
   }
 
   int? _savedMessagesTgChatId(Map<String, dynamic> thread) {
@@ -2239,42 +2686,59 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   /// Visible TG rows on the main hub (Все / custom folders) — TelegramChatsPane
   /// has its own prefetch; this covers the merged list where blunt minithumbs
   /// otherwise stay forever.
-  void _scheduleHubAvatarPrefetch(List<Map<String, dynamic>> rows) {
-    if (!widget.hasIndividualPremium || !_tdlibReady) return;
-    // Prefer rows that already show a soft minithumb (user sees blur) over
-    // chats with no photo at all (initials — nothing to download).
+  /// Chat ids in the current viewport that still show minithumb / need download.
+  List<int> _hubAvatarNeedSharpIds(List<Map<String, dynamic>> rows) {
+    if (rows.isEmpty) return const [];
+    // Prefetch the viewport (+ a few below), NOT the top of the full list —
+    // scrolling to older rows left minithumbs forever while the queue burned
+    // on already-offscreen chats (or cooldown give-ups at the head).
+    const rowExtent = 72.0;
+    final first =
+        (_hubListScrollPixels / rowExtent).floor().clamp(0, rows.length - 1);
+    final window = rows.skip(first).take(28);
     final needSharp = <int>[];
-    final noPhoto = <int>[];
-    for (final t in rows) {
+    for (final t in window) {
       final kind = t['kind']?.toString() ?? '';
       final isTdlibRow = kind == 'tdlib_chat' || kind == 'tdlib_dm';
       // Matched FC DM without FC avatar may carry tdlib_chat_id for TG fallback.
       if (!isTdlibRow && _hasFcPeerAvatar(t)) continue;
-      final path = t['tdlib_photo_path']?.toString().trim() ?? '';
-      if (path.isNotEmpty) continue; // already have a local file
       final id = chatAsInt(t['tdlib_chat_id']);
       if (id == null || id == 0) continue;
       final bytes = t['tdlib_photo_bytes'];
       final hasMini = bytes is List && bytes.isNotEmpty;
-      if (hasMini) {
-        needSharp.add(id);
-      } else {
-        noPhoto.add(id);
-      }
+      final photoFileId = chatAsInt(t['tdlib_photo_file_id']);
+      final hasPhotoId = photoFileId != null && photoFileId > 0;
+      // photoFileId is the preferred size (big). Even when a soft `small` path
+      // is already painted, keep asking until big is cached — otherwise high-DPI
+      // hubs stay muddy forever with need=0.
+      if (!hasMini && !hasPhotoId) continue;
+      needSharp.add(id);
+      if (needSharp.length >= 16) break;
     }
-    final ids = <int>[
-      ...needSharp,
-      ...noPhoto,
-    ];
-    if (ids.isEmpty) return;
-    ref
-        .read(telegramTdlibServiceProvider)
-        .prefetchVisibleHubAvatars(ids.take(16));
+    return needSharp;
+  }
+
+  void _scheduleHubAvatarPrefetch(List<Map<String, dynamic>> rows) {
+    if (!widget.hasIndividualPremium || !_tdlibReady) return;
+    final tdlib = ref.read(telegramTdlibServiceProvider);
+    // Never fight a fling — avatar getChat/download mid-ballistic is the
+    // classic hub "stutter then catch up" feel. Retry once scroll settles.
+    if (tdlib.isUiScrollBusy) {
+      _hubAvatarPrefetchTimer?.cancel();
+      _hubAvatarPrefetchTimer = Timer(const Duration(milliseconds: 420), () {
+        if (!mounted) return;
+        _scheduleHubAvatarPrefetch(rows);
+      });
+      return;
+    }
+    final needSharp = _hubAvatarNeedSharpIds(rows);
+    if (needSharp.isEmpty) return;
+    tdlib.prefetchVisibleHubAvatars(needSharp);
   }
 
   void _debounceHubAvatarPrefetch(List<Map<String, dynamic>> rows) {
     _hubAvatarPrefetchTimer?.cancel();
-    _hubAvatarPrefetchTimer = Timer(const Duration(milliseconds: 120), () {
+    _hubAvatarPrefetchTimer = Timer(const Duration(milliseconds: 280), () {
       if (!mounted) return;
       _scheduleHubAvatarPrefetch(rows);
     });
@@ -2305,17 +2769,32 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       ),
     );
 
-    if (_loading) {
-      return const DeferredPlaceholder(child: ChatHubListSkeleton());
+    if (_showHubSkeleton) {
+      return const ChatHubListSkeleton();
     }
 
-    // Prefetch after first frame — only for the visible chip (TabBarView
-    // also builds neighbors; don't fan out downloads on every rebuild).
+    // Prefetch when the visible muddy set changes — NOT on every rebuild
+    // (ref.watch TDLib used to re-fire this every last-message tick and
+    // mid-scroll). Key includes:
+    // - mediaReadyEpoch: Connecting→Ready re-queues skipped avatars
+    // - needSig: minithumbs that appear AFTER first paint (chat photo
+    //   metadata arrives late) must invalidate the key or they stay muddy
+    //   forever with no ScrollEnd.
     if (identical(chip, _selectedChip) || chip.key == _selectedChip.key) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _debounceHubAvatarPrefetch(filtered);
-      });
+      final mediaEpoch = ref
+          .read(telegramTdlibServiceProvider)
+          .mediaReadyEpoch;
+      final needIds = _hubAvatarNeedSharpIds(filtered);
+      final needSig = needIds.isEmpty ? '0' : needIds.join(',');
+      final prefetchKey =
+          '${chip.key}:m$mediaEpoch:need=$needSig:${filtered.length}';
+      if (prefetchKey != _lastHubAvatarPrefetchKey) {
+        _lastHubAvatarPrefetchKey = prefetchKey;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _debounceHubAvatarPrefetch(filtered);
+        });
+      }
     }
 
     return RefreshIndicator(
@@ -2332,6 +2811,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           : NotificationListener<ScrollNotification>(
               onNotification: (n) {
                 if (n is ScrollUpdateNotification) {
+                  _hubListScrollPixels = n.metrics.pixels;
                   ref
                       .read(telegramTdlibServiceProvider)
                       .setUiScrollBusy(true);
@@ -2345,10 +2825,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                           .setUiScrollBusy(false);
                     },
                   );
-                  if (n.dragDetails != null) {
-                    _debounceHubAvatarPrefetch(filtered);
-                  }
+                  // Do NOT prefetch on every drag tick — that queued getChat
+                  // for missing avatars and hitching ballistic fling.
                 } else if (n is ScrollEndNotification) {
+                  _hubListScrollPixels = n.metrics.pixels;
                   _debounceHubAvatarPrefetch(filtered);
                   _hubScrollBusyClearTimer?.cancel();
                   _hubScrollBusyClearTimer = Timer(
@@ -2366,6 +2846,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               child: ListView.builder(
               key: PageStorageKey<String>('chat-hub-${chip.key}'),
               physics: const AlwaysScrollableScrollPhysics(),
+              // Keep a modest cache — huge cacheExtent + avatar decodes
+              // during fling was a source of hitch.
+              cacheExtent: 480,
               padding: listPadding,
               itemCount: filtered.length,
               itemBuilder: (context, i) {
@@ -2415,6 +2898,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 final avatar = isSaved
                     ? const SavedMessagesAvatar(radius: 24)
                     : ChatAvatar(
+                        key: ValueKey<String>(
+                          'hub-av-${t['id']}-'
+                          '${useTgPhoto ? (tdlibPhotoPath ?? '') : (fcAvatarUrl ?? '')}-'
+                          '${useTgPhoto && tdlibPhotoBytes is List ? (tdlibPhotoBytes as List).length : 0}',
+                        ),
                         name: _avatarName(t),
                         avatarUrl: fcAvatarUrl,
                         userId:
@@ -2572,6 +3060,23 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     // Rebuild list + folder badges whenever TDLib chat/mute/unread changes.
     // (A nested Builder-only watch would leave TabBarView stale.)
     final tdlib = ref.watch(telegramTdlibServiceProvider);
+    // Never setState during build — reveal on the next frame.
+    if (_pendingFirstPaint) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _tryFirstPaintReveal(tdlib);
+      });
+    } else if (_paintedFromSnapshot) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _releaseSnapshotOverlayIfReady(tdlib);
+      });
+    } else if (tdlib.hubSurfaceReady) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scheduleSnapshotPersist();
+      });
+    }
     final connected = tdlib.phase == TdlibAuthPhase.ready;
     final shouldShowTelegram = widget.hasIndividualPremium && !connected;
     final showingTelegram = _chips.any(
@@ -2583,7 +3088,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       });
     }
     final foldersEpoch = tdlib.chatFoldersEpoch;
-    if (foldersEpoch != _lastTgFoldersEpoch) {
+    // While holding the first paint, defer chip rebuilds so FC folders don't
+    // appear alone and then jump when TG folders arrive.
+    if (!_pendingFirstPaint && foldersEpoch != _lastTgFoldersEpoch) {
       _lastTgFoldersEpoch = foldersEpoch;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -2591,6 +3098,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         unawaited(_pullMirroredMembershipFromTg());
       });
     }
+
+    final showHubSkeleton = _showHubSkeleton;
 
     return PopScope(
       canPop: !_searchVisible && !_folderReorderMode && !_selectionMode,
@@ -2613,6 +3122,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               : 'Family Space',
           profileName: _selectionMode ? '' : widget.profileName,
           profileAvatarUrl: _selectionMode ? '' : widget.profileAvatarUrl,
+          profileAvatarLocalPath:
+              _selectionMode ? '' : widget.profileAvatarLocalPath,
           onProfileTap: _selectionMode ? null : widget.onProfileTap,
           automaticallyImplyLeading: false,
           leading: _selectionMode
@@ -2753,35 +3264,43 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 ),
               ),
             Expanded(
-              child: Stack(
-                children: [
-                  TabBarView(
-                    controller: _tabController,
-                    physics: const NeverScrollableScrollPhysics(),
-                    children: _chips.map((chip) {
-                      return ColoredBox(
-                        color: theme.scaffoldBackgroundColor,
-                        child: _buildFilterPage(chip),
-                      );
-                    }).toList(),
-                  ),
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: _ChatFilterTabBar(
-                      chips: _chips,
-                      controller: _tabController,
-                      labelOf: _chipLabel,
-                      unreadOf: _notifiedUnreadForChip,
-                      reorderMode: _folderReorderMode,
-                      onReorder: _onReorderTabs,
-                      onChipLongPress: _showFolderChipMenu,
-                      onDeleteChip: (chip) => unawaited(_deleteFolderChip(chip)),
+              child: showHubSkeleton
+                  ? const ColoredBox(
+                      // Immediate skeleton — DeferredPlaceholder blanked 1s
+                      // and made the FC→TG flash look worse.
+                      color: Colors.transparent,
+                      child: ChatHubListSkeleton(),
+                    )
+                  : Stack(
+                      children: [
+                        TabBarView(
+                          controller: _tabController,
+                          physics: const NeverScrollableScrollPhysics(),
+                          children: _chips.map((chip) {
+                            return ColoredBox(
+                              color: theme.scaffoldBackgroundColor,
+                              child: _buildFilterPage(chip),
+                            );
+                          }).toList(),
+                        ),
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          child: _ChatFilterTabBar(
+                            chips: _chips,
+                            controller: _tabController,
+                            labelOf: _chipLabel,
+                            unreadOf: _notifiedUnreadForChip,
+                            reorderMode: _folderReorderMode,
+                            onReorder: _onReorderTabs,
+                            onChipLongPress: _showFolderChipMenu,
+                            onDeleteChip: (chip) =>
+                                unawaited(_deleteFolderChip(chip)),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
             ),
           ],
         ),

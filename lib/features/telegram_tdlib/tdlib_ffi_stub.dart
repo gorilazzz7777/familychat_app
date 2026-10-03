@@ -1,4 +1,4 @@
-/// Web / non-IO stub — TDLib native client is Android-only.
+/// Web / non-IO stub — TDLib native client is Android/iOS.
 class TdlibFfi {
   TdlibFfi._();
 

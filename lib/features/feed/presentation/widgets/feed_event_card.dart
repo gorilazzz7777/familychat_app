@@ -2,11 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:visibility_detector/visibility_detector.dart';
 
 import '../../../../core/i18n/gender_verbs.dart';
 import '../../../../core/providers/app_providers.dart';
+import '../../../../core/services/rustore_review_prompt_service.dart';
 import '../../../profile/presentation/photo_slideshow_screen.dart';
 import '../../../profile/presentation/widgets/chat_avatar.dart';
 import 'feed_birthday_event_card.dart';
@@ -14,8 +17,13 @@ import 'feed_holiday_event_card.dart';
 import 'feed_event_action_bar.dart';
 import 'feed_expandable_caption.dart';
 import 'feed_event_media_block.dart';
+import '../feed_jank_log.dart';
+import '../feed_scroll_busy.dart';
 import 'feed_reactions.dart';
 import 'feed_viewed_by_row.dart';
+
+/// Fraction of the card that must be on-screen to count as a personal view.
+const _kFeedViewVisibleFraction = 0.5;
 
 class FeedEventCard extends ConsumerStatefulWidget {
   const FeedEventCard({
@@ -45,6 +53,9 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
   int _batchIndex = 0;
   List<Map<String, dynamic>> _viewedBy = const [];
   bool _viewMarked = false;
+  bool _reactBusy = false;
+  /// Avatar + action bar + viewed-by stay light until fling settles.
+  bool _showHeavyChrome = true;
 
   Map<String, dynamic> get _event => widget.event;
   Map<String, dynamic> get _actor => (_event['actor'] as Map<String, dynamic>?) ?? {};
@@ -55,7 +66,13 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
   void initState() {
     super.initState();
     _viewedBy = _parseViewedBy(_event['viewed_by']);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _markViewed());
+    if (FeedScrollBusy.isFlinging) {
+      _showHeavyChrome = false;
+      FeedScrollBusy.onIdle(() {
+        if (!mounted || _showHeavyChrome) return;
+        setState(() => _showHeavyChrome = true);
+      });
+    }
   }
 
   @override
@@ -64,7 +81,13 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     if (oldWidget.event['id'] != widget.event['id']) {
       _viewMarked = false;
       _viewedBy = _parseViewedBy(widget.event['viewed_by']);
-      WidgetsBinding.instance.addPostFrameCallback((_) => _markViewed());
+      if (FeedScrollBusy.isFlinging && _showHeavyChrome) {
+        _showHeavyChrome = false;
+        FeedScrollBusy.onIdle(() {
+          if (!mounted || _showHeavyChrome) return;
+          setState(() => _showHeavyChrome = true);
+        });
+      }
     }
   }
 
@@ -76,9 +99,21 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
         .toList();
   }
 
+  void _onVisibilityChanged(VisibilityInfo info) {
+    if (_viewMarked || !mounted) return;
+    if (info.visibleFraction < _kFeedViewVisibleFraction) return;
+    unawaited(_markViewed());
+  }
+
   Future<void> _markViewed() async {
     if (_viewMarked || !mounted) return;
     // Skip network/setState while the feed is flinging.
+    if (FeedScrollBusy.isBusy) {
+      FeedScrollBusy.onIdle(() {
+        if (mounted) unawaited(_markViewed());
+      });
+      return;
+    }
     if (Scrollable.recommendDeferredLoadingForContext(context)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_markViewed());
@@ -91,23 +126,59 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     if (id == null || id <= 0) return;
     if (_event['_optimistic'] == true) return;
     _viewMarked = true;
+    FeedJankLog.log('VIEW_MARK id=$id');
+    // Persist locally so the next tab entry rebuilds sections correctly even
+    // if the list is still served from cache before the next full fetch.
+    widget.event['is_new'] = false;
     try {
       final data =
           await ref.read(familychatRepositoryProvider).markFeedEventViewed(id);
       if (!mounted) return;
-      final next = _parseViewedBy(data['viewed_by']);
-      if (next.isNotEmpty) {
-        _storeViewedBy(next);
+      // Engagement UI can wait until the next idle frame after a fling.
+      void applyViewed() {
+        if (!mounted) return;
+        final next = _parseViewedBy(data['viewed_by']);
+        if (next.isNotEmpty) {
+          _storeViewedBy(next);
+        } else {
+          widget.onEngagementChanged?.call();
+        }
       }
-    } catch (_) {}
+
+      if (FeedScrollBusy.isBusy) {
+        FeedScrollBusy.onIdle(applyViewed);
+      } else {
+        applyViewed();
+      }
+    } catch (_) {
+      // Keep local is_new=false; retry on next visit via server state.
+      widget.onEngagementChanged?.call();
+    }
   }
 
   void _storeViewedBy(List<Map<String, dynamic>> people) {
     widget.event['viewed_by'] = people;
     widget.event['viewed_count'] = people.length;
-    if (!mounted) return;
-    setState(() => _viewedBy = people);
-    widget.onEngagementChanged?.call();
+    void apply() {
+      if (!mounted) return;
+      setState(() => _viewedBy = people);
+      widget.onEngagementChanged?.call();
+    }
+
+    if (FeedScrollBusy.isBusy) {
+      FeedScrollBusy.onIdle(apply);
+    } else {
+      apply();
+    }
+  }
+
+  Widget _withViewTracking(Widget child) {
+    final id = _eventId;
+    return VisibilityDetector(
+      key: Key('feed_view_${id ?? identityHashCode(_event)}'),
+      onVisibilityChanged: _onVisibilityChanged,
+      child: child,
+    );
   }
 
   int? get _eventId {
@@ -372,107 +443,132 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     );
   }
 
-  Future<void> _onPostLongPress({int? attachmentId}) async {
+  Future<void> _toggleReaction(int? attachmentId, String emoji) async {
+    if (attachmentId == null || _reactBusy || emoji.trim().isEmpty) return;
+    final stored = feedEngagementFromEvent(
+      _event,
+      attachmentId: attachmentId,
+    );
+    final previous = [
+      for (final r in stored.reactions) Map<String, dynamic>.from(r),
+    ];
+    final hadMine = mediaReactionsHasMine(previous);
+    final optimistic = optimisticToggleMediaReaction(previous, emoji: emoji);
+    writeFeedEngagementToEvent(
+      _event,
+      attachmentId: attachmentId,
+      reactions: optimistic,
+      commentsCount: stored.commentsCount,
+    );
+    widget.onEngagementChanged?.call();
+    if (mounted) setState(() {});
+
+    _reactBusy = true;
+    try {
+      final data = await ref
+          .read(familychatRepositoryProvider)
+          .toggleMediaReaction(attachmentId, emoji: emoji);
+      if (!mounted) return;
+      final nextReactions = parseMediaReactions(data['reactions']);
+      final commentsCount = data['comments_count'] is int
+          ? data['comments_count'] as int
+          : int.tryParse('${data['comments_count']}') ?? stored.commentsCount;
+      writeFeedEngagementToEvent(
+        _event,
+        attachmentId: attachmentId,
+        reactions: nextReactions,
+        commentsCount: commentsCount,
+      );
+      widget.onEngagementChanged?.call();
+      if (mounted) setState(() {});
+      if (!hadMine && mediaReactionsHasMine(nextReactions) && mounted) {
+        unawaited(
+          RuStoreReviewPromptService.onFirstFeedLike(
+            context,
+            repository: ref.read(familychatRepositoryProvider),
+          ),
+        );
+      }
+    } catch (_) {
+      writeFeedEngagementToEvent(
+        _event,
+        attachmentId: attachmentId,
+        reactions: previous,
+        commentsCount: stored.commentsCount,
+      );
+      widget.onEngagementChanged?.call();
+      if (mounted) setState(() {});
+    } finally {
+      _reactBusy = false;
+    }
+  }
+
+  Future<void> _onPostDoubleTap({int? attachmentId}) async {
+    if (attachmentId == null) return;
+    HapticFeedback.lightImpact();
+    await _toggleReaction(attachmentId, kFeedDoubleTapReactionEmoji);
+  }
+
+  Future<void> _onPostActionsMenu({int? attachmentId}) async {
+    final canReact = attachmentId != null;
     final stored = feedEngagementFromEvent(
       _event,
       attachmentId: attachmentId,
     );
     final hasReactions = mediaReactionsTotalCount(stored.reactions) > 0;
-    if (!hasReactions) {
-      await _openViewedPeople();
-      return;
-    }
 
     if (!mounted) return;
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) {
-        final theme = Theme.of(ctx);
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(LucideIcons.eye),
-                title: const Text('Просмотрено'),
-                onTap: () => Navigator.pop(ctx, 'viewed'),
-              ),
-              ListTile(
-                leading: Icon(
-                  LucideIcons.heart,
-                  color: theme.colorScheme.onSurface,
-                ),
-                title: const Text('Реакции'),
-                onTap: () => Navigator.pop(ctx, 'reactions'),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
+    final choice = await showFeedPostActionsSheet(
+      context,
+      canReact: canReact,
+      hasReactions: hasReactions,
+      navigateLabel: _navigateTooltip(),
+      canDelete: _canDelete,
     );
     if (!mounted || choice == null) return;
-    if (choice == 'viewed') {
-      await _openViewedPeople();
-    } else if (choice == 'reactions') {
-      await _openReactionPeople(attachmentId);
+    final emoji = choice.reactionEmoji?.trim();
+    if (emoji != null && emoji.isNotEmpty) {
+      if (attachmentId != null) {
+        await _toggleReaction(attachmentId, emoji);
+      }
+      return;
+    }
+    switch (choice.action) {
+      case 'viewed':
+        await _openViewedPeople();
+      case 'reactions':
+        if (attachmentId != null) {
+          await _openReactionPeople(attachmentId);
+        }
+      case 'navigate':
+        widget.onOpenSource();
+      case 'delete':
+        await _confirmAndDeletePost();
     }
   }
 
-  Widget _longPressArea({required Widget child, int? attachmentId}) {
+  /// Gestures on post body below media (caption / meta / dead zones).
+  /// Short tap & long-press → actions sheet; double-tap → quick ❤️.
+  Widget _postBodyGestures({
+    required Widget child,
+    int? attachmentId,
+    bool enableDoubleTap = true,
+    bool enableShortTap = true,
+  }) {
     return GestureDetector(
-      behavior: HitTestBehavior.translucent,
-      onLongPress: () => _onPostLongPress(attachmentId: attachmentId),
+      behavior: HitTestBehavior.opaque,
+      onTap: enableShortTap
+          ? () => _onPostActionsMenu(attachmentId: attachmentId)
+          : null,
+      onLongPress: () => _onPostActionsMenu(attachmentId: attachmentId),
+      onDoubleTap: enableDoubleTap && attachmentId != null
+          ? () => _onPostDoubleTap(attachmentId: attachmentId)
+          : null,
       child: child,
     );
   }
 
   bool get _canDelete => _event['can_delete'] == true;
-
-  Future<void> _openPostMenu() async {
-    final navigateLabel = _navigateTooltip();
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) {
-        final theme = Theme.of(ctx);
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: Icon(LucideIcons.external_link, color: theme.colorScheme.primary),
-                title: Text(navigateLabel),
-                onTap: () => Navigator.pop(ctx, 'navigate'),
-              ),
-              if (_canDelete)
-                ListTile(
-                  leading: Icon(
-                    LucideIcons.trash,
-                    color: theme.colorScheme.error,
-                  ),
-                  title: Text(
-                    'Удалить',
-                    style: TextStyle(color: theme.colorScheme.error),
-                  ),
-                  onTap: () => Navigator.pop(ctx, 'delete'),
-                ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
-    );
-    if (!mounted || choice == null) return;
-    if (choice == 'navigate') {
-      widget.onOpenSource();
-      return;
-    }
-    if (choice == 'delete') {
-      await _confirmAndDeletePost();
-    }
-  }
 
   Future<void> _confirmAndDeletePost() async {
     final eventId = _eventId;
@@ -517,50 +613,56 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     final createdAt = DateTime.tryParse(_event['created_at']?.toString() ?? '');
 
     if (_isBirthdayEvent) {
-      return _longPressArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            FeedBirthdayEventCard(
-              honoreeName: _honoreeName(),
-              honoreeAvatarUrl: _actor['avatar_url']?.toString(),
-              eventDate: _payload['date']?.toString(),
-              createdAt: createdAt,
-              onOpenChat: widget.onOpenSource,
-              onOpenProfile: widget.onOpenProfile,
-            ),
-            FeedViewedByRow(
-              viewedBy: _viewedBy,
-              eventId: _eventId,
-              onViewedByChanged: _storeViewedBy,
-            ),
-          ],
+      return _withViewTracking(
+        _postBodyGestures(
+          enableDoubleTap: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              FeedBirthdayEventCard(
+                honoreeName: _honoreeName(),
+                honoreeAvatarUrl: _actor['avatar_url']?.toString(),
+                eventDate: _payload['date']?.toString(),
+                createdAt: createdAt,
+                onOpenChat: widget.onOpenSource,
+                onOpenProfile: widget.onOpenProfile,
+              ),
+              FeedViewedByRow(
+                viewedBy: _viewedBy,
+                eventId: _eventId,
+                onViewedByChanged: _storeViewedBy,
+              ),
+            ],
+          ),
         ),
       );
     }
 
     if (_isHolidayEvent) {
       final description = _payload['description']?.toString().trim() ?? '';
-      return _longPressArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            FeedHolidayEventCard(
-              title: _payload['title']?.toString() ?? 'Праздник',
-              description: description.isNotEmpty
-                  ? description
-                  : 'Сегодня в семейном календаре отмечен праздник.',
-              holidayCode: _payload['code']?.toString() ?? '',
-              eventDate: _payload['date']?.toString(),
-              createdAt: createdAt,
-              onOpenCalendar: widget.onOpenSource,
-            ),
-            FeedViewedByRow(
-              viewedBy: _viewedBy,
-              eventId: _eventId,
-              onViewedByChanged: _storeViewedBy,
-            ),
-          ],
+      return _withViewTracking(
+        _postBodyGestures(
+          enableDoubleTap: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              FeedHolidayEventCard(
+                title: _payload['title']?.toString() ?? 'Праздник',
+                description: description.isNotEmpty
+                    ? description
+                    : 'Сегодня в семейном календаре отмечен праздник.',
+                holidayCode: _payload['code']?.toString() ?? '',
+                eventDate: _payload['date']?.toString(),
+                createdAt: createdAt,
+                onOpenCalendar: widget.onOpenSource,
+              ),
+              FeedViewedByRow(
+                viewedBy: _viewedBy,
+                eventId: _eventId,
+                onViewedByChanged: _storeViewedBy,
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -573,22 +675,24 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
     final hasMedia = photos.isNotEmpty;
     final engagementAttachmentId = _currentEngagementAttachmentId(photos);
 
-    return Card(
-      elevation: 0,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: cs.outlineVariant),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _longPressArea(
-            attachmentId: engagementAttachmentId,
-            child: Material(
+    return _withViewTracking(
+      Card(
+        elevation: 0,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: cs.outlineVariant),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header: long-press on InkWell (same arena as profile tap).
+            Material(
               color: Colors.transparent,
               child: InkWell(
                 onTap: widget.onOpenProfile,
+                onLongPress: () =>
+                    _onPostActionsMenu(attachmentId: engagementAttachmentId),
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
                   child: Row(
@@ -596,7 +700,9 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                     children: [
                       ChatAvatar(
                         name: _displayActor['name']?.toString() ?? '?',
-                        avatarUrl: _displayActor['avatar_url']?.toString(),
+                        avatarUrl: _showHeavyChrome
+                            ? _displayActor['avatar_url']?.toString()
+                            : null,
                         radius: 18,
                       ),
                       const SizedBox(width: 10),
@@ -608,97 +714,102 @@ class _FeedEventCardState extends ConsumerState<FeedEventCard> {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        tooltip: 'Ещё',
-                        icon: const Icon(LucideIcons.ellipsis_vertical),
-                        onPressed: _openPostMenu,
-                      ),
                     ],
                   ),
                 ),
               ),
             ),
-          ),
-          if (preview.isNotEmpty)
-            _longPressArea(
-              attachmentId: engagementAttachmentId,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                child: Text(
-                  preview,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyMedium,
+            if (preview.isNotEmpty)
+              _postBodyGestures(
+                attachmentId: engagementAttachmentId,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: Text(
+                    preview,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium,
+                  ),
                 ),
               ),
-            ),
-          if (hasMedia)
-            FeedEventMediaBlock(
-              photos: photos,
-              onPhotoTap: (index) => _openPhoto(index, photos),
-              onIndexChanged: _tracksMediaCarousel
-                  ? (index) => setState(() => _batchIndex = index)
-                  : null,
-              onPlaySlideshow: photos.length > 1
-                  ? (startIndex) {
-                      PhotoSlideshowScreen.open(
-                        context,
-                        photos: photos,
-                        startIndex: startIndex,
-                      );
-                    }
-                  : null,
-            ),
-          if (caption != null)
-            _longPressArea(
-              attachmentId: engagementAttachmentId,
-              child: FeedExpandableCaption(text: caption),
-            ),
-          if (_isMilestoneEvent && _hasMilestoneMeta)
-            _longPressArea(
-              attachmentId: engagementAttachmentId,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    if (_weightLabel != null)
-                      _FeedMetaChip(
-                        icon: LucideIcons.weight,
-                        label: _weightLabel!,
-                      ),
-                    if (_heightLabel != null)
-                      _FeedMetaChip(
-                        icon: LucideIcons.ruler,
-                        label: _heightLabel!,
-                      ),
-                  ],
+            if (hasMedia)
+              FeedEventMediaBlock(
+                photos: photos,
+                onPhotoTap: (index) => _openPhoto(index, photos),
+                onPhotoLongPress: () =>
+                    _onPostActionsMenu(attachmentId: engagementAttachmentId),
+                onPhotoDoubleTap: engagementAttachmentId != null
+                    ? () => _onPostDoubleTap(
+                          attachmentId: engagementAttachmentId,
+                        )
+                    : null,
+                onIndexChanged: _tracksMediaCarousel
+                    ? (index) => setState(() => _batchIndex = index)
+                    : null,
+                onPlaySlideshow: photos.length > 1
+                    ? (startIndex) {
+                        PhotoSlideshowScreen.open(
+                          context,
+                          photos: photos,
+                          startIndex: startIndex,
+                        );
+                      }
+                    : null,
+              ),
+            if (caption != null)
+              _postBodyGestures(
+                attachmentId: engagementAttachmentId,
+                child: FeedExpandableCaption(text: caption),
+              ),
+            if (_isMilestoneEvent && _hasMilestoneMeta)
+              _postBodyGestures(
+                attachmentId: engagementAttachmentId,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      if (_weightLabel != null)
+                        _FeedMetaChip(
+                          icon: LucideIcons.weight,
+                          label: _weightLabel!,
+                        ),
+                      if (_heightLabel != null)
+                        _FeedMetaChip(
+                          icon: LucideIcons.ruler,
+                          label: _heightLabel!,
+                        ),
+                    ],
+                  ),
                 ),
               ),
+            // Footer dead zones (outside reaction count / comments / viewed
+            // row buttons) open the same actions menu on tap / long-press.
+            _postBodyGestures(
+              attachmentId: engagementAttachmentId,
+              child: _showHeavyChrome
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        FeedEventActionBar(
+                          key: ValueKey<int?>(engagementAttachmentId),
+                          attachmentId: engagementAttachmentId,
+                          event: _event,
+                          createdAt: createdAt,
+                          onEngagementChanged: widget.onEngagementChanged,
+                        ),
+                        FeedViewedByRow(
+                          viewedBy: _viewedBy,
+                          eventId: _eventId,
+                          onViewedByChanged: _storeViewedBy,
+                        ),
+                      ],
+                    )
+                  : const SizedBox(height: 52),
             ),
-          _longPressArea(
-            attachmentId: engagementAttachmentId,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                FeedEventActionBar(
-                  key: ValueKey<int?>(engagementAttachmentId),
-                  attachmentId: engagementAttachmentId,
-                  event: _event,
-                  createdAt: createdAt,
-                  onEngagementChanged: widget.onEngagementChanged,
-                ),
-                FeedViewedByRow(
-                  viewedBy: _viewedBy,
-                  eventId: _eventId,
-                  onViewedByChanged: _storeViewedBy,
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

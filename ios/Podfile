@@ -38,6 +38,9 @@ target 'Runner' do
   pod 'share_handler_ios_models',
       :path => '.symlinks/plugins/share_handler_ios/ios/Models'
 
+  # TDLib tdjson static xcframework (scripts/fetch_tdlib_ios.ps1).
+  pod 'tdjson', :path => 'tdjson'
+
   target 'RunnerTests' do
     inherit! :search_paths
   end

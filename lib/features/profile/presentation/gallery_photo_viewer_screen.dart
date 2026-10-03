@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -426,7 +427,12 @@ class _GalleryPhotoViewerScreenState
           IconButton(
             tooltip: 'Поделиться',
             onPressed: () => _shareCurrent(context),
-            icon: const Icon(LucideIcons.share),
+            icon: Icon(
+              defaultTargetPlatform == TargetPlatform.iOS ||
+                      defaultTargetPlatform == TargetPlatform.macOS
+                  ? Icons.ios_share
+                  : Icons.share,
+            ),
           ),
         if (threadId != null && chatAsInt(_photo['message_id']) != null)
           IconButton(

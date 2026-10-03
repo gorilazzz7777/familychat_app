@@ -12,6 +12,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
+import '../../../core/diagnostics/app_session_diagnostics.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../../core/media/image_upload_pipeline.dart';
 import '../../../core/media/media_incoming_sync.dart';
@@ -342,6 +343,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _participantUserIds = List<int>.from(widget.initialParticipantUserIds);
     _isBirthdayCelebration = widget.initialIsBirthdayCelebration;
     _headerAvatarUrl = widget.initialPeerAvatarUrl;
+    AppSessionDiagnostics.instance.fcChatOpen(
+      threadId: widget.threadId,
+      title: widget.title,
+      kind: widget.kind,
+      peerUserId: widget.peerUserId,
+    );
     WidgetsBinding.instance.addObserver(this);
     _controller.addListener(_onComposeTextChanged);
     _inputFocus.addListener(_onInputFocusChanged);
@@ -781,9 +788,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   void _maybeSyncLinkedGroupDeleteFromMessages(
     List<Map<String, dynamic>> messages,
   ) {
-    if (!_telegramLinkedGroup || messages.isEmpty) return;
+    // Linked dual groups OR matched DMs with telegram_message_id metadata.
     final tgChatId = _tdlibPeerChatId;
-    if (tgChatId == null || tgChatId == 0) return;
+    if (tgChatId == null || tgChatId == 0 || messages.isEmpty) return;
     final tgIds = <int>[];
     for (final msg in messages) {
       final meta = msg['metadata'];
@@ -2557,6 +2564,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   @override
   void dispose() {
+    AppSessionDiagnostics.instance.fcChatClose(threadId: widget.threadId);
     _pendingDeleteUndo?.cancelSnackBar?.call();
     unawaited(_commitPendingDeleteUndo(silent: true));
     _stopTypingLocal();
@@ -3064,6 +3072,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final previous = _lastMarkedReadId;
     if (previous != null && lastId <= previous) return;
     _lastMarkedReadId = lastId;
+
+    // Matched FC↔TG DM: also catch up TDLib tip, otherwise the tip-heuristic
+    // unread overlay comes back after the next getChat / hub refresh.
+    final tgChatId = _tdlibPeerChatId;
+    if (tgChatId != null && tgChatId != 0) {
+      unawaited(TelegramTdlibService.instance.markChatTipRead(tgChatId));
+    }
 
     if (_localFirst) {
       await ChatLocalMutations.markThreadReadLocal(
@@ -6393,6 +6408,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         isBirthdayCelebration: _isBirthdayCelebration,
         viewerIndividualPremium: _viewerIndividualPremium,
         initialHeaderAvatarUrl: _headerAvatarUrl,
+        initialTdlibChatId: _tdlibPeerChatId,
         onFriendHidden: () {
           if (!mounted) return;
           Navigator.of(context).pop();
@@ -6816,6 +6832,23 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                             kind: widget.kind,
                             isBirthdayCelebration: _isBirthdayCelebration,
                           ),
+                          // FC photo wins; TG local only when FC has none.
+                          localFilePath: () {
+                            final fc = _headerAvatarUrl?.trim() ?? '';
+                            if (fc.isNotEmpty) return null;
+                            final id = tdlibChatId;
+                            if (id == null || id == 0) return null;
+                            return TelegramTdlibService.instance
+                                .peerAvatarPath(id);
+                          }(),
+                          memoryBytes: () {
+                            final fc = _headerAvatarUrl?.trim() ?? '';
+                            if (fc.isNotEmpty) return null;
+                            final id = tdlibChatId;
+                            if (id == null || id == 0) return null;
+                            return TelegramTdlibService.instance
+                                .peerAvatarMinithumbnailBytes(id);
+                          }(),
                           radius: 20,
                         ),
                       const SizedBox(width: 10),

@@ -8,7 +8,7 @@ typedef _TdSendC = Void Function(Int32, Pointer<Utf8>);
 typedef _TdReceiveC = Pointer<Utf8> Function(Double);
 typedef _TdExecuteC = Pointer<Utf8> Function(Pointer<Utf8>);
 
-/// Low-level FFI to vendored `libtdjson.so` (Android jniLibs).
+/// Low-level FFI to vendored TDLib JSON client (Android .so / iOS static).
 class TdlibFfi {
   TdlibFfi._(this.library)
       : createClientId = library
@@ -33,10 +33,16 @@ class TdlibFfi {
   static bool _logConfigured = false;
 
   static TdlibFfi open() {
-    if (!Platform.isAndroid) {
-      throw UnsupportedError('TDLib MVP is Android-only for now');
+    final DynamicLibrary lib;
+    if (Platform.isAndroid) {
+      lib = DynamicLibrary.open('libtdjson.so');
+    } else if (Platform.isIOS) {
+      // Static libtdjson.a is force-kept via ios/tdjson/TdlibKeepSymbols.m.
+      lib = DynamicLibrary.process();
+    } else {
+      throw UnsupportedError('TDLib is Android/iOS only');
     }
-    final ffi = TdlibFfi._(DynamicLibrary.open('libtdjson.so'));
+    final ffi = TdlibFfi._(lib);
     // Default TDLib logs every td_receive poll (DLTD Begin/End wait) — too noisy.
     // 0=fatal, 1=errors, 2=warnings, 3=info.
     if (!_logConfigured) {

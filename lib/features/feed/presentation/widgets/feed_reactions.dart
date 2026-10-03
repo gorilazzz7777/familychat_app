@@ -1,3 +1,5 @@
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:gorila_chat/gorila_chat.dart';
@@ -112,6 +114,67 @@ String? mediaReactionsMyEmoji(List<Map<String, dynamic>> reactions) {
   return null;
 }
 
+/// Local toggle for instant UI — server reconcile happens in the background.
+List<Map<String, dynamic>> optimisticToggleMediaReaction(
+  List<Map<String, dynamic>> reactions, {
+  required String emoji,
+}) {
+  final target = emoji.trim();
+  if (target.isEmpty) {
+    return [
+      for (final r in reactions) Map<String, dynamic>.from(r),
+    ];
+  }
+
+  final myCurrent = mediaReactionsMyEmoji(reactions);
+  final removing = myCurrent == target;
+  final byEmoji = <String, Map<String, dynamic>>{};
+  for (final reaction in reactions) {
+    final e = reaction['emoji']?.toString().trim() ?? '';
+    if (e.isEmpty) continue;
+    byEmoji[e] = Map<String, dynamic>.from(reaction);
+  }
+
+  void adjust(String e, {required bool addMine}) {
+    final existing = byEmoji[e];
+    if (existing == null) {
+      if (!addMine) return;
+      byEmoji[e] = {
+        'emoji': e,
+        'count': 1,
+        'user_ids': <int>[],
+        'users': <Map<String, dynamic>>[],
+        'reacted_by_me': true,
+      };
+      return;
+    }
+    var count = existing['count'] is int
+        ? existing['count'] as int
+        : int.tryParse('${existing['count']}') ?? 0;
+    if (addMine) {
+      count += 1;
+      existing['reacted_by_me'] = true;
+    } else {
+      count = (count - 1).clamp(0, 1 << 30);
+      existing['reacted_by_me'] = false;
+    }
+    if (count <= 0) {
+      byEmoji.remove(e);
+    } else {
+      existing['count'] = count;
+      byEmoji[e] = existing;
+    }
+  }
+
+  if (myCurrent != null) {
+    adjust(myCurrent, addMine: false);
+  }
+  if (!removing) {
+    adjust(target, addMine: true);
+  }
+  return byEmoji.values.toList(growable: false);
+}
+
 int _asCommentsCount(dynamic raw) {
   if (raw is int) return raw;
   return int.tryParse('$raw') ?? 0;
@@ -199,10 +262,13 @@ void writeFeedEngagementToEvent(
   }
 }
 
+/// Default quick reaction for double-tap on a feed post.
+const kFeedDoubleTapReactionEmoji = '❤️';
+
 /// Пачка эмодзи реакций «друг на друге» (без счётчиков по видам).
 ///
-/// Слева направо: своя реакция (или серое сердце), затем остальные.
-/// Своя рисуется сверху по z-order.
+/// Слева направо: своя реакция (если есть), затем остальные.
+/// Своя рисуется сверху по z-order. Пустой слот-сердце по умолчанию выключен.
 class FeedReactionsStack extends StatelessWidget {
   const FeedReactionsStack({
     super.key,
@@ -211,16 +277,16 @@ class FeedReactionsStack extends StatelessWidget {
     this.onTap,
     this.emojiSize = 18,
     this.overlap = 10,
-    this.showMinePlaceholder = true,
+    this.showMinePlaceholder = false,
   });
 
   final List<Map<String, dynamic>> reactions;
-  /// Своя эмодзи, если уже поставили; иначе placeholder (серое сердце).
+  /// Своя эмодзи, если уже поставили; иначе optional placeholder.
   final String? myEmoji;
   final VoidCallback? onTap;
   final double emojiSize;
   final double overlap;
-  /// Показывать серое сердце слева, даже когда реакций ещё нет.
+  /// Показывать серое сердце слева, даже когда своей реакции ещё нет.
   final bool showMinePlaceholder;
 
   List<String> get _otherEmojis {
@@ -242,15 +308,15 @@ class FeedReactionsStack extends StatelessWidget {
     final mine = myEmoji?.trim();
     final hasMine = mine != null && mine.isNotEmpty;
     final others = _otherEmojis;
-    if (!hasMine && others.isEmpty && !showMinePlaceholder) {
+    final showMineSlot = hasMine || showMinePlaceholder;
+    if (!showMineSlot && others.isEmpty) {
       return const SizedBox.shrink();
     }
 
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final diameter = emojiSize + 12;
-    // slots: [mine|placeholder] + others
-    final slotCount = 1 + others.length;
+    final slotCount = (showMineSlot ? 1 : 0) + others.length;
     final width = diameter + (slotCount - 1) * (diameter - overlap);
 
     Widget chip({required Widget child}) {
@@ -274,7 +340,7 @@ class FeedReactionsStack extends StatelessWidget {
     final children = <Widget>[];
     for (var i = slotCount - 1; i >= 0; i--) {
       final Widget content;
-      if (i == 0) {
+      if (showMineSlot && i == 0) {
         content = hasMine
             ? Text(mine, style: TextStyle(fontSize: emojiSize, height: 1))
             : Icon(
@@ -283,8 +349,9 @@ class FeedReactionsStack extends StatelessWidget {
                 color: cs.onSurfaceVariant,
               );
       } else {
+        final otherIndex = showMineSlot ? i - 1 : i;
         content = Text(
-          others[i - 1],
+          others[otherIndex],
           style: TextStyle(fontSize: emojiSize, height: 1),
         );
       }
@@ -449,4 +516,219 @@ Future<String?> showFeedReactionPicker(BuildContext context) async {
   final emoji = result?.reactionEmoji?.trim();
   if (emoji == null || emoji.isEmpty) return null;
   return emoji;
+}
+
+/// Результат long-press меню поста ленты.
+class FeedPostActionsResult {
+  const FeedPostActionsResult.reaction(this.reactionEmoji) : action = null;
+
+  const FeedPostActionsResult.action(this.action) : reactionEmoji = null;
+
+  final String? reactionEmoji;
+  /// `viewed` | `reactions` | `navigate` | `delete`
+  final String? action;
+}
+
+/// Меню поста: реакции сверху, затем просмотры / реакции / открыть / удалить.
+Future<FeedPostActionsResult?> showFeedPostActionsSheet(
+  BuildContext context, {
+  required bool canReact,
+  required bool hasReactions,
+  required String navigateLabel,
+  required bool canDelete,
+}) {
+  return showModalBottomSheet<FeedPostActionsResult>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (ctx) => _FeedPostActionsSheetBody(
+      canReact: canReact,
+      hasReactions: hasReactions,
+      navigateLabel: navigateLabel,
+      canDelete: canDelete,
+    ),
+  );
+}
+
+class _FeedPostActionsSheetBody extends StatefulWidget {
+  const _FeedPostActionsSheetBody({
+    required this.canReact,
+    required this.hasReactions,
+    required this.navigateLabel,
+    required this.canDelete,
+  });
+
+  final bool canReact;
+  final bool hasReactions;
+  final String navigateLabel;
+  final bool canDelete;
+
+  @override
+  State<_FeedPostActionsSheetBody> createState() =>
+      _FeedPostActionsSheetBodyState();
+}
+
+class _FeedPostActionsSheetBodyState extends State<_FeedPostActionsSheetBody> {
+  bool _expandedPicker = false;
+
+  void _pickReaction(String emoji) {
+    Navigator.pop(context, FeedPostActionsResult.reaction(emoji));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.canReact) ...[
+              const SizedBox(height: 4),
+              SizedBox(
+                height: 52,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  children: [
+                    for (final emoji in kGorilaQuickReactionEmojis)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Material(
+                          color: theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(24),
+                          child: InkWell(
+                            onTap: () => _pickReaction(emoji),
+                            borderRadius: BorderRadius.circular(24),
+                            child: SizedBox(
+                              width: 44,
+                              height: 44,
+                              child: Center(
+                                child: Text(
+                                  emoji,
+                                  style: const TextStyle(fontSize: 26),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    Material(
+                      color: _expandedPicker
+                          ? theme.colorScheme.primaryContainer
+                          : theme.colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(24),
+                      child: InkWell(
+                        onTap: () => setState(
+                          () => _expandedPicker = !_expandedPicker,
+                        ),
+                        borderRadius: BorderRadius.circular(24),
+                        child: SizedBox(
+                          width: 44,
+                          height: 44,
+                          child: Icon(
+                            _expandedPicker
+                                ? LucideIcons.chevron_up
+                                : LucideIcons.face_slightly_smiling_plus,
+                            color: _expandedPicker
+                                ? theme.colorScheme.onPrimaryContainer
+                                : theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (_expandedPicker)
+                SizedBox(
+                  height: 280,
+                  child: EmojiPicker(
+                    onEmojiSelected: (category, emoji) {
+                      _pickReaction(emoji.emoji);
+                    },
+                    config: Config(
+                      height: 280,
+                      checkPlatformCompatibility: true,
+                      emojiViewConfig: EmojiViewConfig(
+                        backgroundColor: theme.colorScheme.surface,
+                        columns: 8,
+                        emojiSizeMax: 28 *
+                            (defaultTargetPlatform == TargetPlatform.iOS
+                                ? 1.2
+                                : 1.0),
+                      ),
+                      categoryViewConfig: CategoryViewConfig(
+                        backgroundColor: theme.colorScheme.surface,
+                        indicatorColor: theme.colorScheme.primary,
+                        iconColor: Colors.grey,
+                        iconColorSelected: theme.colorScheme.primary,
+                      ),
+                      bottomActionBarConfig: const BottomActionBarConfig(
+                        enabled: false,
+                      ),
+                      searchViewConfig: SearchViewConfig(
+                        backgroundColor: theme.colorScheme.surface,
+                        hintText: 'Поиск эмодзи',
+                      ),
+                    ),
+                  ),
+                ),
+              const Divider(height: 1),
+            ],
+            ListTile(
+              leading: const Icon(LucideIcons.eye),
+              title: const Text('Просмотрено'),
+              onTap: () => Navigator.pop(
+                context,
+                const FeedPostActionsResult.action('viewed'),
+              ),
+            ),
+            if (widget.hasReactions)
+              ListTile(
+                leading: Icon(
+                  LucideIcons.heart,
+                  color: theme.colorScheme.onSurface,
+                ),
+                title: const Text('Реакции'),
+                onTap: () => Navigator.pop(
+                  context,
+                  const FeedPostActionsResult.action('reactions'),
+                ),
+              ),
+            ListTile(
+              leading: Icon(
+                LucideIcons.external_link,
+                color: theme.colorScheme.primary,
+              ),
+              title: Text(widget.navigateLabel),
+              onTap: () => Navigator.pop(
+                context,
+                const FeedPostActionsResult.action('navigate'),
+              ),
+            ),
+            if (widget.canDelete)
+              ListTile(
+                leading: Icon(
+                  LucideIcons.trash,
+                  color: theme.colorScheme.error,
+                ),
+                title: Text(
+                  'Удалить',
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+                onTap: () => Navigator.pop(
+                  context,
+                  const FeedPostActionsResult.action('delete'),
+                ),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
 }

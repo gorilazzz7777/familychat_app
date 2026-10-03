@@ -14,12 +14,14 @@ import '../platform/browser_info.dart';
 import '../../features/familychat/data/familychat_repository.dart';
 import '../../features/telegram_tdlib/telegram_tdlib_push.dart';
 import '../../features/telegram_tdlib/telegram_tdlib_service.dart';
+import '../../features/telegram_tdlib/tdlib_json_client.dart';
 import '../../firebase_options.dart';
 import 'web_fcm_service_worker.dart';
 import 'web_fcm_token.dart';
 import 'web_push_bridge.dart';
 import 'push_message_handler.dart';
 import '../../features/chat/data/chat_background_sync.dart';
+import '../../features/chat/data/hub_first_paint_snapshot.dart';
 
 @pragma('vm:entry-point')
 Future<void> familychatFirebaseBackgroundHandler(RemoteMessage message) async {
@@ -27,12 +29,33 @@ Future<void> familychatFirebaseBackgroundHandler(RemoteMessage message) async {
   DartPluginRegistrant.ensureInitialized();
   await PushRegistrationService.ensureFirebaseInitialized();
   if (isTelegramRemoteMessage(message)) {
+    final payload = buildTdlibProcessPushPayload(message);
     try {
-      await TelegramTdlibService.instance.processPushNotificationPayload(
-        buildTdlibProcessPushPayload(message),
-      );
+      // UI isolate already owns td_receive — never start a second loop here
+      // (SIGABRT: "Receive must not be called simultaneously").
+      if (await TdlibJsonClient.deliverPushToMainIsolate(payload)) {
+        debugPrint('[FCM background] tdlib push forwarded to main isolate');
+      } else {
+        await TelegramTdlibService.instance.processPushNotificationPayload(
+          payload,
+        );
+      }
     } catch (e, st) {
       debugPrint('[FCM background] tdlib push failed: $e\n$st');
+    }
+    final data = Map<String, dynamic>.from(message.data);
+    final chatId = int.tryParse(data['chat_id']?.toString() ?? '') ??
+        int.tryParse(data['tg_chat_id']?.toString() ?? '');
+    if (chatId != null && chatId != 0) {
+      try {
+        await HubFirstPaintSnapshot.patchRow(
+          tdlibChatId: chatId,
+          title: data['title']?.toString() ?? message.notification?.title,
+          lastBody: data['body']?.toString() ?? message.notification?.body,
+          lastCreatedAt: DateTime.now().toUtc().toIso8601String(),
+          bumpUnread: true,
+        );
+      } catch (_) {}
     }
     return;
   }

@@ -30,10 +30,12 @@ class TdlibApiException implements Exception {
 class _TdlibReceiveHub {
   _TdlibReceiveHub._();
 
-  static const _portName = 'familychat.tdlib.receive.control';
+  static const controlPortName = 'familychat.tdlib.receive.control';
+  static const pushPortName = 'familychat.tdlib.push.inbox';
 
   static Isolate? _isolate;
   static ReceivePort? _fromIsolate;
+  static ReceivePort? _pushInbox;
   static SendPort? _controlPort;
   static final _updates = StreamController<Map<String, dynamic>>.broadcast();
   static Future<void>? _starting;
@@ -41,26 +43,53 @@ class _TdlibReceiveHub {
   /// Called when any live client sees "call setTdlibParameters first".
   static void Function(TdlibApiException error)? onNeedsParameters;
 
+  /// Encrypted TG FCM payload delivered from a background isolate.
+  static void Function(String payloadJson)? onPushPayload;
+
   static Stream<Map<String, dynamic>> get updates => _updates.stream;
 
+  /// True when some Dart isolate in this process owns [td_receive].
+  static bool get hasActiveReceiveOwner =>
+      IsolateNameServer.lookupPortByName(controlPortName) != null;
+
+  /// Forward a TG push into the isolate that already owns TDLib (no second
+  /// [td_receive]). Returns false if the app UI isolate is not running.
+  static Future<bool> deliverPushToMainIsolate(String payloadJson) async {
+    final port = IsolateNameServer.lookupPortByName(pushPortName);
+    if (port == null) return false;
+    try {
+      port.send(payloadJson);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Future<void> ensureStarted() {
-    if (_isolate != null && _controlPort != null) {
+    if (_isolate != null && _controlPort != null && hasActiveReceiveOwner) {
       return Future<void>.value();
     }
     return _starting ??= _start();
   }
 
   static Future<void> _stopPreviousReceiveIsolate() async {
-    final old = IsolateNameServer.lookupPortByName(_portName);
+    final old = IsolateNameServer.lookupPortByName(controlPortName);
     if (old == null) return;
-    try {
-      IsolateNameServer.removePortNameMapping(_portName);
-    } catch (_) {}
     try {
       old.send('stop');
     } catch (_) {}
-    // td_receive timeout is 1s — wait for the loop to exit.
-    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    // Wait until the owner unregisters — proves the loop exited after the
+    // in-flight td_receive(…) returned (see async yield in the loop).
+    final deadline = DateTime.now().add(const Duration(seconds: 4));
+    while (DateTime.now().isBefore(deadline)) {
+      if (IsolateNameServer.lookupPortByName(controlPortName) == null) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    try {
+      IsolateNameServer.removePortNameMapping(controlPortName);
+    } catch (_) {}
   }
 
   static Future<void> _start() async {
@@ -68,12 +97,16 @@ class _TdlibReceiveHub {
     _fromIsolate?.close();
     _fromIsolate = ReceivePort();
     final ready = Completer<SendPort>();
+    final stopped = Completer<void>();
     _fromIsolate!.listen((message) {
       if (message is SendPort) {
         if (!ready.isCompleted) ready.complete(message);
         return;
       }
-      if (message == 'stopped') return;
+      if (message == 'stopped') {
+        if (!stopped.isCompleted) stopped.complete();
+        return;
+      }
       if (message is! String) return;
       Map<String, dynamic>? obj;
       try {
@@ -84,34 +117,56 @@ class _TdlibReceiveHub {
       if (obj == null || _updates.isClosed) return;
       _updates.add(obj);
     });
+
+    _registerPushInbox();
+
     _isolate = await Isolate.spawn(
       _receiveIsolateMain,
       _fromIsolate!.sendPort,
+      debugName: 'tdlib-receive',
     );
     _controlPort = await ready.future.timeout(const Duration(seconds: 5));
     _starting = null;
   }
 
-  static void _receiveIsolateMain(SendPort sendPort) {
+  static void _registerPushInbox() {
+    _pushInbox?.close();
+    _pushInbox = ReceivePort();
+    try {
+      IsolateNameServer.removePortNameMapping(pushPortName);
+    } catch (_) {}
+    IsolateNameServer.registerPortWithName(_pushInbox!.sendPort, pushPortName);
+    _pushInbox!.listen((message) {
+      if (message is! String || message.isEmpty) return;
+      onPushPayload?.call(message);
+    });
+  }
+
+  /// Entry: async so we can yield between [td_receive] polls and honor stop.
+  static Future<void> _receiveIsolateMain(SendPort sendPort) async {
     final ffi = TdlibFfi.open();
     final control = ReceivePort();
     try {
-      IsolateNameServer.removePortNameMapping(_portName);
+      IsolateNameServer.removePortNameMapping(controlPortName);
     } catch (_) {}
-    IsolateNameServer.registerPortWithName(control.sendPort, _portName);
+    IsolateNameServer.registerPortWithName(control.sendPort, controlPortName);
     sendPort.send(control.sendPort);
     var running = true;
     control.listen((msg) {
       if (msg == 'stop') running = false;
     });
     while (running) {
-      // 1s idle timeout; stop signal is checked between receives.
-      final raw = ffi.receive(1.0);
-      if (raw == null || raw.isEmpty) continue;
-      sendPort.send(raw);
+      // Short timeout + yield: a sync while+receive(1s) never processed the
+      // control port, so stop was ignored and FCM spawned a second receive →
+      // SIGABRT "Receive must not be called simultaneously".
+      final raw = ffi.receive(0.25);
+      if (raw != null && raw.isNotEmpty) {
+        sendPort.send(raw);
+      }
+      await Future<void>.delayed(Duration.zero);
     }
     try {
-      IsolateNameServer.removePortNameMapping(_portName);
+      IsolateNameServer.removePortNameMapping(controlPortName);
     } catch (_) {}
     sendPort.send('stopped');
     control.close();
@@ -136,6 +191,18 @@ class TdlibJsonClient {
   static set onNeedsParameters(void Function(TdlibApiException error)? cb) {
     _TdlibReceiveHub.onNeedsParameters = cb;
   }
+
+  /// App hook: encrypted TG FCM arrived while UI isolate owns TDLib.
+  static set onPushPayload(void Function(String payloadJson)? cb) {
+    _TdlibReceiveHub.onPushPayload = cb;
+  }
+
+  /// Forward push into the UI isolate's TDLib. False = app not running.
+  static Future<bool> deliverPushToMainIsolate(String payloadJson) =>
+      _TdlibReceiveHub.deliverPushToMainIsolate(payloadJson);
+
+  static bool get hasActiveReceiveOwner =>
+      _TdlibReceiveHub.hasActiveReceiveOwner;
 
   /// Single-flight create — concurrent ensureStarted callers share one client.
   static Future<TdlibJsonClient>? _createInFlight;

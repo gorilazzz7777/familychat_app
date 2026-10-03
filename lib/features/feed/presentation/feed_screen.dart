@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -20,7 +21,11 @@ import '../../profile/presentation/profile_gallery_album_screen.dart';
 import '../../calendar/presentation/birthday_detail_screen.dart';
 import '../../calendar/presentation/calendar_screen.dart';
 import '../../chat/data/chat_offline_sync.dart';
+import 'feed_jank_log.dart';
+import 'feed_media_prefetch.dart';
+import 'feed_scroll_busy.dart';
 import 'widgets/feed_event_card.dart';
+import 'widgets/feed_event_media_block.dart';
 import 'widgets/feed_people_filter.dart';
 import 'widgets/feed_people_list_sheet.dart';
 
@@ -37,6 +42,21 @@ List<Map<String, dynamic>> _visibleFeedEvents(
   final list = events.where(_isVisibleFeedEvent).toList();
   for (final event in list) {
     MediaLocalIndex.hydrateFeedEvent(event);
+    final payload = event['payload'];
+    if (payload is Map) {
+      final atts = payload['attachments'];
+      if (atts is List) {
+        for (final item in atts) {
+          if (item is Map<String, dynamic>) {
+            FeedEventMediaBlock.seedCachedAspects([item]);
+          } else if (item is Map) {
+            final live = Map<String, dynamic>.from(item);
+            FeedEventMediaBlock.seedCachedAspects([live]);
+            item['aspect_ratio'] = live['aspect_ratio'];
+          }
+        }
+      }
+    }
   }
   unawaited(MediaIncomingSync.ensureFeedEvents(list));
   return list;
@@ -97,15 +117,26 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   bool _lastKnownOnline = true;
   int? _personUserId;
   String? _lastReadAt;
+  /// Frozen `is_new` snapshot for section dividers (Новые / Просмотрено).
+  /// Rebuilt only on tab re-entry / explicit refresh — not while scrolling.
+  Map<int, bool>? _frozenIsNew;
+  bool _recaptureSectionsAfterLoad = false;
   bool _hasMore = false;
   int _feedLoadGen = 0;
+  DateTime? _lastItemBuilderFlushAt;
+  Timer? _scrollBusyClearTimer;
+  VoidCallback? _pendingIdleSetState;
+  bool _idleSetStateScheduled = false;
+  double _lastScrollPixels = 0;
   static const _pageSize = 30;
   static const _deltaLimit = 50;
-  static const _scrollToTopThreshold = 120.0;
+  static const _scrollToTopThreshold = 280.0;
 
   @override
   void initState() {
     super.initState();
+    FeedJankLog.reset();
+    WidgetsBinding.instance.addTimingsCallback(_onFrameTimings);
     _scrollController.addListener(_onScroll);
     ChatOfflineSync.instance.addListener(_onOfflineStateChanged);
     _lastKnownOnline = ChatOfflineSync.instance.isOnline;
@@ -114,10 +145,29 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeTimingsCallback(_onFrameTimings);
+    FeedJankLog.clearFocus();
+    _scrollBusyClearTimer?.cancel();
+    FeedScrollBusy.clear();
+    MediaIncomingSync.setFeedScrollBusy(false);
+    FeedMediaPrefetch.clearSession();
     ChatOfflineSync.instance.removeListener(_onOfflineStateChanged);
     _scrollController.dispose();
     _showScrollToTop.dispose();
     super.dispose();
+  }
+
+  void _onFrameTimings(List<FrameTiming> timings) {
+    if (!FeedJankLog.focused) return;
+    for (final t in timings) {
+      FeedJankLog.frame(t);
+    }
+    final now = DateTime.now();
+    final last = _lastItemBuilderFlushAt;
+    if (last == null || now.difference(last).inMilliseconds >= 250) {
+      _lastItemBuilderFlushAt = now;
+      FeedJankLog.flushItemBuilderWindow();
+    }
   }
 
   void _onOfflineStateChanged() {
@@ -133,7 +183,12 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   }
 
   /// Обновить ленту (вкладка, pull-to-refresh, возврат из деталей).
-  Future<void> refresh({bool silent = false, bool forceFull = false}) async {
+  Future<void> refresh({
+    bool silent = false,
+    bool forceFull = false,
+    bool recaptureSections = false,
+  }) async {
+    if (recaptureSections) _recaptureSectionsAfterLoad = true;
     if (forceFull || _events.isEmpty) {
       await _loadFull(showSpinner: !silent || _events.isEmpty);
       return;
@@ -143,30 +198,190 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     // and backfill names on older cached posts if they still say «Участник».
     if (!silent || _events.any(feedEventNeedsPeopleRefresh)) {
       unawaited(_loadFull(showSpinner: false));
+    } else if (_recaptureSectionsAfterLoad) {
+      _finishSectionRecapture();
     }
+  }
+
+  /// Called when the user switches back to the Feed tab.
+  Future<void> onTabEntered() async {
+    await refresh(silent: true, recaptureSections: true);
+  }
+
+  void _captureSectionFreeze() {
+    final map = <int, bool>{};
+    for (final event in _events) {
+      final id = _eventId(event);
+      if (id == null) continue;
+      map[id] = event['is_new'] == true;
+    }
+    _frozenIsNew = map;
+  }
+
+  void _finishSectionRecapture() {
+    if (!_recaptureSectionsAfterLoad) {
+      // First paint / no freeze yet — capture once.
+      if (_frozenIsNew == null && _events.isNotEmpty) {
+        _captureSectionFreeze();
+      }
+      return;
+    }
+    _recaptureSectionsAfterLoad = false;
+    _captureSectionFreeze();
+    if (mounted) _setStateWhenIdle(() {});
+  }
+
+  bool _isNewForSection(Map<String, dynamic> event) {
+    final id = _eventId(event);
+    final frozen = _frozenIsNew;
+    if (id != null && frozen != null && frozen.containsKey(id)) {
+      return frozen[id]!;
+    }
+    // Mid-session arrivals (WS / optimistic) use live flag.
+    return event['is_new'] == true;
   }
 
   void _updateScrollToTopVisibility() {
     if (!_scrollController.hasClients) return;
     final position = _scrollController.position;
-    final canScroll = position.maxScrollExtent > _scrollToTopThreshold;
-    final show = canScroll && position.pixels > _scrollToTopThreshold;
-    if (show != _showScrollToTop.value) {
-      // ValueNotifier — no setState, so ListView is not rebuilt mid-fling.
-      _showScrollToTop.value = show;
+    final pixels = position.pixels;
+    final delta = pixels - _lastScrollPixels;
+    // Ignore tiny jitter; track intentional direction.
+    if (delta.abs() >= 4) {
+      final deepEnough = pixels > _scrollToTopThreshold &&
+          position.maxScrollExtent > _scrollToTopThreshold;
+      if (delta < 0 && deepEnough) {
+        // Scrolled down earlier, now moving up → show.
+        _showScrollToTop.value = true;
+      } else if (delta > 0) {
+        // Scrolling down again → hide.
+        _showScrollToTop.value = false;
+      }
+      _lastScrollPixels = pixels;
+    }
+    if (pixels <= _scrollToTopThreshold && _showScrollToTop.value) {
+      _showScrollToTop.value = false;
     }
   }
 
   void _onScroll() {
+    if (_scrollController.hasClients) {
+      final pos = _scrollController.position;
+      final activity = pos.activity;
+      final actName = activity is BallisticScrollActivity
+          ? 'ballistic'
+          : activity is DragScrollActivity
+              ? 'drag'
+              : activity is IdleScrollActivity
+                  ? 'idle'
+                  : activity?.runtimeType.toString() ?? 'none';
+      final vel = activity is BallisticScrollActivity
+          ? activity.velocity
+          : 0.0;
+      FeedJankLog.scroll(
+        pixels: pos.pixels,
+        max: pos.maxScrollExtent,
+        activity: actName,
+        velocity: vel,
+      );
+      if (activity is DragScrollActivity ||
+          activity is BallisticScrollActivity) {
+        FeedScrollBusy.setBusy(
+          flinging: activity is BallisticScrollActivity,
+        );
+        MediaIncomingSync.setFeedScrollBusy(true);
+        _scrollBusyClearTimer?.cancel();
+        _scrollBusyClearTimer = Timer(const Duration(milliseconds: 480), () {
+          if (!mounted) return;
+          final act = _scrollController.hasClients
+              ? _scrollController.position.activity
+              : null;
+          if (act is DragScrollActivity || act is BallisticScrollActivity) {
+            return;
+          }
+          FeedScrollBusy.clear();
+          MediaIncomingSync.setFeedScrollBusy(false);
+          FeedJankLog.log('scroll-busy cleared');
+          // After fling: decode window for the next 5 posts.
+          _prefetchAroundViewport();
+        });
+      }
+      FeedMediaPrefetch.onScroll(
+        events: _events,
+        pixels: pos.pixels,
+      );
+    }
     _updateScrollToTopVisibility();
     if (_loadingMore || _loading) return;
     if (!_hasMore) return;
     // Avoid pagination work during high-velocity fling.
-    if (Scrollable.recommendDeferredLoadingForContext(context)) return;
+    if (FeedScrollBusy.isBusy ||
+        Scrollable.recommendDeferredLoadingForContext(context)) {
+      return;
+    }
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent - 200) {
       _loadMore();
     }
+  }
+
+  /// Apply list mutations immediately when idle; otherwise after scroll settles.
+  /// Multiple callers coalesce into a single setState to avoid BUILD storms.
+  void _setStateWhenIdle(VoidCallback fn) {
+    if (!mounted) return;
+    final scrolling = _scrollController.hasClients &&
+        _scrollController.position.isScrollingNotifier.value;
+    if (!FeedScrollBusy.isBusy && !scrolling) {
+      setState(fn);
+      return;
+    }
+    FeedJankLog.log('setState deferred (scroll busy)');
+    final previous = _pendingIdleSetState;
+    _pendingIdleSetState = () {
+      previous?.call();
+      fn();
+    };
+    if (_idleSetStateScheduled) return;
+    _idleSetStateScheduled = true;
+    FeedScrollBusy.onIdle(() {
+      _idleSetStateScheduled = false;
+      final batch = _pendingIdleSetState;
+      _pendingIdleSetState = null;
+      if (!mounted || batch == null) return;
+      final stillScrolling = FeedScrollBusy.isBusy ||
+          (_scrollController.hasClients &&
+              _scrollController.position.isScrollingNotifier.value);
+      if (stillScrolling) {
+        _setStateWhenIdle(batch);
+        return;
+      }
+      // Next frame — avoid colliding with the first idle layout pass.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (FeedScrollBusy.isBusy ||
+            (_scrollController.hasClients &&
+                _scrollController.position.isScrollingNotifier.value)) {
+          _setStateWhenIdle(batch);
+          return;
+        }
+        setState(batch);
+      });
+    });
+  }
+
+  void _prefetchAroundViewport() {
+    if (!mounted || _events.isEmpty) return;
+    FeedMediaPrefetch.bind(
+      context: context,
+      repo: ref.read(familychatRepositoryProvider),
+    );
+    var from = 0;
+    if (_scrollController.hasClients) {
+      from = (_scrollController.position.pixels / FeedMediaPrefetch.approxPostHeight)
+          .floor()
+          .clamp(0, _events.length - 1);
+    }
+    FeedMediaPrefetch.ensureAround(events: _events, centerIndex: from);
   }
 
   Future<void> _scrollToTop() async {
@@ -178,7 +393,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       );
     }
     if (!mounted) return;
-    await refresh(silent: true);
+    await refresh(silent: true, recaptureSections: true);
     if (!mounted) return;
     if (_showScrollToTop.value) {
       _showScrollToTop.value = false;
@@ -217,28 +432,15 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     return null;
   }
 
-  DateTime? get _lastReadDateTime {
-    final raw = _lastReadAt;
-    if (raw == null || raw.isEmpty) return null;
-    return DateTime.tryParse(raw);
-  }
-
   int? get _firstSeenIndex {
-    final lastRead = _lastReadDateTime;
-    if (lastRead == null) return null;
     for (var i = 0; i < _events.length; i++) {
-      final created =
-          DateTime.tryParse(_events[i]['created_at']?.toString() ?? '');
-      if (created != null && !created.isAfter(lastRead)) return i;
+      if (!_isNewForSection(_events[i])) return i;
     }
     return null;
   }
 
-  bool get _hasNewEvents {
-    if (_events.isEmpty) return false;
-    if (_lastReadDateTime == null) return true;
-    return _events.any((e) => e['is_new'] == true);
-  }
+  bool get _startsWithNew =>
+      _events.isNotEmpty && _isNewForSection(_events.first);
 
   bool _parseHasMore(Map<String, dynamic> data, {required int batchLength}) {
     final hasMore = data['has_more'];
@@ -399,30 +601,6 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     unawaited(_persistCache());
   }
 
-  Future<void> _maybeMarkRead() async {
-    if (!_hasNewEvents) return;
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
-    await _markFeedRead();
-  }
-
-  Future<void> _markFeedRead() async {
-    final hadNew = _events.any((e) => e['is_new'] == true);
-    try {
-      final data = await ref.read(familychatRepositoryProvider).markFeedRead();
-      if (!mounted) return;
-      final newLastRead = data['last_read_at']?.toString();
-      if (!hadNew && newLastRead == _lastReadAt) return;
-      setState(() {
-        _lastReadAt = newLastRead;
-        for (final event in _events) {
-          event['is_new'] = false;
-        }
-      });
-      await _persistCache();
-    } catch (_) {}
-  }
-
   Future<void> _showCachedSnapshot(Map<String, dynamic> cached) async {
     _applyFromCache(cached);
     await hydrateFeedEventsPeople(_events);
@@ -431,7 +609,11 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       _loading = false;
       _error = null;
     });
+    _finishSectionRecapture();
     unawaited(_persistCache());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _prefetchAroundViewport();
+    });
   }
 
   Future<void> _loadInitial() async {
@@ -440,9 +622,12 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     if (cached != null && mounted) {
       await _showCachedSnapshot(cached);
       await _syncUpdates();
+      // Prefer server is_new over cache once first network page lands.
+      _recaptureSectionsAfterLoad = true;
       unawaited(_loadFull(showSpinner: false));
       return;
     }
+    _recaptureSectionsAfterLoad = true;
     await _loadFull(showSpinner: true);
   }
 
@@ -520,7 +705,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       }
       if (!mounted || gen != _feedLoadGen) return;
 
-      setState(() {
+      void apply() {
         _lastReadAt = newLastRead;
         if (newFilter.isNotEmpty) {
           _filterPeople = newFilter;
@@ -528,15 +713,25 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
         _hasMore = newHasMore;
         _loading = false;
         _error = null;
-      });
+      }
+
+      if (showSpinner) {
+        setState(apply);
+      } else {
+        // Silent refresh mid-fling was causing 200–300ms full-list frames.
+        _setStateWhenIdle(apply);
+      }
       unawaited(_persistCache());
-      unawaited(_maybeMarkRead());
+      _finishSectionRecapture();
       if (canKeepTail) {
         unawaited(
           _reloadStaleCachedEvents(gen: gen, firstPageLength: batch.length),
         );
       }
-      WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _updateScrollToTopVisibility();
+        if (mounted) _prefetchAroundViewport();
+      });
     } catch (e) {
       if (!mounted || gen != _feedLoadGen) return;
       setState(() {
@@ -597,7 +792,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       }
     }
     if (!mounted || gen != _feedLoadGen || !changed) return;
-    setState(() {});
+    _setStateWhenIdle(() {});
     unawaited(_persistCache());
   }
 
@@ -653,11 +848,11 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
           !metaChanged &&
           !_loading &&
           _error == null) {
-        unawaited(_maybeMarkRead());
+        _finishSectionRecapture();
         return;
       }
 
-      setState(() {
+      _setStateWhenIdle(() {
         if (afterId == null) {
           if (batch.isNotEmpty && eventsChanged) {
             _events
@@ -680,7 +875,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
       if (eventsChanged || metaChanged) {
         unawaited(_persistCache());
       }
-      unawaited(_maybeMarkRead());
+      _finishSectionRecapture();
       WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
     } catch (e) {
       if (!mounted) return;
@@ -699,6 +894,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   Future<void> _loadMore() async {
     if (_loadingMore || !_hasMore) return;
     final beforeId = _oldestEventId;
+    FeedJankLog.loadMore(started: true);
     setState(() => _loadingMore = true);
     try {
       final data = await ref.read(familychatRepositoryProvider).familyFeed(
@@ -725,22 +921,29 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
         _hasMore = _parseHasMore(data, batchLength: batch.length);
         _loadingMore = false;
       });
+      FeedJankLog.loadMore(started: false, added: unique.length);
       await _persistCache();
-      WidgetsBinding.instance.addPostFrameCallback((_) => _updateScrollToTopVisibility());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _updateScrollToTopVisibility();
+        if (mounted) _prefetchAroundViewport();
+      });
     } catch (_) {
       if (!mounted) return;
       setState(() => _loadingMore = false);
+      FeedJankLog.loadMore(started: false, added: 0);
     }
   }
 
   Future<void> _onPersonFilterSelected(int? userId) async {
     setState(() => _personUserId = userId);
+    _recaptureSectionsAfterLoad = true;
     final cached =
         await FamilyChatLocalCache.readFeedSnapshot(personUserId: userId);
     if (cached != null && mounted) {
       await _showCachedSnapshot(cached);
       await _syncUpdates();
-      if (mounted && _events.any(feedEventNeedsPeopleRefresh)) {
+      _recaptureSectionsAfterLoad = true;
+      if (mounted) {
         unawaited(_loadFull(showSpinner: false));
       }
       return;
@@ -967,7 +1170,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     final entries = <_FeedEntry>[];
     final firstSeen = _firstSeenIndex;
 
-    if (_hasNewEvents) {
+    if (_startsWithNew) {
       entries.add(const _FeedEntry.newDivider());
     } else if (_events.isNotEmpty) {
       entries.add(const _FeedEntry.seenDivider());
@@ -988,6 +1191,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
   }
 
   Widget _buildEntry(_FeedEntry entry) {
+    FeedJankLog.itemBuilderTick();
     switch (entry.kind) {
       case _FeedEntryKind.newDivider:
         return const FeedSectionDivider(label: 'Новые');
@@ -1059,6 +1263,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final sw = Stopwatch()..start();
     if (_loading) {
       return const DeferredPlaceholder(child: FeedListSkeleton());
     }
@@ -1079,6 +1284,12 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
     }
 
     final entries = _buildEntries();
+    sw.stop();
+    FeedJankLog.build(
+      ms: sw.elapsedMilliseconds,
+      events: _events.length,
+      rows: entries.length,
+    );
 
     return Column(
       children: [
@@ -1093,7 +1304,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
             children: [
               if (_events.isEmpty)
                 RefreshIndicator(
-                  onRefresh: refresh,
+                  onRefresh: () => refresh(recaptureSections: true),
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
                     children: [
@@ -1104,11 +1315,11 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                 )
               else
                 RefreshIndicator(
-                  onRefresh: refresh,
+                  onRefresh: () => refresh(recaptureSections: true),
                   child: ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
-                    cacheExtent: 900,
+                    cacheExtent: 480,
                     addAutomaticKeepAlives: false,
                     itemCount: entries.length,
                     itemBuilder: (context, index) => _buildEntry(entries[index]),
@@ -1117,7 +1328,7 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
               Positioned(
                 left: 0,
                 right: 0,
-                bottom: 20,
+                top: 10,
                 child: ValueListenableBuilder<bool>(
                   valueListenable: _showScrollToTop,
                   builder: (context, show, child) {
@@ -1125,11 +1336,11 @@ class FeedScreenState extends ConsumerState<FeedScreen> {
                       ignoring: !show,
                       child: AnimatedOpacity(
                         opacity: show ? 1 : 0,
-                        duration: const Duration(milliseconds: 180),
+                        duration: const Duration(milliseconds: 200),
                         child: AnimatedSlide(
-                          offset: show ? Offset.zero : const Offset(0, 0.4),
-                          duration: const Duration(milliseconds: 180),
-                          curve: Curves.easeOut,
+                          offset: show ? Offset.zero : const Offset(0, -0.35),
+                          duration: const Duration(milliseconds: 220),
+                          curve: Curves.easeOutCubic,
                           child: child,
                         ),
                       ),
@@ -1155,36 +1366,54 @@ class _FeedScrollToTopButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
     return Semantics(
       button: true,
-      label: 'Наверх',
-      child: GestureDetector(
-        onTap: onPressed,
-        behavior: HitTestBehavior.opaque,
-        child: Container(
-          width: 48,
-          height: 48,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: cs.outline.withValues(alpha: 0.45),
-              width: 1.2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.1),
-                blurRadius: 10,
-                offset: const Offset(0, 2),
+      label: 'Вверх',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(22),
+          child: Ink(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(22),
+              color: cs.surface.withValues(alpha: 0.94),
+              border: Border.all(
+                color: cs.outlineVariant.withValues(alpha: 0.85),
               ),
-            ],
-          ),
-          child: Icon(
-            LucideIcons.chevron_up,
-            size: 30,
-            color: cs.onSurface.withValues(alpha: 0.9),
+              boxShadow: [
+                BoxShadow(
+                  color: cs.shadow.withValues(alpha: 0.14),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 8, 16, 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    LucideIcons.arrow_up,
+                    size: 18,
+                    color: cs.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Вверх',
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: cs.onSurface,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
       ),

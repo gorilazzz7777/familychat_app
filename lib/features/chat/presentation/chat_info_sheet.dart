@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +15,9 @@ import '../../../core/widgets/app_skeletons.dart';
 import '../../../core/widgets/family_public_image.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
+import '../../telegram_tdlib/telegram_match_store.dart';
+import '../../telegram_tdlib/telegram_tdlib_providers.dart';
+import '../../telegram_tdlib/telegram_tdlib_service.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import 'chat_thread_avatars.dart';
 import 'chat_call_screen.dart';
@@ -62,6 +66,7 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
     this.peerUserId,
     this.isBirthdayCelebration = false,
     this.initialHeaderAvatarUrl,
+    this.initialTdlibChatId,
     this.onTitleChanged,
     this.onMembershipChanged,
     this.onGoToMessage,
@@ -82,6 +87,8 @@ class ChatInfoSheet extends ConsumerStatefulWidget {
   final int? peerUserId;
   final bool isBirthdayCelebration;
   final String? initialHeaderAvatarUrl;
+  /// Matched TG chat for avatar fallback when FC has no photo.
+  final int? initialTdlibChatId;
   final ChatTitleChanged? onTitleChanged;
   final VoidCallback? onMembershipChanged;
   final ChatGoToMessage? onGoToMessage;
@@ -107,6 +114,7 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   bool _loading = true;
   String? _headerAvatarUrl;
   String? _headerSubtitle;
+  int? _tdlibChatId;
   bool _notificationsEnabled = true;
   bool _canQuietHours = false;
   String? _quietHoursStart;
@@ -143,13 +151,32 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     return url != null && url.isNotEmpty;
   }
 
+  bool get _useTgHeaderAvatar {
+    if (_hasHeaderNetworkPhoto || _hasHeaderAssetPhoto) return false;
+    final id = _tdlibChatId;
+    return id != null && id != 0;
+  }
+
+  String? get _tgHeaderAvatarPath {
+    if (!_useTgHeaderAvatar) return null;
+    return TelegramTdlibService.instance.peerAvatarPath(_tdlibChatId!);
+  }
+
+  List<int>? get _tgHeaderAvatarBytes {
+    if (!_useTgHeaderAvatar) return null;
+    return TelegramTdlibService.instance
+        .peerAvatarMinithumbnailBytes(_tdlibChatId!);
+  }
+
   bool get _hasHeaderAssetPhoto => chatThreadHasAssetAvatar(
         kind: widget.kind,
         isBirthdayCelebration: widget.isBirthdayCelebration,
       );
 
   bool get _hasExpandedHeaderPhoto =>
-      _hasHeaderNetworkPhoto || _hasHeaderAssetPhoto;
+      _hasHeaderNetworkPhoto ||
+      _hasHeaderAssetPhoto ||
+      (_tgHeaderAvatarPath != null && _tgHeaderAvatarPath!.isNotEmpty);
 
   String? get _headerAvatarAsset => chatThreadAvatarAsset(
         kind: widget.kind,
@@ -168,8 +195,24 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
         initialAvatar != null && initialAvatar.isNotEmpty ? initialAvatar : null;
     _tabs = TabController(length: _tabCount, vsync: this);
     _tabs.addListener(_onTabChanged);
+    _tdlibChatId = widget.initialTdlibChatId;
     _prefetchHeaderPhoto();
     _load();
+    unawaited(_resolveTdlibChatId());
+  }
+
+  Future<void> _resolveTdlibChatId() async {
+    if (_tdlibChatId != null && _tdlibChatId != 0) return;
+    final peerId = widget.peerUserId;
+    if (peerId == null || peerId <= 0) return;
+    final all = await TelegramMatchStore.instance.loadAll();
+    for (final m in all.values) {
+      if (m.fcUserId == peerId && m.tgChatId != 0) {
+        if (!mounted) return;
+        setState(() => _tdlibChatId = m.tgChatId);
+        return;
+      }
+    }
   }
 
   void _prefetchHeaderPhoto() {
@@ -222,7 +265,9 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       shape: const CircleBorder(),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: _openProfilePhoto,
+        onTap: _hasHeaderNetworkPhoto || _tgHeaderAvatarPath != null
+            ? _openProfilePhoto
+            : null,
         customBorder: const CircleBorder(),
         child: SizedBox(
           width: size,
@@ -233,12 +278,24 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                   width: size,
                   height: size,
                 )
-              : Image.asset(
-                  _headerAvatarAsset!,
-                  width: size,
-                  height: size,
-                  fit: BoxFit.cover,
-                ),
+              : _tgHeaderAvatarPath != null
+                  ? Image.file(
+                      File(_tgHeaderAvatarPath!),
+                      width: size,
+                      height: size,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => ChatAvatar(
+                        name: _title,
+                        memoryBytes: _tgHeaderAvatarBytes,
+                        radius: size / 2,
+                      ),
+                    )
+                  : Image.asset(
+                      _headerAvatarAsset!,
+                      width: size,
+                      height: size,
+                      fit: BoxFit.cover,
+                    ),
         ),
       ),
     );
@@ -1147,6 +1204,21 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
       );
       return;
     }
+    final tgPath = _tgHeaderAvatarPath;
+    if (tgPath != null && tgPath.isNotEmpty) {
+      await ChatImageViewer.open(
+        context,
+        imageUrl: '',
+        filename: _title.isNotEmpty ? '$_title.jpg' : 'avatar.jpg',
+        attachment: {
+          'local_device_path': tgPath,
+          'kind': 'image',
+          'filename': _title.isNotEmpty ? '$_title.jpg' : 'avatar.jpg',
+        },
+        enableFaceTag: false,
+      );
+      return;
+    }
     if (!_hasHeaderAssetPhoto) return;
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -1206,6 +1278,8 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                       avatarUrl: _headerAvatarUrl,
                       userId: widget.peerUserId,
                       assetPath: _headerAvatarAsset,
+                      localFilePath: _tgHeaderAvatarPath,
+                      memoryBytes: _tgHeaderAvatarBytes,
                       radius: 44,
                     ),
                   const SizedBox(height: 10),
@@ -1339,6 +1413,32 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                       ),
                     ),
                   ),
+                )
+              else if (_tgHeaderAvatarPath != null)
+                Positioned.fill(
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: _openProfilePhoto,
+                      child: Opacity(
+                        opacity: (1 - t * 0.9).clamp(0.0, 1.0),
+                        child: Image.file(
+                          File(_tgHeaderAvatarPath!),
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => ColoredBox(
+                            color: theme.colorScheme.surfaceContainerLow,
+                            child: Center(
+                              child: ChatAvatar(
+                                name: _title,
+                                memoryBytes: _tgHeaderAvatarBytes,
+                                radius: 64,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               if (showCollapsedAvatar && avatarOpacity > 0.12)
                 Opacity(
@@ -1449,6 +1549,10 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    final tdlibId = _tdlibChatId;
+    if (tdlibId != null && tdlibId != 0) {
+      ref.watch(telegramTdlibServiceProvider);
+    }
 
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),

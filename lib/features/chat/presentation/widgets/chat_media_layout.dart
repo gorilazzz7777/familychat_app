@@ -27,6 +27,9 @@ double? chatAttachmentAspectRatio(Map<String, dynamic> attachment) {
       numField('h');
   if (w != null && h != null && h > 0) return w / h;
 
+  final stored = numField('aspect_ratio') ?? numField('_feed_aspect');
+  if (stored != null && stored > 0) return stored;
+
   final exif = attachment['photo_exif'];
   if (exif is Map) {
     final ew = (exif['ImageWidth'] as num?)?.toDouble() ??

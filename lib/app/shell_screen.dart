@@ -7,6 +7,7 @@ import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_handler/share_handler.dart';
 
+import '../core/diagnostics/app_session_diagnostics.dart';
 import '../core/feed/feed_post_outbox.dart';
 import '../core/call/callkit_incoming_service.dart';
 import '../core/notifications/familychat_notifications.dart';
@@ -26,7 +27,6 @@ import '../core/share/incoming_share_bus.dart';
 import '../core/share/share_direct_target_service.dart';
 import '../core/settings/app_settings_controller.dart';
 import '../core/settings/shell_nav_layout.dart';
-import '../features/telegram_tdlib/telegram_match_store.dart';
 import '../features/telegram_tdlib/telegram_saved_bridge.dart';
 import '../features/telegram_tdlib/telegram_tdlib_providers.dart';
 import '../features/telegram_tdlib/telegram_tdlib_service.dart';
@@ -49,6 +49,7 @@ import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/chat_sync_service.dart';
 import '../features/chat/data/chat_ui_connectivity.dart';
 import '../features/chat/data/chat_voice_transcription_prefs.dart';
+import '../features/chat/data/hub_first_paint_snapshot.dart';
 import '../features/chat/data/incoming_call_coordinator.dart';
 import '../features/chat/presentation/chat_share_target_screen.dart';
 import '../core/media/gallery_media_utils.dart';
@@ -98,16 +99,19 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   final _galleryMenuKey = GlobalKey<GalleryMenuScreenState>();
   final _tabRefreshedAt = <int, DateTime>{};
   /// Чат (главная) + лента сразу; остальные — при первом заходе.
-  final _visitedTabs = <int>{_chatTabIndex, _feedTabIndex};
+  final _visitedTabs = <int>{_chatTabIndex};
   Timer? _webPollTimer;
   bool _lastKnownOnline = true;
   bool _tdlibMatchesImported = false;
+  String _profileAvatarLocalPath =
+      HubFirstPaintSnapshot.cachedProfileAvatarPath ?? '';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _status = widget.status;
+    unawaited(_loadCachedProfileAvatar());
     IncomingShareBus.instance.addListener(_onIncomingShare);
     onOpenFeedFromPush = _openFeedFromPush;
     if (kIsWeb) {
@@ -124,7 +128,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       unawaited(ShareDirectTargetService.syncFromStore());
       _openPendingShareIfAny();
       final userId = _currentUserId;
-      if (userId != null) {
+      if (userId != null && _shouldRunCalendarSync) {
         unawaited(
           _runCalendarSyncAndMaybeReview(userId),
         );
@@ -253,7 +257,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   void _onChatRealtime(Map<String, dynamic> event) {
     final ev = event['event']?.toString();
     if (ev == 'ws_connected') {
+      AppSessionDiagnostics.instance.ws('connected');
       FamilyChatPresenceService.onRealtimeConnected();
+      return;
+    }
+    if (ev == 'ws_disconnected') {
+      AppSessionDiagnostics.instance.ws('disconnected', {
+        'code': event['code'],
+        'reason': event['reason']?.toString(),
+      });
       return;
     }
     if (ev == 'user_presence') {
@@ -296,10 +308,13 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   void _onOfflineStateChanged() {
     if (!mounted) return;
-    setState(() {});
     final online = ChatOfflineSync.instance.isOnline;
     final becameOnline = online && !_lastKnownOnline;
+    if (online != _lastKnownOnline) {
+      AppSessionDiagnostics.instance.offlineSync(online);
+    }
     _lastKnownOnline = online;
+    // Skip shell-wide setState — chat hub listens to offline itself.
     if (becameOnline) {
       unawaited(_refreshTab(_index, silent: true));
     }
@@ -326,6 +341,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    AppSessionDiagnostics.instance.lifecycle(state);
     FamilyChatPresenceService.onLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       IncomingCallCoordinator.instance.flushPendingIfAny();
@@ -350,7 +366,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       );
       unawaited(ChatScheduledSendService.instance.dispatchDue());
       final userId = _currentUserId;
-      if (userId != null) {
+      if (userId != null && _shouldRunCalendarSync) {
         unawaited(_runCalendarSyncAndMaybeReview(userId));
       }
       // Serialize: fresh JWT → WS connect → outbox flush (avoid stale-token race).
@@ -488,6 +504,15 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   String get _displayName => _status['display_name']?.toString() ?? '';
   String get _avatarUrl => _status['avatar_url']?.toString() ?? '';
 
+  Future<void> _loadCachedProfileAvatar() async {
+    final path = await HubFirstPaintSnapshot.profileAvatarPath();
+    if (!mounted) return;
+    // Clear stale / empty local path so ChatAvatar can use avatar_url.
+    final next = path ?? '';
+    if (next == _profileAvatarLocalPath) return;
+    setState(() => _profileAvatarLocalPath = next);
+  }
+
   bool get _hasIndividualPremium {
     final entitlements = _status['entitlements'];
     return entitlements is Map && entitlements['individual_premium'] == true;
@@ -495,20 +520,21 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   bool get _telegramConnected {
     // TDLib client-side auth (Business Secretary UI hidden).
-    final tdlib = ref.watch(telegramTdlibServiceProvider);
+    // Prefer read: shell build already watches tdlib for bootstrap.
+    final tdlib = ref.read(telegramTdlibServiceProvider);
     return tdlib.phase == TdlibAuthPhase.ready;
   }
 
-  Future<void> _importTdlibSecretaryMatches() async {
+  /// Calendar photo sync only when the section is enabled and has been opened.
+  bool get _shouldRunCalendarSync {
+    final settings = ref.read(appSettingsProvider);
+    if (!settings.menuCalendar) return false;
+    return _visitedTabs.contains(_calendarTabIndex);
+  }
+
+  Future<void> _onTdlibReadyBootstrap() async {
     try {
-      final chats =
-          await ref.read(familychatRepositoryProvider).telegramChats();
-      final n =
-          await TelegramMatchStore.instance.importFromSecretaryChats(chats);
-      if (n > 0) {
-        debugPrint('[tdlib] imported $n secretary matches');
-      }
-      // After secretary import, also apply verified family TDLib identities.
+      // Apply verified family TDLib identities (no Secretary import).
       await ref
           .read(telegramTdlibServiceProvider)
           .reconcileFamilyIdentities();
@@ -517,7 +543,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       TelegramSavedBridge.instance.bindRepository(repo);
       unawaited(TelegramSavedBridge.instance.ensureLinkedAndSync());
     } catch (e) {
-      debugPrint('[tdlib] secretary match import failed: $e');
+      debugPrint('[tdlib] ready bootstrap failed: $e');
       // Allow retry on next ready rebuild.
       if (mounted) _tdlibMatchesImported = false;
     }
@@ -547,7 +573,18 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       _index = i;
       if (needsBuild) _visitedTabs.add(i);
     });
-    if (previous != i && _shouldRefreshTab(i)) {
+    if (previous == i) return;
+    AppSessionDiagnostics.instance.shellTab(
+      section.name,
+      from: _sectionOf(previous).name,
+    );
+    if (i == _feedTabIndex) {
+      // Always rebuild Новые/Просмотрено on tab re-entry (even within TTL).
+      unawaited(_feedKey.currentState?.onTabEntered());
+      _tabRefreshedAt[i] = DateTime.now();
+      return;
+    }
+    if (_shouldRefreshTab(i)) {
       unawaited(_refreshTab(i, silent: true));
     }
   }
@@ -557,7 +594,6 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     final layout = ShellNavLayout.fromSettings(ref.read(appSettingsProvider));
     if (!layout.isEnabled(ShellSection.feed)) return;
     _selectSection(ShellSection.feed);
-    unawaited(_refreshTab(_feedTabIndex, silent: true));
   }
 
   int _indexOf(ShellSection section) {
@@ -627,6 +663,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           telegramGrace: _telegramGrace,
           profileName: _displayName,
           profileAvatarUrl: _avatarUrl,
+          profileAvatarLocalPath: _profileAvatarLocalPath,
           onProfileTap: _openProfile,
         );
       case _feedTabIndex:
@@ -659,6 +696,11 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       await ref.read(themeSeedProvider.notifier).syncFromStatus(st);
       if (!mounted) return;
       setState(() => _status = st);
+      unawaited(
+        HubFirstPaintSnapshot.writeProfileAvatar(
+          profileAvatarUrl: st['avatar_url']?.toString(),
+        ).then((_) => _loadCachedProfileAvatar()),
+      );
       await widget.onStatusChanged();
     } catch (_) {}
   }
@@ -797,7 +839,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     } else if (!_tdlibMatchesImported) {
       _tdlibMatchesImported = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        unawaited(_importTdlibSecretaryMatches());
+        unawaited(_onTdlibReadyBootstrap());
       });
     }
     if (!layout.isEnabled(current) && _index != _chatTabIndex) {
@@ -825,6 +867,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
               title: _title,
               profileName: _displayName,
               profileAvatarUrl: _avatarUrl,
+              profileAvatarLocalPath: _profileAvatarLocalPath,
               onProfileTap: _openProfile,
               actions: [
                 if (_index == _feedTabIndex)

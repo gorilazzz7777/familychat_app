@@ -1,5 +1,7 @@
 import 'dart:developer' as developer;
 
+import '../core/diagnostics/app_session_diagnostics.dart';
+
 /// Boot / splash diagnostics. Filter: `ChatBoot`.
 abstract final class ChatBootTrace {
   static const logName = 'ChatBoot';
@@ -18,5 +20,9 @@ abstract final class ChatBootTrace {
     developer.log(line, name: logName);
     // ignore: avoid_print — always-on for device Console / Xcode
     print(line);
+    AppSessionDiagnostics.instance.bootstrap(phase, {
+      if (detail != null && detail.isNotEmpty) 'detail': detail,
+      ...extra,
+    });
   }
 }

@@ -228,6 +228,19 @@ abstract final class GalleryMediaExport {
     return null;
   }
 
+  /// Файл с диска телефона (TDLib / исходящие), без сети и без дискового URL-кэша.
+  static Future<File?> fileFromLocalDevice(
+    Map<String, dynamic> attachment,
+  ) async {
+    final path = galleryLocalDevicePath(attachment);
+    if (path.isEmpty) return null;
+    try {
+      final file = File(path);
+      if (await file.exists() && await file.length() > 0) return file;
+    } catch (_) {}
+    return null;
+  }
+
   /// Файл из дискового кэша превью/полноэкранного просмотра (без сети).
   static Future<File?> fileFromDiskCache(String url) async {
     final trimmed = url.trim();
@@ -247,11 +260,16 @@ abstract final class GalleryMediaExport {
     return null;
   }
 
-  /// Байты: кэш 뿯↽ (опционально) сеть через [fetchBytes].
+  /// Байты: локальный файл → URL-кэш → (опционально) сеть через [fetchBytes].
   static Future<Uint8List> resolveBytes({
     required Map<String, dynamic> attachment,
     Future<Uint8List> Function()? fetchBytes,
   }) async {
+    final local = await fileFromLocalDevice(attachment);
+    if (local != null) {
+      return local.readAsBytes();
+    }
+
     final url = galleryAttachmentUrl(attachment);
     final cached = await fileFromDiskCache(url);
     if (cached != null) {
@@ -281,6 +299,12 @@ abstract final class GalleryMediaExport {
     Future<Uint8List> Function()? fetchBytes,
   }) async {
     final name = filenameFor(attachment);
+    final local = await fileFromLocalDevice(attachment);
+    if (local != null) {
+      final tmp = await _copyToTemp(local, name);
+      return XFile(tmp.path, name: name, mimeType: mimeForName(name));
+    }
+
     final url = galleryAttachmentUrl(attachment);
     final cached = await fileFromDiskCache(url);
     if (cached != null) {

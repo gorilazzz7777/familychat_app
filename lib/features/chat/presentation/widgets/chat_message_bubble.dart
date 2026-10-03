@@ -258,11 +258,13 @@ class ChatMessageBubble extends StatelessWidget {
     final bubbleColor = isMine
         ? theme.colorScheme.primary
         : Colors.white;
-    final textColor = isMine ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface;
+    final textColor =
+        isMine ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface;
     final metaColor = isMine
         ? theme.colorScheme.onPrimary.withValues(alpha: 0.75)
         : theme.colorScheme.onSurfaceVariant;
-    final quoteAccent = isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary;
+    final quoteAccent =
+        isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary;
     final rowTint = (highlighted || selected)
         ? theme.colorScheme.primary.withValues(alpha: 0.12)
         : Colors.transparent;
@@ -333,7 +335,6 @@ class ChatMessageBubble extends StatelessWidget {
                   child: _buildForwardQuote(
                     forward!,
                     quoteAccent,
-                    theme.colorScheme.onSurface,
                   ),
                 ),
               ),
@@ -389,7 +390,9 @@ class ChatMessageBubble extends StatelessWidget {
           child: Padding(
             padding: EdgeInsets.fromLTRB(
               isMine ? framePad : framePad + tailWidth,
-              hasVisualMedia ? 2 : 8,
+              hasVisualMedia
+                  ? 2
+                  : (forward != null ? 6.0 : 8.0),
               isMine ? framePad + tailWidth : framePad,
               6,
             ),
@@ -404,11 +407,7 @@ class ChatMessageBubble extends StatelessWidget {
                     child: GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onTap: selectionMode ? onTap : onForwardTap,
-                      child: _buildForwardQuote(
-                        forward!,
-                        quoteAccent,
-                        textColor,
-                      ),
+                      child: _buildForwardQuote(forward!, quoteAccent),
                     ),
                   ),
                 if (replyTo != null)
@@ -609,9 +608,8 @@ class ChatMessageBubble extends StatelessWidget {
         (messageMetadata['gif'] != null || messageMetadata['sticker'] != null)) {
       return false;
     }
-    if (forward == null) return true;
-    final original = forward['original_body']?.toString() ?? '';
-    return body.trim() != original.trim();
+    // Forward header is separate; body always shows as normal message text.
+    return true;
   }
 
   bool get _fromTelegram =>
@@ -653,20 +651,45 @@ class ChatMessageBubble extends StatelessWidget {
 
     if (!canCollapse) return text;
 
+    final expandLabel = bodyExpanded ? 'Свернуть' : 'Ещё';
+    final chipBg = isMine
+        ? Colors.white.withValues(alpha: 0.16)
+        : theme.colorScheme.primary.withValues(alpha: 0.10);
+    final chipFg = isMine
+        ? Colors.white.withValues(alpha: 0.95)
+        : theme.colorScheme.primary;
+
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
         text,
-        const SizedBox(height: 2),
-        GestureDetector(
-          onTap: onToggleBodyExpand,
-          behavior: HitTestBehavior.opaque,
-          child: Text(
-            bodyExpanded ? 'Свернуть' : 'ещё',
-            style: linkStyle.copyWith(
-              fontWeight: FontWeight.w600,
-              fontSize: (baseStyle.fontSize ?? 14) * 0.95,
+        const SizedBox(height: 10),
+        Center(
+          child: Material(
+            color: chipBg,
+            borderRadius: BorderRadius.circular(18),
+            child: InkWell(
+              onTap: onToggleBodyExpand,
+              borderRadius: BorderRadius.circular(18),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
+                child: Text(
+                  expandLabel,
+                  style: theme.textTheme.labelLarge?.copyWith(
+                        color: chipFg,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13.5,
+                        letterSpacing: 0.2,
+                      ) ??
+                      TextStyle(
+                        color: chipFg,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13.5,
+                      ),
+                ),
+              ),
             ),
           ),
         ),
@@ -765,31 +788,15 @@ class ChatMessageBubble extends StatelessWidget {
   Widget _buildForwardQuote(
     Map<String, dynamic> fwd,
     Color accent,
-    Color textColor,
   ) {
     final originalSender = fwd['original_sender_name']?.toString() ?? '';
-    final forwardedBy = fwd['forwarded_by_name']?.toString() ?? '';
     final threadTitle = fwd['original_thread_title']?.toString() ?? '';
-    final originalBody = fwd['original_body']?.toString() ?? '';
-
-    String title;
-    String? subtitle;
-    if (isGroupLike && forwardedBy.isNotEmpty) {
-      title = 'Переслано $forwardedBy';
-      subtitle = originalSender.isNotEmpty ? 'от $originalSender' : null;
-    } else if (originalSender.isNotEmpty) {
-      title = 'Переслано от $originalSender';
-      if (threadTitle.isNotEmpty) subtitle = threadTitle;
-    } else {
-      title = 'Переслано';
-    }
-
-    return ChatMessageQuote(
-      title: title,
-      subtitle: subtitle,
-      body: originalBody,
+    final name = originalSender.isNotEmpty
+        ? originalSender
+        : (threadTitle.isNotEmpty ? threadTitle : null);
+    return ChatMessageForwardHeader(
+      name: name,
       accentColor: accent,
-      textColor: textColor,
     );
   }
 
@@ -1544,6 +1551,8 @@ class _ChatVideoAttachmentPreviewState
       messageMetadata: widget.messageMetadata,
       messageCreatedAt: widget.messageCreatedAt,
       borderRadius: widget.borderRadius,
+      // Bubble owns the download spinner ([showSpinner]) — avoid a second ring.
+      showTransferOverlay: false,
       onResolvedSize: (resolved) {
         if (resolved.height <= 0) return;
         if (chatAttachmentAspectRatio(widget.attachment) != null) return;

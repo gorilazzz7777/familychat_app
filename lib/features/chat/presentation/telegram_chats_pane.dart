@@ -38,8 +38,9 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
   Map<int, TelegramMatch> _matches = {};
   final _listScroll = ScrollController();
   Timer? _avatarPrefetchTimer;
-  Timer? _scrollBusyClearTimer;
   List<int> _lastAvatarPrefetchIds = const [];
+  int _lastAvatarPrefetchEpoch = -1;
+  Timer? _scrollBusyClearTimer;
   var _didInitialAvatarPrefetch = false;
 
   @override
@@ -92,10 +93,11 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
             })
             .toList();
     if (list.isEmpty) return;
+    if (svc.isUiScrollBusy) return;
 
-    // Prefer soft minithumb rows (visible blur) over chats with no photo.
+    // Prefer soft minithumb rows (visible blur). Also enqueue chats that
+    // already have a TDLib photo file id but no minithumb (initials tiles).
     final needSharp = <int>[];
-    final noPhoto = <int>[];
     const rowExtent = 72.0;
     var first = 0;
     if (_listScroll.hasClients) {
@@ -107,26 +109,28 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
       final hasMini =
           c.photoMinithumbnailBytes != null &&
           c.photoMinithumbnailBytes!.isNotEmpty;
-      if (hasMini) {
-        needSharp.add(c.chatId);
-      } else {
-        noPhoto.add(c.chatId);
-      }
+      final hasPhotoId = c.photoFileId != null && c.photoFileId! > 0;
+      if (!hasMini && !hasPhotoId) continue;
+      needSharp.add(c.chatId);
+      if (needSharp.length >= 12) break;
     }
-    final ids = <int>[...needSharp, ...noPhoto];
-    if (ids.isEmpty) return;
-    if (ids.length == _lastAvatarPrefetchIds.length) {
+    if (needSharp.isEmpty) return;
+    if (!svc.readyForMedia) return;
+    final epoch = svc.mediaReadyEpoch;
+    if (needSharp.length == _lastAvatarPrefetchIds.length &&
+        epoch == _lastAvatarPrefetchEpoch) {
       var same = true;
-      for (var i = 0; i < ids.length; i++) {
-        if (ids[i] != _lastAvatarPrefetchIds[i]) {
+      for (var i = 0; i < needSharp.length; i++) {
+        if (needSharp[i] != _lastAvatarPrefetchIds[i]) {
           same = false;
           break;
         }
       }
       if (same) return;
     }
-    _lastAvatarPrefetchIds = List<int>.from(ids);
-    svc.prefetchVisibleHubAvatars(ids.take(16));
+    _lastAvatarPrefetchIds = List<int>.from(needSharp);
+    _lastAvatarPrefetchEpoch = epoch;
+    svc.prefetchVisibleHubAvatars(needSharp);
   }
 
   Future<void> _reloadMatches() async {
@@ -169,7 +173,7 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
             children: [
               Text(
                 !TdlibConfig.isSupportedPlatform
-                    ? 'TDLib пока только на Android'
+                    ? 'TDLib поддерживается на Android и iOS'
                     : 'Нет Telegram API credentials',
                 textAlign: TextAlign.center,
               ),
@@ -265,6 +269,7 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                       .read(telegramTdlibServiceProvider)
                       .setUiScrollBusy(true);
                 } else if (n is ScrollEndNotification) {
+                  _scheduleVisibleAvatarPrefetch(chats);
                   _scrollBusyClearTimer?.cancel();
                   _scrollBusyClearTimer = Timer(
                     const Duration(milliseconds: 280),
@@ -280,6 +285,7 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
               },
               child: ListView.builder(
               controller: _listScroll,
+              cacheExtent: 480,
               itemCount: chats.length,
               itemBuilder: (context, i) {
                 final c = chats[i];
@@ -294,12 +300,20 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                 final unreadBadgeColor = muted
                     ? const Color(0xFFB0B0B0)
                     : scheme.primary;
+                final match = (!c.isGroup && !c.isChannel && c.userId > 0)
+                    ? _matches[c.userId]
+                    : null;
+                final fcAvatar = match?.avatarUrl.trim() ?? '';
+                final useTgPhoto = fcAvatar.isEmpty;
 
                 return ListTile(
                   leading: ChatAvatar(
                     name: c.title,
-                    localFilePath: c.photoLocalPath,
-                    memoryBytes: c.photoMinithumbnailBytes,
+                    avatarUrl: useTgPhoto ? null : fcAvatar,
+                    userId: match?.fcUserId,
+                    localFilePath: useTgPhoto ? c.photoLocalPath : null,
+                    memoryBytes:
+                        useTgPhoto ? c.photoMinithumbnailBytes : null,
                     radius: 24,
                   ),
                   title: Text(
@@ -375,7 +389,10 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                         builder: (_) => TelegramConversationScreen(
                           chatId: c.chatId,
                           title: c.title,
-                          tgUserId: (c.isGroup || c.isChannel) ? null : c.userId,
+                          tgUserId:
+                              (c.isGroup || c.isChannel) ? null : c.userId,
+                          fcUserId: match?.fcUserId,
+                          peerAvatarUrl: fcAvatar,
                         ),
                       ),
                     );

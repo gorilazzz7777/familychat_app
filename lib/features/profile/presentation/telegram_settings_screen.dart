@@ -120,7 +120,7 @@ class _TelegramSettingsScreenState
           if (!TdlibConfig.isSupportedPlatform)
             _banner(
               scheme,
-              'На этой платформе TDLib ещё не подключён. Android — первый релиз; iOS следом.',
+              'На этой платформе TDLib не подключён. Поддерживаются Android и iOS.',
             )
           else if (!TdlibConfig.hasApiCredentials)
             _banner(

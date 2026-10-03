@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
@@ -40,6 +41,8 @@ abstract final class ChatImageViewer {
     List<Map<String, dynamic>>? galleryAttachments,
     VoidCallback? onGoToMessage,
     Map<String, String>? httpHeaders,
+    /// Face tagging needs an FC attachment API. Off for TDLib / unbound TG.
+    bool enableFaceTag = true,
   }) {
     if (imageUrl.isEmpty &&
         attachmentId == null &&
@@ -61,6 +64,7 @@ abstract final class ChatImageViewer {
             galleryAttachments: galleryAttachments,
             onGoToMessage: onGoToMessage,
             httpHeaders: httpHeaders,
+            enableFaceTag: enableFaceTag,
           ),
         ),
       ),
@@ -79,6 +83,7 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
     this.galleryAttachments,
     this.onGoToMessage,
     this.httpHeaders,
+    this.enableFaceTag = true,
   });
 
   final String imageUrl;
@@ -90,6 +95,7 @@ class _ChatImageViewerScreen extends ConsumerStatefulWidget {
   final List<Map<String, dynamic>>? galleryAttachments;
   final VoidCallback? onGoToMessage;
   final Map<String, String>? httpHeaders;
+  final bool enableFaceTag;
 
   @override
   ConsumerState<_ChatImageViewerScreen> createState() =>
@@ -209,14 +215,18 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
 
     if (media.isEmpty) {
       media.add(seed);
-      if (widget.threadId != null) {
+      // FC thread media carousel only — TG chat ids are not FC threads.
+      final fcThreadId = widget.threadId;
+      final hasLocalTg = galleryLocalDevicePath(seedAtt).isNotEmpty ||
+          (widget.attachment?['local_bytes'] != null);
+      if (fcThreadId != null && !hasLocalTg) {
         try {
-          final threadMedia = await repo.threadMedia(widget.threadId!);
+          final threadMedia = await repo.threadMedia(fcThreadId);
           for (final att in threadMedia) {
             if (!isGalleryMediaAttachment(att)) continue;
             final url = chatAttachmentImageUrl(
               repo: repo,
-              threadId: widget.threadId!,
+              threadId: fcThreadId,
               attachment: att,
             );
             media.add(
@@ -310,6 +320,17 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
   }
 
   Future<Uint8List?> _resolveBytes(_ChatViewerPhoto photo) async {
+    if (!kIsWeb) {
+      final local = galleryLocalDevicePath(photo.attachment ?? const {});
+      if (local.isNotEmpty) {
+        try {
+          final file = await GalleryMediaExport.fileFromLocalDevice(
+            photo.attachment ?? const {},
+          );
+          if (file != null) return file.readAsBytes();
+        } catch (_) {}
+      }
+    }
     if (kIsWeb) {
       return chatAttachmentBytesForViewer(
         ref: ref,
@@ -317,15 +338,21 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
         attachmentId: photo.attachmentId,
       );
     }
-    if (photo.threadId != null && photo.attachmentId != null) {
+    // FC server attachment only (not TDLib file ids / TG chat ids).
+    final url = photo.imageUrl.trim();
+    final looksFcHttp = url.startsWith('http://') || url.startsWith('https://');
+    if (looksFcHttp &&
+        photo.threadId != null &&
+        photo.attachmentId != null) {
       try {
         return await ref
             .read(familychatRepositoryProvider)
             .fetchChatAttachmentBytes(photo.threadId!, photo.attachmentId!);
       } catch (_) {}
     }
+    if (url.isEmpty) return null;
     final response = await ref.read(apiClientProvider).dio.get<List<int>>(
-          photo.imageUrl,
+          url,
           options: Options(responseType: ResponseType.bytes),
         );
     final data = response.data;
@@ -378,15 +405,13 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
           box == null ? null : box.localToGlobal(Offset.zero) & box.size;
       await GalleryMediaExport.shareAttachments(
         attachments: [_attachmentMap(photo)],
-        fetchBytes: photo.threadId == null || photo.attachmentId == null
-            ? null
-            : (_) async {
-                final bytes = await _resolveBytes(photo);
-                if (bytes == null || bytes.isEmpty) {
-                  throw StateError('Пустой файл');
-                }
-                return bytes;
-              },
+        fetchBytes: (_) async {
+          final bytes = await _resolveBytes(photo);
+          if (bytes == null || bytes.isEmpty) {
+            throw StateError('Пустой файл');
+          }
+          return bytes;
+        },
         sharePositionOrigin: origin,
       );
     } catch (e) {
@@ -450,6 +475,34 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
           if (photo.filename != null) 'filename': photo.filename,
         };
 
+    // TDLib / local files: open from disk (no FC thread API).
+    if (!kIsWeb) {
+      final local = galleryLocalDevicePath(attachment);
+      if (local.isNotEmpty) {
+        return Image.file(
+          File(local),
+          fit: BoxFit.contain,
+          width: double.infinity,
+          height: double.infinity,
+          gaplessPlayback: true,
+          filterQuality: FilterQuality.medium,
+          errorBuilder: (_, __, ___) {
+            if (photo.threadId != null) {
+              return ChatNetworkImage(
+                threadId: photo.threadId!,
+                attachment: attachment,
+                fit: BoxFit.contain,
+                width: double.infinity,
+                height: double.infinity,
+                showTransferOverlay: false,
+              );
+            }
+            return const SizedBox.shrink();
+          },
+        );
+      }
+    }
+
     if (photo.threadId != null) {
       return ChatNetworkImage(
         threadId: photo.threadId!,
@@ -491,8 +544,10 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     final attachmentId = photo.attachmentId;
     final showPeopleOverlay = isCurrent &&
         !photo.isVideo &&
+        widget.enableFaceTag &&
         attachmentId != null &&
-        photo.threadId != null;
+        photo.threadId != null &&
+        _looksLikeFamilyChatAttachment(photo);
     final showHighlight = isCurrent && _highlightBoxes.isNotEmpty;
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -632,6 +687,15 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     return 'GIF';
   }
 
+  /// FC server attachment (http URL). TDLib locals only have disk paths.
+  bool _looksLikeFamilyChatAttachment(_ChatViewerPhoto? photo) {
+    if (photo == null) return false;
+    final url = photo.imageUrl.trim();
+    if (url.startsWith('http://') || url.startsWith('https://')) return true;
+    final attUrl = galleryAttachmentUrl(photo.attachment ?? const {}).trim();
+    return attUrl.startsWith('http://') || attUrl.startsWith('https://');
+  }
+
   @override
   Widget build(BuildContext context) {
     final photo = _photos.isEmpty ? null : _currentPhoto;
@@ -640,9 +704,12 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     final canForward =
         (photo?.threadId ?? widget.threadId) != null &&
             (photo?.messageId ?? widget.messageId) != null;
-    final canFaceTag = !isVideo &&
+    // Face tags need FC attachment API — not TDLib file ids / unbound TG.
+    final canFaceTag = widget.enableFaceTag &&
+        !isVideo &&
         (photo?.threadId ?? widget.threadId) != null &&
-        (photo?.attachmentId ?? widget.attachmentId) != null;
+        (photo?.attachmentId ?? widget.attachmentId) != null &&
+        _looksLikeFamilyChatAttachment(photo);
 
     if (_photos.isEmpty || _pageController == null) {
       return Scaffold(
@@ -694,7 +761,12 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
                     color: Colors.white,
                   ),
                 )
-              : const Icon(LucideIcons.share),
+              : Icon(
+                  defaultTargetPlatform == TargetPlatform.iOS ||
+                          defaultTargetPlatform == TargetPlatform.macOS
+                      ? Icons.ios_share
+                      : Icons.share,
+                ),
         ),
         if (canForward)
           IconButton(

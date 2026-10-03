@@ -24,6 +24,13 @@ class TdlibJsonClient {
 
   static set onNeedsParameters(void Function(TdlibApiException error)? cb) {}
 
+  static set onPushPayload(void Function(String payloadJson)? cb) {}
+
+  static Future<bool> deliverPushToMainIsolate(String payloadJson) async =>
+      false;
+
+  static bool get hasActiveReceiveOwner => false;
+
   static Future<TdlibJsonClient> create() async {
     throw UnsupportedError('TDLib is not available on this platform');
   }

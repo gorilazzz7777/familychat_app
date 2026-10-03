@@ -1456,6 +1456,28 @@ class FamilyChatRepository {
         .toList();
   }
 
+  /// Delete own FC copies that mirror [tgMessageIds] in [tgChatId].
+  /// Best-effort after TDLib revoke-delete on a matched DM/group.
+  Future<List<int>> deleteMessagesByTelegramIds({
+    required int tgChatId,
+    required List<int> tgMessageIds,
+  }) async {
+    if (tgChatId == 0 || tgMessageIds.isEmpty) return const [];
+    final res = await _sendDio.post<Map<String, dynamic>>(
+      'familychat/telegram/message-map/delete/',
+      data: {
+        'tg_chat_id': tgChatId,
+        'tg_message_ids': tgMessageIds,
+      },
+    );
+    final ids = res.data?['deleted_ids'];
+    if (ids is! List) return const [];
+    return ids
+        .map((e) => e is int ? e : int.tryParse('$e'))
+        .whereType<int>()
+        .toList();
+  }
+
   Future<List<int>> hideMessagesForMe(int threadId, List<int> messageIds) async {
     final res = await _sendDio.post<Map<String, dynamic>>(
       'familychat/chat/threads/$threadId/messages/hide/',

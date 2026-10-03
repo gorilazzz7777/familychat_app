@@ -389,7 +389,7 @@ class ChatSyncService {
       await ChatLocalStore.instance.replaceThreads(enriched);
       await ChatLocalStore.instance.replaceMembers(members);
       _notifyUnreadChanged();
-      unawaited(syncTelegramChats());
+      // Secretary soft-kill: do not refresh Business Bot telegram-chats cache.
 
       if (prefetchMessages) {
         for (final thread in enriched) {
@@ -467,8 +467,10 @@ class ChatSyncService {
       if (keepLocalLast) {
         return math.max(serverUnread, localUnread);
       }
+      // A local zero is not evidence of reading — push/tip syncs advance the
+      // local tip without touching unread. Only local_read_through_id (above)
+      // proves this device read the thread, so keep the server count here.
       if (localLastId != null && localLastId == serverLastId) {
-        if (localUnread == 0) return 0;
         return math.max(serverUnread, localUnread);
       }
       return serverUnread;
@@ -534,6 +536,26 @@ class ChatSyncService {
     );
   }
 
+  /// Server unread formula applied to a synced window: inbound messages newer
+  /// than the last id this device marked read. 0 without a local frontier —
+  /// then the hub snapshot stays the only source of truth.
+  int _unreadPastReadFrontier(
+    Map<String, dynamic> thread,
+    List<Map<String, dynamic>> messages,
+  ) {
+    final frontier = chatAsInt(thread['local_read_through_id']) ?? 0;
+    if (frontier <= 0) return 0;
+    var unread = 0;
+    for (final message in messages) {
+      final id = chatAsInt(message['id']);
+      if (id == null || id <= frontier) continue;
+      if (chatMessageIsPending(message)) continue;
+      if (chatMessageIsMine(message, _currentUserId)) continue;
+      unread++;
+    }
+    return unread;
+  }
+
   Future<void> _patchHubLastMessageFromSynced(
     int threadId,
     List<Map<String, dynamic>> messages, {
@@ -583,6 +605,13 @@ class ChatSyncService {
           FamilyChatForegroundBridge.isActivelyViewingThread(threadId)) {
         next['unread_count'] = 0;
         next['local_read_through_id'] = newestId;
+      } else {
+        // Push wake syncs the tip without a hub snapshot — count inbound
+        // messages past the read frontier so the badge appears right away.
+        final fromFrontier = _unreadPastReadFrontier(thread, messages);
+        if (fromFrontier > (chatAsInt(thread['unread_count']) ?? 0)) {
+          next['unread_count'] = fromFrontier;
+        }
       }
       await ChatLocalStore.instance.upsertThread(next);
       _notifyUnreadChanged();

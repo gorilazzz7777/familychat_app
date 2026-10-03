@@ -163,7 +163,17 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
     final attachmentId = _attachmentId;
     if (attachmentId == null || _reactBusy || emoji.trim().isEmpty) return;
     final hadMine = _hasMyReaction;
-    setState(() => _reactBusy = true);
+    final previous = [
+      for (final r in _reactions) Map<String, dynamic>.from(r),
+    ];
+    final previousComments = _commentsCount;
+    final optimistic = optimisticToggleMediaReaction(previous, emoji: emoji);
+    setState(() {
+      _reactions = optimistic;
+      _reactBusy = true;
+    });
+    _storeLocal(reactions: optimistic, commentsCount: previousComments);
+
     try {
       final data = await ref
           .read(familychatRepositoryProvider)
@@ -189,7 +199,12 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
       }
     } catch (_) {
       if (!mounted) return;
-      setState(() => _reactBusy = false);
+      setState(() {
+        _reactions = previous;
+        _commentsCount = previousComments;
+        _reactBusy = false;
+      });
+      _storeLocal(reactions: previous, commentsCount: previousComments);
     }
   }
 
@@ -261,15 +276,15 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
       child: Row(
         children: [
           if (hasMedia) ...[
-            // One control: mine (or grey heart) + others LTR; tap = picker.
-            FeedReactionsStack(
-              reactions: _reactions,
-              myEmoji: myEmoji,
-              onTap: _reactBusy ? null : _openReactionSheet,
-            ),
+            // Real reactions only — no empty-heart placeholder.
+            // Add via long-press / double-tap on the post body.
             if (_reactionsTotal > 0) ...[
+              FeedReactionsStack(
+                reactions: _reactions,
+                myEmoji: myEmoji,
+                onTap: _reactBusy ? null : _openReactionSheet,
+              ),
               const SizedBox(width: 4),
-              // Count is separate: tap opens who reacted (not the picker).
               Tooltip(
                 message: 'Кто поставил реакцию',
                 child: Material(
@@ -287,8 +302,7 @@ class _FeedEventActionBarState extends ConsumerState<FeedEventActionBar> {
                   ),
                 ),
               ),
-            ] else
-              const SizedBox(width: 4),
+            ],
             IconButton(
               tooltip: 'Комментарии',
               visualDensity: VisualDensity.compact,

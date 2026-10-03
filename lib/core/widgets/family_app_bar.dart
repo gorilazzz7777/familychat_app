@@ -74,12 +74,14 @@ class FamilyAppBarProfileAvatar extends StatelessWidget {
     super.key,
     required this.name,
     this.avatarUrl,
+    this.localFilePath,
     required this.onTap,
     this.radius = 22,
   });
 
   final String name;
   final String? avatarUrl;
+  final String? localFilePath;
   final VoidCallback onTap;
   final double radius;
 
@@ -118,6 +120,7 @@ class FamilyAppBarProfileAvatar extends StatelessWidget {
                 child: ChatAvatar(
                   name: name,
                   avatarUrl: avatarUrl ?? '',
+                  localFilePath: localFilePath,
                   radius: radius,
                 ),
               ),
@@ -143,6 +146,7 @@ abstract final class FamilyAppBar {
     TextStyle? titleStyle,
     String? profileName,
     String? profileAvatarUrl,
+    String? profileAvatarLocalPath,
     VoidCallback? onProfileTap,
   }) {
     final hasProfile = onProfileTap != null;
@@ -160,6 +164,7 @@ abstract final class FamilyAppBar {
           ? FamilyAppBarProfileAvatar(
               name: profileName ?? '',
               avatarUrl: profileAvatarUrl,
+              localFilePath: profileAvatarLocalPath,
               onTap: onProfileTap,
             )
           : leading,

@@ -255,26 +255,11 @@ class ChatImageAlbum extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           image,
-          if (attachment['is_downloading'] == true)
-            ColoredBox(
-              color: Colors.black.withValues(alpha: 0.35),
-              child: Center(
-                child: SizedBox(
-                  width: 36,
-                  height: 36,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    color: Colors.white,
-                    value: () {
-                      final p = attachment['download_progress'];
-                      if (p is num && p > 0 && p <= 1) return p.toDouble();
-                      return null;
-                    }(),
-                  ),
-                ),
-              ),
-            )
-          else if (isVideo && overlayLabel == null)
+          // Download spinner lives in ChatNetworkImage (_wrapOverlay) — do not
+          // stack a second ring here (looks like a "double loader").
+          if (isVideo &&
+              overlayLabel == null &&
+              attachment['is_downloading'] != true)
             const Center(child: GalleryVideoPlayBadge()),
           if (overlayLabel != null)
             ColoredBox(

@@ -16,6 +16,43 @@ import 'media_local_index.dart';
 /// Свои оригиналы не копируем. «Скачать» на полном экране пишет в альбом явно.
 abstract final class MediaIncomingSync {
   static final Set<String> _inflight = {};
+  static final List<Map<String, dynamic>> _deferredFeedAttachments = [];
+  static bool _feedScrollBusy = false;
+  static bool _flushScheduled = false;
+
+  /// Feed fling gate — set from [FeedScreen]; defers gallery auto-save I/O.
+  static void setFeedScrollBusy(bool busy) {
+    _feedScrollBusy = busy;
+    if (!busy) flushDeferredFeedWork();
+  }
+
+  static void flushDeferredFeedWork() {
+    if (_feedScrollBusy || _deferredFeedAttachments.isEmpty) return;
+    if (_flushScheduled) return;
+    _flushScheduled = true;
+    scheduleMicrotask(() async {
+      _flushScheduled = false;
+      while (_deferredFeedAttachments.isNotEmpty && !_feedScrollBusy) {
+        final chunk = _deferredFeedAttachments
+            .take(6)
+            .toList(growable: false);
+        _deferredFeedAttachments.removeRange(0, chunk.length);
+        for (final att in chunk) {
+          unawaited(ensureAttachment(att));
+        }
+        // Yield so UI frames aren't starved by a 600+ attachment storm.
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+    });
+  }
+
+  static void _enqueueFeedAttachment(Map<String, dynamic> attachment) {
+    if (_feedScrollBusy) {
+      _deferredFeedAttachments.add(attachment);
+      return;
+    }
+    unawaited(ensureAttachment(attachment));
+  }
 
   static Future<void> ensureMessages(
     Iterable<Map<String, dynamic>> messages,
@@ -44,6 +81,8 @@ abstract final class MediaIncomingSync {
     Iterable<Map<String, dynamic>> events,
   ) async {
     await MediaLocalIndex.ensureLoaded();
+    var queued = 0;
+    var deferred = 0;
     for (final event in events) {
       MediaLocalIndex.hydrateFeedEvent(event);
       final payload = event['payload'];
@@ -51,12 +90,23 @@ abstract final class MediaIncomingSync {
       final atts = payload['attachments'];
       if (atts is! List) continue;
       for (final item in atts) {
+        Map<String, dynamic>? att;
         if (item is Map<String, dynamic>) {
-          unawaited(ensureAttachment(item));
+          att = item;
         } else if (item is Map) {
-          unawaited(ensureAttachment(Map<String, dynamic>.from(item)));
+          att = Map<String, dynamic>.from(item);
         }
+        if (att == null) continue;
+        queued++;
+        if (_feedScrollBusy) deferred++;
+        _enqueueFeedAttachment(att);
       }
+    }
+    if (kDebugMode && queued > 0) {
+      debugPrint(
+        '[feed-jank] MEDIA_SYNC ensureFeedEvents queued=$queued '
+        'deferred=$deferred busy=$_feedScrollBusy',
+      );
     }
   }
 

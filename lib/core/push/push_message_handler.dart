@@ -4,10 +4,12 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 
 import '../call/callkit_incoming_service.dart';
+import '../diagnostics/app_session_diagnostics.dart';
 import '../notifications/familychat_notifications.dart';
 import '../notifications/familychat_foreground_bridge.dart';
 import '../../features/chat/data/familychat_realtime.dart';
 import '../../features/chat/data/chat_sync_service.dart';
+import '../../features/chat/data/hub_first_paint_snapshot.dart';
 import '../../features/chat/data/incoming_call_coordinator.dart';
 import '../../features/telegram_tdlib/telegram_tdlib_push.dart';
 import '../../features/telegram_tdlib/telegram_tdlib_service.dart';
@@ -24,6 +26,15 @@ void handleFamilyChatRemoteMessage(
   final data = message.data;
   final type = data['type']?.toString() ?? '';
   final isForeground = FamilyChatForegroundBridge.isAppInForeground();
+  AppSessionDiagnostics.instance.push(
+    openedFromTap ? 'opened' : 'received',
+    {
+      'type': type.isEmpty ? null : type,
+      'tg': isTelegramRemoteMessage(message),
+      'fg': isForeground,
+      'threadId': int.tryParse(data['thread_id']?.toString() ?? ''),
+    },
+  );
 
   if (isTelegramRemoteMessage(message)) {
     if (openedFromTap) {
@@ -35,6 +46,7 @@ void handleFamilyChatRemoteMessage(
         buildTdlibProcessPushPayload(message),
       ),
     );
+    _patchHubSnapshotFromTgPush(Map<String, dynamic>.from(data), message);
     return;
   }
 
@@ -65,6 +77,17 @@ void handleFamilyChatRemoteMessage(
     if (threadId != null && ChatSyncService.isSupported) {
       unawaited(ChatSyncService.instance.syncThreadFromPush(threadId));
     }
+    unawaited(
+      HubFirstPaintSnapshot.patchRow(
+        threadId: threadId,
+        title: payload['thread_title']?.toString() ??
+            payload['title']?.toString() ??
+            message.notification?.title,
+        lastBody: payload['body']?.toString() ?? message.notification?.body,
+        lastCreatedAt: DateTime.now().toUtc().toIso8601String(),
+        bumpUnread: true,
+      ),
+    );
 
     if (openedFromTap) {
       openChatFromPushData(payload);
@@ -174,5 +197,28 @@ Future<void> _showChatPushNotification(
     body: body != null && body.isNotEmpty ? body : 'Новое сообщение',
     data: payload,
     enrichChatPreviewFromDatabase: true,
+  );
+}
+
+void _patchHubSnapshotFromTgPush(
+  Map<String, dynamic> data,
+  RemoteMessage message,
+) {
+  final chatId = int.tryParse(data['chat_id']?.toString() ?? '') ??
+      int.tryParse(data['tg_chat_id']?.toString() ?? '') ??
+      int.tryParse(data['dialog_id']?.toString() ?? '');
+  if (chatId == null || chatId == 0) return;
+  final title = data['title']?.toString() ?? message.notification?.title;
+  final body = data['body']?.toString() ??
+      data['message']?.toString() ??
+      message.notification?.body;
+  unawaited(
+    HubFirstPaintSnapshot.patchRow(
+      tdlibChatId: chatId,
+      title: title,
+      lastBody: body,
+      lastCreatedAt: DateTime.now().toUtc().toIso8601String(),
+      bumpUnread: true,
+    ),
   );
 }

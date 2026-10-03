@@ -1,5 +1,20 @@
 import 'package:flutter/foundation.dart';
 
+/// One MTProto FakeTLS endpoint (host may differ; SNI lives inside [secret]).
+class TdlibProxyEndpoint {
+  const TdlibProxyEndpoint({
+    required this.server,
+    required this.port,
+    required this.secret,
+    required this.label,
+  });
+
+  final String server;
+  final int port;
+  final String secret;
+  final String label;
+}
+
 /// TDLib client config for FamilyChat.
 ///
 /// Defaults are the Family Space app credentials from my.telegram.org.
@@ -17,22 +32,47 @@ class TdlibConfig {
     defaultValue: 'a7585fb85b603c1a80902fd76f374051',
   );
 
-  /// Hardcoded RU MTProto proxy (FamilyChat infra).
-  ///
-  /// FakeTLS disguise host is `proxy.remont-tracker.ru` (same as [proxyServer]).
-  /// Keep this in sync with the mtg container secret on the VPS — a domain
-  /// mismatch yields `cannot find X in [Y]`; a key mismatch yields
-  /// `incorrect client random`. Both fall through to domain-fronting and
-  /// stall media at 0B while API can still look Ready.
-  static const proxyServer = 'proxy.remont-tracker.ru';
-  static const proxyPort = 8443;
-  static const proxySecret =
-      'eee1a6c02fc78d6c1b1d8ab8c45d7235db70726f78792e72656d6f6e742d747261636b65722e7275';
+  /// FakeTLS secret with SNI `www.cloudflare.com` (Megafon mobile needs this;
+  /// `cdn.remont-tracker.ru` SNI stalled on cellular DPI).
+  static const _fakeTlsCfSecret =
+      'eefd10303a88e2c4ab0e0d385432d568ac7777772e636c6f7564666c6172652e636f6d';
 
-  /// Android-first MVP; iOS follows in a later PR with the same Dart API.
+  /// Ordered MTProto endpoints. Index 0 = preferred; later entries are
+  /// automatic failover when Wi‑Fi stays wedged on Connecting.
+  ///
+  /// 1) DNS hostname via nginx stream :443 → mtg
+  /// 2) Same path by VPS IP (skips DNS / captive-portal hostname quirks)
+  ///
+  /// Keep [proxySecretEpoch] in sync when secrets change so TDLib drops
+  /// stale proxy rows.
+  static const proxyEndpoints = <TdlibProxyEndpoint>[
+    TdlibProxyEndpoint(
+      server: 'cdn.remont-tracker.ru',
+      port: 443,
+      secret: _fakeTlsCfSecret,
+      label: 'cdn-443-cf',
+    ),
+    TdlibProxyEndpoint(
+      server: '159.194.200.164',
+      port: 443,
+      secret: _fakeTlsCfSecret,
+      label: 'ip-443-cf',
+    ),
+  ];
+
+  /// Bump whenever any [proxyEndpoints] secret changes.
+  static const proxySecretEpoch = 3;
+
+  /// Primary endpoint helpers (call sites / docs).
+  static String get proxyServer => proxyEndpoints.first.server;
+  static int get proxyPort => proxyEndpoints.first.port;
+  static String get proxySecret => proxyEndpoints.first.secret;
+
+  /// Android + iOS (static tdjson on iOS via DynamicLibrary.process).
   static bool get isSupportedPlatform {
     if (kIsWeb) return false;
-    return defaultTargetPlatform == TargetPlatform.android;
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
   }
 
   static bool get hasApiCredentials => apiId > 0 && apiHash.isNotEmpty;

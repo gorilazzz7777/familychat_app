@@ -9,6 +9,8 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'app/bootstrap_screen.dart';
+import 'core/diagnostics/app_session_diagnostics.dart';
+import 'core/diagnostics/session_log.dart';
 import 'core/call/callkit_incoming_service.dart';
 import 'core/client/app_client.dart';
 import 'core/client/install_store.dart';
@@ -27,6 +29,9 @@ import 'core/theme/theme_seed_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Debug diagnostic store (48h JSONL) — adb pull from app_flutter/fc_diag.
+  unawaited(SessionLog.instance.ensureStarted());
+  AppSessionDiagnostics.instance.start();
   // Cap decoded-image RAM — hub avatars + chat media otherwise grow until
   // Android suggests clearing the app cache / reports "many errors".
   final imageCache = PaintingBinding.instance.imageCache;
@@ -86,6 +91,9 @@ class FamilyChatApp extends ConsumerWidget {
       title: 'Family Space',
       navigatorKey: familyChatNavigatorKey,
       scaffoldMessengerKey: familyChatScaffoldMessengerKey,
+      navigatorObservers: [
+        AppSessionDiagnostics.instance.navigatorObserver,
+      ],
       debugShowCheckedModeBanner: false,
       locale: const Locale('ru'),
       supportedLocales: const [Locale('ru')],

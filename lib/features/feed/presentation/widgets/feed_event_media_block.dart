@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -15,20 +15,25 @@ import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../chat/presentation/widgets/chat_media_layout.dart';
 import '../../../chat/presentation/widgets/chat_network_image.dart';
 import '../../../gallery/presentation/widgets/gallery_carousel_thumbnail_strip.dart';
+import '../feed_jank_log.dart';
+import '../feed_media_prefetch.dart';
+import '../feed_scroll_busy.dart';
 
-/// Медиа в ленте: высота подстраивается под пропорции фото.
+/// РњРµРґРёР° РІ Р»РµРЅС‚Рµ: РІС‹СЃРѕС‚Р° РїРѕРґСЃС‚СЂР°РёРІР°РµС‚СЃСЏ РїРѕРґ РїСЂРѕРїРѕСЂС†РёРё С„РѕС‚Рѕ.
 ///
-/// - одно фото → рамка по его aspect (clamp 4:5 … ~16:9);
-/// - карусель → по самому «высокому» (меньший w/h);
-/// - [BoxFit.cover] — без серых полос.
+/// - РѕРґРЅРѕ С„РѕС‚Рѕ в†’ СЂР°РјРєР° РїРѕ РµРіРѕ aspect (clamp 4:5 вЂ¦ ~16:9);
+/// - РєР°СЂСѓСЃРµР»СЊ в†’ РїРѕ СЃР°РјРѕРјСѓ В«РІС‹СЃРѕРєРѕРјСѓВ» (РјРµРЅСЊС€РёР№ w/h);
+/// - [BoxFit.cover] вЂ” Р±РµР· СЃРµСЂС‹С… РїРѕР»РѕСЃ.
 ///
-/// Высота рамки фиксируется после первого известного aspect — иначе
-/// async decode + AnimatedSize дёргают инерционный скролл ленты.
+/// Р’С‹СЃРѕС‚Р° СЂР°РјРєРё С„РёРєСЃРёСЂСѓРµС‚СЃСЏ РїРѕСЃР»Рµ РїРµСЂРІРѕРіРѕ РёР·РІРµСЃС‚РЅРѕРіРѕ aspect вЂ” РёРЅР°С‡Рµ
+/// async decode + AnimatedSize РґС‘СЂРіР°СЋС‚ РёРЅРµСЂС†РёРѕРЅРЅС‹Р№ СЃРєСЂРѕР»Р» Р»РµРЅС‚С‹.
 class FeedEventMediaBlock extends ConsumerStatefulWidget {
   const FeedEventMediaBlock({
     super.key,
     required this.photos,
     required this.onPhotoTap,
+    this.onPhotoLongPress,
+    this.onPhotoDoubleTap,
     this.initialIndex = 0,
     this.onIndexChanged,
     this.onPlaySlideshow,
@@ -36,6 +41,9 @@ class FeedEventMediaBlock extends ConsumerStatefulWidget {
 
   final List<Map<String, dynamic>> photos;
   final void Function(int index) onPhotoTap;
+  /// Same recognizer as [onPhotoTap] вЂ” parent wrappers lose to inner onTap.
+  final VoidCallback? onPhotoLongPress;
+  final VoidCallback? onPhotoDoubleTap;
   final int initialIndex;
   final ValueChanged<int>? onIndexChanged;
   final void Function(int startIndex)? onPlaySlideshow;
@@ -43,6 +51,21 @@ class FeedEventMediaBlock extends ConsumerStatefulWidget {
   static const double minAspect = 0.8;
   static const double maxAspect = 1.91;
   static const double fallbackAspect = 1.0;
+
+  static final Map<String, double> aspectCache = {};
+
+  /// Copy session-cached aspects onto attachment maps so the next mount
+  /// hydrates without a decode в†’ height jump.
+  static void seedCachedAspects(Iterable<Map<String, dynamic>> photos) {
+    for (final photo in photos) {
+      if (chatAttachmentAspectRatio(photo) != null) continue;
+      final id = photo['id'] ?? photo['attachment_id'];
+      final key = id != null ? 'id:$id' : 'url:${galleryAttachmentUrl(photo)}';
+      final cached = aspectCache[key];
+      if (cached == null || cached <= 0) continue;
+      photo['aspect_ratio'] = cached;
+    }
+  }
 
   @override
   ConsumerState<FeedEventMediaBlock> createState() =>
@@ -60,8 +83,13 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
   bool _stripHeld = false;
   Timer? _hideStripTimer;
   bool _resolveScheduled = false;
+  /// Heavy images/video stay off until the feed fling settles.
+  bool _showHeavyMedia = false;
+  bool _revealScheduled = false;
+  static int _revealSeq = 0;
+  /// Only cover is decoded in the feed; other pages unlock on carousel swipe.
+  late Set<int> _heavyPhotoIndices;
 
-  static final Map<String, double> _aspectCache = {};
   static const _stripItem = 48.0;
   static const _stripGap = 6.0;
   static const _hideStripAfter = Duration(milliseconds: 2400);
@@ -72,8 +100,14 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     _index = widget.initialIndex.clamp(0, widget.photos.length - 1);
     _pageController = PageController(initialPage: _index);
     _aspects = List<double?>.filled(widget.photos.length, null);
+    _heavyPhotoIndices = {_index};
     _hydrateFromKnown();
-    _scheduleResolveAspects();
+    // Freeze height for this mount (fallback or known). Never resize mid-list.
+    _frameLocked = true;
+    if (_aspects.any((a) => a == null)) {
+      _scheduleResolveAspects();
+    }
+    _scheduleMediaReveal();
   }
 
   @override
@@ -83,8 +117,66 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
       _aspects = List<double?>.filled(widget.photos.length, null);
       _frameLocked = false;
       _hydrateFromKnown();
-      _scheduleResolveAspects();
+      _frameLocked = true;
+      _showHeavyMedia = false;
+      _revealScheduled = false;
+      _index = widget.initialIndex.clamp(0, widget.photos.length - 1);
+      _heavyPhotoIndices = {_index};
+      if (_aspects.any((a) => a == null)) {
+        _scheduleResolveAspects();
+      }
+      _scheduleMediaReveal();
     }
+  }
+
+  void _unlockPhoto(int index, {bool prefetchNeighbor = true}) {
+    if (index < 0 || index >= widget.photos.length) return;
+    final added = _heavyPhotoIndices.add(index);
+    if (added && mounted) setState(() {});
+    if (prefetchNeighbor) {
+      final next = index + 1;
+      if (next < widget.photos.length) {
+        FeedMediaPrefetch.enqueueAttachment(widget.photos[next]);
+      }
+    }
+    FeedMediaPrefetch.enqueueAttachment(widget.photos[index]);
+  }
+
+  void _onCarouselScrollActivity() {
+    _revealStrip();
+    // Unlock current + next so the swipe lands on a real image, not a shell.
+    _unlockPhoto(_index);
+    _unlockPhoto(_index + 1, prefetchNeighbor: false);
+  }
+
+  void _scheduleMediaReveal() {
+    if (_showHeavyMedia || _revealScheduled) return;
+    // Slow drag / idle: show photos immediately (prefetch should warm cache).
+    // Only ballistic fling keeps a lightweight shell so inertia stays smooth.
+    if (!FeedScrollBusy.isFlinging) {
+      _showHeavyMedia = true;
+      return;
+    }
+    _revealScheduled = true;
+    FeedJankLog.log('MEDIA_DEFER photos=${widget.photos.length}');
+    // Do NOT wait for full scroll-idle (drag keeps busy for ~480ms) —
+    // reveal as soon as ballistic ends so covers appear during slow scrolling.
+    _pollFlingEndThenReveal();
+  }
+
+  void _pollFlingEndThenReveal() {
+    if (!mounted || _showHeavyMedia) return;
+    if (FeedScrollBusy.isFlinging) {
+      Future<void>.delayed(const Duration(milliseconds: 32), () {
+        if (mounted) _pollFlingEndThenReveal();
+      });
+      return;
+    }
+    setState(() {
+      _showHeavyMedia = true;
+      _revealScheduled = false;
+    });
+    FeedJankLog.log('MEDIA_REVEAL photos=${widget.photos.length}');
   }
 
   @override
@@ -161,7 +253,7 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
   double? _aspectFromPhoto(Map<String, dynamic> photo) {
     final fromMeta = chatAttachmentAspectRatio(photo);
     if (fromMeta != null && fromMeta > 0) return fromMeta;
-    return _aspectCache[_photoCacheKey(photo)];
+    return FeedEventMediaBlock.aspectCache[_photoCacheKey(photo)];
   }
 
   void _hydrateFromKnown() {
@@ -170,7 +262,7 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
       if (known != null) {
         final clamped = _clampAspect(known);
         _aspects[i] = clamped;
-        _aspectCache[_photoCacheKey(widget.photos[i])] = clamped;
+        FeedEventMediaBlock.aspectCache[_photoCacheKey(widget.photos[i])] = clamped;
       }
     }
     _recomputeFrameAspect(lockIfKnown: true);
@@ -192,50 +284,55 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
   }
 
   void _scheduleResolveAspects() {
-    if (_frameLocked || _resolveScheduled) return;
+    if (_resolveScheduled) return;
     _resolveScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _resolveScheduled = false;
-      if (!mounted || _frameLocked) return;
+      if (!mounted) return;
+      // Still missing some aspects вЂ” fill cache without resizing.
+      if (_aspects.every((a) => a != null)) return;
       unawaited(_resolveAspects());
     });
   }
 
   Future<void> _resolveAspects() async {
-    if (_frameLocked) return;
-    // Don't decode images mid-fling — wait until scroll slows.
-    if (Scrollable.recommendDeferredLoadingForContext(context)) {
+    // Cache-only: _frameLocked is set on mount so we never setState-resize.
+    // Don't decode images mid-fling вЂ” wait until scroll slows.
+    if (Scrollable.recommendDeferredLoadingForContext(context) ||
+        FeedScrollBusy.isBusy) {
       _scheduleResolveAspects();
       return;
     }
     final photos = List<Map<String, dynamic>>.from(widget.photos);
-    var changed = false;
     for (var i = 0; i < photos.length; i++) {
-      if (!mounted || _frameLocked) return;
+      if (!mounted) return;
       if (_aspects[i] != null) continue;
-      if (Scrollable.recommendDeferredLoadingForContext(context)) {
+      if (Scrollable.recommendDeferredLoadingForContext(context) ||
+          FeedScrollBusy.isBusy) {
         _scheduleResolveAspects();
         return;
       }
       final ar = await _resolveOne(photos[i]);
-      if (!mounted || _frameLocked) return;
+      if (!mounted) return;
       if (ar == null) continue;
       if (i >= widget.photos.length) return;
       if (_photoCacheKey(widget.photos[i]) != _photoCacheKey(photos[i])) return;
       final clamped = _clampAspect(ar);
       _aspects[i] = clamped;
-      _aspectCache[_photoCacheKey(photos[i])] = clamped;
-      changed = true;
+      final key = _photoCacheKey(photos[i]);
+      FeedEventMediaBlock.aspectCache[key] = clamped;
+      // Persist onto the live map so cache / next mount hydrates without jump.
+      widget.photos[i]['aspect_ratio'] = clamped;
+      photos[i]['aspect_ratio'] = clamped;
+      FeedJankLog.log(
+        'ASPECT_CACHE key=$key ar=${clamped.toStringAsFixed(2)}',
+      );
     }
-    if (!changed || !mounted || _frameLocked) return;
-    setState(() {
-      _recomputeFrameAspect(lockIfKnown: true);
-    });
   }
 
   Future<double?> _resolveOne(Map<String, dynamic> photo) async {
     final key = _photoCacheKey(photo);
-    final cached = _aspectCache[key];
+    final cached = FeedEventMediaBlock.aspectCache[key];
     if (cached != null) return cached;
     final fromMeta = chatAttachmentAspectRatio(photo);
     if (fromMeta != null && fromMeta > 0) return fromMeta;
@@ -322,6 +419,31 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
     final height = _mediaHeight(context);
     final showCounter = widget.photos.length > 1;
 
+    // Mid-fling: reserved-height shell only — no decode / network / video.
+    if (!_showHeavyMedia) {
+      return ColoredBox(
+        color: cs.surfaceContainerHighest,
+        child: SizedBox(
+          height: height,
+          width: double.infinity,
+          child: showCounter
+              ? Align(
+                  alignment: Alignment.topRight,
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Text(
+                      '${_index + 1} / ${widget.photos.length}',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: cs.onSurfaceVariant,
+                          ),
+                    ),
+                  ),
+                )
+              : null,
+        ),
+      );
+    }
+
     Widget buildMedia(Map<String, dynamic> photo) {
       MediaLocalIndex.hydrateAttachment(photo);
       final localPath = galleryLocalDevicePath(photo);
@@ -389,6 +511,20 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
       return const Center(child: Icon(LucideIcons.image_off));
     }
 
+    Widget pageChild(int index) {
+      // Cover-only until the user swipes the in-post gallery.
+      if (!_heavyPhotoIndices.contains(index)) {
+        return ColoredBox(color: cs.surfaceContainerHighest);
+      }
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => widget.onPhotoTap(index),
+        onLongPress: widget.onPhotoLongPress,
+        onDoubleTap: widget.onPhotoDoubleTap,
+        child: buildMedia(widget.photos[index]),
+      );
+    }
+
     // No AnimatedSize: height animation during list fling fights scroll physics.
     return ColoredBox(
       color: cs.surfaceContainerHighest,
@@ -399,34 +535,28 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
           fit: StackFit.expand,
           children: [
               if (widget.photos.length == 1)
-                GestureDetector(
-                  onTap: () => widget.onPhotoTap(0),
-                  child: buildMedia(widget.photos.first),
-                )
+                pageChild(0)
               else
                 NotificationListener<ScrollNotification>(
                   onNotification: (notification) {
                     if (notification.depth == 0 &&
                         (notification is ScrollStartNotification ||
                             notification is ScrollUpdateNotification)) {
-                      _revealStrip();
+                      _onCarouselScrollActivity();
                     }
                     return false;
                   },
                   child: PageView.builder(
                     controller: _pageController,
                     itemCount: widget.photos.length,
+                    allowImplicitScrolling: false,
                     onPageChanged: (value) {
                       setState(() => _index = value);
                       widget.onIndexChanged?.call(value);
+                      _unlockPhoto(value);
                       _revealStrip();
                     },
-                    itemBuilder: (_, index) {
-                      return GestureDetector(
-                        onTap: () => widget.onPhotoTap(index),
-                        child: buildMedia(widget.photos[index]),
-                      );
-                    },
+                    itemBuilder: (_, index) => pageChild(index),
                   ),
                 ),
               if (showCounter)
@@ -465,7 +595,7 @@ class _FeedEventMediaBlockState extends ConsumerState<FeedEventMediaBlock> {
                     shape: const CircleBorder(),
                     clipBehavior: Clip.antiAlias,
                     child: IconButton(
-                      tooltip: 'Диафильм',
+                      tooltip: 'Р”РёР°С„РёР»СЊРј',
                       onPressed: () => widget.onPlaySlideshow!(_index),
                       icon: const Icon(
                         LucideIcons.play,

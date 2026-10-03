@@ -50,7 +50,8 @@ class TelegramMatchStore {
   }
 
   /// Import FC↔TG links from secretary `telegram/chats/` payload.
-  /// Only fills missing private matches (does not overwrite local links).
+  /// Soft-killed: Secretary path is disabled; keep for emergency revive only.
+  @Deprecated('Secretary soft-killed; use TDLib match / family identities')
   Future<int> importFromSecretaryChats(List<Map<String, dynamic>> chats) async {
     if (chats.isEmpty) return 0;
     final all = await loadAll();
@@ -143,18 +144,81 @@ class TelegramMatchStore {
     }
 
     // Drop verified self-links whose identity is no longer active.
-    // Leave manual / secretary matches (peer not logged in yet).
+    // Never wipe on an empty payload — that is almost always a transient
+    // API/network failure and previously split linked DMs (Киса FC+TG).
     final toRemove = <int>[];
-    for (final e in all.entries) {
-      if (!e.value.verified) continue;
-      if (activeTgIds.contains(e.key)) continue;
-      toRemove.add(e.key);
+    if (identities.isNotEmpty) {
+      for (final e in all.entries) {
+        if (!e.value.verified) continue;
+        if (activeTgIds.contains(e.key)) continue;
+        toRemove.add(e.key);
+      }
     }
     for (final tgId in toRemove) {
       all.remove(tgId);
       changed++;
     }
 
+    if (changed > 0) await _persist(all);
+    return changed;
+  }
+
+  /// Restore hub matches from FC threads that already carry `telegram.tg_chat_id`
+  /// (secretary / tdlib bridge). Does not overwrite verified identity matches.
+  Future<int> seedFromFcLinkedThreads(
+    List<Map<String, dynamic>> threads,
+  ) async {
+    if (threads.isEmpty) return 0;
+    final all = await loadAll();
+    var changed = 0;
+    for (final t in threads) {
+      final kind = t['kind']?.toString() ?? '';
+      if (kind != 'dm' && kind != 'friend_dm') continue;
+      final tg = t['telegram'];
+      if (tg is! Map || tg['linked'] != true) continue;
+      final tgChatId = (tg['tg_chat_id'] as num?)?.toInt() ??
+          int.tryParse('${tg['tg_chat_id'] ?? ''}') ??
+          0;
+      if (tgChatId == 0) continue;
+      final peerRaw = t['peer_user_id'];
+      final fcUserId = peerRaw is int
+          ? peerRaw
+          : int.tryParse('$peerRaw') ?? 0;
+      if (fcUserId <= 0) continue;
+      // Private TG chat id == peer user id.
+      final tgUserId = tgChatId > 0 ? tgChatId : 0;
+      if (tgUserId <= 0) continue;
+      final existing = all[tgUserId];
+      if (existing != null &&
+          existing.verified &&
+          existing.fcUserId == fcUserId &&
+          existing.tgChatId == tgChatId) {
+        continue;
+      }
+      if (existing != null &&
+          !existing.verified &&
+          existing.fcUserId == fcUserId &&
+          existing.tgChatId == tgChatId) {
+        continue;
+      }
+      final title = (t['title'] ?? t['custom_title'] ?? '').toString().trim();
+      final avatar = (t['peer_avatar_url'] ?? '').toString().trim();
+      all[tgUserId] = TelegramMatch(
+        tgUserId: tgUserId,
+        tgChatId: tgChatId,
+        fcUserId: fcUserId,
+        displayName: title.isNotEmpty
+            ? title
+            : (existing?.displayName.isNotEmpty == true
+                ? existing!.displayName
+                : 'Telegram'),
+        avatarUrl: avatar.isNotEmpty ? avatar : (existing?.avatarUrl ?? ''),
+        verified: existing?.verified ?? false,
+        fromSecretary: existing?.fromSecretary ??
+            (tg['bridge_mode']?.toString() == 'secretary'),
+      );
+      changed++;
+    }
     if (changed > 0) await _persist(all);
     return changed;
   }

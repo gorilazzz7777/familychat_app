@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import '../../core/diagnostics/session_log.dart';
+
 /// Temporary jank probe for TG conversation (НСИС…). Filter logcat by `[tg-jank]`.
 class TgJankLog {
   TgJankLog._();
@@ -20,6 +22,7 @@ class TgJankLog {
     _buildCount = 0;
     _notifyCount = 0;
     log('focus chat=$chatId');
+    SessionLog.instance.event('tg.ui', 'jank_focus', {'chatId': chatId});
   }
 
   static void clearFocus() {
@@ -27,12 +30,21 @@ class TgJankLog {
       'unfocus chat=$focusChatId builds=$_buildCount notifies=$_notifyCount '
       'itemBuilder=$_itemBuilderTicks',
     );
+    SessionLog.instance.event('tg.ui', 'jank_unfocus', {
+      'chatId': focusChatId,
+      'builds': _buildCount,
+      'notifies': _notifyCount,
+      'itemBuilder': _itemBuilderTicks,
+    });
     focusChatId = null;
   }
 
   static void log(String msg) {
     if (!enabled) return;
     debugPrint('[tg-jank] $msg');
+    // Only persist non-scroll spam — scroll is high-frequency.
+    if (msg.startsWith('SCROLL ')) return;
+    SessionLog.instance.trace('tg.jank', msg);
   }
 
   static void build({
