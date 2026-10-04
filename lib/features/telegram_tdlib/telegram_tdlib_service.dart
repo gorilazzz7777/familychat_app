@@ -549,7 +549,11 @@ class TelegramTdlibService extends ChangeNotifier {
   /// requests we pile on; concurrency of parts is inside TDLib.
   /// https://github.com/tdlib/td/issues/786
   /// https://hubo.dev/2020-06-05-source-code-walkthrough-of-telegram-ios-part-4/
-  static const _maxConcurrentDownloads = 2;
+  ///
+  /// Hub list: 3 is the sweet spot with FakeTLS proxy — faster than 2 for the
+  /// visible avatar budget (16), without flooding mtg handshakes like 5+.
+  /// Keep in sync with the hub-avatar inflight cap in [_pumpDownloadQueue].
+  static const _maxConcurrentDownloads = 3;
   /// One CDN download while a chat is open. Parallel focus+focus-tail both
   /// stalled at 0B; exclusive 1 keeps the focused photo as the only request.
   static const _maxConcurrentWhenChatOpen = 1;
@@ -665,9 +669,15 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Debounced public-IP / geo recheck (VPN can keep kind=wifi).
   Timer? _proxyGeoRecheckTimer;
   DateTime? _lastProxyGeoRecheckAt;
-  /// Active entry in [TdlibConfig.proxyEndpoints] (failover rotates this).
+  /// Active entry in [_activeProxyEndpoints] (failover rotates this).
   int _proxyEndpointIndex = 0;
   DateTime? _lastProxyFailoverAt;
+  /// Server-provided FakeTLS list (null → compile-time [TdlibConfig.proxyEndpoints]).
+  List<TdlibProxyEndpoint>? _remoteProxyEndpoints;
+  int? _remoteProxyEpoch;
+  DateTime? _lastRemoteProxyFetchAt;
+  static const _remoteProxyCacheKey = 'tdlib_mtproto_remote_proxies_v1';
+  static const _remoteProxyFetchMinInterval = Duration(minutes: 5);
 
   List<TdlibChatPreview> get privateChats =>
       hubChats.where((c) => !c.isGroup && !c.isChannel).toList();
@@ -1352,7 +1362,7 @@ class TelegramTdlibService extends ChangeNotifier {
     }
 
     // Cap how many hub-avatar jobs sit waiting — otherwise scroll floods the
-    // queue while the first two CDN downloads sit at 0B.
+    // queue while the in-flight CDN downloads sit at 0B.
     final hubQueued = _downloadQueue
         .where((j) => j.reason == 'hub-avatar')
         .length;
@@ -3326,7 +3336,82 @@ class TelegramTdlibService extends ChangeNotifier {
     }
   }
 
-  /// Rotate to the next [TdlibConfig.proxyEndpoints] entry (DNS → IP, …).
+  List<TdlibProxyEndpoint> get _activeProxyEndpoints =>
+      _remoteProxyEndpoints ?? TdlibConfig.proxyEndpoints;
+
+  int get _activeProxyEpoch =>
+      _remoteProxyEpoch ?? TdlibConfig.proxySecretEpoch;
+
+  /// Pull ordered FakeTLS endpoints from FamilyChat API (auth required).
+  /// On failure / empty payload keeps compile-time fallback (and disk cache).
+  Future<void> _refreshRemoteProxyEndpoints({bool force = false}) async {
+    final last = _lastRemoteProxyFetchAt;
+    if (!force &&
+        last != null &&
+        DateTime.now().difference(last) < _remoteProxyFetchMinInterval &&
+        _remoteProxyEndpoints != null) {
+      return;
+    }
+    // Warm from disk once so cold boot can rotate secrets before network.
+    if (_remoteProxyEndpoints == null) {
+      await _loadCachedRemoteProxyEndpoints();
+    }
+    try {
+      final raw = await _familychatRepo()
+          .fetchMtprotoProxies()
+          .timeout(const Duration(seconds: 5));
+      _lastRemoteProxyFetchAt = DateTime.now();
+      final parsed = TdlibConfig.parseRemoteProxies(raw);
+      if (parsed == null) {
+        _mediaLog(
+          'proxy-remote empty/invalid — using built-in '
+          'n=${TdlibConfig.proxyEndpoints.length} epoch=${TdlibConfig.proxySecretEpoch}',
+        );
+        return;
+      }
+      _remoteProxyEndpoints = parsed.endpoints;
+      _remoteProxyEpoch = parsed.epoch;
+      if (_proxyEndpointIndex >= parsed.endpoints.length) {
+        _proxyEndpointIndex = 0;
+      }
+      await _saveCachedRemoteProxyEndpoints(raw);
+      _mediaLog(
+        'proxy-remote ok n=${parsed.endpoints.length} epoch=${parsed.epoch} '
+        'primary=${parsed.endpoints.first.label}',
+      );
+    } catch (e) {
+      _mediaLog('proxy-remote fetch soft-fail err=$e');
+    }
+  }
+
+  Future<void> _loadCachedRemoteProxyEndpoints() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final text = prefs.getString(_remoteProxyCacheKey);
+      if (text == null || text.isEmpty) return;
+      final decoded = jsonDecode(text);
+      if (decoded is! Map) return;
+      final parsed = TdlibConfig.parseRemoteProxies(
+        Map<String, dynamic>.from(decoded),
+      );
+      if (parsed == null) return;
+      _remoteProxyEndpoints = parsed.endpoints;
+      _remoteProxyEpoch = parsed.epoch;
+      _mediaLog(
+        'proxy-remote cache hit n=${parsed.endpoints.length} '
+        'epoch=${parsed.epoch}',
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _saveCachedRemoteProxyEndpoints(Map<String, dynamic> raw) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_remoteProxyCacheKey, jsonEncode(raw));
+    } catch (_) {}
+  }
+
+  /// Rotate to the next [_activeProxyEndpoints] entry (DNS → IP, …).
   /// Single-endpoint builds fall back to disable/enable cycle.
   Future<void> _failoverProxy({required String why}) async {
     if (!_useMtprotoProxy) {
@@ -3334,7 +3419,7 @@ class TelegramTdlibService extends ChangeNotifier {
       return;
     }
     if (_client == null || _tearingDown || _tdlibReadyForMedia) return;
-    final endpoints = TdlibConfig.proxyEndpoints;
+    final endpoints = _activeProxyEndpoints;
     if (endpoints.length <= 1) {
       await _cycleEnabledProxy(why: why);
       return;
@@ -3400,9 +3485,10 @@ class TelegramTdlibService extends ChangeNotifier {
 
     while (_downloadActive < _downloadSlotLimit && _downloadQueue.isNotEmpty) {
       // Skip background jobs while a chat is open.
-      // With MTProto proxy: cap hub-avatar parallelism at 2 (slot limit).
+      // With MTProto proxy: cap hub-avatar parallelism to the hub slot limit.
       // Serial-only was worse — one 0B poison remote blocked the whole
       // viewport for 12s+ while good remotes waited unused behind it.
+      final hubInflightCap = _maxConcurrentDownloads;
       final hubInflightCount = _enabledProxyId == null
           ? 0
           : _downloadInFlight.where((id) {
@@ -3413,7 +3499,7 @@ class TelegramTdlibService extends ChangeNotifier {
         if (_openChatId != null && j.background) return false;
         if (_enabledProxyId != null &&
             j.reason == 'hub-avatar' &&
-            hubInflightCount >= 2) {
+            hubInflightCount >= hubInflightCap) {
           return false;
         }
         return true;
@@ -10044,12 +10130,14 @@ class TelegramTdlibService extends ChangeNotifier {
       }
     }
 
-    final endpoints = TdlibConfig.proxyEndpoints;
+    await _refreshRemoteProxyEndpoints();
+
+    final endpoints = _activeProxyEndpoints;
     if (endpoints.isEmpty) {
       _mediaLog('proxy ensure FAIL (no endpoints configured)');
       return;
     }
-    final epoch = TdlibConfig.proxySecretEpoch;
+    final epoch = _activeProxyEpoch;
     const epochPrefKey = 'tdlib_mtproto_proxy_secret_epoch';
     var forceSecretRotate = false;
     try {

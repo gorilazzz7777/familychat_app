@@ -46,11 +46,22 @@ class TdlibConfig {
   /// (`cannot find www.cloudflare.com in [cdn.remont-tracker.ru]`).
   /// SessionLog 2026-10-03 23:28: stuck Connecting on `cdn-443-cf` failover
   /// until rotated back to IP → Ready in ~11s. Hostname must NOT be a failover
-  /// target with this secret — stage-2 kick cycles enableProxy on the IP instead.
+  /// target with this secret.
+  ///
+  /// Prefer dedicated :8443 (direct to mtg, no nginx SNI mux). :443 stays as
+  /// failover for networks that block non-443 — but on some Wi‑Fi/ISP paths
+  /// FakeTLS ClientHello on :443 arrives with empty SNI and nginx routes it
+  /// to web :4443 instead of mtg (SessionLog 2026-10-04).
   ///
   /// Keep [proxySecretEpoch] in sync when secrets or preferred server change
   /// so TDLib drops stale proxy rows.
   static const proxyEndpoints = <TdlibProxyEndpoint>[
+    TdlibProxyEndpoint(
+      server: '159.194.200.164',
+      port: 8443,
+      secret: _fakeTlsCfSecret,
+      label: 'ip-8443-cf',
+    ),
     TdlibProxyEndpoint(
       server: '159.194.200.164',
       port: 443,
@@ -60,12 +71,44 @@ class TdlibConfig {
   ];
 
   /// Bump whenever any [proxyEndpoints] secret or preferred server changes.
-  static const proxySecretEpoch = 5;
+  /// Remote API may override via a higher [proxySecretEpoch] from the server.
+  static const proxySecretEpoch = 6;
 
   /// Primary endpoint helpers (call sites / docs).
   static String get proxyServer => proxyEndpoints.first.server;
   static int get proxyPort => proxyEndpoints.first.port;
   static String get proxySecret => proxyEndpoints.first.secret;
+
+  /// Parse server JSON `{epoch, endpoints:[{server,port,secret,label}]}`.
+  /// Returns null when the payload has no usable endpoints.
+  static ({int epoch, List<TdlibProxyEndpoint> endpoints})? parseRemoteProxies(
+    Map<String, dynamic> raw,
+  ) {
+    final listRaw = raw['endpoints'];
+    if (listRaw is! List || listRaw.isEmpty) return null;
+    final out = <TdlibProxyEndpoint>[];
+    for (final item in listRaw) {
+      if (item is! Map) continue;
+      final m = Map<String, dynamic>.from(item);
+      final server = m['server']?.toString().trim() ?? '';
+      final secret = m['secret']?.toString().trim() ?? '';
+      final label = m['label']?.toString().trim() ?? '';
+      final port = (m['port'] as num?)?.toInt();
+      if (server.isEmpty || secret.length < 32 || port == null) continue;
+      if (port < 1 || port > 65535) continue;
+      out.add(
+        TdlibProxyEndpoint(
+          server: server,
+          port: port,
+          secret: secret.toLowerCase(),
+          label: label.isEmpty ? 'remote-${out.length}' : label,
+        ),
+      );
+    }
+    if (out.isEmpty) return null;
+    final epoch = (raw['epoch'] as num?)?.toInt() ?? proxySecretEpoch;
+    return (epoch: epoch < 0 ? 0 : epoch, endpoints: out);
+  }
 
   /// Android + iOS (static tdjson on iOS via DynamicLibrary.process).
   static bool get isSupportedPlatform {

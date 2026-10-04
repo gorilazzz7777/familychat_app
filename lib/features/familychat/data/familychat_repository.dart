@@ -2762,4 +2762,14 @@ class FamilyChatRepository {
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
   }
+
+  /// Remote MTProto FakeTLS endpoints for TDLib (auth required).
+  ///
+  /// Empty [endpoints] means "use client built-in fallback".
+  Future<Map<String, dynamic>> fetchMtprotoProxies() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/telegram/mtproto-proxies/',
+    );
+    return res.data ?? const <String, dynamic>{};
+  }
 }
