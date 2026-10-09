@@ -1,7 +1,7 @@
 name: familychat_app
 description: Family Space — семейный мессенджер с родством.
 publish_to: 'none'
-version: 1.6.1+19
+version: 1.7.0+20
 
 environment:
   sdk: ^3.5.0
@@ -76,6 +76,9 @@ dependencies:
   flutter_tts: ^4.2.5
   pdfrx: ^2.4.7
   open_filex: ^4.7.0
+  audio_service: ^0.18.19
+  just_audio: ^0.10.6
+  flutter_inappwebview: ^6.1.5
 
 # sqlite3 3.x hooks download prebuilt .so from GitHub by default — that fails
 # when github.com is unreachable. Compile vendored amalgamation instead.
@@ -91,6 +94,11 @@ dependency_overrides:
   # We vendor a patched copy with corrected pubspec:web:fileName.
   vosk_flutter_service:
     path: vendor/vosk_flutter_service
+  # Close Consumer ProviderSubscriptions before Element.unmount and skip
+  # markNeedsBuild when !mounted — fixes defunct Element crashes when
+  # TelegramTdlibService (ChangeNotifier) notifies during route pop.
+  flutter_riverpod:
+    path: vendor/flutter_riverpod
 
 dev_dependencies:
   flutter_test:
@@ -110,6 +118,9 @@ flutter:
     - assets/logo/vk.png
     - assets/logo/ya.png
     - assets/logo/tg.png
+    - assets/logo/youtube.png
+    - assets/logo/tiktok.png
+    - assets/logo/instagram.png
     - assets/chat/birthday_celebration_avatar.jpg
     - assets/chat/family_chat_avatar.jpg
     - assets/chat/wallpapers/

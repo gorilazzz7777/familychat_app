@@ -39,8 +39,11 @@ class _MenuSectionsScreenState extends ConsumerState<MenuSectionsScreen> {
       ShellSection.family => settings.copyWith(menuFamily: value),
       ShellSection.gallery => settings.copyWith(menuGallery: value),
       ShellSection.calendar => settings.copyWith(menuCalendar: value),
+      ShellSection.services => settings,
     };
-    if (section == ShellSection.chat) return Future.value();
+    if (section == ShellSection.chat || section == ShellSection.services) {
+      return Future.value();
+    }
     return _apply(next);
   }
 
@@ -59,7 +62,9 @@ class _MenuSectionsScreenState extends ConsumerState<MenuSectionsScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final settings = ref.watch(appSettingsProvider);
-    final sections = ShellNavLayout.normalizedOrder(settings.menuOrder);
+    final sections = ShellNavLayout.normalizedOrder(settings.menuOrder)
+        .where((s) => s != ShellSection.services)
+        .toList();
 
     return Scaffold(
       appBar: FamilyAppBar.build(title: 'Разделы меню'),

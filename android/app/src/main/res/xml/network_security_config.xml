@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext for Services proxy (:13128) and IP-register (:13129); site traffic stays HTTPS. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">159.194.200.164</domain>
+    </domain-config>
+</network-security-config>

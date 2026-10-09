@@ -1345,6 +1345,48 @@ class _ChatVideoAttachmentPreviewState
 
   bool get _downloading => widget.attachment['is_downloading'] == true;
 
+  int? _asPositiveInt(dynamic raw) {
+    int? v;
+    if (raw is int) {
+      v = raw;
+    } else if (raw is num) {
+      v = raw.toInt();
+    } else {
+      v = int.tryParse('$raw');
+    }
+    if (v == null || v <= 0) return null;
+    return v;
+  }
+
+  String _formatTransferBytes(int bytes) {
+    if (bytes < 1024) return '$bytes Б';
+    if (bytes < 1024 * 1024) {
+      final kb = bytes / 1024;
+      return '${kb < 10 ? kb.toStringAsFixed(1) : kb.toStringAsFixed(0)} КБ';
+    }
+    final mb = bytes / (1024 * 1024);
+    return '${mb < 10 ? mb.toStringAsFixed(1) : mb.toStringAsFixed(0)} МБ';
+  }
+
+  /// `размер / загружено` while the video file is transferring.
+  String? get _videoTransferLabel {
+    final total = _asPositiveInt(widget.attachment['size_bytes']) ??
+        _asPositiveInt(widget.attachment['size']) ??
+        _asPositiveInt(widget.attachment['file_size']);
+    final downloaded = _asPositiveInt(widget.attachment['downloaded_bytes']);
+    if (total == null && downloaded == null) {
+      final p = widget.attachment['download_progress'];
+      if (p is num && p > 0) {
+        return '${(p * 100).clamp(0, 100).round()}%';
+      }
+      return null;
+    }
+    final totalLabel = total == null ? '…' : _formatTransferBytes(total);
+    final loadedLabel =
+        _formatTransferBytes(downloaded ?? 0);
+    return '$totalLabel / $loadedLabel';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1377,7 +1419,11 @@ class _ChatVideoAttachmentPreviewState
         oldWidget.attachment['is_downloading'] !=
             widget.attachment['is_downloading'] ||
         oldWidget.attachment['download_progress'] !=
-            widget.attachment['download_progress']) {
+            widget.attachment['download_progress'] ||
+        oldWidget.attachment['downloaded_bytes'] !=
+            widget.attachment['downloaded_bytes'] ||
+        oldWidget.attachment['size_bytes'] !=
+            widget.attachment['size_bytes']) {
       _aspect = chatAttachmentAspectRatio(widget.attachment) ?? _aspect;
       if (chatAttachmentAspectRatio(widget.attachment) == null) {
         _probeLocalBytes();
@@ -1609,19 +1655,44 @@ class _ChatVideoAttachmentPreviewState
           if (showSpinner) ...[
             ColoredBox(color: Colors.black.withValues(alpha: 0.35)),
             Center(
-              child: SizedBox(
-                width: 52,
-                height: 52,
-                child: CircularProgressIndicator(
-                  value: () {
-                    final p = widget.attachment['download_progress'];
-                    if (p is num && p > 0) return p.toDouble().clamp(0.0, 1.0);
-                    return null;
-                  }(),
-                  strokeWidth: 3.5,
-                  color: Colors.white,
-                  backgroundColor: Colors.white24,
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 52,
+                    height: 52,
+                    child: CircularProgressIndicator(
+                      value: () {
+                        final p = widget.attachment['download_progress'];
+                        if (p is num && p > 0) {
+                          return p.toDouble().clamp(0.0, 1.0);
+                        }
+                        return null;
+                      }(),
+                      strokeWidth: 3.5,
+                      color: Colors.white,
+                      backgroundColor: Colors.white24,
+                    ),
+                  ),
+                  if (_videoTransferLabel != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _videoTransferLabel!,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                        height: 1.1,
+                        shadows: [
+                          Shadow(
+                            color: Colors.black54,
+                            blurRadius: 4,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
           ] else if (!_playing)

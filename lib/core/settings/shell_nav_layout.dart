@@ -3,7 +3,7 @@ import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'app_settings.dart';
 
-enum ShellSection { chat, feed, family, gallery, calendar }
+enum ShellSection { chat, feed, family, gallery, calendar, services }
 
 class ShellNavLayout {
   const ShellNavLayout({
@@ -23,6 +23,7 @@ class ShellNavLayout {
     ShellSection.family,
     ShellSection.gallery,
     ShellSection.calendar,
+    ShellSection.services,
   ];
 
   final List<ShellSection> enabled;
@@ -62,6 +63,8 @@ class ShellNavLayout {
       ShellSection.family => settings.menuFamily,
       ShellSection.gallery => settings.menuGallery,
       ShellSection.calendar => settings.menuCalendar,
+      // Injected via [fromSettings] extras when premium — never a settings toggle.
+      ShellSection.services => false,
     };
   }
 
@@ -91,6 +94,7 @@ class ShellNavLayout {
     List<ShellSection> extras = const [],
     Set<ShellSection> pinToBar = const {},
   }) {
+    // Extras (e.g. Services) always last in the bar.
     final enabled = <ShellSection>[
       for (final section in normalizedOrder(settings.menuOrder))
         if (isVisible(section, settings)) section,
@@ -105,7 +109,8 @@ class ShellNavLayout {
         showMore: false,
       );
     }
-    if (enabled.length <= maxBarSlots) {
+    // Icons-only: no «Ещё» — every section in one row (Services stays last).
+    if (!settings.menuLabels || enabled.length <= maxBarSlots) {
       return ShellNavLayout(
         enabled: enabled,
         barSections: enabled,
@@ -137,6 +142,7 @@ class ShellNavLayout {
       ShellSection.family => 'Семья',
       ShellSection.gallery => 'Галерея',
       ShellSection.calendar => 'Календарь',
+      ShellSection.services => 'Сервисы',
     };
   }
 
@@ -149,6 +155,7 @@ class ShellNavLayout {
       ShellSection.family => LucideIcons.users,
       ShellSection.gallery => LucideIcons.images,
       ShellSection.calendar => LucideIcons.calendar_days,
+      ShellSection.services => LucideIcons.layout_grid,
     };
   }
 

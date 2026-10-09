@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../telegram_tdlib/telegram_link_navigation.dart';
+import '../youtube_proxy_navigation.dart';
 
 /// Styled range from Telegram TDLib `textEntity` (UTF-16 offsets).
 class ChatTextEntity {
@@ -141,7 +142,7 @@ class ChatMentionText extends StatelessWidget {
 
     if (entities.isNotEmpty) {
       return Text.rich(
-        TextSpan(children: _buildEntitySpans(resolvedLinkStyle)),
+        TextSpan(children: _buildEntitySpans(context, resolvedLinkStyle)),
         maxLines: maxLines,
         overflow: overflow,
       );
@@ -157,13 +158,16 @@ class ChatMentionText extends StatelessWidget {
     }
 
     return Text.rich(
-      TextSpan(children: _buildSpans(resolvedLinkStyle)),
+      TextSpan(children: _buildSpans(context, resolvedLinkStyle)),
       maxLines: maxLines,
       overflow: overflow,
     );
   }
 
-  List<InlineSpan> _buildEntitySpans(TextStyle resolvedLinkStyle) {
+  List<InlineSpan> _buildEntitySpans(
+    BuildContext context,
+    TextStyle resolvedLinkStyle,
+  ) {
     final n = body.length;
     if (n == 0) return const [];
 
@@ -239,7 +243,8 @@ class ChatMentionText extends StatelessWidget {
           TextSpan(
             text: chunk,
             style: runStyle,
-            recognizer: TapGestureRecognizer()..onTap = () => _openUrl(url),
+            recognizer: TapGestureRecognizer()
+              ..onTap = () => _openUrl(context, url),
           ),
         );
       } else {
@@ -250,7 +255,10 @@ class ChatMentionText extends StatelessWidget {
     return spans;
   }
 
-  List<InlineSpan> _buildSpans(TextStyle resolvedLinkStyle) {
+  List<InlineSpan> _buildSpans(
+    BuildContext context,
+    TextStyle resolvedLinkStyle,
+  ) {
     final sortedMentions = [...mentions]
       ..sort((a, b) {
         final an = a['display_name']?.toString() ?? '';
@@ -280,7 +288,7 @@ class ChatMentionText extends StatelessWidget {
             text: urlText,
             style: resolvedLinkStyle,
             recognizer: TapGestureRecognizer()
-              ..onTap = () => _openUrl(urlText),
+              ..onTap = () => _openUrl(context, urlText),
           ),
         );
         index += urlText.length;
@@ -323,7 +331,7 @@ class ChatMentionText extends StatelessWidget {
     return from + candidates.reduce((a, b) => a < b ? a : b);
   }
 
-  Future<void> _openUrl(String raw) async {
+  Future<void> _openUrl(BuildContext context, String raw) async {
     var value = raw.trim();
     if (value.startsWith('@') && value.length > 1) {
       value = 'https://t.me/${value.substring(1)}';
@@ -343,6 +351,9 @@ class ChatMentionText extends StatelessWidget {
         if (await onOpenUrl!(value)) return;
       } catch (_) {}
     }
+    try {
+      if (await YoutubeProxyNavigation.tryOpen(context, value)) return;
+    } catch (_) {}
     try {
       if (await TelegramLinkNavigation.tryOpen(value)) return;
     } catch (_) {}

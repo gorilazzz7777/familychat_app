@@ -1,0 +1,37 @@
+---
+description: Deploy FamilyChat debug builds with flutter run — never flutter install (wipes app data)
+alwaysApply: true
+---
+
+# FamilyChat — деплой на телефон без затирания данных
+
+При установке/обновлении debug-сборки на устройство **не использовать** `flutter install`.
+
+`flutter install` на Android часто делает uninstall → install и **стирает данные приложения** (логины FamilyChat, TDLib/Telegram сессия, cookies Services и т.д.). Пользователю приходится заново логиниться везде.
+
+## Делать так
+
+```bash
+flutter run -d <deviceId>
+# или, если процесс уже запущен:
+# r = hot reload, R = hot restart
+```
+
+Если нужен только APK без wipe сессии:
+
+```bash
+flutter build apk --debug
+adb install -r build/app/outputs/flutter-apk/app-debug.apk
+```
+
+Флаг `-r` = replace/upgrade **без** удаления данных.
+
+## Не делать
+
+```bash
+flutter install          # плохо — часто wipe
+adb uninstall … && adb install …
+adb install без -r после uninstall
+```
+
+Исключение: явная просьба пользователя «чистая установка» / «снести данные».

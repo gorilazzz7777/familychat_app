@@ -1,35 +1,38 @@
 import 'package:flutter/foundation.dart';
 
 abstract final class Env {
+  // Phone ISP path (e.g. 109.252.x) often TCP-timeouts 159.194.200.164:443
+  // while :4443 works. VPS: stream 443→4443 for clean nets; app uses :4443.
+  static const String _origin = 'https://familychat-app.ru:4443';
+
   static const String apiBaseUrl = String.fromEnvironment(
     'FAMILYCHAT_API_BASE_URL',
-    defaultValue: 'https://familychat-app.ru/api/v1/',
+    defaultValue: '$_origin/api/v1/',
   );
 
   static const String webAppBaseUrl = String.fromEnvironment(
     'FAMILYCHAT_WEB_APP_URL',
-    defaultValue: 'https://familychat-app.ru/app',
+    defaultValue: '$_origin/app',
   );
 
   static const String inviteBaseUrl = String.fromEnvironment(
     'FAMILYCHAT_INVITE_BASE_URL',
-    defaultValue: 'https://familychat-app.ru',
+    defaultValue: _origin,
   );
 
   static const String legalPrivacyUrl = String.fromEnvironment(
     'FAMILYCHAT_LEGAL_PRIVACY_URL',
-    defaultValue: 'https://familychat-app.ru/legal/familychat/privacy-policy/',
+    defaultValue: '$_origin/legal/familychat/privacy-policy/',
   );
 
   static const String legalAgreementUrl = String.fromEnvironment(
     'FAMILYCHAT_LEGAL_AGREEMENT_URL',
-    defaultValue: 'https://familychat-app.ru/legal/familychat/user-agreement/',
+    defaultValue: '$_origin/legal/familychat/user-agreement/',
   );
 
   static const String legalChildSafetyUrl = String.fromEnvironment(
     'FAMILYCHAT_LEGAL_CHILD_SAFETY_URL',
-    defaultValue:
-        'https://familychat-app.ru/legal/familychat/child-safety-standards/',
+    defaultValue: '$_origin/legal/familychat/child-safety-standards/',
   );
 
   static const String rustoreAppUrl = String.fromEnvironment(

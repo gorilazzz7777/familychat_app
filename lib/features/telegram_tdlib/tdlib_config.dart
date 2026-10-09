@@ -37,8 +37,8 @@ class TdlibConfig {
   static const _fakeTlsCfSecret =
       'eefd10303a88e2c4ab0e0d385432d568ac7777772e636c6f7564666c6172652e636f6d';
 
-  /// Ordered MTProto endpoints. Index 0 = preferred; later entries are
-  /// automatic failover when Wi‑Fi stays wedged on Connecting.
+  /// Ordered MTProto endpoints. Index 0 = compile-time default; runtime
+  /// prefers the last Ready hop, then [pingProxy]-ranked failover.
   ///
   /// IP only: with a hostname as [TdlibProxyEndpoint.server], TDLib puts that
   /// hostname into TLS SNI, while FakeTLS secret requires SNI
@@ -48,31 +48,31 @@ class TdlibConfig {
   /// until rotated back to IP → Ready in ~11s. Hostname must NOT be a failover
   /// target with this secret.
   ///
-  /// Prefer dedicated :8443 (direct to mtg, no nginx SNI mux). :443 stays as
-  /// failover for networks that block non-443 — but on some Wi‑Fi/ISP paths
-  /// FakeTLS ClientHello on :443 arrives with empty SNI and nginx routes it
-  /// to web :4443 instead of mtg (SessionLog 2026-10-04).
+  /// Prefer dedicated second-IP :443 (mtg-wifi only).
+  /// `200.164:443` is **website HTTPS only** (SNI mux removed 2026-10-09) —
+  /// never an MTProto hop. `:8443` last — direct `mtg`; fine on mobile, often
+  /// closed on home Wi‑Fi.
   ///
   /// Keep [proxySecretEpoch] in sync when secrets or preferred server change
   /// so TDLib drops stale proxy rows.
   static const proxyEndpoints = <TdlibProxyEndpoint>[
+    TdlibProxyEndpoint(
+      server: '159.194.244.213',
+      port: 443,
+      secret: _fakeTlsCfSecret,
+      label: 'ip2-443-cf',
+    ),
     TdlibProxyEndpoint(
       server: '159.194.200.164',
       port: 8443,
       secret: _fakeTlsCfSecret,
       label: 'ip-8443-cf',
     ),
-    TdlibProxyEndpoint(
-      server: '159.194.200.164',
-      port: 443,
-      secret: _fakeTlsCfSecret,
-      label: 'ip-443-cf',
-    ),
   ];
 
   /// Bump whenever any [proxyEndpoints] secret or preferred server changes.
   /// Remote API may override via a higher [proxySecretEpoch] from the server.
-  static const proxySecretEpoch = 6;
+  static const proxySecretEpoch = 9;
 
   /// Primary endpoint helpers (call sites / docs).
   static String get proxyServer => proxyEndpoints.first.server;

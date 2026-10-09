@@ -91,11 +91,18 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
 
         if (state.phase == ChatAttachmentDownloadPhase.downloading &&
             showWhenDownloading) {
+          final attTotal = _attachmentSizeBytes(att);
+          final total = state.totalBytes > 0 ? state.totalBytes : attTotal;
           return _stack(
             context,
             child: child,
             progress: state.progress,
             onCancel: () => manager.cancelDownload(tid, attachmentId),
+            sizeLabel: _sizeLabel(
+              received: state.receivedBytes,
+              total: total,
+              progress: state.progress,
+            ),
           );
         }
 
@@ -137,11 +144,48 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
     );
   }
 
+  int _attachmentSizeBytes(Map<String, dynamic> att) {
+    for (final key in ['size_bytes', 'size', 'file_size']) {
+      final raw = att[key];
+      if (raw is int && raw > 0) return raw;
+      if (raw is num && raw > 0) return raw.toInt();
+      final parsed = int.tryParse('$raw');
+      if (parsed != null && parsed > 0) return parsed;
+    }
+    return 0;
+  }
+
+  static String _fmtBytes(int bytes) {
+    if (bytes < 1024) return '$bytes Б';
+    if (bytes < 1024 * 1024) {
+      final kb = bytes / 1024;
+      return '${kb < 10 ? kb.toStringAsFixed(1) : kb.toStringAsFixed(0)} КБ';
+    }
+    final mb = bytes / (1024 * 1024);
+    return '${mb < 10 ? mb.toStringAsFixed(1) : mb.toStringAsFixed(0)} МБ';
+  }
+
+  /// `размер / загружено` (total / received).
+  String? _sizeLabel({
+    required int received,
+    required int total,
+    required double progress,
+  }) {
+    if (total <= 0 && received <= 0) {
+      if (progress > 0) return '${(progress * 100).clamp(0, 100).round()}%';
+      return null;
+    }
+    final totalLabel = total > 0 ? _fmtBytes(total) : '…';
+    final loadedLabel = _fmtBytes(received < 0 ? 0 : received);
+    return '$totalLabel / $loadedLabel';
+  }
+
   Widget _stack(
     BuildContext context, {
     required Widget child,
     required double progress,
     VoidCallback? onCancel,
+    String? sizeLabel,
   }) {
     const ringSize = 56.0;
     const strokeWidth = 3.0;
@@ -156,38 +200,61 @@ class ChatMediaTransferOverlay extends ConsumerWidget {
             child: ColoredBox(
               color: Colors.black.withValues(alpha: 0.35),
               child: Center(
-                child: SizedBox(
-                  width: ringSize,
-                  height: ringSize,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      SizedBox(
-                        width: ringSize,
-                        height: ringSize,
-                        child: CircularProgressIndicator(
-                          value: progress > 0 ? progress : null,
-                          strokeWidth: strokeWidth,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: ringSize,
+                      height: ringSize,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          SizedBox(
+                            width: ringSize,
+                            height: ringSize,
+                            child: CircularProgressIndicator(
+                              value: progress > 0 ? progress : null,
+                              strokeWidth: strokeWidth,
+                              color: Colors.white,
+                              backgroundColor: Colors.white24,
+                            ),
+                          ),
+                          if (onCancel != null)
+                            _CancelButton(
+                              onTap: onCancel,
+                              size: innerSize,
+                            )
+                          else
+                            Text(
+                              '${(progress * 100).clamp(0, 100).round()}%',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (sizeLabel != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        sizeLabel,
+                        style: const TextStyle(
                           color: Colors.white,
-                          backgroundColor: Colors.white24,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                          height: 1.1,
+                          shadows: [
+                            Shadow(
+                              color: Colors.black54,
+                              blurRadius: 4,
+                            ),
+                          ],
                         ),
                       ),
-                      if (onCancel != null)
-                        _CancelButton(
-                          onTap: onCancel,
-                          size: innerSize,
-                        )
-                      else
-                        Text(
-                          '${(progress * 100).clamp(0, 100).round()}%',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 13,
-                          ),
-                        ),
                     ],
-                  ),
+                  ],
                 ),
               ),
             ),

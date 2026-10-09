@@ -15,6 +15,7 @@ import '../../../core/settings/app_settings.dart';
 import '../../chat/data/link_preview_service.dart';
 import '../../gallery/data/gallery_diary_album_bridge.dart';
 import '../../members/presentation/utils/milestone_photo_add_trace.dart';
+import '../../services/data/services_access.dart';
 
 class ThreadMessagesPage {
   const ThreadMessagesPage({
@@ -2771,5 +2772,38 @@ class FamilyChatRepository {
       'familychat/telegram/mtproto-proxies/',
     );
     return res.data ?? const <String, dynamic>{};
+  }
+
+  /// Resolve YouTube URL to a proxied progressive stream (auth required).
+  ///
+  /// Status: `preparing` | `ready` | `error`. When ready, [playback_path] is
+  /// an absolute path on the API host (e.g. `/yt-relay/stream/<token>`).
+  Future<Map<String, dynamic>> resolveYoutubePlayback(String url) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/youtube/resolve/',
+      queryParameters: {'url': url},
+      // Preparing a first-time cache can take a bit; still keep this short and
+      // let the UI poll while status == preparing.
+      options: Options(
+        receiveTimeout: const Duration(seconds: 25),
+        validateStatus: (code) => code != null && code < 500,
+      ),
+    );
+    return res.data ?? const <String, dynamic>{'status': 'error'};
+  }
+
+  /// Premium Services: whitelist this device IP + return proxy + catalog.
+  Future<ServicesAccess> fetchServicesAccess() async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      'familychat/services/access/',
+      options: Options(
+        receiveTimeout: const Duration(seconds: 15),
+      ),
+    );
+    final data = res.data ?? const <String, dynamic>{};
+    if (data['status']?.toString() != 'ready') {
+      throw StateError(data['error']?.toString() ?? 'services_unavailable');
+    }
+    return ServicesAccess.fromJson(data);
   }
 }

@@ -24,10 +24,14 @@ class ChatAttachmentDownloadState {
   const ChatAttachmentDownloadState({
     this.phase = ChatAttachmentDownloadPhase.idle,
     this.progress = 0,
+    this.receivedBytes = 0,
+    this.totalBytes = 0,
   });
 
   final ChatAttachmentDownloadPhase phase;
   final double progress;
+  final int receivedBytes;
+  final int totalBytes;
 
   bool get needsManualTap =>
       phase == ChatAttachmentDownloadPhase.idle ||
@@ -171,6 +175,8 @@ class ChatAttachmentDownloadManager extends ChangeNotifier {
             ChatAttachmentDownloadState(
               phase: ChatAttachmentDownloadPhase.downloading,
               progress: progress.clamp(0.0, 1.0),
+              receivedBytes: received < 0 ? 0 : received,
+              totalBytes: total < 0 ? 0 : total,
             ),
           );
         },

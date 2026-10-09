@@ -25,6 +25,7 @@ import '../core/providers/app_providers.dart';
 import '../core/theme/theme_seed_controller.dart';
 import '../core/share/incoming_share_bus.dart';
 import '../core/share/share_direct_target_service.dart';
+import '../core/settings/app_settings.dart';
 import '../core/settings/app_settings_controller.dart';
 import '../core/settings/shell_nav_layout.dart';
 import '../features/telegram_tdlib/telegram_saved_bridge.dart';
@@ -64,6 +65,7 @@ import '../features/location/presentation/family_map_screen.dart';
 import '../features/members/presentation/family_invite_flow.dart';
 import '../features/members/presentation/members_screen.dart';
 import '../features/profile/presentation/menu_sections_screen.dart';
+import '../features/services/presentation/services_hub_screen.dart';
 
 class ShellScreen extends ConsumerStatefulWidget {
   const ShellScreen({
@@ -90,6 +92,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   static const _familyTabIndex = 2;
   static const _galleryTabIndex = 3;
   static const _calendarTabIndex = 4;
+  static const _servicesTabIndex = 5;
+  static const _tabCount = 6;
   static const _tabRefreshTtl = Duration(seconds: 45);
 
   int _index = _chatTabIndex;
@@ -516,6 +520,25 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   /// TG hub features are available to everyone (no Individual Premium gate).
   bool get _telegramFeaturesEnabled => true;
 
+  bool get _hasIndividualPremium {
+    final entitlements = _status['entitlements'];
+    return entitlements is Map && entitlements['individual_premium'] == true;
+  }
+
+  ShellNavLayout _navLayout([FamilyChatAppSettings? settings]) {
+    final FamilyChatAppSettings s =
+        settings ?? ref.read(appSettingsProvider);
+    return ShellNavLayout.fromSettings(
+      s,
+      extras: _hasIndividualPremium
+          ? const [ShellSection.services]
+          : const <ShellSection>[],
+      // With labels + overflow, keep Services on the pill (not under «Ещё»).
+      // Icons-only mode never uses «Ещё» — all icons stay in one row.
+      pinToBar: s.menuLabels ? const {ShellSection.services} : const {},
+    );
+  }
+
   bool get _telegramConnected {
     // TDLib client-side auth (Business Secretary UI hidden).
     // Prefer read: shell build already watches tdlib for bootstrap.
@@ -555,6 +578,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         _familyTabIndex => 'Семья',
         _galleryTabIndex => 'Галерея',
         _calendarTabIndex => 'Календарь',
+        _servicesTabIndex => 'Сервисы',
         _ => 'Family Space',
       };
 
@@ -589,7 +613,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
 
   void _openFeedFromPush() {
     if (!mounted) return;
-    final layout = ShellNavLayout.fromSettings(ref.read(appSettingsProvider));
+    final layout = _navLayout();
     if (!layout.isEnabled(ShellSection.feed)) return;
     _selectSection(ShellSection.feed);
   }
@@ -601,6 +625,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       ShellSection.family => _familyTabIndex,
       ShellSection.gallery => _galleryTabIndex,
       ShellSection.calendar => _calendarTabIndex,
+      ShellSection.services => _servicesTabIndex,
     };
   }
 
@@ -610,6 +635,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
       _familyTabIndex => ShellSection.family,
       _galleryTabIndex => ShellSection.gallery,
       _calendarTabIndex => ShellSection.calendar,
+      _servicesTabIndex => ShellSection.services,
       _ => ShellSection.chat,
     };
   }
@@ -683,6 +709,8 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
               );
       case _calendarTabIndex:
         return const CalendarScreen();
+      case _servicesTabIndex:
+        return const ServicesHubScreen();
       default:
         return const SizedBox.shrink();
     }
@@ -829,7 +857,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   @override
   Widget build(BuildContext context) {
     final showingNestedScreen = _hideShellAppBar;
-    final layout = ShellNavLayout.fromSettings(ref.watch(appSettingsProvider));
+    final layout = _navLayout(ref.watch(appSettingsProvider));
     final current = _sectionOf(_index);
     final tdlib = ref.watch(telegramTdlibServiceProvider);
     if (tdlib.phase != TdlibAuthPhase.ready) {
@@ -898,7 +926,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
           Expanded(
             child: IndexedStack(
               index: _index,
-              children: List<Widget>.generate(5, _buildTab),
+              children: List<Widget>.generate(_tabCount, _buildTab),
             ),
           ),
         ],

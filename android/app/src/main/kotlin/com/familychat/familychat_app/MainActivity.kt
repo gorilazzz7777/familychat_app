@@ -16,11 +16,11 @@ import android.provider.MediaStore
 import android.util.Log
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
-import io.flutter.embedding.android.FlutterActivity
+import com.ryanheise.audioservice.AudioServiceFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterActivity() {
+class MainActivity : AudioServiceFragmentActivity() {
     companion object {
         private const val TAG = "FamilyChatShare"
         private const val PUSH_REPLY_TAG = "FamilyChatPushReply"

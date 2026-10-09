@@ -32,6 +32,7 @@ import '../../chat/presentation/widgets/chat_message_bubble.dart';
 import '../../chat/presentation/widgets/chat_pinned_bar.dart';
 import '../../chat/presentation/widgets/chat_reply_compose_bar.dart';
 import '../../chat/presentation/widgets/chat_unread_separator.dart';
+import '../../chat/presentation/youtube_proxy_navigation.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
@@ -398,11 +399,12 @@ class _TelegramConversationScreenState
         _armIdleMediaRescan();
         return;
       }
-      // Force: ignore leftover hold from a neighbor that already finished.
+      // Do not forceFocus — under FakeTLS it flip-flops tip/photo rows and
+      // cancels the only in-flight downloadFile into permanent 0B.
       svc.prefetchOpenChatViewport(
         chatId: widget.chatId,
         focusMessageId: focusId,
-        forceFocus: true,
+        forceFocus: false,
       );
       _armIdleMediaRescan();
     });
@@ -461,8 +463,8 @@ class _TelegramConversationScreenState
     svc.prefetchOpenChatViewport(
       chatId: widget.chatId,
       focusMessageId: focusId,
-      // Settled viewport pick must beat leftover 4s hold from a prior row.
-      forceFocus: true,
+      // Hold wins over scroll jitter; user tap uses ensureFileDownloaded.
+      forceFocus: false,
     );
   }
 
@@ -505,12 +507,11 @@ class _TelegramConversationScreenState
       final mid = (top + bottom) * 0.5;
       final dist = (mid - centerY).abs();
       final coversCenter = top <= centerY && bottom >= centerY;
-      // Photo upgrades beat video thumbs; both beat docs/stickers.
-      final priority = svc.photoNeedsFocusDownload(m)
+      // Sharp photo + video first-frame thumbs share top priority; docs last.
+      final priority = (svc.photoNeedsFocusDownload(m) ||
+              svc.videoPreviewNeedsFocusDownload(m))
           ? 0
-          : (m.isVideo || m.isAnimation || m.isVideoNote)
-              ? 1
-              : 2;
+          : 2;
       final score = coversCenter ? dist : dist + listH;
 
       if (priority < bestPriority ||
@@ -552,7 +553,11 @@ class _TelegramConversationScreenState
       return null;
     }
 
-    return pick((row) => row.members.any(svc.photoNeedsFocusDownload)) ??
+    return pick((row) => row.members.any(
+              (m) =>
+                  svc.photoNeedsFocusDownload(m) ||
+                  svc.videoPreviewNeedsFocusDownload(m),
+            )) ??
         pick((row) => row.members.any(svc.mediaNeedsViewportFocus));
   }
 
@@ -1089,7 +1094,10 @@ class _TelegramConversationScreenState
     }
   }
 
-  Future<bool> _handleOpenUrl(String url) {
+  Future<bool> _handleOpenUrl(String url) async {
+    try {
+      if (await YoutubeProxyNavigation.tryOpen(context, url)) return true;
+    } catch (_) {}
     return TelegramLinkNavigation.tryOpen(
       url,
       currentChatId: widget.chatId,
@@ -1652,6 +1660,12 @@ class _TelegramConversationScreenState
     final svc = ref.read(telegramTdlibServiceProvider);
     final id = int.tryParse(play['id']?.toString() ?? '');
     if (id != null && id > 0) {
+      // R22: clear focus/album/stall holders before taking the FakeTLS slot.
+      unawaited(svc.preemptForUserTap(
+        fileId: id,
+        chatId: widget.chatId,
+        reason: 'tap:photo:$id',
+      ));
       final path = await svc.ensureFileLocal(
         id,
         priority: TelegramTdlibService.prioFocused,
@@ -2569,6 +2583,14 @@ class _TelegramConversationScreenState
           (path == null || path.isEmpty) &&
           (tapping ||
               ((!hasThumbFile) && svc.isFileDownloading(fileId)));
+      final sizeBytes = () {
+        final declared = m.videoSizeBytes ?? 0;
+        if (declared > 0) return declared;
+        if (fileId == null) return 0;
+        return svc.fileExpectedSize(fileId);
+      }();
+      final downloadedBytes =
+          fileId == null ? 0 : svc.fileDownloadedBytes(fileId);
       return [
         {
           'id': fileId ?? m.id,
@@ -2593,8 +2615,10 @@ class _TelegramConversationScreenState
             'width': m.videoWidth,
           if (m.videoHeight != null && m.videoHeight! > 0)
             'height': m.videoHeight,
+          if (sizeBytes > 0) 'size_bytes': sizeBytes,
           if (downloading) 'is_downloading': true,
           if (downloading && progress != null) 'download_progress': progress,
+          if (downloading) 'downloaded_bytes': downloadedBytes,
         },
       ];
     }
@@ -2956,8 +2980,8 @@ class _TelegramConversationScreenState
                   if (kDebugMode)
                     Tooltip(
                       message: svc.mtprotoProxyEnabled
-                          ? 'MTProto proxy ON'
-                          : 'MTProto proxy OFF (direct)',
+                          ? 'MTProto proxy allow (follow geo)'
+                          : 'MTProto proxy OFF (user direct)',
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [

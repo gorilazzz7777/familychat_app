@@ -5,6 +5,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../telegram_tdlib/telegram_link_navigation.dart';
 import '../../data/link_preview_service.dart';
+import '../../data/youtube_links.dart';
+import '../youtube_proxy_navigation.dart';
 
 /// Превью ссылки в пузыре: сайт, заголовок страницы и фото со ссылки.
 class ChatLinkPreviewCard extends StatefulWidget {
@@ -73,6 +75,9 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
       } catch (_) {}
     }
     try {
+      if (await YoutubeProxyNavigation.tryOpen(context, normalized)) return;
+    } catch (_) {}
+    try {
       if (await TelegramLinkNavigation.tryOpen(normalized)) return;
     } catch (_) {}
     final uri = Uri.tryParse(normalized);
@@ -106,7 +111,10 @@ class _ChatLinkPreviewCardState extends State<ChatLinkPreviewCard> {
     final siteName = preview?.siteName?.trim();
     final title = preview?.title?.trim();
     final description = preview?.description?.trim();
-    final imageUrl = preview?.imageUrl?.trim();
+    // YouTube: always prefer relay thumb — direct ytimg is blocked on RU mobile.
+    final imageUrl = YoutubeLinks.proxiedThumbUrl(widget.url) ??
+        YoutubeLinks.proxiedThumbUrl(preview?.canonicalUrl ?? '') ??
+        preview?.imageUrl?.trim();
     final source = (siteName != null && siteName.isNotEmpty) ? siteName : host;
     final showTitle = title != null &&
         title.isNotEmpty &&
