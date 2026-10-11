@@ -101,9 +101,14 @@ MTProto FakeTLS (см. `TdlibConfig.proxyEndpoints`; VPS: `mtg` / `mtg-wifi`):
 - **R30:** после pause None — один `enableProxy` (proxy reconnect) +
   quiet 35s; long-bg не soft-restart@20s. См.
   `_fc_diag/proxy_parity/18_RESUME_PROXY_RECONNECT.md`.
-- **R31b:** boot — params → proxy → online/WiFi; skip bearer mid-boot
-  (pre-params addProxy timed out). См.
-  `_fc_diag/proxy_parity/19_BOOT_PROXY_BEFORE_DIAL.md`.
+- **R31b:** boot — skip bearer mid-boot (pre-params addProxy timed out).
+  См. `_fc_diag/proxy_parity/19_BOOT_PROXY_BEFORE_DIAL.md`.
+- **R32:** boot — `networkTypeNone` hold until enableProxy, then WiFi
+  (first dial = FakeTLS); bearer soft-only in background. См.
+  `_fc_diag/proxy_parity/20_36H_BOOT_HOLD_UNTIL_PROXY.md`.
+- **R33:** short resume = только `online`+`setNetworkType` (как
+  resumeNetwork), без enableProxy; collapse soft-restart после quiet.
+  См. `_fc_diag/proxy_parity/21_RESUME_NO_ENABLEPROXY.md`.
 - `pingProxy` **не** используется для «лечения» отдельных file stalls
   ([td#2585](https://github.com/tdlib/td/issues/2585)): пока нет Ready —
   только disk-hits; сетевые download ждут канала.

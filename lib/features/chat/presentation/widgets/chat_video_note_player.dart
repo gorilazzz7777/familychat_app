@@ -17,6 +17,8 @@ import '../../../../core/network/chat_network_link.dart';
 import '../../../../core/providers/app_providers.dart';
 import '../../../../core/settings/app_settings_controller.dart';
 import '../../../../core/widgets/family_public_image.dart';
+import '../../../telegram_tdlib/telegram_tdlib_providers.dart';
+import '../../../telegram_tdlib/telegram_tdlib_service.dart';
 import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_media_flicker_trace.dart';
 import '../../data/chat_media_providers.dart';
@@ -75,6 +77,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
   String? _thumbPath;
   String? _thumbUrl;
   int _thumbGen = 0;
+  bool _tdlibFetching = false;
 
   @override
   void initState() {
@@ -88,11 +91,41 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     _scheduleAutoDownload();
   }
 
+  bool get _isTdlibNote =>
+      widget.attachment['tdlib_file_id'] != null ||
+      widget.attachment['skip_age_defer'] == true;
+
+  int? get _tdlibFileId =>
+      chatAsInt(widget.attachment['tdlib_file_id']) ??
+      chatAsInt(widget.attachment['id']);
+
   void _scheduleAutoDownload() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final attachmentId = chatAsInt(widget.attachment['id']);
       if (attachmentId == null || attachmentId <= 0) return;
+      // Telegram video notes must use TDLib — FC HTTP 404s forever (stuck ✕).
+      if (_isTdlibNote) {
+        final fileId = _tdlibFileId;
+        if (fileId == null || fileId <= 0) return;
+        if (galleryLocalDevicePath(widget.attachment).isNotEmpty) return;
+        final settings = ref.read(appSettingsProvider);
+        final network = ref.read(chatNetworkLinkProvider).value ??
+            ChatNetworkLinkKind.unknown;
+        if (!ChatMediaAutoDownloadPolicy.shouldAutoDownload(
+          settings: settings,
+          network: network,
+          attachment: widget.attachment,
+          messageMetadata: widget.messageMetadata,
+        )) {
+          return;
+        }
+        ref.read(telegramTdlibServiceProvider).queueAutoVideoDownload(
+              fileId: fileId,
+              chatId: widget.threadId,
+            );
+        return;
+      }
       final settings = ref.read(appSettingsProvider);
       final network = ref.read(chatNetworkLinkProvider).value ??
           ChatNetworkLinkKind.unknown;
@@ -110,6 +143,9 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
 
   bool _skipDownloadOverlay() {
     MediaLocalIndex.hydrateAttachment(widget.attachment);
+    if (galleryLocalDevicePath(widget.attachment).isNotEmpty) return true;
+    // TDLib: overlay driven by attachment is_downloading, not FC manager.
+    if (_isTdlibNote) return widget.attachment['is_downloading'] != true;
     return ChatMediaAutoDownloadPolicy.isLocallyAvailable(
           threadId: widget.threadId,
           attachment: widget.attachment,
@@ -117,6 +153,28 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
         ChatMediaAutoDownloadPolicy.hasRemoteContentUrl(
           attachment: widget.attachment,
         );
+  }
+
+  Future<String?> _ensureTdlibLocal() async {
+    final fileId = _tdlibFileId;
+    if (fileId == null || fileId <= 0) return null;
+    if (mounted) setState(() => _tdlibFetching = true);
+    try {
+      final svc = ref.read(telegramTdlibServiceProvider);
+      await svc.preemptForUserTap(
+        fileId: fileId,
+        chatId: widget.threadId,
+        reason: 'tap:video:$fileId',
+      );
+      return await svc.ensureFileLocal(
+        fileId,
+        priority: TelegramTdlibService.prioFocused,
+        reason: 'tap:video:$fileId',
+        waitFor: const Duration(minutes: 10),
+      );
+    } finally {
+      if (mounted) setState(() => _tdlibFetching = false);
+    }
   }
 
   @override
@@ -356,6 +414,16 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     if (!widget.interactive) return;
 
     if (!_expanded) {
+      if (_isTdlibNote &&
+          galleryLocalDevicePath(widget.attachment).isEmpty) {
+        final path = await _ensureTdlibLocal();
+        if (!mounted) return;
+        if (path == null || path.isEmpty) {
+          setState(() => _error = StateError('Не удалось загрузить кружок'));
+          return;
+        }
+        widget.attachment['local_device_path'] = path;
+      }
       await _ensureExpandedPlayback();
       return;
     }
@@ -427,6 +495,60 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     final showPlayer =
         _expanded && !_initializing && c != null && c.value.isInitialized;
 
+    final tdlibDownloading = _isTdlibNote &&
+        (_tdlibFetching || widget.attachment['is_downloading'] == true);
+    if (tdlibDownloading) {
+      final progress = widget.attachment['download_progress'];
+      final value = progress is num && progress > 0
+          ? progress.toDouble().clamp(0.0, 1.0)
+          : null;
+      return Stack(
+        fit: StackFit.passthrough,
+        children: [
+          RepaintBoundary(
+            child: GestureDetector(
+              onTap: _onTap,
+              behavior: HitTestBehavior.opaque,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                width: size,
+                height: size,
+                clipBehavior: (showPlayer || placeholder != null)
+                    ? Clip.antiAlias
+                    : Clip.none,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                ),
+                child: showPlayer
+                    ? VideoPlayer(c!)
+                    : (placeholder ?? const SizedBox.shrink()),
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: Material(
+              color: Colors.black.withValues(alpha: 0.28),
+              shape: const CircleBorder(),
+              child: Center(
+                child: SizedBox(
+                  width: 52,
+                  height: 52,
+                  child: CircularProgressIndicator(
+                    value: value,
+                    strokeWidth: 3.5,
+                    color: Colors.white,
+                    backgroundColor: Colors.white24,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return ChatMediaTransferOverlay(
       threadId: widget.threadId,
       attachment: widget.attachment,
@@ -434,6 +556,8 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
       onCancelUpload: widget.onCancelUpload,
       onDownloadTap: _onTap,
       showManualDownload: !_skipDownloadOverlay(),
+      // TDLib notes never use the FC HTTP downloader.
+      showWhenDownloading: !_isTdlibNote,
       child: RepaintBoundary(
         child: GestureDetector(
           onTap: _onTap,

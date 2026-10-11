@@ -1611,13 +1611,15 @@ class _TelegramConversationScreenState
       // Inline progress on the bubble preview — no blocking dialog.
       play.remove('local_device_path');
       setState(() => _pendingOpenVideoId = id);
-      // User tap wins the exclusive slot — cancel autofocus photo first.
-      unawaited(svc.preemptForUserTap(
-        fileId: id,
-        chatId: widget.chatId,
-        reason: 'tap:video:$id',
-      ));
+      // R49: await preempt first — unawaited raced ensureFileLocal so
+      // downloadFile often started before openMessageContent/viewMessages.
       unawaited(() async {
+        await svc.preemptForUserTap(
+          fileId: id,
+          chatId: widget.chatId,
+          reason: 'tap:video:$id',
+        );
+        if (!mounted || _pendingOpenVideoId != id) return;
         final path = await svc.ensureFileLocal(
           id,
           priority: TelegramTdlibService.prioFocused,
@@ -1660,12 +1662,12 @@ class _TelegramConversationScreenState
     final svc = ref.read(telegramTdlibServiceProvider);
     final id = int.tryParse(play['id']?.toString() ?? '');
     if (id != null && id > 0) {
-      // R22: clear focus/album/stall holders before taking the FakeTLS slot.
-      unawaited(svc.preemptForUserTap(
+      // R22/R49: await preempt so open/slot yield finishes before ensure.
+      await svc.preemptForUserTap(
         fileId: id,
         chatId: widget.chatId,
         reason: 'tap:photo:$id',
-      ));
+      );
       final path = await svc.ensureFileLocal(
         id,
         priority: TelegramTdlibService.prioFocused,
@@ -2522,11 +2524,10 @@ class _TelegramConversationScreenState
     }
 
     if (m.isVideoNote) {
+      final fileId = m.videoNoteFileId;
       final path = m.videoNoteLocalPath ??
-          (m.videoNoteFileId == null
-              ? null
-              : svc.cachedFilePath(m.videoNoteFileId!));
-      // Thumbs / body come from exclusive focus — do not enqueue here.
+          (fileId == null ? null : svc.cachedFilePath(fileId));
+      // Thumbs come from exclusive focus; body via TDLib (not FC HTTP).
       final thumbPath = m.videoNoteThumbLocalPath ??
           (m.videoNoteThumbFileId == null
               ? null
@@ -2539,21 +2540,43 @@ class _TelegramConversationScreenState
         }
       }
       final durationMs = m.videoNoteDurationMs ?? 0;
+      final previewLoading = svc.videoPreviewNeedsFocusDownload(m) &&
+          svc.isMessagePreviewLoading(m);
+      final bodyLoading = fileId != null &&
+          (path == null || path.isEmpty) &&
+          svc.isFileDownloading(fileId);
+      final downloading = previewLoading || bodyLoading;
+      final progress = downloading
+          ? (svc.messagePreviewProgress(m) ??
+              (fileId == null ? null : svc.fileDownloadProgress(fileId)))
+          : null;
+      final sizeBytes =
+          fileId == null ? 0 : svc.fileExpectedSize(fileId);
+      final downloadedBytes =
+          fileId == null ? 0 : svc.fileDownloadedBytes(fileId);
       return [
         {
-          'id': m.videoNoteFileId ?? m.id,
+          'id': fileId ?? m.id,
           'kind': 'video',
           'content_type': 'video/mp4',
           'filename': 'video_note_${durationMs > 0 ? durationMs : m.id}.mp4',
           'is_video_note': true,
           'skip_age_defer': true,
-          if (path != null && path.isNotEmpty) 'local_device_path': path,
+          if (fileId != null && fileId > 0) 'tdlib_file_id': fileId,
+          if (path != null && path.isNotEmpty) ...{
+            'local_device_path': path,
+            'video_local_path': path,
+          },
           if (thumbPath != null && thumbPath.isNotEmpty)
             'thumbnail_local_path': thumbPath,
           if ((thumbPath == null || thumbPath.isEmpty) &&
               m.videoNoteThumbBytes != null &&
               m.videoNoteThumbBytes!.isNotEmpty)
             'thumbnail_bytes': Uint8List.fromList(m.videoNoteThumbBytes!),
+          if (sizeBytes > 0) 'size_bytes': sizeBytes,
+          if (downloading) 'is_downloading': true,
+          if (downloading && progress != null) 'download_progress': progress,
+          if (downloading) 'downloaded_bytes': downloadedBytes,
         },
       ];
     }
@@ -2575,14 +2598,19 @@ class _TelegramConversationScreenState
       final durationMs = m.videoDurationMs ?? 0;
       final ext = m.isAnimation ? 'gif' : 'mp4';
       final fileId = m.videoFileId;
-      final progress = fileId == null ? null : svc.fileDownloadProgress(fileId);
       final hasThumbFile = thumbPath != null && thumbPath.isNotEmpty;
-      // Show spinner while the full video downloads on tap (even if thumb ready).
+      // Spinner: thumb preview loading, or full body on tap (even if thumb ready).
       final tapping = fileId != null && _pendingOpenVideoId == fileId;
-      final downloading = fileId != null &&
+      final previewLoading = svc.videoPreviewNeedsFocusDownload(m) &&
+          svc.isMessagePreviewLoading(m);
+      final bodyLoading = fileId != null &&
           (path == null || path.isEmpty) &&
-          (tapping ||
-              ((!hasThumbFile) && svc.isFileDownloading(fileId)));
+          (tapping || svc.isFileDownloading(fileId));
+      final downloading = previewLoading || bodyLoading;
+      final progress = downloading
+          ? (svc.messagePreviewProgress(m) ??
+              (fileId == null ? null : svc.fileDownloadProgress(fileId)))
+          : null;
       final sizeBytes = () {
         final declared = m.videoSizeBytes ?? 0;
         if (declared > 0) return declared;
@@ -2685,9 +2713,11 @@ class _TelegramConversationScreenState
     if (readyPath == null && thumbBytes == null && fileId == null) {
       return const [];
     }
-    final downloading =
-        fileId != null && readyPath == null && svc.isFileDownloading(fileId);
-    final progress = fileId == null ? null : svc.fileDownloadProgress(fileId);
+    // Soft m on disk + sharp x in flight still needs the loader (R45).
+    final downloading = svc.photoNeedsFocusDownload(m) &&
+        svc.isMessagePreviewLoading(m);
+    final progress =
+        downloading ? svc.messagePreviewProgress(m) : null;
     return [
       {
         'id': fileId ?? m.id,
@@ -2708,8 +2738,7 @@ class _TelegramConversationScreenState
           'local_bytes': thumbBytes,
           'thumbnail_bytes': thumbBytes,
         },
-        // Only while TDLib is actually downloading — never spin forever when
-        // the file is merely missing (Connecting / not queued / stalled).
+        // Spinner over minithumb/soft path while focus/tap transfer is live.
         if (downloading) 'is_downloading': true,
         if (downloading && progress != null) 'download_progress': progress,
       },

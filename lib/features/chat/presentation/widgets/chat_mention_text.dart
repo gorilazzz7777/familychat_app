@@ -213,7 +213,8 @@ class ChatMentionText extends StatelessWidget {
       final url = urls[i];
       var runStyle = style;
       if (bold[i]) {
-        runStyle = runStyle.copyWith(fontWeight: FontWeight.w700);
+        // Telegram Android uses Roboto Medium (500) for bold spans.
+        runStyle = runStyle.copyWith(fontWeight: FontWeight.w500);
       }
       if (italic[i]) {
         runStyle = runStyle.copyWith(fontStyle: FontStyle.italic);
@@ -235,7 +236,7 @@ class ChatMentionText extends StatelessWidget {
       if (url != null && url.isNotEmpty) {
         runStyle = resolvedLinkStyle.merge(
           TextStyle(
-            fontWeight: bold[i] ? FontWeight.w700 : resolvedLinkStyle.fontWeight,
+            fontWeight: bold[i] ? FontWeight.w500 : resolvedLinkStyle.fontWeight,
             fontStyle: italic[i] ? FontStyle.italic : resolvedLinkStyle.fontStyle,
           ),
         );

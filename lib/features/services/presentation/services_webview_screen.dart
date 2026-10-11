@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
 
@@ -162,15 +163,52 @@ class _ServicesWebViewScreenState extends State<ServicesWebViewScreen> {
     return false;
   }
 
+  /// Prefer in-WebView history (YouTube / TikTok / …). Returns true if handled.
+  Future<bool> _goBackInWebView() async {
+    final c = _controller;
+    if (c == null) return false;
+    try {
+      if (await c.canGoBack()) {
+        await c.goBack();
+        return true;
+      }
+    } catch (e) {
+      debugPrint('[services_webview] goBack failed: $e');
+    }
+    return false;
+  }
+
+  Future<void> _onAppBarBack() async {
+    if (await _goBackInWebView()) return;
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  void _exitToServices() {
+    Navigator.of(context).pop();
+  }
+
+  Future<void> _onSystemPop(bool didPop) async {
+    if (didPop) return;
+    if (await _goBackInWebView()) return;
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        unawaited(_onSystemPop(didPop));
+      },
+      child: Scaffold(
       appBar: FamilyAppBar.build(
         title: _title,
         leading: IconButton(
           icon: const Icon(LucideIcons.arrow_left),
-          tooltip: 'К списку сервисов',
-          onPressed: () => Navigator.of(context).maybePop(),
+          tooltip: 'Назад',
+          onPressed: () => unawaited(_onAppBarBack()),
         ),
         actions: [
           IconButton(
@@ -180,6 +218,11 @@ class _ServicesWebViewScreenState extends State<ServicesWebViewScreen> {
               setState(() => _error = null);
               _controller?.reload();
             },
+          ),
+          IconButton(
+            tooltip: 'Выход',
+            icon: const Icon(LucideIcons.log_out),
+            onPressed: _exitToServices,
           ),
         ],
       ),
@@ -279,6 +322,7 @@ class _ServicesWebViewScreenState extends State<ServicesWebViewScreen> {
           ),
         ],
       ),
+    ),
     );
   }
 }

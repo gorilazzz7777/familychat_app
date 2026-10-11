@@ -464,14 +464,9 @@ class _ChatNetworkImageState extends ConsumerState<ChatNetworkImage> {
     // TDLib downloads are driven by TelegramTdlibService — do not show the
     // FamilyChat "Load" button (wrong downloader / wrong attachment id).
     if (skipAgeDefer && tdlibDownloading) {
-      // Don't cover an already-decoded local thumb/photo with a spinner.
-      final localPath = galleryLocalDevicePath(widget.attachment);
-      final thumbPath =
-          widget.attachment['thumbnail_local_path']?.toString().trim() ?? '';
-      if (localDeviceFileExists(localPath) ||
-          localDeviceFileExists(thumbPath)) {
-        return child;
-      }
+      // Always overlay while TDLib is fetching a sharper preview — minithumb
+      // / soft local path alone must not hide the loader (user can't tell
+      // muddy JPEG from a stuck download).
       final progress = widget.attachment['download_progress'];
       final value = progress is num && progress > 0
           ? progress.toDouble().clamp(0.0, 1.0)

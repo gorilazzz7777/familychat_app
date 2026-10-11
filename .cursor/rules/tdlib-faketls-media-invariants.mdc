@@ -43,10 +43,49 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
 
 7. **Pause / resume = soft same-hop (official tgnet + levlam)**
    - Pause: freeze kick ladder; arm `_softResumeGuardUntil` (~5m).
-   - **R26 pause suspend:** after ~2s grace → `setNetworkType(None)`
-     (tgnet `pauseNetwork` / `suspendConnections`). Even if already
-     Connecting — do **not** leave zombie FakeTLS. Cancel grace on resume.
+   - **R26 pause suspend:** after ~2s grace → `setNetworkType(None)` when
+     already !Ready (zombie FakeTLS). Cancel grace on resume.
      Marker: `app-pause-suspend fire networkTypeNone`.
+   - **R34 (r33_check + mtg):** Ready+FakeTLS short lock → **skip**
+     `networkTypeNone` (TDLib None ≠ tgnet pauseNetwork; WiFi-only reopen
+     → 0/21 RELAY). Marker: `app-pause-suspend skip None (Ready+FakeTLS)`.
+     If None was applied (!Ready path): unsuspend quiet **12s**, R15
+     collapse soft-restart @**12s** (not 35+40). Marker:
+     `R15/R34 collapse … pauseSuspend=true`.
+   - **R35 (SessionLog 17:36):** after R34a skip None, TDLib may still
+     drop Ready→Connecting ~3s into lock. Resume must **not** R13
+     escalate@40s. Arm same early path as pause-suspend (`_resumeFromPauseSuspend`
+     + quiet 12s + soft-restart @12s). Markers:
+     `skip None` sets `_softPausedReadyProxy`,
+     `connecting-on-resume skip R13 (soft-pause Ready drop)`,
+     `faketls-quiet arm 12s why=app-resume-soft-pause`.
+   - **R36 (SessionLog 17:54):** unlock while already Ready+FakeTLS →
+     **never** `force setNetworkType` (`app-resume-ready` tore Ready→Connecting
+     ~180ms). `online=true` only. Soft-pause under long-bg (≥2m) still arms
+     early soft-restart. Markers:
+     `app-resume-ready skip setNetworkType (Ready+FakeTLS)`,
+     `long-background-resume soft-pause Ready drop`.
+   - **R37 (SessionLog 18:06 + mtg):** soft-restart after soft-pause often
+     DF-only (0 RELAY) while boot RELAY. tearDown wiped `_resumeFromPauseSuspend`
+     → soft-nudge forever. Preserve soft-pause ladder across soft-restart
+     (soft×≤3 → hop), same as longBg. Markers:
+     `preserveSoftPause=true`,
+     `soft-pause-escalation preserve after soft-restart`,
+     `soft-restart-preserve-soft-pause`.
+   - **R38 (SessionLog 18:35 + mtg):** soft-pause must **not** WiFi-only
+     reopen (0 RELAY DF). Soft-restart-first@0 was tried next.
+   - **R39 (r38_check + mtg):** soft-restart@0 without wire freeze → DF;
+     quiet-only left zombie dialing (QUIET 12 DF / 0 RELAY) → +46s soft×3.
+   - **R40 (r39_check + mtg, target ≤5s):** after R34a skip None, if TDLib
+     Ready→Connecting in bg → **late-None** (stop DF). Unlock →
+     **soft-restart-first** (not quiet-only / not WiFi reopen). Markers:
+     `app-pause-suspend late-None (Ready-drop in bg)`,
+     `app-resume-recover soft-restart-first`.
+   - **R41 (r40_check mtg):** long unlock +4.4s / 1 RELAY; short unlock
+     collapse@4s → soft× every 5s = DF thrash (+86s; soft×1 6 DF / 0 RELAY).
+     Soft-pause quiet/collapse **35s** (Ready clears quiet early → ≤5s when
+     plane good). Stage-5 skip-hop only after full quiet. Markers:
+     `faketls-quiet arm 35s why=soft-restart:soft-pause-resume`.
    - Resume while **still Ready** and never suspended: soft setNetworkType.
    - **Escalate ladder** (`_longBackgroundResume`) when:
      - background ≥2m (**long-bg**), **or**
@@ -59,8 +98,10 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
      without longBg/R15 soft-restart@15s. Marker:
      `connecting-on-resume skip R13 (pause-suspend)`.
    - **R25/R26 resume (primary):** `online=true` + `setNetworkType(force)`
-     after pause None (`app-resume-unsuspend` / `official-reopen`). No
-     soft-restart / enableProxy / hop on the resume recover path.
+     after pause None when **not** soft-pause / late-None FakeTLS wedge
+     (`app-resume-unsuspend` / `official-reopen`). No enableProxy / hop on
+     the resume recover path. **R40 soft-pause / late-None FakeTLS
+     `!Ready`:** soft-restart-first (WiFi-only after None = 0 RELAY).
    - Kick ladder only if still Connecting after R25 reopen (R9–R24):
      1. soft-nudge **without** enableProxy under soft-resume (R25)
      2. soft-restart×≤3 same hop, **skip** Connecting ping-probe (R24)
@@ -99,10 +140,23 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
    - **R31/R31b (SessionLog 17:21 / 17:28):** official = proxy before first
      dial, **not** Ready-direct→enableProxy. Pre-params `addProxy` timed
      out on our TDLib (17:28) + bearer-recover None mid-boot → worse.
-     **R31b:** `setTdlibParameters` → `_ensureProxy` → then `online`+WiFi;
-     skip bearer-recover / link-change while `!_parametersApplied` /
-     `_setParamsJob`. Markers: `boot proxy step done`,
-     `bearer-recover skip (boot/params)`, `link-change skip (boot/params)`.
+     **R31b:** skip bearer-recover / link-change while `!_parametersApplied`
+     / `_setParamsJob`.
+   - **R32 (36h SessionLog 10–11 Oct):** after params TDLib dials **direct**
+     Ready@~300ms; enableProxy ~1–4s later tears session; FakeTLS Ready
+     collapses ~15s. Fix: `networkTypeNone` **boot-hold-until-proxy** after
+     params, then `_ensureProxy`, then release WiFi/Mobile (first dial =
+     FakeTLS). Bearer: soft-only in background; no None-bounce when already
+     Ready+proxy. Markers: `boot-hold-until-proxy`,
+     `bearer-recover soft-only (background)`,
+     `skip-none-bounce (ready+proxy)`.
+   - **R33 (SessionLog 16:53 short lock):** official `resumeNetwork` = online
+     + setNetworkType only — **not** enableProxy (proxy still enabled after
+     pause None). R30 unsuspend enableProxy aborted FakeTLS → stuck ~1m45s.
+     After pause-suspend resume: no enableProxy; quiet; if still Connecting
+     after quiet → R15-style collapse to soft-restart. Markers:
+     `official-reopen` without `unsuspend enableProxy`,
+     `R15/R33 collapse … pauseSuspend=true` (timings → R34).
    - **R21** (SessionLog 16:15 lock-reopen): `_failoverProxy` Ready-gate
      must re-check **after every await** (`pingProxy` / sync). Probe-miss
      soft-nudge `enableProxy` while already Ready tore Ready→Connecting
@@ -113,7 +167,21 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
      suspend None (R26) and post-ladder socket-reopen (R16).
    - Ready-path failover still only on better ping (R10).
 
-7b. **Exclusive slot wedge (LOCKED R22)** — SessionLog 16:32–16:38
+7b. **Exclusive slot wedge (LOCKED R22 + R42 + R43 + R44 + R48 + R49)** — SessionLog 16:32–16:38,
+    r41_check 20:13/20:22, r42_check Shariy 20:30
+   - **R48 (active-screen priority):** hub is the active screen when
+     `_openChatId == null` — visible `hub-avatar` **may** use FakeTLS wire
+     (slotLimit=1, 0B budget ~4s, queue cap ~8). Do **not** restore
+     `hub-avatar skip: proxy exclusive`. Open chat must
+     `_purgeAvatarDownloads` + `_purgeNonFocusDownloads` before media.
+     App pause clears unfinished queue/inflight (`app-pause clear-unfinished`)
+     and bumps `mediaReadyEpoch` so hub re-prefetches; keep disk cache.
+   - **R49 (tap:video Ready+0B):** await `preemptForUserTap` before
+     `ensureFileLocal` (no unawaited race). `openMessageContent`/`viewMessages`
+     on tap:video must **force** (bypass 8s focus debounce). Keep download
+     waiters alive across stall-retry/lastchance — only complete on give-up.
+     Markers: `openMessageContent ok` before first tap `net-downloadFile`,
+     no waiter-null mid-ladder.
    - Full `tap:video` can succeed under Ready+FakeTLS; later thumbs/photos
      0B / idle mid-file + `album:prefetch`×N + `focus_hold` wedged 1/1.
    - **`preemptForUserTap`:** drop `album:prefetch` / `stall-*` / focus from
@@ -124,6 +192,49 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
    - Small files (≤64KB, not video body): Ready 0B budget **~12s**; **no**
      lastchance — marker `stall-give-up-small`.
    - Large `tap:video` Ready 0B stays **35s** (R19).
+   - **R42:** on chat switch clear focus hold + purge foreign **before**
+     `focus.contains`; pump gates on `inflight.length` (no FakeTLS 2×);
+     `tap:photo` Ready+0B **~12s** + skip lastchance; give-up clears hold.
+     Markers: `focus-hold clear why=open-chat:…`, `stall-give-up-small`.
+     Do **not** soft-restart / late-None / quiet changes for media stalls.
+   - **R43 (Shariy screen blur):** after focus disk/net complete, clear hold
+     **and** `_focusDownloadOrder` (keep `_focusMessageId` to skip re-open).
+     Same-focus early-return must **not** re-arm +45s FakeTLS hold unless
+     `_focusMediaBusy()`. Idle held bubble must not `focus_hold_block`
+     scroll siblings. Markers: `focus-hold clear why=focus-complete:…`,
+     `focus-hold clear why=focus-hold-idle:…`.
+   - **R44 (album gallery):** do **not** `focus-cap`→1. Queue all album
+     preview files as `focus` + `focus-tail:*`; slotLimit=1 serializes the
+     wire. Same-album viewport must not `focus_hold_block` mid-queue; idle
+     same-album may re-enqueue only when a sibling still has **uncached**
+     preview (not soft-not-sharp loop). Marker: `focus-album-queue`.
+   - **R45 (soft≠sharp):** typed `x`/`y`/`w` must download **primary**, not
+     stop at soft `m` fallback. Never `focus-alias` soft→primary; after soft
+     paints, queue `focus-upgrade` primary (slot=1). Markers:
+     `focus-alias skip soft→primary`, `focus-upgrade-soft … → [primary]`.
+   - **R46 (album soft 0B):** under FakeTLS focus wires **primary only** (soft
+     `m` disk-paint OK). `stall-give-up-small` on `focus-tail`/`focus-upgrade`
+     must **not** `_clearFocusMediaClaim` (substring `focus:`). Typed primary
+     on disk ≥3KB = bubble sharp (not 40KB bar). Poison give-up ids. Markers:
+     `stall-give-up-small keep-album-queue`, `focus-album-queue` without soft.
+   - **R47 (soft-restart stale file_id — SessionLog 00:39–00:40):** preserve
+     open transcript across soft-restart for paint, but TDLib remaps
+     `file_id`. `_loadChatHistory.mergeLiveIntoById` must **`putIfAbsent`**
+     only — never overwrite history-page rows with preserved RAM copies
+     (that kept pre-restart ids → `getFile` 404 / `downloadFile` 400
+     `File not found` / UI «Не удалось загрузить видео» while Ready+
+     proxyOn). On `File not found`: `getMessage` → upsert → remap waiter
+     to fresh id (`file-id-remap`). Clear `_mediaGiveUpFileIds` in
+     tearDown. Markers: `file-id-remap file=A → B`, `file_id_remap`.
+   - **R47b (cache after lock — SessionLog 00:50–00:51):** media already on
+     disk (`done … source=net path=…_120.jpg`) must paint after soft-restart
+     without re-wire. tearDown clears `_filePathCache` but must **seed** it
+     back from stamped `photoLocalPath` / video paths on restore
+     (`restore-seed-cache`), keep `_durablePathByRemote`, and treat
+     stamped local path as bubble-sharp (`_photoBubbleSharp`). Remap must
+     `remap-seed-disk` / `remap-disk-hit` / `ensure-hit-remap` so tap with
+     stale attachment id still hits disk. Markers: `restore-seed-cache`,
+     `remap-disk-hit`, `ensure-hit-remap`, `probe-hit-durable`.
 
 8. **Ready + media 0B ladder (LOCKED R8 + R10 + R17)**
    - First `downloadFile` under proxy: **CDN `offset=0`** — including
@@ -166,8 +277,23 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
 - Boot/sync `enableProxy` without quiet (soft@35s aborts first TlsInit)
 - Leaving restartCount at cap after hop-try (no soft-restart on new hop)
 - Burning soft×2 under long-bg while quiet / after quiet (R15 gap — ~2m UX)
-- Soft-restart-first / enableProxy on resume recover (R25 — not official)
+- Soft-restart-first / enableProxy on resume recover when Ready or direct
+  MTProto (R25 — not official). **Allowed:** soft-pause / late-None FakeTLS
+  `!Ready` (R40 — quiet-only DF×12; target ≤5s)
 - Skipping pause suspend when already Connecting (R26 — zombie FakeTLS)
+- `networkTypeNone` on every Ready+FakeTLS short lock while still Ready
+  (R34 — breaks FakeTLS). **Allowed:** late-None after Ready-drop in bg (R40)
+- Leaving zombie Connecting in bg after R34a skip None (R40 — LOCK/QUIET DF)
+- R13 escalate@40s after R34a skip None when TDLib dropped Ready in
+  background (R35 — soft-pause Ready drop → early soft-restart)
+- `force setNetworkType` on resume when already Ready+FakeTLS (R36 —
+  aborts FakeTLS; SessionLog 17:54)
+- Clearing soft-pause / pause-suspend flags inside soft-restart tearDown
+  (R37 — soft-nudge forever after first soft-restart; mtg DF-only)
+- WiFi-only reopen on soft-pause / late-None FakeTLS (R33/R38/R40 — 0 RELAY)
+- Soft-pause quiet-only without soft-restart (R39 — QUIET DF×12 / +46s)
+- Soft-pause collapse@4s / soft× every ~5s (R41 — DF thrash; +86s)
+- Hop-try to alt FakeTLS after soft-pause soft×N (R38/R39 — 0 RELAY)
 - R13 escalate after our own pause-suspend None (R27 — soft-restart@15s
   tears FakeTLS that official-reopen just started)
 - Soft-nudge `enableProxy` while Connecting after boot quiet (R28 —
@@ -177,7 +303,11 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
 - Long-bg quiet 18s / soft-restart@~20s after pause None without one
   enableProxy reconnect (R30 — thrash; Ready needs ~20s+)
 - Boot Ready-on-direct then enableProxy; pre-params addProxy; bearer-recover
-  None mid-boot (R31/R31b — Ready→Connecting / «ожидание»)
+  None mid-boot / while paused (R31/R32 — Ready→Connecting / «ожидание»)
+- Releasing WiFi before enableProxy after setTdlibParameters (R32 — direct
+  dial race)
+- `enableProxy` on every pause-suspend unsuspend (R33 — not official
+  resumeNetwork; aborts FakeTLS reopen)
 - Soft-nudge-only after hop-try debounce (need socket reopen last resort)
 - Writing geo result into debug AppBar pref / skipping geo forever after VPN
 - Force-ON FakeTLS in debug ignoring non-RU geo (breaks VPN auto-off)
@@ -191,12 +321,24 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
 - Preferred-skip mid-ladder after hop-try (R24 regressed — stuck 8443)
 - Changing mtg without dial/DC203 evidence
 - MiddleProxy migration while on mtg direct
+- Letting `mergeLiveIntoById` overwrite fresh history `file_id`s with
+  preserved soft-restart RAM (R47 — tap 404 while proxy UI ON)
+- Restoring `hub-avatar skip: proxy exclusive` while hub is active (R48 —
+  blurry hub forever under FakeTLS)
+- Leaving unfinished download queue across app pause (R48)
+- Unawaited `preemptForUserTap` racing `ensureFileLocal` / skipping force
+  `openMessageContent` on tap:video (R49 — Ready+0B video body)
+- Completing download waiters before stall-lastchance requeue (R49)
 
 ## After changes here
 
 Cold start: `boot proxy-before-params` then params then online — first
-Ready already `proxyOn=true` (R31), no Ready-direct→enableProxy drop.
-Lock ≥2s → pause None; unlock: skip R13 + unsuspend + one enableProxy +
-quiet → Ready (R30+R27+R26+R25). Soft kicks skip setNetworkType/enableProxy
-while Connecting (R29/R28). Tap video: `offset=0` (R17); wedged slot →
-`preempt-tap` (R22).
+Ready already `proxyOn=true` (R31/R32), no Ready-direct→enableProxy drop.
+Short lock while Ready+FakeTLS → `skip None` (R34). If Ready→Connecting in
+bg → late-None (R40). Unlock still Ready → `skip setNetworkType` (R36).
+Unlock !Ready → soft-restart-first (R40), quiet/collapse **35s** (R41 —
+Ready clears early); skip hop (R39); preserve ladder (R37).
+Soft kicks skip setNetworkType/enableProxy while Connecting (R29/R28).
+Tap video: `offset=0` (R17); wedged slot → `preempt-tap` (R22).
+After soft-restart: history merge must refresh file ids (R47); tap must
+not keep `File not found` on preserved ids.

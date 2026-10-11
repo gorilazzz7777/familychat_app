@@ -3,6 +3,7 @@ import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../app_theme.dart';
 import '../appearance_prefs.dart';
+import '../chat_text_styles.dart';
 import '../../settings/shell_nav_layout.dart';
 import '../../widgets/family_input_styles.dart';
 
@@ -560,7 +561,7 @@ class _PreviewConversation extends StatelessWidget {
               ),
               child: Text(
                 'Привет! Как дела?',
-                style: theme.textTheme.bodyMedium,
+                style: ChatTextStyles.messageBody(color: scheme.onSurface),
               ),
             ),
           ),
@@ -581,9 +582,7 @@ class _PreviewConversation extends StatelessWidget {
               ),
               child: Text(
                 'Отлично, скоро буду!',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: scheme.onPrimary,
-                ),
+                style: ChatTextStyles.messageBody(color: scheme.onPrimary),
               ),
             ),
           ),

@@ -13,6 +13,7 @@ import 'package:visibility_detector/visibility_detector.dart';
 
 import '../../../../core/network/chat_network_link.dart';
 import '../../../../core/settings/app_settings_controller.dart';
+import '../../../../core/theme/chat_text_styles.dart';
 import '../../data/chat_media_providers.dart';
 import '../../data/chat_realtime_utils.dart';
 
@@ -620,16 +621,13 @@ class ChatMessageBubble extends StatelessWidget {
     required Color textColor,
     required double maxWidth,
   }) {
-    final baseStyle = theme.textTheme.bodyMedium?.copyWith(color: textColor) ??
-        TextStyle(color: textColor);
-    final mentionStyle = (theme.textTheme.bodyMedium ?? const TextStyle())
-        .copyWith(
+    // Telegram-parity: system sans @ 16sp (not Material bodyMedium 14/Roboto).
+    final baseStyle = ChatTextStyles.messageBody(color: textColor);
+    final mentionStyle = ChatTextStyles.messageEmphasis(
       color: isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary,
-      fontWeight: FontWeight.w600,
     );
-    final linkStyle = (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+    final linkStyle = ChatTextStyles.messageLink(
       color: isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary,
-      decoration: TextDecoration.none,
     );
     final limit = collapseBodyAfterLines;
     final canCollapse = limit != null &&
@@ -674,12 +672,7 @@ class ChatMessageBubble extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(0, 6, 12, 4),
               child: Text(
                 expandLabel,
-                style: (theme.textTheme.bodyMedium ?? const TextStyle())
-                    .copyWith(
-                  color: linkFg,
-                  fontWeight: FontWeight.w600,
-                  height: 1.25,
-                ),
+                style: ChatTextStyles.messageEmphasis(color: linkFg),
               ),
             ),
           ),
@@ -698,7 +691,7 @@ class ChatMessageBubble extends StatelessWidget {
     final newlineCount = '\n'.allMatches(text).length;
     if (newlineCount >= maxLines) return true;
     // Approximate wrapped lines without TextPainter (avoids TextDirection issues).
-    final fontSize = style.fontSize ?? 14;
+    final fontSize = style.fontSize ?? ChatTextStyles.messageFontSize;
     final avgCharWidth = fontSize * 0.52;
     final charsPerLine = (maxWidth / avgCharWidth).floor().clamp(8, 10000);
     var lines = 0;
