@@ -37,6 +37,8 @@ import 'chat_location_preview.dart';
 import 'chat_media_layout.dart';
 import 'chat_media_transfer_overlay.dart';
 import 'chat_network_image.dart';
+import 'chat_message_block_quote.dart';
+import 'chat_message_code_block.dart';
 import 'chat_message_quote.dart';
 import 'chat_message_reactions.dart';
 import 'chat_message_read_status_icon.dart';
@@ -87,11 +89,9 @@ class ChatMessageBubble extends StatelessWidget {
     this.location,
     this.messageMetadata = const {},
     this.canToggleVoiceTranscript = false,
-    this.collapseBodyAfterLines,
-    this.bodyExpanded = false,
-    this.onToggleBodyExpand,
     this.onOpenUrl,
     this.showLinkPreview = true,
+    this.showTelegramBadge = true,
   });
 
   final int threadId;
@@ -133,15 +133,12 @@ class ChatMessageBubble extends StatelessWidget {
   final ChatLocationPoint? location;
   final Map<String, dynamic> messageMetadata;
   final bool canToggleVoiceTranscript;
-
-  /// Для каналов: свернуть длинный текст после N строк.
-  final int? collapseBodyAfterLines;
-  final bool bodyExpanded;
-  final VoidCallback? onToggleBodyExpand;
   /// Return true if the URL was handled in-app (e.g. t.me → TDLib jump).
   final Future<bool> Function(String url)? onOpenUrl;
   /// When false, skip OG card (open/scroll settle) — host links still work.
   final bool showLinkPreview;
+  /// TG logo next to time — useful in mixed FamilyChat threads; off in pure TG chats.
+  final bool showTelegramBadge;
 
   static const double _avatarSize = 32;
 
@@ -255,7 +252,9 @@ class ChatMessageBubble extends StatelessWidget {
     final theme = Theme.of(context);
     final timeFmt = DateFormat.Hm();
     final screenWidth = MediaQuery.sizeOf(context).width;
-    final maxBubbleWidth = screenWidth * 0.78;
+    // Match official Telegram channel posts (~82% screen white body on
+    // 1080px / 450dpi; was 0.78 → ~819px vs TG Mash ~882px).
+    final maxBubbleWidth = screenWidth * 0.84;
     final bubbleColor = isMine
         ? theme.colorScheme.primary
         : Colors.white;
@@ -446,7 +445,6 @@ class ChatMessageBubble extends StatelessWidget {
                     child: _buildCaptionBody(
                       theme: theme,
                       textColor: textColor,
-                      maxWidth: contentMaxWidth,
                     ),
                   ),
                 if (location != null) ...[
@@ -509,8 +507,10 @@ class ChatMessageBubble extends StatelessWidget {
             onLongPress: selectionMode ? onTap : null,
             child: Padding(
               padding: EdgeInsets.only(
-                left: 8,
-                right: 8,
+                // Keep side inset close to official TG (~8–12dp total with
+                // list pad); was 8+8 list which left Mash bubbles ~24dp in.
+                left: 4,
+                right: 4,
                 bottom: compactWithNext ? 1 : 6,
               ),
               child: Row(
@@ -619,7 +619,6 @@ class ChatMessageBubble extends StatelessWidget {
   Widget _buildCaptionBody({
     required ThemeData theme,
     required Color textColor,
-    required double maxWidth,
   }) {
     // Telegram-parity: system sans @ 16sp (not Material bodyMedium 14/Roboto).
     final baseStyle = ChatTextStyles.messageBody(color: textColor);
@@ -629,83 +628,132 @@ class ChatMessageBubble extends StatelessWidget {
     final linkStyle = ChatTextStyles.messageLink(
       color: isMine ? const Color(0xFF8FD3FF) : theme.colorScheme.primary,
     );
-    final limit = collapseBodyAfterLines;
-    final canCollapse = limit != null &&
-        limit > 0 &&
-        onToggleBodyExpand != null &&
-        _bodyExceedsLines(body, baseStyle, maxWidth, limit);
 
-    final text = ChatMentionText(
-      body: body,
-      mentions: mentions,
-      entities: textEntities,
-      style: baseStyle,
-      mentionStyle: mentionStyle,
-      linkStyle: linkStyle,
-      maxLines: canCollapse && !bodyExpanded ? limit : null,
-      overflow: canCollapse && !bodyExpanded ? TextOverflow.ellipsis : null,
-      onOpenUrl: onOpenUrl,
-    );
-
-    if (!canCollapse) return text;
-
-    // Telegram-style text affordance (not a centered pill): sits in the text
-    // flow, left-aligned, with a generous hit target and no chip fill.
-    final expandLabel = bodyExpanded ? 'Свернуть' : 'Ещё';
-    final linkFg = isMine
+    final quoteAccent = isMine
         ? const Color(0xFF8FD3FF)
-        : theme.colorScheme.primary;
+        : const Color(0xFFAA7CE1);
+    final quoteFill = isMine
+        ? Colors.white.withValues(alpha: 0.18)
+        : const Color(0xFFF5EFFB);
 
+    final segments = _splitBodyByBlocks(body, textEntities);
+    final hasBlocks = segments.any((s) => s.isQuote || s.isCode);
+
+    Widget buildPlain(String text, {required List<ChatTextEntity> entities}) {
+      return ChatMentionText(
+        body: text,
+        mentions: mentions,
+        entities: entities,
+        style: baseStyle,
+        mentionStyle: mentionStyle,
+        linkStyle: linkStyle,
+        onOpenUrl: onOpenUrl,
+      );
+    }
+
+    if (!hasBlocks) {
+      return buildPlain(body, entities: textEntities);
+    }
+
+    final children = <Widget>[];
+    for (final seg in segments) {
+      if (seg.text.isEmpty) continue;
+      if (seg.isCode) {
+        children.add(
+          ChatMessageCodeBlock(
+            code: seg.text,
+            language: seg.language,
+            isMine: isMine,
+          ),
+        );
+        continue;
+      }
+      final plain = buildPlain(seg.text, entities: seg.entities);
+      if (seg.isQuote) {
+        children.add(
+          ChatMessageBlockQuote(
+            accentColor: quoteAccent,
+            fillColor: quoteFill,
+            expandable: seg.expandable,
+            child: plain,
+          ),
+        );
+      } else {
+        children.add(plain);
+      }
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
-      children: [
-        text,
-        Align(
-          alignment: Alignment.centerLeft,
-          child: InkWell(
-            onTap: onToggleBodyExpand,
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              // ~44dp tap height; horizontal pad keeps the label easy to hit
-              // without looking like a full-width button slab.
-              padding: const EdgeInsets.fromLTRB(0, 6, 12, 4),
-              child: Text(
-                expandLabel,
-                style: ChatTextStyles.messageEmphasis(color: linkFg),
-              ),
-            ),
-          ),
-        ),
-      ],
+      children: children,
     );
   }
 
-  static bool _bodyExceedsLines(
-    String text,
-    TextStyle style,
-    double maxWidth,
-    int maxLines,
+  /// Split message body into plain / block-quote / pre-code segments.
+  static List<_BodyBlockSegment> _splitBodyByBlocks(
+    String body,
+    List<ChatTextEntity> entities,
   ) {
-    if (text.isEmpty || maxWidth <= 0) return false;
-    final newlineCount = '\n'.allMatches(text).length;
-    if (newlineCount >= maxLines) return true;
-    // Approximate wrapped lines without TextPainter (avoids TextDirection issues).
-    final fontSize = style.fontSize ?? ChatTextStyles.messageFontSize;
-    final avgCharWidth = fontSize * 0.52;
-    final charsPerLine = (maxWidth / avgCharWidth).floor().clamp(8, 10000);
-    var lines = 0;
-    for (final paragraph in text.split('\n')) {
-      if (paragraph.isEmpty) {
-        lines += 1;
-      } else {
-        lines += ((paragraph.length + charsPerLine - 1) / charsPerLine)
-            .floor()
-            .clamp(1, 100000);
-      }
-      if (lines > maxLines) return true;
+    if (body.isEmpty) return const [];
+    final blocks = entities
+        .where((e) => e.isBlockQuote || e.isPreBlock)
+        .toList()
+      ..sort((a, b) => a.offset.compareTo(b.offset));
+    if (blocks.isEmpty) {
+      return [
+        _BodyBlockSegment(
+          text: body,
+          entities: entities,
+          isQuote: false,
+          isCode: false,
+          expandable: false,
+        ),
+      ];
     }
-    return lines > maxLines;
+
+    final out = <_BodyBlockSegment>[];
+    var cursor = 0;
+    for (final b in blocks) {
+      final start = b.offset.clamp(0, body.length);
+      final end = (b.offset + b.length).clamp(0, body.length);
+      if (start < cursor) continue; // overlapping / nested — skip
+      if (start > cursor) {
+        out.add(
+          _BodyBlockSegment(
+            text: body.substring(cursor, start),
+            entities: ChatTextEntity.slice(entities, cursor, start),
+            isQuote: false,
+            isCode: false,
+            expandable: false,
+          ),
+        );
+      }
+      if (end > start) {
+        out.add(
+          _BodyBlockSegment(
+            text: body.substring(start, end),
+            entities: ChatTextEntity.slice(entities, start, end),
+            isQuote: b.isBlockQuote,
+            isCode: b.isPreBlock,
+            expandable: b.expandableBlockquote,
+            language: b.language,
+          ),
+        );
+      }
+      cursor = end;
+    }
+    if (cursor < body.length) {
+      out.add(
+        _BodyBlockSegment(
+          text: body.substring(cursor),
+          entities: ChatTextEntity.slice(entities, cursor, body.length),
+          isQuote: false,
+          isCode: false,
+          expandable: false,
+        ),
+      );
+    }
+    return out;
   }
 
   /// Meta-ряд справа: [лого TG] · время · галочки.
@@ -717,7 +765,7 @@ class ChatMessageBubble extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (_fromTelegram) ...[
+        if (showTelegramBadge && _fromTelegram) ...[
           Image.asset(
             'assets/logo/tg.png',
             width: 12,
@@ -1318,9 +1366,16 @@ class _ChatVideoAttachmentPreviewState
     return '';
   }
 
-  /// Real streamable HTTPS (S3 / CDN). FamilyChat `/attachments/…/content`
-  /// proxy URLs are NOT playable for TDLib file ids — those need download.
+  /// Real streamable HTTPS (S3 / CDN) or TDLib loopback progressive proxy.
+  /// FamilyChat `/attachments/…/content` proxy URLs are NOT playable for
+  /// TDLib file ids — those need download / `video_stream_url`.
   String get _streamableVideoUrl {
+    final tdlibStream =
+        widget.attachment['video_stream_url']?.toString().trim() ?? '';
+    if (tdlibStream.startsWith('http://127.0.0.1') ||
+        tdlibStream.startsWith('http://localhost')) {
+      return tdlibStream;
+    }
     for (final key in ['file_url', 'url', 'video_url']) {
       final raw = widget.attachment[key]?.toString().trim() ?? '';
       if (raw.startsWith('https://') || raw.startsWith('http://')) {
@@ -1416,15 +1471,24 @@ class _ChatVideoAttachmentPreviewState
         oldWidget.attachment['downloaded_bytes'] !=
             widget.attachment['downloaded_bytes'] ||
         oldWidget.attachment['size_bytes'] !=
-            widget.attachment['size_bytes']) {
+            widget.attachment['size_bytes'] ||
+        oldWidget.attachment['video_stream_url'] !=
+            widget.attachment['video_stream_url']) {
       _aspect = chatAttachmentAspectRatio(widget.attachment) ?? _aspect;
       if (chatAttachmentAspectRatio(widget.attachment) == null) {
         _probeLocalBytes();
       }
       unawaited(_ensureThumb());
+      // Progressive TDLib stream became ready while waiting for full file.
+      if (_waitingForDownload &&
+          (_videoPath.isNotEmpty || _streamableVideoUrl.isNotEmpty)) {
+        _waitingForDownload = false;
+        _playing = true;
+      }
     }
-    // Download finished while we were waiting → start muted inline playback.
-    if (_waitingForDownload && newPath.isNotEmpty) {
+    // Download finished / progressive stream ready → start muted inline play.
+    if (_waitingForDownload &&
+        (newPath.isNotEmpty || _streamableVideoUrl.isNotEmpty)) {
       _waitingForDownload = false;
       if (!_playing && mounted) {
         setState(() => _playing = true);
@@ -1567,8 +1631,10 @@ class _ChatVideoAttachmentPreviewState
     final videoPath = _videoPath;
     final streamUrl = _streamableVideoUrl;
     final canPlay = videoPath.isNotEmpty || streamUrl.isNotEmpty;
-    final showSpinner =
-        _downloading || (_waitingForDownload && videoPath.isEmpty);
+    // Once local file or progressive stream URL is ready, drop the overlay —
+    // background TDLib range fill must not keep the blocking loader.
+    final showSpinner = !canPlay &&
+        (_downloading || _waitingForDownload);
 
     final background = ChatNetworkImage(
       threadId: widget.threadId,
@@ -2107,6 +2173,24 @@ class _ChatFileAttachmentRowState extends ConsumerState<_ChatFileAttachmentRow> 
       ),
     );
   }
+}
+
+class _BodyBlockSegment {
+  const _BodyBlockSegment({
+    required this.text,
+    required this.entities,
+    required this.isQuote,
+    required this.isCode,
+    required this.expandable,
+    this.language,
+  });
+
+  final String text;
+  final List<ChatTextEntity> entities;
+  final bool isQuote;
+  final bool isCode;
+  final bool expandable;
+  final String? language;
 }
 
 

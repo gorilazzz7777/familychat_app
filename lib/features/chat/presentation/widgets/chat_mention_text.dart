@@ -15,6 +15,10 @@ class ChatTextEntity {
     this.underline = false,
     this.strikethrough = false,
     this.code = false,
+    this.pre = false,
+    this.language,
+    this.blockquote = false,
+    this.expandableBlockquote = false,
     this.url,
   });
 
@@ -24,8 +28,20 @@ class ChatTextEntity {
   final bool italic;
   final bool underline;
   final bool strikethrough;
+  /// Inline monospace (`textEntityTypeCode`).
   final bool code;
+  /// Block preformatted (`textEntityTypePre` / `PreCode`).
+  final bool pre;
+  /// Language from `textEntityTypePreCode.language` (e.g. xml, json).
+  final String? language;
+  /// `textEntityTypeBlockQuote` — always shown fully.
+  final bool blockquote;
+  /// `textEntityTypeExpandableBlockQuote` — collapsed by default (TG).
+  final bool expandableBlockquote;
   final String? url;
+
+  bool get isBlockQuote => blockquote || expandableBlockquote;
+  bool get isPreBlock => pre;
 
   factory ChatTextEntity.fromMap(Map<String, dynamic> m, {String body = ''}) {
     final offset = (m['offset'] as num?)?.toInt() ?? 0;
@@ -50,6 +66,7 @@ class ChatTextEntity {
           url = 'https://t.me/$user';
       }
     }
+    final lang = m['language']?.toString();
     return ChatTextEntity(
       offset: offset,
       length: length,
@@ -58,6 +75,10 @@ class ChatTextEntity {
       underline: m['underline'] == true,
       strikethrough: m['strikethrough'] == true,
       code: m['code'] == true,
+      pre: m['pre'] == true,
+      language: (lang != null && lang.isNotEmpty) ? lang : null,
+      blockquote: m['blockquote'] == true,
+      expandableBlockquote: m['expandable_blockquote'] == true,
       url: url,
     );
   }
@@ -72,6 +93,38 @@ class ChatTextEntity {
     ];
   }
 
+  /// Entities overlapping `[start, end)` with offsets remapped to 0-based.
+  /// Drops blockquote / pre markers (those become separate widgets).
+  static List<ChatTextEntity> slice(
+    List<ChatTextEntity> entities,
+    int start,
+    int end,
+  ) {
+    if (entities.isEmpty || start >= end) return const [];
+    final out = <ChatTextEntity>[];
+    for (final e in entities) {
+      if (e.isBlockQuote || e.isPreBlock) continue;
+      final es = e.offset;
+      final ee = e.offset + e.length;
+      final s = es < start ? start : es;
+      final t = ee > end ? end : ee;
+      if (s >= t) continue;
+      out.add(
+        ChatTextEntity(
+          offset: s - start,
+          length: t - s,
+          bold: e.bold,
+          italic: e.italic,
+          underline: e.underline,
+          strikethrough: e.strikethrough,
+          code: e.code,
+          url: e.url,
+        ),
+      );
+    }
+    return out;
+  }
+
   Map<String, dynamic> toMap() => {
         'offset': offset,
         'length': length,
@@ -80,6 +133,10 @@ class ChatTextEntity {
         if (underline) 'underline': true,
         if (strikethrough) 'strikethrough': true,
         if (code) 'code': true,
+        if (pre) 'pre': true,
+        if (language != null && language!.isNotEmpty) 'language': language,
+        if (blockquote) 'blockquote': true,
+        if (expandableBlockquote) 'expandable_blockquote': true,
         if (url != null && url!.isNotEmpty) 'url': url,
       };
 }

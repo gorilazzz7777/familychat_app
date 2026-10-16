@@ -42,10 +42,9 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
    - Do **not** restore full ±4 under FakeTLS without new A/B (was DF storm).
    - `ensureFileLocal(ensure|avatar|album:prefetch|…)` → disk only on wire.
    - Yield under proxy → hard `cancelDownloadFile`.
-   - **Unread tip warm** (hub, Ready): serial oldest-unread *light* media
-     (`unread-tip:`, prio 8, ≤5 chats) — photo / video thumb only, soft `m`
-     OK; no video body, no focus_hold. Yields to open chat / tap / hub-avatar.
-     Markers: `warm-unread-tip start|done|pass-done`.
+   - **Unread tip warm: REMOVED** (2026-10-16). Do not restore — low ROI under
+     FakeTLS slot=1; often no media in unread tip; burned hub/open slot.
+     History warm for DM/groups only may remain (`warm-history`).
 
 7. **Pause / resume = soft same-hop (official tgnet + levlam)**
    - Pause: freeze kick ladder; arm `_softResumeGuardUntil` (~5m).
@@ -269,8 +268,20 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
      Config already says `:8443` (mtg) for mobile, `:443` (mtg-wifi) for
      home Wi‑Fi. On `link:…mobile` / `link:…wifi` (and soft-restart
      `ensure` while on that radio) switch hop by port before enableProxy.
-     Do not write preferred prefs. Markers: `bearer-endpoint … → ip-8443-cf`
-     on wifi→mobile; `→ ip2-443-cf` on mobile→wifi.
+     Do not write preferred prefs on the bearer flip itself. Markers:
+     `bearer-endpoint … → ip-8443-cf` on wifi→mobile; `→ ip2-443-cf` on
+     mobile→wifi.
+   - **R73 (16 Oct 12:49 SessionLog):** preferred FakeTLS hop is
+     **per-radio** (`v2_wifi` / `v2_mobile`). Soft-restart `ensure` must
+     not restore sticky mobile `:8443` on home Wi‑Fi (pause → late-None →
+     soft×N Connecting on `ip-8443-cf` while `net=wifi`). Legacy v1
+     migrates to the radio matching its port; miss → R67 default port.
+     MegaFon Wi‑Fi that needs `:8443` keeps it via `v2_wifi` after Pong.
+     Soft-pause unlock after recent Pong soft-fail → hard-hop +
+     soft-restart first (not same-hop soft×). Markers:
+     `proxy preferred restore … (v2)`, `preferred-miss:wifi|mobile`,
+     `proxy preferred migrate v1→v2`,
+     `app-resume-recover soft-restart-first → hard-hop (recent Pong fail)`.
    - **R68 (14 Oct 09:45 + mtg):** R67 switched hop but order was
      `Mobile` (Ready on :443) → `enableProxy` 8443 → Ready→Connecting →
      `None→Mobile` — aborted the new ClientHello. mtg `:8443` from
@@ -495,6 +506,10 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
   Connecting → **hard-hop + persist + soft-restart** (`hard-hop
   soft-pause-skip-hop-exhausted`); socket-reopen only after that hop also
   fails. Sticky preferred restore without persist undoes hop.
+- Single global preferred hop across wifi+mobile (R73 — mobile `:8443`
+  soft-restored on home Wi‑Fi; use `v2_wifi` / `v2_mobile`)
+- Soft-pause soft-restart-first on the same hop after a recent Pong
+  soft-fail (R73 — hard-hop first)
 - R13 escalate after our own pause-suspend None (R27 — soft-restart@15s
   tears FakeTLS that official-reopen just started)
 - Soft-nudge `enableProxy` while Connecting after boot quiet (R28 —
@@ -632,11 +647,12 @@ Short lock while Ready+FakeTLS → `skip None` (R34). If Ready→Connecting in
 bg → late-None only (R40/R63 — no bg dial). Unlock still Ready →
 `skip setNetworkType` (R36).
 Unlock !Ready → soft-restart-first (R40), quiet/collapse **35s** (R41 —
-Ready clears early); one preferred soft-restart then hard-hop if still
-stuck (16 Oct thrash); preserve ladder (R37).
-wifi↔mobile FakeTLS: hop by port (R67); same hop → setNetworkType only,
-hop change → soft-restart (R69 — match official; no mid-session
-enableProxy). No resume official-reopen on that dial (R68).
+Ready clears early); recent Pong fail → hard-hop first (R73); else one
+preferred soft-restart then hard-hop if still stuck; preserve ladder (R37).
+Preferred hop is per-radio (R73). wifi↔mobile FakeTLS: hop by port (R67);
+same hop → setNetworkType only, hop change → soft-restart (R69 — match
+official; no mid-session enableProxy). No resume official-reopen on that
+dial (R68).
 Soft kicks skip setNetworkType/enableProxy while Connecting (R29/R28).
 Tap video: `offset=0` (R17); wedged slot → `preempt-tap` (R22).
 After soft-restart: history merge must refresh file ids (R47); tap must

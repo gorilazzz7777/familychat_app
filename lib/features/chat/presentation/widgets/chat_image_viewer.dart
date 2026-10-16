@@ -703,16 +703,19 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       }
       final local = galleryLocalDevicePath(photo.attachment ?? const {});
       final gifLike = _attachmentIsGifVideo(photo.attachment);
-      // Prefer local file. Empty/proxy imageUrl for TDLib must not be used as
-      // the playable stream — that left album videos black after open.
-      final url = local.isNotEmpty ? '' : photo.imageUrl;
+      // Prefer complete local file. Else TDLib progressive loopback / HTTPS.
+      final stream = photo.attachment?['video_stream_url']?.toString().trim() ??
+          '';
+      final url = local.isNotEmpty
+          ? ''
+          : (stream.isNotEmpty ? stream : photo.imageUrl);
       return GalleryVideoPlayer(
         key: ValueKey(
-          'viewer-video:${photo.attachmentId ?? local}:${local.isNotEmpty ? 'local' : 'net'}',
+          'viewer-video:${photo.attachmentId ?? local}:${local.isNotEmpty ? 'local' : (stream.isNotEmpty ? 'stream' : 'net')}',
         ),
         url: url,
         localPath: local.isEmpty ? null : local,
-        httpHeaders: local.isEmpty ? photo.httpHeaders : null,
+        httpHeaders: local.isEmpty && stream.isEmpty ? photo.httpHeaders : null,
         fit: BoxFit.contain,
         autoplay: autoplay,
         looping: gifLike,

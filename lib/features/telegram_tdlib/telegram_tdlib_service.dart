@@ -30,6 +30,8 @@ import 'telegram_match_store.dart';
 import 'telegram_tdlib_push.dart';
 import 'tdlib_transcript_cache.dart';
 import 'tdlib_video_note_prep.dart';
+import 'tdlib_video_stream_proxy.dart'
+    if (dart.library.html) 'tdlib_video_stream_proxy_stub.dart';
 
 enum TdlibAuthPhase {
   unavailable,
@@ -559,13 +561,6 @@ class TelegramTdlibService extends ChangeNotifier {
   /// (`_tearDown` clears RAM but must not blank the visible conversation).
   final Map<int, List<TdlibMessage>> _openTranscriptPreserve = {};
   final Set<int> _historyWarmInFlight = {};
-  /// Serial hub warm: oldest unread light preview per chat (not full video).
-  bool _unreadTipWarmRunning = false;
-  /// chatId → message id already tip-warmed this session (−1 = no media).
-  final Map<int, int> _unreadTipWarmedMsgByChat = {};
-  DateTime? _unreadTipWarmLastAt;
-  Timer? _unreadTipWarmDebounceTimer;
-  static const _unreadTipWarmMinGap = Duration(seconds: 8);
   /// Boot / mtproto-up must not race hub first paint with getChatHistory×N
   /// (SessionLog 09:12: warm-history @ +0.2s after Ready → thrash).
   DateTime? _hubWarmNotBefore;
@@ -587,6 +582,8 @@ class TelegramTdlibService extends ChangeNotifier {
   final List<Map<String, dynamic>> _bootUpdateQueue = [];
   bool _bootUpdateDraining = false;
   int _bootUpdateHandled = 0;
+  /// Quiet-end / drain-end flush must pierce the boot coalesce in notifyListeners.
+  bool _flushingBootUi = false;
   int? _myUserId;
   /// Self [chatMember.status] per chat — used for send permissions.
   final Map<int, Map<String, dynamic>> _chatMemberStatus = {};
@@ -624,16 +621,12 @@ class TelegramTdlibService extends ChangeNotifier {
   static const prioOpenChatMedia = 16;
   /// Hub list avatars (visible rows only) — above generic background warm.
   static const prioHubAvatar = 10;
-  /// Oldest unread light media while on hub (below avatars, above bg warm).
-  static const prioUnreadTipWarm = 8;
   /// Alt-size / delayed retry after a hub-avatar 0B stall.
   /// Keep BELOW first-pass (10): poison remotes were jumping the queue at prio
   /// 18 and starving never-tried faces in the visible viewport for tens of
   /// seconds while Telegram/Шарий VPN etc. sat at 0B forever.
   static const prioHubAvatarRetry = 6;
   static const prioBackground = 4;
-  /// Cap how many unread chats get tip-media warm per pass (serial, slot=1).
-  static const warmUnreadTipChatLimit = 3;
   /// Hang with no new bytes → cancelDownloadFile + requeue / size fallback.
   ///
   /// Official guidance (levlam / td#2585): there are no "stalled" downloads —
@@ -799,6 +792,25 @@ class TelegramTdlibService extends ChangeNotifier {
   /// 0..1 while downloading; removed on complete/cancel.
   final Map<int, double> _fileDownloadProgress = {};
   final Map<int, _TdlibDownloadTrace> _downloadTrace = {};
+  /// Official-style progressive video: loopback HTTP + TDLib range downloads.
+  TdlibVideoStreamProxy? _videoStreamProxy;
+  final Set<int> _streamingVideoIds = {};
+  final Map<int, String> _streamUrlByFileId = {};
+  /// Survive soft-restart / ExoPlayer race: revive proxy session from this.
+  final Map<int, TdlibVideoStreamSession> _streamSessionMeta = {};
+  final Map<int, String> _partialFilePath = {};
+  final Map<int, List<Completer<void>>> _streamRangeWaiters = {};
+  /// Serialize range `downloadFile` per file (TDLib: one active download/file).
+  final Map<int, Future<void>> _streamRangeGates = {};
+  /// TDLib `photoSize.progressive_sizes` — JPEG prefix thresholds (bytes).
+  final Map<int, List<int>> _photoProgressiveSizes = {};
+  /// Last progressive prefix byte count painted for [fileId].
+  final Map<int, int> _photoProgressivePaintedBytes = {};
+  /// Snapshot path of a progressive JPEG prefix (not the final file).
+  final Map<int, String> _progressivePaintPath = {};
+  /// Bubble primary (`x`) → larger fullscreen size (`y`/`w`) when present.
+  final Map<int, int> _photoFullscreenUpgrade = {};
+  final Set<int> _progressivePaintInFlight = {};
   /// remote.unique_id → our tracked file id (TDLib may emit updateFile under a new id).
   final Map<String, int> _remoteUniqueToFileId = {};
   /// Survives soft-restart: remote.unique_id → on-disk path (file_ids remap).
@@ -1113,8 +1125,15 @@ class TelegramTdlibService extends ChangeNotifier {
   DateTime? _lastRemoteProxyFetchAt;
   static const _remoteProxyCacheKey = 'tdlib_mtproto_remote_proxies_v1';
   static const _remoteProxyFetchMinInterval = Duration(minutes: 5);
-  /// Last endpoint that passed [pingProxy] on this device (`server:port`).
+  /// Legacy single preferred hop (`server:port`). Migrated into per-radio
+  /// v2 keys — a mobile `:8443` Ready must not sticky-restore on home Wi‑Fi
+  /// soft-restart (SessionLog 16 Oct 12:49: pause → soft-restart×N on
+  /// `ip-8443-cf` while `net=wifi`).
   static const _preferredProxyKey = 'tdlib_mtproto_preferred_endpoint_v1';
+  static const _preferredProxyKeyWifi =
+      'tdlib_mtproto_preferred_endpoint_v2_wifi';
+  static const _preferredProxyKeyMobile =
+      'tdlib_mtproto_preferred_endpoint_v2_mobile';
 
   List<TdlibChatPreview> get privateChats =>
       hubChats.where((c) => !c.isGroup && !c.isChannel).toList();
@@ -2304,14 +2323,35 @@ class TelegramTdlibService extends ChangeNotifier {
       final p = cachedFilePath(id);
       if (p != null && p.isNotEmpty) return p;
     }
+    // Official progressive JPEG: paint a prefix while the full size downloads.
+    if (primary != null) {
+      final prog = _progressivePaintPath[primary];
+      if (prog != null && prog.isNotEmpty) return prog;
+    }
     if (m.photoLocalPath != null && m.photoLocalPath!.isNotEmpty) {
       return m.photoLocalPath;
     }
     if (primary != null) {
       final p = cachedFilePath(primary);
       if (p != null) return p;
+      final prog = _progressivePaintPath[primary];
+      if (prog != null && prog.isNotEmpty) return prog;
     }
     return null;
+  }
+
+  /// True when a progressive JPEG prefix is already on screen for [fileId].
+  bool hasProgressivePhotoPaint(int fileId) {
+    final p = _progressivePaintPath[fileId];
+    return p != null && p.isNotEmpty;
+  }
+
+  /// Larger `y`/`w` file for fullscreen when bubble primary is a smaller size.
+  int? photoFullscreenUpgradeId(int fileId) {
+    if (fileId <= 0) return null;
+    final up = _photoFullscreenUpgrade[fileId];
+    if (up == null || up <= 0 || up == fileId) return null;
+    return up;
   }
 
   /// Drop a stale cache entry so the next request re-queues the download.
@@ -2509,10 +2549,14 @@ class TelegramTdlibService extends ChangeNotifier {
   int fileExpectedSize(int fileId) =>
       _downloadTrace[fileId]?.expectedSize ?? 0;
 
+  /// Active progressive-play loopback URL for [fileId], if any.
+  String? videoStreamUrl(int fileId) => _streamUrlByFileId[fileId];
+
   bool isFileDownloading(int fileId) =>
       _downloadInFlight.contains(fileId) ||
       _downloadQueued.contains(fileId) ||
-      _fileDownloadProgress.containsKey(fileId);
+      _fileDownloadProgress.containsKey(fileId) ||
+      _streamingVideoIds.contains(fileId);
 
   /// File ids that paint a chat-bubble preview for [m] (photo sizes, thumbs).
   List<int> previewFileIdsFor(TdlibMessage m) {
@@ -2562,9 +2606,10 @@ class TelegramTdlibService extends ChangeNotifier {
   void setUiScrollBusy(bool busy) {
     if (busy) {
       _uiScrollBusy = true;
-      // Extend window on every scroll tick (drag + fling).
+      // Extend window on every scroll tick (drag + fling). Longer than the
+      // ballistic settle so reaction/media notifies don't hitch the fling end.
       _uiScrollBusyUntil =
-          DateTime.now().add(const Duration(milliseconds: 520));
+          DateTime.now().add(const Duration(milliseconds: 720));
       LinkPreviewService.instance.deferNetworkFetches = true;
       return;
     }
@@ -2573,7 +2618,16 @@ class TelegramTdlibService extends ChangeNotifier {
     if (LinkPreviewService.instance.linkPreviewGateOpen) {
       LinkPreviewService.instance.deferNetworkFetches = false;
     }
-    _flushPendingUiNotify();
+    // Flush one frame later — flushing on the same tick as fling-end still
+    // races the last ballistic layout and feels like a sticky stop.
+    _uiNotifyTimer?.cancel();
+    if (_uiNotifyPending) {
+      _uiNotifyTimer = Timer(const Duration(milliseconds: 100), () {
+        _uiNotifyTimer = null;
+        if (_deferMediaUiNotify) return;
+        _flushPendingUiNotify();
+      });
+    }
   }
 
   /// True while hub/conversation scroll/fling should suppress media + rebuilds.
@@ -2590,6 +2644,24 @@ class TelegramTdlibService extends ChangeNotifier {
   void notifyListeners() {
     if (_tearingDown) return;
     _hubChatsCache = null;
+    // Hub boot quiet / boot-update drain: coalesce. Direct notifyListeners from
+    // updateNewChat / updateChat* during _drainBootUpdateQueue bypassed
+    // _notifyUi quiet and caused NOTIFY×1500 + FRAME build 140–250ms
+    // (SessionLog 11:57 / 12:09). Snapshot stays on screen until one flush.
+    if (!_flushingBootUi &&
+        _openChatId == null &&
+        (_inHubBootUiQuiet || _bootUpdateDraining)) {
+      _uiNotifyPending = true;
+      return;
+    }
+    // Mid-scroll: same hole — updateUser / updateSupergroup call notifyListeners
+    // directly (not _notifyUi), so scroll-busy never deferred them.
+    // SessionLog 12:48–12:49: NOTIFY×180 from _onUpdate:updateUser while
+    // flinging a 200-msg channel → FRAME build 95–365ms sticky scroll.
+    if (!_flushingBootUi && _deferMediaUiNotify) {
+      _uiNotifyPending = true;
+      return;
+    }
     if (TgJankLog.focusChatId != null && _openChatId == TgJankLog.focusChatId) {
       final tip = StackTrace.current
           .toString()
@@ -2620,27 +2692,25 @@ class TelegramTdlibService extends ChangeNotifier {
   }
 
   /// Coalesce high-frequency media notifies. [immediate] bypasses throttle
-  /// (auth / new messages). While the open conversation is scrolling/flinging,
-  /// defer ALL non-immediate notifies — any rebuild mid-ballistic feels like
-  /// "inertia won't start" in media-heavy groups.
+  /// unless the open conversation is scrolling/flinging — mid-ballistic
+  /// rebuilds (reactions, path stamps) were FRAME build=160–270ms and felt
+  /// like sticky scroll. Use [force] only for auth / open-chat must-paint.
   ///
   /// While MTProto is Connecting (or just after soft-restart) use a longer
   /// coalesce — SessionLog showed ~200 NOTIFY/min from `_onUpdate` storms.
-  void _notifyUi({bool immediate = false, bool media = false}) {
-    if (immediate) {
-      _uiNotifyTimer?.cancel();
-      _uiNotifyTimer = null;
-      _uiNotifyPending = false;
-      notifyListeners();
-      return;
-    }
-    if (_deferMediaUiNotify) {
+  void _notifyUi({
+    bool immediate = false,
+    bool media = false,
+    bool force = false,
+  }) {
+    if (_deferMediaUiNotify && !force) {
+      // Defer even "immediate" reaction/media paints — SessionLog 14:52
+      // showed _applyInteractionInfoReactions bypassing scroll-busy.
       _uiNotifyPending = true;
       _uiNotifyTimer?.cancel();
-      _uiNotifyTimer = Timer(const Duration(milliseconds: 160), () {
+      _uiNotifyTimer = Timer(const Duration(milliseconds: 180), () {
         _uiNotifyTimer = null;
         if (_deferMediaUiNotify) {
-          // Still flinging — wait again.
           _notifyUi(media: media);
           return;
         }
@@ -2649,17 +2719,24 @@ class TelegramTdlibService extends ChangeNotifier {
       return;
     }
     final now = DateTime.now();
-    final inOpenQuiet = _openChatUiQuietUntil != null &&
-        now.isBefore(_openChatUiQuietUntil!);
     final inHubBootQuiet = _openChatId == null &&
-        _hubBootUiQuietUntil != null &&
-        now.isBefore(_hubBootUiQuietUntil!);
-    // Hub boot: hold all rebuilds until quiet ends (one flush). Boot-prime
-    // snapshot stays on screen — no jank from loadChats/updateNewChat.
-    if (inHubBootQuiet) {
+        (_inHubBootUiQuiet || _bootUpdateDraining);
+    // Hub boot: hold all rebuilds (incl. immediate) until quiet/drain ends.
+    // force=true still paints (auth / quiet-end flush).
+    if (inHubBootQuiet && !force) {
       _uiNotifyPending = true;
       return;
     }
+    if (immediate) {
+      _uiNotifyTimer?.cancel();
+      _uiNotifyTimer = null;
+      _uiNotifyPending = false;
+      notifyListeners();
+      return;
+    }
+    final inOpenQuiet = _openChatUiQuietUntil != null &&
+        now.isBefore(_openChatUiQuietUntil!);
+    // Hub boot already handled above; keep snapshot path for non-immediate.
     final Duration coalesce;
     if (inOpenQuiet) {
       coalesce = const Duration(milliseconds: 240);
@@ -2688,10 +2765,21 @@ class TelegramTdlibService extends ChangeNotifier {
       _hubBootFlushTimer = null;
       _hubBootUiQuietUntil = null;
       _mediaLog('hub-boot-ui-quiet end flush');
+      // If boot drain is still chewing the queue, leave pending — drain-end
+      // flushes once. Painting mid-drain just restarts the NOTIFY storm.
+      if (_bootUpdateDraining) {
+        _uiNotifyPending = true;
+        return;
+      }
       if (_uiNotifyPending) {
         _flushPendingUiNotify();
       } else {
-        _notifyUi(immediate: true);
+        _flushingBootUi = true;
+        try {
+          _notifyUi(immediate: true, force: true);
+        } finally {
+          _flushingBootUi = false;
+        }
       }
     });
     _mediaLog(
@@ -2735,6 +2823,9 @@ class TelegramTdlibService extends ChangeNotifier {
       _bootUpdateDraining = false;
       if (_bootUpdateQueue.isNotEmpty) {
         unawaited(_drainBootUpdateQueue());
+      } else if (_uiNotifyPending && !_inHubBootUiQuiet && _openChatId == null) {
+        // Quiet already ended while drain was still running — one hub flush.
+        _flushPendingUiNotify();
       }
     }
   }
@@ -2761,7 +2852,12 @@ class TelegramTdlibService extends ChangeNotifier {
     _uiNotifyPending = false;
     _uiNotifyTimer?.cancel();
     _uiNotifyTimer = null;
-    notifyListeners();
+    _flushingBootUi = true;
+    try {
+      notifyListeners();
+    } finally {
+      _flushingBootUi = false;
+    }
   }
 
   /// True when nothing is queued/in-flight (safe for bubble to seed focus).
@@ -3224,6 +3320,13 @@ class TelegramTdlibService extends ChangeNotifier {
     if (!_downloadInFlight.contains(fileId)) return;
     final tEarly = _downloadTrace[fileId];
     final reasonEarly = tEarly?.reason ?? '';
+    // Progressive video owns its downloadFile offsets — stall ladder must
+    // not cancel mid-range (official seek = new offset, not give-up).
+    if (_streamingVideoIds.contains(fileId) ||
+        reasonEarly.startsWith('stream:video:')) {
+      _mediaLog('stall-skip stream file=$fileId reason=$reasonEarly');
+      return;
+    }
     final isHubAvatarEarly = reasonEarly == 'hub-avatar';
     if (!_canStartNetworkDownload && !isHubAvatarEarly) {
       // Auth/offline: free slot only — do not wait on connectionState.
@@ -5358,15 +5461,37 @@ class TelegramTdlibService extends ChangeNotifier {
         await _setTdlibOnline(true);
         return;
       }
+      await _setTdlibOnline(true);
+      _appNetworkSuspended = false;
+      // Recent Pong soft-fail on the sticky hop → hard-hop before soft-restart
+      // (SessionLog 16 Oct 12:49: Pong timeout then soft×N on same dead
+      // preferred). Per-radio preferred still applies inside ensure.
+      final pongFailAt = _lastProxyPingFailAt;
+      final pongFailRecent = pongFailAt != null &&
+          DateTime.now().difference(pongFailAt) < const Duration(minutes: 5);
+      if (pongFailRecent &&
+          !_softPauseHardHopTried &&
+          _activeProxyEndpoints.length > 1) {
+        _softPauseHardHopTried = true;
+        _longBackgroundSoftRestartCount = 1;
+        _mediaLog(
+          'app-resume-recover soft-restart-first → hard-hop '
+          '(recent Pong fail) suspended=$wasSuspended '
+          'conn=$_connectionState net=$_networkKind',
+        );
+        await _hardHopDeadPreferred(
+          why: 'soft-pause-resume-pong-fail',
+          softRestartAfter: true,
+        );
+        return;
+      }
       _mediaLog(
         'app-resume-recover soft-restart-first '
         'suspended=$wasSuspended '
         'longBg=$_resumeWasTrueLongBackground '
         'restartCount=$_longBackgroundSoftRestartCount '
-        'conn=$_connectionState',
+        'conn=$_connectionState net=$_networkKind',
       );
-      await _setTdlibOnline(true);
-      _appNetworkSuspended = false;
       _longBackgroundSoftRestartCount =
           (_longBackgroundSoftRestartCount + 1)
               .clamp(1, _longBgSoftRestartCap);
@@ -5947,15 +6072,11 @@ class TelegramTdlibService extends ChangeNotifier {
   /// FakeTLS hop for the current radio. Compile-time order: mtg-wifi `:443`
   /// first (home Wi‑Fi), direct mtg `:8443` second (mobile; `:443` often
   /// ClientHello-timeout on cellular DPI — R67). Does not write preferred
-  /// prefs (wifi preferred stays for wifi boots / soft-restart).
+  /// prefs (per-radio v2 preferred stays for soft-restart — R73).
   void _preferEndpointForCurrentBearer({required String why}) {
     final endpoints = _activeProxyEndpoints;
     if (endpoints.length <= 1) return;
-    final int? wantPort = switch (_networkKind) {
-      ChatNetworkLinkKind.mobile => 8443,
-      ChatNetworkLinkKind.wifi => 443,
-      _ => null,
-    };
+    final wantPort = _wantProxyPortForKind(_preferredProxyRadioKind);
     if (wantPort == null) return;
     final idx = endpoints.indexWhere((e) => e.port == wantPort);
     if (idx < 0) return;
@@ -6222,16 +6343,95 @@ class TelegramTdlibService extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Radio used for preferred FakeTLS hop prefs (wifi vs mobile).
+  ChatNetworkLinkKind get _preferredProxyRadioKind {
+    if (_networkKind == ChatNetworkLinkKind.wifi ||
+        _networkKind == ChatNetworkLinkKind.mobile) {
+      return _networkKind;
+    }
+    final last = _lastNonOfflineKind;
+    if (last == ChatNetworkLinkKind.wifi ||
+        last == ChatNetworkLinkKind.mobile) {
+      return last;
+    }
+    return ChatNetworkLinkKind.unknown;
+  }
+
+  String? _preferredProxyPrefKeyForKind(ChatNetworkLinkKind kind) {
+    return switch (kind) {
+      ChatNetworkLinkKind.wifi => _preferredProxyKeyWifi,
+      ChatNetworkLinkKind.mobile => _preferredProxyKeyMobile,
+      _ => null,
+    };
+  }
+
+  int? _wantProxyPortForKind(ChatNetworkLinkKind kind) {
+    return switch (kind) {
+      ChatNetworkLinkKind.mobile => 8443,
+      ChatNetworkLinkKind.wifi => 443,
+      _ => null,
+    };
+  }
+
   Future<void> _loadPreferredProxyEndpointIndex() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final key = prefs.getString(_preferredProxyKey);
-      if (key == null || key.isEmpty) return;
       final endpoints = _activeProxyEndpoints;
-      final idx = endpoints.indexWhere((e) => '${e.server}:${e.port}' == key);
-      if (idx < 0) return;
-      _proxyEndpointIndex = idx;
-      _mediaLog('proxy preferred restore idx=$idx key=$key');
+      if (endpoints.isEmpty) return;
+      final kind = _preferredProxyRadioKind;
+      final v2Key = _preferredProxyPrefKeyForKind(kind);
+      if (v2Key != null) {
+        final keyed = prefs.getString(v2Key);
+        if (keyed != null && keyed.isNotEmpty) {
+          final idx =
+              endpoints.indexWhere((e) => '${e.server}:${e.port}' == keyed);
+          if (idx >= 0) {
+            _proxyEndpointIndex = idx;
+            _mediaLog(
+              'proxy preferred restore idx=$idx key=$keyed '
+              'net=$kind (v2)',
+            );
+            return;
+          }
+        }
+      }
+      // Legacy v1: stash under the radio that matches its port, then only
+      // restore when it matches this radio's default — otherwise R67 port
+      // (home Wi‑Fi must not inherit sticky mobile `:8443`).
+      final legacy = prefs.getString(_preferredProxyKey);
+      if (legacy != null && legacy.isNotEmpty) {
+        final legIdx =
+            endpoints.indexWhere((e) => '${e.server}:${e.port}' == legacy);
+        if (legIdx >= 0) {
+          final legPort = endpoints[legIdx].port;
+          final legKind = legPort == 8443
+              ? ChatNetworkLinkKind.mobile
+              : (legPort == 443 ? ChatNetworkLinkKind.wifi : null);
+          if (legKind != null) {
+            final migrateKey = _preferredProxyPrefKeyForKind(legKind);
+            if (migrateKey != null &&
+                (prefs.getString(migrateKey) ?? '').isEmpty) {
+              await prefs.setString(migrateKey, legacy);
+              _mediaLog(
+                'proxy preferred migrate v1→v2 net=$legKind key=$legacy',
+              );
+            }
+          }
+          final want = _wantProxyPortForKind(kind);
+          if (want != null && legPort == want) {
+            _proxyEndpointIndex = legIdx;
+            _mediaLog(
+              'proxy preferred restore idx=$legIdx key=$legacy '
+              'net=$kind (legacy)',
+            );
+            return;
+          }
+        }
+      }
+      if (kind == ChatNetworkLinkKind.wifi ||
+          kind == ChatNetworkLinkKind.mobile) {
+        _preferEndpointForCurrentBearer(why: 'preferred-miss:$kind');
+      }
     } catch (_) {}
   }
 
@@ -6242,16 +6442,30 @@ class TelegramTdlibService extends ChangeNotifier {
     final key = '${e.server}:${e.port}';
     try {
       final prefs = await SharedPreferences.getInstance();
+      final kind = _preferredProxyRadioKind;
+      final v2Key = _preferredProxyPrefKeyForKind(kind);
+      if (v2Key != null) {
+        await prefs.setString(v2Key, key);
+      }
+      // Keep legacy for older builds / diagnostics.
       await prefs.setString(_preferredProxyKey, key);
-      _mediaLog('proxy preferred save idx=$index key=$key label=${e.label}');
+      _mediaLog(
+        'proxy preferred save idx=$index key=$key label=${e.label} '
+        'net=$kind',
+      );
     } catch (_) {}
   }
 
   Future<void> _clearPreferredProxyEndpoint() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      final kind = _preferredProxyRadioKind;
+      final v2Key = _preferredProxyPrefKeyForKind(kind);
+      if (v2Key != null) {
+        await prefs.remove(v2Key);
+      }
       await prefs.remove(_preferredProxyKey);
-      _mediaLog('proxy preferred cleared');
+      _mediaLog('proxy preferred cleared net=$kind');
     } catch (_) {}
   }
 
@@ -7601,6 +7815,9 @@ class TelegramTdlibService extends ChangeNotifier {
       );
       return;
     }
+    _partialFilePath[fileId] = path;
+    _pulseStreamRangeWaiters(fileId);
+    _clearProgressivePhotoPaint(fileId);
     final t = _downloadTrace.remove(fileId);
     final now = DateTime.now();
     final started = t?.startedAt ?? t?.enqueuedAt;
@@ -8018,6 +8235,17 @@ class TelegramTdlibService extends ChangeNotifier {
     final downloaded = (local['downloaded_size'] as num?)?.toInt() ?? 0;
     final completed = local['is_downloading_completed'] == true;
     final active = local['is_downloading_active'] == true;
+    final partialPath = local['path']?.toString();
+    if (partialPath != null && partialPath.isNotEmpty) {
+      _partialFilePath[fileId] = partialPath;
+    }
+    if (_streamingVideoIds.contains(fileId) ||
+        (_downloadTrace[fileId]?.reason ?? '').startsWith('stream:video:')) {
+      _pulseStreamRangeWaiters(fileId);
+    }
+    if (!completed) {
+      _maybePaintProgressivePhoto(fileId, local);
+    }
     final t = _downloadTrace[fileId];
     if (t != null) {
       if (expectedSize > 0) t.expectedSize = expectedSize;
@@ -9035,11 +9263,6 @@ class TelegramTdlibService extends ChangeNotifier {
     _remoteUniqueToFileId.clear();
     // R47: stale ids from prior client must not stay poisoned across restart.
     _mediaGiveUpFileIds.clear();
-    _unreadTipWarmRunning = false;
-    _unreadTipWarmedMsgByChat.clear();
-    _unreadTipWarmDebounceTimer?.cancel();
-    _unreadTipWarmDebounceTimer = null;
-    _unreadTipWarmLastAt = null;
     _hubWarmDeferTimer?.cancel();
     _hubWarmDeferTimer = null;
     _hubWarmPassScheduled = false;
@@ -9053,6 +9276,7 @@ class TelegramTdlibService extends ChangeNotifier {
     _bootUpdateQueue.clear();
     _bootUpdateDraining = false;
     _bootUpdateHandled = 0;
+    _flushingBootUi = false;
     _completeWaitMediaConn(false);
     _pendingOpenMessageContent = null;
     _lastOpenMessageContentDeferKey = null;
@@ -9128,8 +9352,25 @@ class TelegramTdlibService extends ChangeNotifier {
     _endpointProxyIds.clear();
     _lastSetNetworkTypeAt = null;
     _setNetworkTypeJob = null;
-    // Soft-restart keeps [_proxyEndpointIndex] so failover sticks across recover.
+    _partialFilePath.clear();
+    _streamRangeGates.clear();
+    _photoProgressivePaintedBytes.clear();
+    _progressivePaintPath.clear();
+    _progressivePaintInFlight.clear();
+    // Soft-restart must NOT kill the loopback video proxy — ExoPlayer keeps
+    // the old http://127.0.0.1:port/v/<id> URL and would 404 if we dispose.
+    // Full wipe drops streams; soft-restart keeps proxy + session meta so
+    // Range requests can revive after the new TDLib client is Ready.
     if (wipeDatabase) {
+      for (final id in _streamingVideoIds.toList()) {
+        endVideoStream(id);
+      }
+      _streamingVideoIds.clear();
+      _streamUrlByFileId.clear();
+      _streamSessionMeta.clear();
+      final streamProxy = _videoStreamProxy;
+      _videoStreamProxy = null;
+      unawaited(streamProxy?.dispose() ?? Future<void>.value());
       _proxyEndpointIndex = 0;
     }
     await _networkLinkSub?.cancel();
@@ -10485,6 +10726,7 @@ class TelegramTdlibService extends ChangeNotifier {
 
   /// Warm hub chats that already have unreads (after list load / new msgs).
   /// Prefers stacks with unread ≥ 2 — those need a scroll jump on open.
+  /// Tip-media warm removed (low ROI under FakeTLS slot=1; often no media).
   void warmUnreadChatsFromHub({int maxChats = 3}) {
     if (!isReady) return;
     if (_hubWarmNotBefore != null &&
@@ -10501,43 +10743,6 @@ class TelegramTdlibService extends ChangeNotifier {
       n++;
       if (n >= maxChats) break;
     }
-    // Tip media after history chain settles a bit (same grace debounce).
-    warmUnreadTipMediaFromHub(
-      maxChats: maxChats < warmUnreadTipChatLimit
-          ? maxChats
-          : warmUnreadTipChatLimit,
-    );
-  }
-
-  /// Hub-only: download the oldest unread *light* media (photo / video thumb)
-  /// for a few unread chats — serial on FakeTLS slot=1. Yields to open chat,
-  /// tap, and hub avatars (prio 8 < avatar 10). Soft `m` is enough; no video
-  /// body / no focus_hold.
-  void warmUnreadTipMediaFromHub({int maxChats = warmUnreadTipChatLimit}) {
-    if (!isReady) return;
-    if (_openChatId != null) return;
-    if (!_appInForeground) return;
-    if (!_tdlibReadyForMedia) return;
-    if (_hubWarmNotBefore != null &&
-        DateTime.now().isBefore(_hubWarmNotBefore!)) {
-      scheduleHubWarmAfterBoot(why: 'warm-unread-tip');
-      return;
-    }
-    if (_unreadTipWarmRunning) return;
-    final last = _unreadTipWarmLastAt;
-    if (last != null &&
-        DateTime.now().difference(last) < _unreadTipWarmMinGap) {
-      // Coalesce mtproto-up + loadChats + hub listeners into one pass.
-      _unreadTipWarmDebounceTimer?.cancel();
-      final left = _unreadTipWarmMinGap - DateTime.now().difference(last);
-      _unreadTipWarmDebounceTimer = Timer(left, () {
-        _unreadTipWarmDebounceTimer = null;
-        warmUnreadTipMediaFromHub(maxChats: maxChats);
-      });
-      return;
-    }
-    _unreadTipWarmLastAt = DateTime.now();
-    unawaited(_runUnreadTipMediaWarm(maxChats: maxChats));
   }
 
   List<({int id, int unread})> _unreadWarmCandidates({required int maxChats}) {
@@ -10557,243 +10762,6 @@ class TelegramTdlibService extends ChangeNotifier {
     });
     if (candidates.length <= maxChats) return candidates;
     return candidates.sublist(0, maxChats);
-  }
-
-  Future<void> _runUnreadTipMediaWarm({required int maxChats}) async {
-    if (_unreadTipWarmRunning) return;
-    _unreadTipWarmRunning = true;
-    try {
-      final candidates = _unreadWarmCandidates(maxChats: maxChats);
-      if (candidates.isEmpty) return;
-      _mediaLog(
-        'warm-unread-tip start n=${candidates.length} '
-        'proxy=${_enabledProxyId != null}',
-      );
-      for (final c in candidates) {
-        if (!_appInForeground || _openChatId != null) break;
-        if (!_tdlibReadyForMedia) break;
-        if (unreadCountFor(c.id) <= 0) continue;
-        await _warmOldestUnreadLightMedia(c.id);
-      }
-      _mediaLog('warm-unread-tip pass-done');
-    } finally {
-      _unreadTipWarmRunning = false;
-    }
-  }
-
-  /// Soft path / thumb on disk is enough for open-chat first paint.
-  bool _unreadTipPreviewReady(TdlibMessage m) {
-    if (m.isPhoto ||
-        (m.photoRemoteId != null && m.photoRemoteId! > 0) ||
-        (m.photoThumbBytes != null && m.photoThumbBytes!.isNotEmpty)) {
-      return _photoHasUsablePath(m);
-    }
-    if (m.isVideo || m.isAnimation) {
-      if (m.videoThumbBytes != null && m.videoThumbBytes!.isNotEmpty) {
-        return true;
-      }
-      final path = m.videoThumbLocalPath;
-      if (path != null && path.isNotEmpty) return true;
-      final vt = m.videoThumbFileId;
-      return vt != null && vt > 0 && _hasCachedPath(vt);
-    }
-    if (m.isVideoNote) {
-      if (m.videoNoteThumbBytes != null &&
-          m.videoNoteThumbBytes!.isNotEmpty) {
-        return true;
-      }
-      final path = m.videoNoteThumbLocalPath;
-      if (path != null && path.isNotEmpty) return true;
-      final vt = m.videoNoteThumbFileId;
-      return vt != null && vt > 0 && _hasCachedPath(vt);
-    }
-    if (m.isSticker) {
-      final id = m.photoRemoteId;
-      return id != null && id > 0 && _hasCachedPath(id);
-    }
-    if (m.isPdfDocument) {
-      final dt = m.documentThumbFileId;
-      return dt != null && dt > 0 && _hasCachedPath(dt);
-    }
-    return true;
-  }
-
-  TdlibMessage? _findOldestUnreadLightMedia(int chatId) {
-    final lastRead = lastReadInboxMessageId(chatId);
-    final list = _messagesByChat[chatId];
-    if (list == null || list.isEmpty) return null;
-    for (final m in list) {
-      if (m.id <= lastRead) continue;
-      if (!_messageHasLightMedia(m)) continue;
-      if (_unreadTipPreviewReady(m)) continue;
-      return m;
-    }
-    return null;
-  }
-
-  int? _unreadTipLightFileId(TdlibMessage m) {
-    if (m.isPhoto || m.photoRemoteId != null) {
-      final soft = m.photoSizeType == null ||
-          m.photoSizeType == 'm' ||
-          m.photoSizeType == 's';
-      if (soft && m.photoFallbackFileIds.isNotEmpty) {
-        for (final id in m.photoFallbackFileIds) {
-          if (id > 0 && !_hasCachedPath(id)) return id;
-        }
-      }
-      final primary = m.photoRemoteId;
-      if (primary != null && primary > 0 && !_hasCachedPath(primary)) {
-        return primary;
-      }
-    }
-    if (m.isVideo || m.isAnimation) {
-      final vt = m.videoThumbFileId;
-      if (vt != null && vt > 0 && !_hasCachedPath(vt)) return vt;
-    }
-    if (m.isVideoNote) {
-      final vt = m.videoNoteThumbFileId;
-      if (vt != null && vt > 0 && !_hasCachedPath(vt)) return vt;
-    }
-    if (m.isSticker) {
-      final id = m.photoRemoteId;
-      if (id != null && id > 0 && !_hasCachedPath(id)) return id;
-    }
-    if (m.isPdfDocument) {
-      final dt = m.documentThumbFileId;
-      if (dt != null && dt > 0 && !_hasCachedPath(dt)) return dt;
-    }
-    return null;
-  }
-
-  Future<String?> _ensureUnreadTipFile(
-    int fileId, {
-    required int chatId,
-    required String reason,
-  }) async {
-    if (fileId <= 0) return null;
-    final cached = cachedFilePath(fileId);
-    if (cached != null && cached.isNotEmpty) return cached;
-    if (await _probeLocalFile(fileId)) return _filePathCache[fileId];
-
-    final existing = _downloadWaiters[fileId];
-    final waitFor = Duration(
-      seconds: _enabledProxyId != null ? 22 : 35,
-    );
-    if (existing != null) {
-      try {
-        return await existing.future.timeout(
-          waitFor,
-          onTimeout: () => _filePathCache[fileId],
-        );
-      } catch (_) {
-        return _filePathCache[fileId];
-      }
-    }
-
-    final completer = Completer<String?>();
-    _downloadWaiters[fileId] = completer;
-    _queueFileDownload(
-      fileId,
-      priority: prioUnreadTipWarm,
-      background: true,
-      chatId: chatId,
-      reason: reason,
-    );
-    _pumpDownloadQueue();
-    try {
-      return await completer.future.timeout(
-        waitFor,
-        onTimeout: () {
-          _mediaLog(
-            'warm-unread-tip timeout file=$fileId reason=$reason',
-          );
-          return _filePathCache[fileId];
-        },
-      );
-    } catch (_) {
-      return _filePathCache[fileId];
-    } finally {
-      if (identical(_downloadWaiters[fileId], completer)) {
-        _downloadWaiters.remove(fileId);
-      }
-      if (!completer.isCompleted) {
-        completer.complete(_filePathCache[fileId]);
-      }
-    }
-  }
-
-  Future<void> _warmOldestUnreadLightMedia(int chatId) async {
-    if (chatId == 0 || !isReady) return;
-    if (_openChatId != null || !_appInForeground) return;
-    if (!_tdlibReadyForMedia) return;
-    if (unreadCountFor(chatId) <= 0) return;
-
-    if (!isUnreadHistoryWarm(chatId) ||
-        firstUnreadMessageId(chatId) == null) {
-      await warmUnreadChatHistory(chatId);
-    }
-    if (_openChatId != null || !_appInForeground) return;
-    if (unreadCountFor(chatId) <= 0) return;
-
-    final target = _findOldestUnreadLightMedia(chatId);
-    if (target == null) {
-      if (isUnreadHistoryWarm(chatId)) {
-        _unreadTipWarmedMsgByChat[chatId] = -1;
-      }
-      return;
-    }
-    final prev = _unreadTipWarmedMsgByChat[chatId];
-    if (prev == target.id) return;
-
-    var m = target;
-    final softPhoto = m.isPhoto &&
-        (m.photoSizeType == null ||
-            m.photoSizeType == 'm' ||
-            m.photoSizeType == 's' ||
-            m.photoFallbackFileIds.isEmpty);
-    if (softPhoto) {
-      await _openMessageContent(chatId, m.id);
-      if (_openChatId != null || !_appInForeground) return;
-      final c = _client;
-      if (c != null) {
-        try {
-          final res = await c.sendAwait({
-            '@type': 'getMessage',
-            'chat_id': chatId,
-            'message_id': m.id,
-          }, timeout: const Duration(seconds: 6));
-          final parsed = _parseMessage(res);
-          if (parsed != null) {
-            _upsertMessage(parsed);
-            m = parsed;
-          }
-        } catch (_) {}
-      }
-      if (_unreadTipPreviewReady(m)) {
-        _unreadTipWarmedMsgByChat[chatId] = m.id;
-        return;
-      }
-    }
-
-    final fileId = _unreadTipLightFileId(m);
-    if (fileId == null) {
-      _unreadTipWarmedMsgByChat[chatId] = m.id;
-      return;
-    }
-
-    _mediaLog(
-      'warm-unread-tip chat=$chatId msg=${m.id} file=$fileId',
-    );
-    final path = await _ensureUnreadTipFile(
-      fileId,
-      chatId: chatId,
-      reason: 'unread-tip:$chatId:${m.id}',
-    );
-    _unreadTipWarmedMsgByChat[chatId] = m.id;
-    _mediaLog(
-      'warm-unread-tip done chat=$chatId file=$fileId '
-      'ok=${path != null && path.isNotEmpty}',
-    );
   }
 
   /// Hub-row fields of a `chat` payload, hashed — [syncChatTail] re-reads
@@ -11044,6 +11012,7 @@ class TelegramTdlibService extends ChangeNotifier {
   /// `stall-lastchance` of tap:video — photos OK, video body forever 0B.
   bool _isProtectedUserMediaReason(String reason) {
     if (reason.startsWith('tap:')) return true;
+    if (reason.startsWith('stream:video:')) return true;
     if (reason.startsWith('stall-retry:tap:')) return true;
     if (reason.startsWith('stall-fallback:tap:')) return true;
     if (reason.startsWith('stall-lastchance:')) return true;
@@ -11065,12 +11034,11 @@ class TelegramTdlibService extends ChangeNotifier {
 
   /// Free slots held by idle neighbor/demoted jobs so focus can start.
   Future<void> _yieldSlotsToFocus(Set<int> want) async {
-    // Drop queued neighbors / unread-tip so they don't steal the next free slot.
+    // Drop queued neighbors so they don't steal the next free slot.
     final dropQueuedEarly = _downloadQueue
         .where((j) =>
             !want.contains(j.fileId) &&
             (j.reason.startsWith('neighbor:') ||
-                j.reason.startsWith('unread-tip:') ||
                 j.reason.startsWith('demoted-after-focus')))
         .toList();
     for (final j in dropQueuedEarly) {
@@ -11117,12 +11085,11 @@ class TelegramTdlibService extends ChangeNotifier {
       blockers.add(id);
       if (blockers.length >= 1) break; // free one slot, not a cancel storm
     }
-    // Also drop queued neighbors / unread-tip so they don't refill the slot.
+    // Also drop queued neighbors so they don't refill the slot.
     final dropQueued = _downloadQueue
         .where((j) =>
             !want.contains(j.fileId) &&
             (j.reason.startsWith('neighbor:') ||
-                j.reason.startsWith('unread-tip:') ||
                 j.reason.startsWith('demoted-after-focus') ||
                 (j.reason.startsWith('stall-lastchance:') &&
                     j.priority < prioFocused)))
@@ -11979,19 +11946,6 @@ class TelegramTdlibService extends ChangeNotifier {
     return mediaNeedsViewportFocus(m);
   }
 
-  bool _photoHasUsablePath(TdlibMessage m) {
-    if (m.photoLocalPath != null && m.photoLocalPath!.isNotEmpty) {
-      // Soft s/m still counts as "has bytes to paint", but focus must upgrade.
-      return true;
-    }
-    final primary = m.photoRemoteId;
-    if (primary != null && _hasCachedPath(primary)) return true;
-    for (final id in m.photoFallbackFileIds) {
-      if (_hasCachedPath(id)) return true;
-    }
-    return false;
-  }
-
   /// Sharp enough for a chat bubble — soft s/m / tiny files alone are not.
   /// Typed `x` with a soft/minithumb path used to skip focus forever
   /// (`focus-skip-empty … photoPath=true`) and leave the bubble muddy.
@@ -12016,10 +11970,13 @@ class TelegramTdlibService extends ChangeNotifier {
       }
       // R47b: soft-restart cleared RAM file_id cache; stamped local path on
       // the preserved message is still the on-disk file — do not spin/re-wire.
+      // Progressive JPEG prefixes also stamp photoLocalPath — those must NOT
+      // count as sharp or focus stops the real download mid-file.
       final local = m.photoLocalPath;
       if (local != null &&
           local.isNotEmpty &&
-          _isPaintReadyMediaPath(local)) {
+          _isPaintReadyMediaPath(local) &&
+          (primary == null || _progressivePaintPath[primary] != local)) {
         return true;
       }
       return false;
@@ -12478,7 +12435,6 @@ class TelegramTdlibService extends ChangeNotifier {
       _openTranscriptPreserve.remove(chatId);
       // Resume background jobs that were waiting; rebuild hub so avatars re-queue.
       _pumpDownloadQueue();
-      warmUnreadTipMediaFromHub();
       // Never notify synchronously from a widget dispose path.
       scheduleMicrotask(() {
         notifyListeners();
@@ -13560,7 +13516,8 @@ class TelegramTdlibService extends ChangeNotifier {
     );
     if (prevFp == nextFp) return;
     list[idx] = _copyMessage(m, reactions: next);
-    _notifyUi(immediate: true);
+    // Coalesce — never hitch an open-chat fling for a channel reaction bump.
+    _notifyUi();
   }
 
   Future<void> _sendReactionToggle(
@@ -13698,7 +13655,6 @@ class TelegramTdlibService extends ChangeNotifier {
         r.startsWith('focus-tail:') ||
         r.startsWith('focus-upgrade:') ||
         r.startsWith('neighbor:') ||
-        r.startsWith('unread-tip:') ||
         r.startsWith('auto:video:') ||
         r.startsWith('stall-fallback:') ||
         r.startsWith('stall-retry:') ||
@@ -13767,6 +13723,291 @@ class TelegramTdlibService extends ChangeNotifier {
 
   Future<String?> downloadFile(int fileId, {int priority = prioFocused}) async {
     return ensureFileLocal(fileId, priority: priority);
+  }
+
+  /// Progressive video like official TG: loopback URL + TDLib Range downloads.
+  ///
+  /// Returns null when the file is already complete on disk (caller plays file)
+  /// or streaming is unavailable (web / no size). Otherwise a `http://127.0.0.1`
+  /// URL for [VideoPlayerController.networkUrl].
+  Future<String?> beginVideoStream({
+    required int fileId,
+    int? chatId,
+    int? expectedSize,
+    String mimeType = 'video/mp4',
+  }) async {
+    if (fileId <= 0 || kIsWeb) return null;
+    if (await _probeLocalFile(fileId)) {
+      return null;
+    }
+    var size = expectedSize ?? 0;
+    if (size <= 0) size = fileExpectedSize(fileId);
+    if (size <= 0) {
+      final file = await _getFileMap(fileId);
+      if (file != null) {
+        size = _tdlibInt(file['expected_size']);
+        if (size <= 0) size = _tdlibInt(file['size']);
+        final local = file['local'];
+        if (local is Map) {
+          final path = local['path']?.toString();
+          if (path != null && path.isNotEmpty) {
+            _partialFilePath[fileId] = path;
+          }
+          if (local['is_downloading_completed'] == true &&
+              path != null &&
+              path.isNotEmpty) {
+            _completeFileDownload(fileId, path);
+            return null;
+          }
+        }
+      }
+    }
+    if (size <= 0) {
+      _mediaLog('stream-begin skip file=$fileId (unknown size)');
+      return null;
+    }
+    if (chatId != null && chatId != 0) {
+      await _openMessageContentForFile(chatId, fileId, force: true);
+    }
+    _streamingVideoIds.add(fileId);
+    final session = TdlibVideoStreamSession(
+      fileId: fileId,
+      expectedSize: size,
+      mimeType: mimeType,
+      chatId: chatId,
+    );
+    _streamSessionMeta[fileId] = session;
+    _videoStreamProxy ??= TdlibVideoStreamProxy(
+      ensureRange: ({
+        required int fileId,
+        required int offset,
+        required int length,
+      }) =>
+          ensureVideoStreamRange(
+            fileId: fileId,
+            offset: offset,
+            length: length,
+          ),
+      reviveSession: _reviveVideoStreamSession,
+    );
+    final url = await _videoStreamProxy!.register(session);
+    _streamUrlByFileId[fileId] = url;
+    _mediaLog(
+      'stream-begin file=$fileId size=${_fmtBytes(size)} url=$url '
+      'chat=$chatId',
+    );
+    // Kick the first megabyte so ExoPlayer's opening Range is warm.
+    // Moov-at-end / seek ranges are driven by the player (official model) —
+    // do not prefetch the tail here (that would cancel this download).
+    final warm = size < 1024 * 1024 ? size : 1024 * 1024;
+    unawaited(
+      ensureVideoStreamRange(fileId: fileId, offset: 0, length: warm),
+    );
+    notifyListeners();
+    return url;
+  }
+
+  void endVideoStream(int fileId) {
+    if (fileId <= 0) return;
+    _streamingVideoIds.remove(fileId);
+    _streamUrlByFileId.remove(fileId);
+    _streamSessionMeta.remove(fileId);
+    _videoStreamProxy?.unregister(fileId);
+    final waiters = _streamRangeWaiters.remove(fileId);
+    if (waiters != null) {
+      for (final w in waiters) {
+        if (!w.isCompleted) w.complete();
+      }
+    }
+    _mediaLog('stream-end file=$fileId');
+    notifyListeners();
+  }
+
+  Future<TdlibVideoStreamSession?> _reviveVideoStreamSession(int fileId) async {
+    final meta = _streamSessionMeta[fileId];
+    if (meta == null) {
+      _mediaLog('stream-revive miss file=$fileId (no meta)');
+      return null;
+    }
+    _streamingVideoIds.add(fileId);
+    _mediaLog(
+      'stream-revive file=$fileId size=${_fmtBytes(meta.expectedSize)}',
+    );
+    return meta;
+  }
+
+  /// Ensure [length] contiguous bytes from [offset] are on disk (TDLib ranges).
+  Future<TdlibVideoRangeReady?> ensureVideoStreamRange({
+    required int fileId,
+    required int offset,
+    required int length,
+  }) async {
+    if (fileId <= 0 || length <= 0 || offset < 0) return null;
+    final prev = _streamRangeGates[fileId] ?? Future<void>.value();
+    final gate = Completer<void>();
+    _streamRangeGates[fileId] = gate.future;
+    try {
+      await prev;
+      return await _ensureVideoStreamRangeUnlocked(
+        fileId: fileId,
+        offset: offset,
+        length: length,
+      );
+    } finally {
+      gate.complete();
+    }
+  }
+
+  Future<TdlibVideoRangeReady?> _ensureVideoStreamRangeUnlocked({
+    required int fileId,
+    required int offset,
+    required int length,
+  }) async {
+    final c = _client;
+    if (c == null || _tearingDown) return null;
+    final deadline = DateTime.now().add(const Duration(seconds: 90));
+    // Lookahead so the next player Range often hits cache (official buffers).
+    final expected = fileExpectedSize(fileId);
+    var downloadLimit = length;
+    if (downloadLimit < 512 * 1024) downloadLimit = 512 * 1024;
+    if (expected > 0 && offset + downloadLimit > expected) {
+      downloadLimit = expected - offset;
+    }
+    if (downloadLimit < length) downloadLimit = length;
+
+    while (!_tearingDown && DateTime.now().isBefore(deadline)) {
+      if (!_streamingVideoIds.contains(fileId) &&
+          !_downloadInFlight.contains(fileId)) {
+        // Session ended mid-wait.
+      }
+      final avail = await _getFileDownloadedPrefixSize(fileId, offset);
+      final path = _partialFilePath[fileId] ?? cachedFilePath(fileId);
+      if (avail >= length && path != null && path.isNotEmpty) {
+        return TdlibVideoRangeReady(path: path, available: avail);
+      }
+      if (!_canStartNetworkDownload && !_tdlibReadyForMedia) {
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        continue;
+      }
+      await _startStreamRangeDownload(
+        fileId: fileId,
+        offset: offset,
+        limit: downloadLimit <= 0 ? 0 : downloadLimit,
+      );
+      final waiter = Completer<void>();
+      (_streamRangeWaiters[fileId] ??= <Completer<void>>[]).add(waiter);
+      try {
+        await waiter.future.timeout(const Duration(seconds: 3));
+      } on TimeoutException {
+        // Re-check prefix / re-issue downloadFile.
+      } finally {
+        _streamRangeWaiters[fileId]?.remove(waiter);
+      }
+    }
+    final avail = await _getFileDownloadedPrefixSize(fileId, offset);
+    final path = _partialFilePath[fileId] ?? cachedFilePath(fileId);
+    if (avail >= length && path != null && path.isNotEmpty) {
+      return TdlibVideoRangeReady(path: path, available: avail);
+    }
+    _mediaLog(
+      'stream-range FAIL file=$fileId offset=$offset need=$length '
+      'got=$avail path=${path == null ? "null" : p.basename(path)}',
+    );
+    return null;
+  }
+
+  Future<void> _startStreamRangeDownload({
+    required int fileId,
+    required int offset,
+    required int limit,
+  }) async {
+    final c = _client;
+    if (c == null || _tearingDown) return;
+    if (!_downloadInFlight.contains(fileId)) {
+      _downloadInFlight.add(fileId);
+      _downloadActive = (_downloadActive + 1).clamp(0, 100);
+    }
+    final t = _downloadTrace.putIfAbsent(
+      fileId,
+      () => _TdlibDownloadTrace(
+        fileId: fileId,
+        reason: 'stream:video:$fileId',
+        priority: 32,
+        background: false,
+        chatId: _openChatId,
+      ),
+    );
+    t.reason = 'stream:video:$fileId';
+    t.offset = offset;
+    t.startedAt ??= DateTime.now();
+    t.lastStartAt = DateTime.now();
+    t.downloadAcked = false;
+    if (t.expectedSize <= 0) {
+      final s = fileExpectedSize(fileId);
+      if (s > 0) t.expectedSize = s;
+    }
+    _mediaLog(
+      'stream-downloadFile file=$fileId offset=$offset limit=$limit '
+      'prio=32 net=${_networkKind.name}',
+    );
+    try {
+      await c.sendAwait(
+        {
+          '@type': 'downloadFile',
+          'file_id': fileId,
+          'priority': 32,
+          'offset': offset,
+          'limit': limit,
+          'synchronous': false,
+        },
+        timeout: const Duration(seconds: 20),
+      );
+      t.downloadAcked = true;
+    } catch (e) {
+      _mediaLog('stream-downloadFile FAIL file=$fileId err=$e');
+    }
+  }
+
+  Future<int> _getFileDownloadedPrefixSize(int fileId, int offset) async {
+    final c = _client;
+    if (c == null) return 0;
+    try {
+      final r = await c.sendAwait(
+        {
+          '@type': 'getFileDownloadedPrefixSize',
+          'file_id': fileId,
+          'offset': offset,
+        },
+        timeout: const Duration(seconds: 5),
+      );
+      return _tdlibInt(r['size']);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<Map?> _getFileMap(int fileId) async {
+    final c = _client;
+    if (c == null || fileId <= 0) return null;
+    try {
+      final r = await c.sendAwait(
+        {'@type': 'getFile', 'file_id': fileId},
+        timeout: const Duration(seconds: 8),
+      );
+      if (r['@type'] != 'file') return null;
+      return r;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _pulseStreamRangeWaiters(int fileId) {
+    final list = _streamRangeWaiters[fileId];
+    if (list == null || list.isEmpty) return;
+    for (final w in List<Completer<void>>.from(list)) {
+      if (!w.isCompleted) w.complete();
+    }
+    list.clear();
   }
 
   /// Wait until file is local (via async download + [updateFile]), or null.
@@ -14120,6 +14361,48 @@ class TelegramTdlibService extends ChangeNotifier {
       '@type': 'leaveChat',
       'chat_id': chatId,
     });
+  }
+
+  /// Clear messages locally (and optionally for peers). Keeps the chat in the list.
+  Future<void> clearChatHistory(
+    int chatId, {
+    bool revoke = false,
+  }) async {
+    final c = _client;
+    if (c == null || chatId == 0) return;
+    await c.sendAwait({
+      '@type': 'deleteChatHistory',
+      'chat_id': chatId,
+      'remove_from_chat_list': false,
+      'revoke': revoke,
+    });
+    _messagesByChat.remove(chatId);
+    _openTranscriptPreserve.remove(chatId);
+    _pinnedMessageId.remove(chatId);
+    _hubChatsCache = null;
+    notifyListeners();
+  }
+
+  /// Delete a private/secret chat (history + remove from chat list).
+  Future<void> deleteChat(
+    int chatId, {
+    bool revoke = false,
+  }) async {
+    final c = _client;
+    if (c == null || chatId == 0) return;
+    await c.sendAwait({
+      '@type': 'deleteChatHistory',
+      'chat_id': chatId,
+      'remove_from_chat_list': true,
+      'revoke': revoke,
+    });
+    _messagesByChat.remove(chatId);
+    _openTranscriptPreserve.remove(chatId);
+    _pinnedMessageId.remove(chatId);
+    _chats.remove(chatId);
+    _chatOrder.remove(chatId);
+    _hubChatsCache = null;
+    notifyListeners();
   }
 
   /// Whether the current user is the group/channel creator.
@@ -15405,7 +15688,6 @@ class TelegramTdlibService extends ChangeNotifier {
               scheduleHubWarmAfterBoot(why: 'updateChatReadInbox');
             } else if (!isChannelChat(chatId)) {
               _enqueueHistoryWarm(chatId);
-              warmUnreadTipMediaFromHub();
             }
           }
         } else if (type == 'updateChatReadOutbox') {
@@ -15531,7 +15813,8 @@ class TelegramTdlibService extends ChangeNotifier {
           final id = (user['id'] as num?)?.toInt();
           if (id != null) {
             _users[id] = Map<String, dynamic>.from(user);
-            notifyListeners();
+            // Coalesce / scroll-defer — raw notifyListeners hitch flings.
+            _notifyUi();
           }
         }
         break;
@@ -15566,7 +15849,7 @@ class TelegramTdlibService extends ChangeNotifier {
                 }
               }
             }
-            notifyListeners();
+            _notifyUi();
           }
         }
         break;
@@ -15584,7 +15867,7 @@ class TelegramTdlibService extends ChangeNotifier {
                 _memberCountByChatId[entry.key] = mc;
               }
             }
-            notifyListeners();
+            _notifyUi();
           }
         }
         break;
@@ -15652,7 +15935,6 @@ class TelegramTdlibService extends ChangeNotifier {
                 scheduleHubWarmAfterBoot(why: 'newMessage');
               } else if (!isChannelChat(msg.chatId)) {
                 _enqueueHistoryWarm(msg.chatId);
-                warmUnreadTipMediaFromHub();
               }
             }
             if (!msg.isService && _bridgeNewMessageListeners.isNotEmpty) {
@@ -16166,13 +16448,12 @@ class TelegramTdlibService extends ChangeNotifier {
         _mediaLog('proxy epoch saved=$epoch');
       } catch (_) {}
     } else {
-      // Prefer the hop that last reached Ready on this device/network.
-      // (R24 mid-ladder skip stuck us on dead 8443 — SessionLog 14:41–14:44.)
+      // Prefer the hop that last reached Ready on this radio (wifi vs mobile
+      // prefs). R24 mid-ladder skip stuck us on dead 8443 — SessionLog
+      // 14:41–14:44. Load remaps to R67 default when this radio has no
+      // preferred (legacy mobile `:8443` must not sticky-restore on Wi‑Fi).
+      // MegaFon Wi‑Fi that needs `:8443` keeps it via v2_wifi after Pong.
       await _loadPreferredProxyEndpointIndex();
-      // R67 port flip remains on real wifi↔mobile (bearer-recover only).
-      // Do NOT remap here: SessionLog 10:20 restored sticky `:8443` then
-      // `bearer-endpoint … why=ensure` forced dead mtg-wifi `:443` while
-      // MegaFon WiFi blackholes `244.213:443` and `:8443` works.
     }
     if (_proxyEndpointIndex < 0 || _proxyEndpointIndex >= endpoints.length) {
       _proxyEndpointIndex = 0;
@@ -16840,8 +17121,12 @@ class TelegramTdlibService extends ChangeNotifier {
       var underline = false;
       var strikethrough = false;
       var code = false;
+      var pre = false;
+      String? language;
       String? url;
       String? urlKind;
+      var blockquote = false;
+      var expandableBlockquote = false;
       if (t == 'textEntityTypeBold') {
         bold = true;
       } else if (t == 'textEntityTypeItalic') {
@@ -16850,10 +17135,18 @@ class TelegramTdlibService extends ChangeNotifier {
         underline = true;
       } else if (t == 'textEntityTypeStrikethrough') {
         strikethrough = true;
-      } else if (t == 'textEntityTypeCode' ||
-          t == 'textEntityTypePre' ||
-          t == 'textEntityTypePreCode') {
+      } else if (t == 'textEntityTypeCode') {
         code = true;
+      } else if (t == 'textEntityTypePre') {
+        pre = true;
+      } else if (t == 'textEntityTypePreCode') {
+        pre = true;
+        final lang = type['language']?.toString();
+        if (lang != null && lang.isNotEmpty) language = lang;
+      } else if (t == 'textEntityTypeBlockQuote') {
+        blockquote = true;
+      } else if (t == 'textEntityTypeExpandableBlockQuote') {
+        expandableBlockquote = true;
       } else if (t == 'textEntityTypeTextUrl') {
         url = type['url']?.toString();
       } else if (t == 'textEntityTypeUrl') {
@@ -16882,6 +17175,10 @@ class TelegramTdlibService extends ChangeNotifier {
         if (underline) 'underline': true,
         if (strikethrough) 'strikethrough': true,
         if (code) 'code': true,
+        if (pre) 'pre': true,
+        if (language != null && language.isNotEmpty) 'language': language,
+        if (blockquote) 'blockquote': true,
+        if (expandableBlockquote) 'expandable_blockquote': true,
         if (url != null && url.isNotEmpty) 'url': url,
         if (urlKind != null) 'url_kind': urlKind,
       });
@@ -17007,6 +17304,10 @@ class TelegramTdlibService extends ChangeNotifier {
       if (file is! Map) continue;
       final id = _tdlibInt(file['id']);
       if (id <= 0) continue;
+      final progressive = _readProgressiveSizes(raw);
+      if (progressive.isNotEmpty) {
+        _photoProgressiveSizes[id] = progressive;
+      }
       final w = (raw['width'] as num?)?.toInt() ?? 0;
       final h = (raw['height'] as num?)?.toInt() ?? 0;
       final area = w * h;
@@ -17078,6 +17379,11 @@ class TelegramTdlibService extends ChangeNotifier {
 
     final chosen = bestLocalGood ?? bestRemote ?? bestAnyLocal;
     if (chosen != null) {
+      _rememberFullscreenUpgrade(
+        primaryId: chosen.fileId,
+        primaryType: chosen.type,
+        byType: byType,
+      );
       // Soft picks are common; logging every ListView rebuild stalls scroll.
       return (
         fileId: chosen.fileId,
@@ -17156,6 +17462,125 @@ class TelegramTdlibService extends ChangeNotifier {
       default:
         return 5;
     }
+  }
+
+  List<int> _readProgressiveSizes(Map raw) {
+    final ps = raw['progressive_sizes'];
+    if (ps is! List || ps.isEmpty) return const [];
+    final out = <int>[];
+    for (final v in ps) {
+      final n = (v is num) ? v.toInt() : int.tryParse('$v') ?? 0;
+      if (n > 0) out.add(n);
+    }
+    if (out.isEmpty) return const [];
+    out.sort();
+    return out;
+  }
+
+  /// Bubble keeps `x`; fullscreen may pull `y` then `w` (official screen pick).
+  void _rememberFullscreenUpgrade({
+    required int primaryId,
+    required String primaryType,
+    required Map<String, int> byType,
+  }) {
+    if (primaryId <= 0) return;
+    int? upgrade;
+    if (primaryType == 'w') {
+      upgrade = null;
+    } else if (primaryType == 'y') {
+      upgrade = byType['w'];
+    } else {
+      // x / m / s / unknown — prefer y (~1280 phone), else w.
+      upgrade = byType['y'] ?? byType['w'];
+    }
+    if (upgrade != null && upgrade != primaryId) {
+      _photoFullscreenUpgrade[primaryId] = upgrade;
+    } else {
+      _photoFullscreenUpgrade.remove(primaryId);
+    }
+  }
+
+  /// Official TG: as the full JPEG downloads from offset=0, paint progressive
+  /// prefixes so the bubble "resolves" instead of staying on minithumb.
+  void _maybePaintProgressivePhoto(int fileId, Map local) {
+    final prefixes = _photoProgressiveSizes[fileId];
+    if (prefixes == null || prefixes.isEmpty) return;
+    if (_hasUsablePhotoCached(fileId, minBytes: 3 * 1024)) return;
+    final offset = _tdlibInt(local['download_offset']);
+    if (offset != 0) return;
+    final path = local['path']?.toString();
+    if (path == null || path.isEmpty) return;
+    final avail = _tdlibInt(local['downloaded_prefix_size']);
+    final downloaded = _tdlibInt(local['downloaded_size']);
+    final have = avail > 0 ? avail : downloaded;
+    if (have <= 0) return;
+    // Skip tiny prefixes — minithumb already covers them; need a real scan.
+    const minPaint = 8 * 1024;
+    var hit = 0;
+    for (final p in prefixes) {
+      if (p >= minPaint && have >= p) hit = p;
+    }
+    if (hit <= 0 && have >= minPaint) {
+      // No declared thresholds crossed but we have enough bytes — paint once.
+      hit = have < 64 * 1024 ? have : 64 * 1024;
+    }
+    if (hit <= 0) return;
+    final painted = _photoProgressivePaintedBytes[fileId] ?? 0;
+    if (hit <= painted) return;
+    if (_progressivePaintInFlight.contains(fileId)) return;
+    _progressivePaintInFlight.add(fileId);
+    unawaited(_paintProgressivePhotoPrefix(fileId, path, hit));
+  }
+
+  Future<void> _paintProgressivePhotoPrefix(
+    int fileId,
+    String srcPath,
+    int bytes,
+  ) async {
+    try {
+      final src = File(srcPath);
+      if (!src.existsSync()) return;
+      final len = src.lengthSync();
+      if (len < bytes) return;
+      final raf = await src.open();
+      late final List<int> data;
+      try {
+        await raf.setPosition(0);
+        data = await raf.read(bytes);
+      } finally {
+        await raf.close();
+      }
+      if (data.length < 4) return;
+      // JPEG SOI
+      if (data[0] != 0xFF || data[1] != 0xD8) return;
+      final dir = await getTemporaryDirectory();
+      final outPath = p.join(dir.path, 'tdlib_prog_${fileId}_$bytes.jpg');
+      final out = File(outPath);
+      await out.writeAsBytes(data, flush: true);
+      _progressivePaintPath[fileId] = outPath;
+      _photoProgressivePaintedBytes[fileId] = bytes;
+      // Stamp messages so bubbles rebuild without waiting for full complete.
+      final msg = _findMessageForFileId(fileId);
+      if (msg != null) {
+        final patched = _copyMessage(msg, photoLocalPath: outPath);
+        _upsertMessage(patched);
+      }
+      _mediaLog(
+        'photo-progressive paint file=$fileId bytes=${_fmtBytes(bytes)} '
+        'path=${p.basename(outPath)}',
+      );
+      _notifyUi();
+    } catch (e) {
+      _mediaLog('photo-progressive FAIL file=$fileId err=$e');
+    } finally {
+      _progressivePaintInFlight.remove(fileId);
+    }
+  }
+
+  void _clearProgressivePhotoPaint(int fileId) {
+    _progressivePaintPath.remove(fileId);
+    _photoProgressivePaintedBytes.remove(fileId);
+    _progressivePaintInFlight.remove(fileId);
   }
 
   /// Any file id from photo.sizes (ignores type ranking).

@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Cleartext for Services proxy (:13128) and IP-register (:13129); site traffic stays HTTPS. -->
+<!-- Cleartext for Services proxy (:13128), IP-register (:13129), and TDLib
+     progressive video loopback (127.0.0.1). Site traffic stays HTTPS. -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">159.194.200.164</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
     </domain-config>
 </network-security-config>
