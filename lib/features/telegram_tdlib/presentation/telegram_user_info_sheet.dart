@@ -4,12 +4,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/push/push_navigation.dart';
 import '../../../core/widgets/family_tab_bar.dart';
+import '../../chat/presentation/widgets/chat_link_item_actions.dart';
+import '../../chat/presentation/widgets/chat_link_preview_tile.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../tdlib_local_file.dart';
 import '../telegram_link_navigation.dart';
 import '../telegram_tdlib_providers.dart';
 import '../telegram_tdlib_service.dart';
+import 'telegram_conversation_screen.dart';
+import 'telegram_sheet_media_thumb.dart';
 
 /// Шторка профиля TG — layout как у [ChatInfoSheet] (DM).
 class TelegramUserInfoSheet extends ConsumerStatefulWidget {
@@ -18,17 +23,20 @@ class TelegramUserInfoSheet extends ConsumerStatefulWidget {
     required this.chatId,
     required this.profile,
     this.onLinkToFamily,
+    this.onGoToMessage,
   });
 
   final int chatId;
   final TdlibUserProfile profile;
   final VoidCallback? onLinkToFamily;
+  final Future<void> Function(int messageId)? onGoToMessage;
 
   static Future<void> show(
     BuildContext context, {
     required int chatId,
     required TdlibUserProfile profile,
     VoidCallback? onLinkToFamily,
+    Future<void> Function(int messageId)? onGoToMessage,
   }) {
     return showModalBottomSheet<void>(
       context: context,
@@ -39,6 +47,7 @@ class TelegramUserInfoSheet extends ConsumerStatefulWidget {
         chatId: chatId,
         profile: profile,
         onLinkToFamily: onLinkToFamily,
+        onGoToMessage: onGoToMessage,
       ),
     );
   }
@@ -115,6 +124,49 @@ class _TelegramUserInfoSheetState extends ConsumerState<TelegramUserInfoSheet>
         SnackBar(content: Text('Не удалось изменить уведомления: $e')),
       );
     }
+  }
+
+  /// Open (or create) the private DM with this user.
+  Future<void> _openPrivateChat() async {
+    final userId = _profile.userId;
+    if (userId <= 0) return;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final existing = svc.privateChatIdForUser(userId);
+    // Already inside this DM — just close the profile sheet.
+    if (existing != null && existing == widget.chatId) {
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+
+    final chatId = existing ?? await svc.ensurePrivateChatId(userId);
+    if (!mounted) return;
+    if (chatId == null || chatId == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось открыть чат')),
+      );
+      return;
+    }
+    // Same chat id passed into the sheet (rare: DM without cache hit earlier).
+    if (chatId == widget.chatId) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    final title = _profile.displayName.trim().isNotEmpty
+        ? _profile.displayName.trim()
+        : 'Telegram';
+    Navigator.of(context).pop();
+    final nav = familyChatNavigatorKey.currentState;
+    if (nav == null) return;
+    await nav.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => TelegramConversationScreen(
+          chatId: chatId,
+          title: title,
+          tgUserId: userId,
+        ),
+      ),
+    );
   }
 
   @override
@@ -219,7 +271,7 @@ class _TelegramUserInfoSheetState extends ConsumerState<TelegramUserInfoSheet>
                                     _ActionChip(
                                       icon: LucideIcons.message_circle,
                                       tooltip: 'Чат',
-                                      onTap: () => Navigator.of(context).pop(),
+                                      onTap: () => unawaited(_openPrivateChat()),
                                     ),
                                     const SizedBox(width: 10),
                                     _ActionChip(
@@ -355,11 +407,31 @@ class _TelegramUserInfoSheetState extends ConsumerState<TelegramUserInfoSheet>
             delegate: SliverChildBuilderDelegate(
               (context, i) {
                 final item = _links[i];
-                return ListTile(
-                  leading: const Icon(LucideIcons.link),
-                  title: Text(item.url, maxLines: 2),
-                  onTap: () => unawaited(
-                    TelegramLinkNavigation.openOrLaunch(item.url),
+                final url = item.url;
+                final messageId = item.messageId;
+                final goTo = widget.onGoToMessage;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: ChatLinkPreviewTile(
+                    url: url,
+                    onTap: () {
+                      unawaited(
+                        showChatLinkItemActions(
+                          context,
+                          onOpen: () => TelegramLinkNavigation.openOrLaunch(
+                            url,
+                            currentChatId: widget.chatId,
+                          ),
+                          onGoToMessage: messageId > 0 && goTo != null
+                              ? () => goToChatInfoMessage(
+                                    context,
+                                    messageId: messageId,
+                                    onGoToMessage: goTo,
+                                  )
+                              : null,
+                        ),
+                      );
+                    },
                   ),
                 );
               },
@@ -387,50 +459,11 @@ class _TelegramUserInfoSheetState extends ConsumerState<TelegramUserInfoSheet>
             crossAxisSpacing: 4,
           ),
           delegate: SliverChildBuilderDelegate(
-            (context, i) {
-              final m = _media[i];
-              final svc = ref.read(telegramTdlibServiceProvider);
-              final path = m.photoLocalPath ??
-                  (m.photoRemoteId != null
-                      ? svc.cachedFilePath(m.photoRemoteId!)
-                      : null) ??
-                  m.videoThumbLocalPath ??
-                  (m.videoThumbFileId != null
-                      ? svc.cachedFilePath(m.videoThumbFileId!)
-                      : null);
-              if (path == null || path.isEmpty) {
-                final fileId = m.photoRemoteId ?? m.videoThumbFileId;
-                if (fileId != null) {
-                  unawaited(svc.ensureFileLocal(fileId));
-                }
-                return ColoredBox(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  child: Center(
-                    child: Icon(
-                      m.isVideo ? LucideIcons.video : LucideIcons.image,
-                    ),
-                  ),
-                );
-              }
-              return ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    tdlibLocalFileImage(path, fit: BoxFit.cover),
-                    if (m.isVideo)
-                      const Align(
-                        alignment: Alignment.center,
-                        child: Icon(
-                          LucideIcons.play,
-                          color: Colors.white,
-                          size: 28,
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            },
+            (context, i) => TelegramSheetMediaThumb(
+              message: _media[i],
+              gallery: _media,
+              onGoToMessage: widget.onGoToMessage,
+            ),
             childCount: _media.length,
           ),
         ),

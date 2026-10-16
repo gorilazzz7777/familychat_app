@@ -14,6 +14,8 @@ import Intents
   private static var outboxBgTasksRegistered = false
   private var outboxChannel: FlutterMethodChannel?
   private var outboxBgTaskId: UIBackgroundTaskIdentifier = .invalid
+  private var voiceProximityEventSink: FlutterEventSink?
+  private var voiceProximityObserving = false
 
   override func application(
     _ application: UIApplication,
@@ -30,9 +32,23 @@ import Intents
   }
 
   override func applicationDidEnterBackground(_ application: UIApplication) {
-    UIDevice.current.isProximityMonitoringEnabled = false
+    // Do NOT stop voice proximity here — bringing the phone to the ear blanks
+    // the screen and can background the app; Dart owns stop when playback ends.
+    NSLog("FamilyChatVoice: applicationDidEnterBackground proxObs=%@",
+          voiceProximityObserving ? "1" : "0")
+    if voiceProximityObserving {
+      voiceProximityEventSink?(voiceAudioSnapshot(reason: "enterBackground"))
+    }
     scheduleOutboxRefresh()
     super.applicationDidEnterBackground(application)
+  }
+
+  override func applicationWillEnterForeground(_ application: UIApplication) {
+    NSLog("FamilyChatVoice: applicationWillEnterForeground")
+    if voiceProximityObserving {
+      voiceProximityEventSink?(voiceAudioSnapshot(reason: "enterForeground"))
+    }
+    super.applicationWillEnterForeground(application)
   }
 
   private func registerOutboxBgTasks() {
@@ -147,8 +163,45 @@ import Intents
         UIDevice.current.isProximityMonitoringEnabled = true
         result(nil)
       case "disable":
-        UIDevice.current.isProximityMonitoringEnabled = false
+        // Keep monitoring if voice proximity is active.
+        if !self.voiceProximityObserving {
+          UIDevice.current.isProximityMonitoringEnabled = false
+        }
         result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
+    let voiceProximityEvents = FlutterEventChannel(
+      name: "com.familychat/voice_proximity_events",
+      binaryMessenger: registrar.messenger()
+    )
+    voiceProximityEvents.setStreamHandler(VoiceProximityStreamHandler(appDelegate: self))
+
+    let voiceProximityChannel = FlutterMethodChannel(
+      name: "com.familychat/voice_proximity",
+      binaryMessenger: registrar.messenger()
+    )
+    voiceProximityChannel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      switch call.method {
+      case "start":
+        result(self.startVoiceProximityMonitoring())
+      case "stop":
+        self.stopVoiceProximityMonitoring()
+        result(nil)
+      case "setEarpiece":
+        self.setVoiceAudioRoute(earpiece: true)
+        result(nil)
+      case "setSpeaker":
+        self.setVoiceAudioRoute(earpiece: false)
+        result(nil)
+      case "getSnapshot":
+        result(self.voiceAudioSnapshot(reason: "getSnapshot"))
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -298,5 +351,113 @@ import Intents
   }
 
   func didDeactivateAudioSession(_ audioSession: AVAudioSession) {
+  }
+
+  fileprivate func startVoiceProximityMonitoring() -> Bool {
+    // All modern iPhones expose proximity; simulator does not.
+    #if targetEnvironment(simulator)
+    return false
+    #else
+    if voiceProximityObserving { return true }
+    UIDevice.current.isProximityMonitoringEnabled = true
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(onProximityChanged),
+      name: UIDevice.proximityStateDidChangeNotification,
+      object: nil
+    )
+    voiceProximityObserving = true
+    NSLog("FamilyChatVoice: startVoiceProximity near=%@",
+          UIDevice.current.proximityState ? "1" : "0")
+    voiceProximityEventSink?(voiceAudioSnapshot(reason: "sensor_start"))
+    return true
+    #endif
+  }
+
+  fileprivate func stopVoiceProximityMonitoring() {
+    guard voiceProximityObserving else { return }
+    NSLog("FamilyChatVoice: stopVoiceProximity")
+    NotificationCenter.default.removeObserver(
+      self,
+      name: UIDevice.proximityStateDidChangeNotification,
+      object: nil
+    )
+    voiceProximityObserving = false
+    UIDevice.current.isProximityMonitoringEnabled = false
+    // Restore media playback category after voice routing ends.
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.overrideOutputAudioPort(.none)
+      try session.setCategory(.playback, mode: .default, options: [])
+      try session.setActive(true)
+    } catch {
+      // Best-effort restore.
+    }
+  }
+
+  @objc private func onProximityChanged(_ notification: Notification) {
+    let near = UIDevice.current.proximityState
+    NSLog("FamilyChatVoice: proximity near=%@", near ? "1" : "0")
+    voiceProximityEventSink?(voiceAudioSnapshot(reason: "sensor"))
+  }
+
+  /// Keep playAndRecord for the whole voice clip; only override the output port.
+  /// Flipping category/mode mid-play restarts the player (~1–2s mute).
+  fileprivate func setVoiceAudioRoute(earpiece: Bool) {
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(
+        .playAndRecord,
+        mode: .voiceChat,
+        options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+      )
+      try session.overrideOutputAudioPort(earpiece ? .none : .speaker)
+      try session.setActive(true)
+      NSLog("FamilyChatVoice: setVoiceAudioRoute earpiece=%@", earpiece ? "1" : "0")
+    } catch {
+      NSLog("FamilyChatVoice: setVoiceAudioRoute fail %@", "\(error)")
+    }
+  }
+
+  fileprivate func voiceAudioSnapshot(reason: String) -> [String: Any] {
+    let session = AVAudioSession.sharedInstance()
+    let outputs = session.currentRoute.outputs.map { "\($0.portType.rawValue):\($0.portName)" }
+    let inputs = session.currentRoute.inputs.map { "\($0.portType.rawValue):\($0.portName)" }
+    return [
+      "reason": reason,
+      "near": UIDevice.current.proximityState,
+      "category": session.category.rawValue,
+      "mode": session.mode.rawValue,
+      "outputs": outputs.joined(separator: ","),
+      "inputs": inputs.joined(separator: ","),
+      "otherAudio": session.isOtherAudioPlaying,
+      "secondaryAudio": session.secondaryAudioShouldBeSilencedHint,
+      "proxObs": voiceProximityObserving,
+    ]
+  }
+
+  fileprivate func setVoiceProximityEventSink(_ sink: FlutterEventSink?) {
+    voiceProximityEventSink = sink
+    if voiceProximityObserving, let sink = sink {
+      sink(voiceAudioSnapshot(reason: "sink_listen"))
+    }
+  }
+}
+
+private final class VoiceProximityStreamHandler: NSObject, FlutterStreamHandler {
+  private weak var appDelegate: AppDelegate?
+
+  init(appDelegate: AppDelegate) {
+    self.appDelegate = appDelegate
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    appDelegate?.setVoiceProximityEventSink(events)
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    appDelegate?.setVoiceProximityEventSink(nil)
+    return nil
   }
 }

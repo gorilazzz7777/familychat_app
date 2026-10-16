@@ -66,13 +66,17 @@ class ChatVoiceRecorder {
     };
     final path = await voiceRecordingTempPath(extension: ext) ??
         'voice_${DateTime.now().millisecondsSinceEpoch}.$ext';
+    // TDLib voice notes require mono Opus/OGG (or M4A). Stereo Opus → 400.
     final config = _wavForTranscription
         ? RecordConfig(
             encoder: encoder,
             sampleRate: kChatVoiceTranscriptionSampleRate,
             numChannels: 1,
           )
-        : RecordConfig(encoder: encoder);
+        : RecordConfig(
+            encoder: encoder,
+            numChannels: 1,
+          );
     await _recorder.start(config, path: path);
     _path = path;
     _startedAt = DateTime.now();

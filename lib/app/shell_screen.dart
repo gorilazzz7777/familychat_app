@@ -110,11 +110,21 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   String _profileAvatarLocalPath =
       HubFirstPaintSnapshot.cachedProfileAvatarPath ?? '';
 
+  /// Hold ChatHubScreen until SQLite/file hub snapshot is in RAM (frame-0 paint).
+  bool _hubSnapshotReady =
+      kIsWeb || HubFirstPaintSnapshot.warmed != null;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _status = widget.status;
+    if (!_hubSnapshotReady) {
+      unawaited(HubFirstPaintSnapshot.warm().whenComplete(() {
+        if (!mounted || _hubSnapshotReady) return;
+        setState(() => _hubSnapshotReady = true);
+      }));
+    }
     unawaited(_loadCachedProfileAvatar());
     IncomingShareBus.instance.addListener(_onIncomingShare);
     onOpenFeedFromPush = _openFeedFromPush;
@@ -520,19 +530,13 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   /// TG hub features are available to everyone (no Individual Premium gate).
   bool get _telegramFeaturesEnabled => true;
 
-  bool get _hasIndividualPremium {
-    final entitlements = _status['entitlements'];
-    return entitlements is Map && entitlements['individual_premium'] == true;
-  }
-
   ShellNavLayout _navLayout([FamilyChatAppSettings? settings]) {
     final FamilyChatAppSettings s =
         settings ?? ref.read(appSettingsProvider);
+    // Services: open to everyone during promo (backend gate); later premium.
     return ShellNavLayout.fromSettings(
       s,
-      extras: _hasIndividualPremium
-          ? const [ShellSection.services]
-          : const <ShellSection>[],
+      extras: const [ShellSection.services],
       // With labels + overflow, keep Services on the pill (not under «Ещё»).
       // Icons-only mode never uses «Ещё» — all icons stay in one row.
       pinToBar: s.menuLabels ? const {ShellSection.services} : const {},
@@ -680,6 +684,10 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
     final userId = _currentUserId;
     switch (i) {
       case _chatTabIndex:
+        if (!_hubSnapshotReady) {
+          // Brief hold while DB/file snapshot loads — avoids empty→list flash.
+          return const ChatHubListSkeleton();
+        }
         return ChatHubScreen(
           key: _chatHubKey,
           hasIndividualPremium: _telegramFeaturesEnabled,

@@ -63,7 +63,8 @@ class ShellNavLayout {
       ShellSection.family => settings.menuFamily,
       ShellSection.gallery => settings.menuGallery,
       ShellSection.calendar => settings.menuCalendar,
-      // Injected via [fromSettings] extras when premium — never a settings toggle.
+      // Injected via [fromSettings] extras (promo / later premium) — not a
+      // user settings toggle.
       ShellSection.services => false,
     };
   }

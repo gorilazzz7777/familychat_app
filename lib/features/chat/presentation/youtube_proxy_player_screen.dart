@@ -10,6 +10,7 @@ import 'package:video_player/video_player.dart';
 
 import '../../../core/config/env.dart';
 import '../../../core/providers/app_providers.dart';
+import '../../../core/settings/app_screen_keep_on.dart';
 import '../data/youtube_audio_handler.dart';
 import '../data/youtube_links.dart';
 
@@ -47,6 +48,13 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   Orientation? _lastOrientation;
+  bool _controlsVisible = true;
+  bool _scrubbing = false;
+  Timer? _hideControlsTimer;
+  bool _keepOnHeld = false;
+
+  static const _controlsHideAfter = Duration(seconds: 3);
+  static const _keepOnId = 'youtube_proxy_player';
 
   String? get _thumbUrl => YoutubeLinks.proxiedThumbUrl(widget.url);
 
@@ -60,19 +68,55 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _hideControlsTimer?.cancel();
     // Restore system bars if we left while in immersive landscape.
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     unawaited(_tearDown());
     super.dispose();
   }
 
+  void _showControls({bool autoHide = true}) {
+    _hideControlsTimer?.cancel();
+    if (!mounted) return;
+    if (!_controlsVisible) {
+      setState(() => _controlsVisible = true);
+    }
+    _scheduleHideControls(autoHide: autoHide);
+  }
+
+  void _scheduleHideControls({bool autoHide = true}) {
+    _hideControlsTimer?.cancel();
+    if (!autoHide || !_playing || _scrubbing || _backgroundAudio) return;
+    _hideControlsTimer = Timer(_controlsHideAfter, () {
+      if (!mounted || !_playing || _scrubbing) return;
+      setState(() => _controlsVisible = false);
+    });
+  }
+
+  void _toggleControlsVisibility() {
+    if (_controlsVisible) {
+      _hideControlsTimer?.cancel();
+      setState(() => _controlsVisible = false);
+    } else {
+      _showControls();
+    }
+  }
+
   void _syncSystemUiForOrientation(Orientation orientation) {
     if (_lastOrientation == orientation) return;
+    final first = _lastOrientation == null;
     _lastOrientation = orientation;
     if (orientation == Orientation.landscape) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     } else {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
+    // Fresh orientation → show chrome briefly, then auto-hide if playing.
+    // Skip first frame (init); never setState during build.
+    if (!first) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showControls();
+      });
     }
   }
 
@@ -87,6 +131,9 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
     try {
       await audio?.stop();
     } catch (_) {}
+    _playing = false;
+    _backgroundAudio = false;
+    _syncKeepOn();
   }
 
   @override
@@ -102,12 +149,29 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
     }
   }
 
+  void _syncKeepOn() {
+    // Only while in-app video is visible+playing (not background audio).
+    final keep = !_backgroundAudio &&
+        _playing &&
+        _video != null &&
+        (_video?.value.isInitialized ?? false);
+    if (keep) {
+      if (_keepOnHeld) return;
+      _keepOnHeld = true;
+      unawaited(AppScreenKeepOn.acquire(_keepOnId));
+    } else if (_keepOnHeld) {
+      _keepOnHeld = false;
+      unawaited(AppScreenKeepOn.release(_keepOnId));
+    }
+  }
+
   Future<void> _enterBackground() async {
     if (_backgroundAudio) return;
     final audio = _audio;
     final video = _video;
     if (audio == null) return;
     _backgroundAudio = true;
+    _syncKeepOn();
     Duration pos = _position;
     if (video != null && video.value.isInitialized) {
       pos = video.value.position;
@@ -153,6 +217,7 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
         _playing = wasPlaying;
       });
     }
+    _syncKeepOn();
   }
 
   Future<void> _resolveAndPlay() async {
@@ -238,6 +303,7 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
       await video.play();
       _duration = video.value.duration;
       _playing = true;
+      _syncKeepOn();
       video.addListener(_onVideoTick);
       // Prime audio engine for lock-screen / notification; stay paused while
       // the in-app video player owns sound.
@@ -252,7 +318,10 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
           _playing = handler.player.playing;
         });
       });
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+        _scheduleHideControls();
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = 'Не удалось начать воспроизведение');
@@ -263,14 +332,23 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
     final video = _video;
     if (!mounted || video == null || !video.value.isInitialized) return;
     if (_backgroundAudio) return;
+    final wasPlaying = _playing;
+    final nowPlaying = video.value.isPlaying;
     setState(() {
       _position = video.value.position;
       _duration = video.value.duration;
-      _playing = video.value.isPlaying;
+      _playing = nowPlaying;
     });
+    if (wasPlaying && !nowPlaying) {
+      _showControls(autoHide: false);
+    } else if (!wasPlaying && nowPlaying) {
+      _scheduleHideControls();
+    }
+    _syncKeepOn();
   }
 
   Future<void> _togglePlay() async {
+    _showControls();
     if (_backgroundAudio) {
       final audio = _audio;
       if (audio == null) return;
@@ -279,7 +357,10 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
       } else {
         await audio.play();
       }
-      if (mounted) setState(() => _playing = audio.player.playing);
+      if (mounted) {
+        setState(() => _playing = audio.player.playing);
+        _scheduleHideControls(autoHide: audio.player.playing);
+      }
       return;
     }
     final video = _video;
@@ -289,7 +370,11 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
     } else {
       await video.play();
     }
-    if (mounted) setState(() => _playing = video.value.isPlaying);
+    if (mounted) {
+      setState(() => _playing = video.value.isPlaying);
+      _scheduleHideControls(autoHide: video.value.isPlaying);
+    }
+    _syncKeepOn();
   }
 
   Future<void> _seek(Duration pos) async {
@@ -412,6 +497,12 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
                   Expanded(
                     child: Slider(
                       value: progress.clamp(0.0, 1.0),
+                      onChangeStart: totalMs <= 0
+                          ? null
+                          : (_) {
+                              _scrubbing = true;
+                              _hideControlsTimer?.cancel();
+                            },
                       onChanged: totalMs <= 0
                           ? null
                           : (v) {
@@ -423,13 +514,17 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
                             },
                       onChangeEnd: totalMs <= 0
                           ? null
-                          : (v) => unawaited(
+                          : (v) {
+                              _scrubbing = false;
+                              unawaited(
                                 _seek(
                                   Duration(
                                     milliseconds: (v * totalMs).round(),
                                   ),
                                 ),
-                              ),
+                              );
+                              _scheduleHideControls();
+                            },
                     ),
                   ),
                   Text(
@@ -453,6 +548,51 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _chromeOverlay({
+    required double progress,
+    required int totalMs,
+    required bool landscape,
+  }) {
+    return AnimatedOpacity(
+      opacity: _controlsVisible ? 1 : 0,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      child: IgnorePointer(
+        ignoring: !_controlsVisible,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (landscape)
+              SafeArea(
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: Row(
+                    children: [
+                      IconButton(
+                        color: Colors.white,
+                        onPressed: () => Navigator.of(context).maybePop(),
+                        icon: const Icon(Icons.arrow_back),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: 'Открыть в YouTube',
+                        onPressed: () => unawaited(_openInYoutube()),
+                        icon: const _YoutubeAppBarIcon(),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: _controlsBar(progress: progress, totalMs: totalMs),
+            ),
+          ],
         ),
       ),
     );
@@ -506,54 +646,28 @@ class _YoutubeProxyPlayerScreenState extends ConsumerState<YoutubeProxyPlayerScr
                   ),
                 ),
               )
-            : landscape
-                ? Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      ColoredBox(
-                        color: Colors.black,
-                        child: _videoSurface(fillScreen: true),
-                      ),
-                      // Compact overlays so video keeps the full viewport.
-                      SafeArea(
-                        child: Align(
-                          alignment: Alignment.topLeft,
-                          child: Row(
-                            children: [
-                              IconButton(
-                                color: Colors.white,
-                                onPressed: () => Navigator.of(context).maybePop(),
-                                icon: const Icon(Icons.arrow_back),
-                              ),
-                              const Spacer(),
-                              IconButton(
-                                tooltip: 'Открыть в YouTube',
-                                onPressed: () => unawaited(_openInYoutube()),
-                                icon: const _YoutubeAppBarIcon(),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.bottomCenter,
-                        child: _controlsBar(
-                          progress: progress,
-                          totalMs: totalMs,
-                        ),
-                      ),
-                    ],
-                  )
-                : Column(
-                    children: [
-                      Expanded(
-                        child: Center(
-                          child: _videoSurface(fillScreen: false),
-                        ),
-                      ),
-                      _controlsBar(progress: progress, totalMs: totalMs),
-                    ],
-                  );
+            : Stack(
+                fit: StackFit.expand,
+                children: [
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _toggleControlsVisibility,
+                    child: ColoredBox(
+                      color: Colors.black,
+                      child: landscape
+                          ? _videoSurface(fillScreen: true)
+                          : Center(
+                              child: _videoSurface(fillScreen: false),
+                            ),
+                    ),
+                  ),
+                  _chromeOverlay(
+                    progress: progress,
+                    totalMs: totalMs,
+                    landscape: landscape,
+                  ),
+                ],
+              );
 
     return Scaffold(
       backgroundColor: Colors.black,

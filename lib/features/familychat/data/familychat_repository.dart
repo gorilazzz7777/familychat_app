@@ -2792,7 +2792,7 @@ class FamilyChatRepository {
     return res.data ?? const <String, dynamic>{'status': 'error'};
   }
 
-  /// Premium Services: whitelist this device IP + return proxy + catalog.
+  /// Services: whitelist this device IP + return proxy + catalog (+ promo).
   Future<ServicesAccess> fetchServicesAccess() async {
     final res = await _dio.get<Map<String, dynamic>>(
       'familychat/services/access/',

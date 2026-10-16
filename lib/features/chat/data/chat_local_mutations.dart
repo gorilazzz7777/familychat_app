@@ -7,6 +7,7 @@ import 'chat_hub_last_message.dart';
 import 'chat_message_preview.dart';
 import 'chat_realtime_utils.dart';
 import 'chat_unread_providers.dart';
+import 'hub_first_paint_snapshot.dart';
 
 /// Optimistic SQLite updates before outbox sync (native local-first).
 abstract final class ChatLocalMutations {
@@ -27,6 +28,7 @@ abstract final class ChatLocalMutations {
         next['local_read_through_id'] = lastMessageId;
       }
       await ChatLocalStore.instance.upsertThread(next);
+      unawaited(HubFirstPaintSnapshot.upsertFullRow(next));
       break;
     }
     ChatUnreadRefresh.onInvalidate?.call();
@@ -61,6 +63,7 @@ abstract final class ChatLocalMutations {
       next['last_message'] = richer;
       if (clearUnread) next['unread_count'] = 0;
       await ChatLocalStore.instance.upsertThread(next);
+      unawaited(HubFirstPaintSnapshot.upsertFullRow(next));
       ChatUnreadRefresh.onInvalidate?.call();
       return;
     }

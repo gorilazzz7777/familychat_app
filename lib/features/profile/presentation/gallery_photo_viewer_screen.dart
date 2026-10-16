@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -19,6 +18,7 @@ import '../../chat/presentation/chat_forward_screen.dart';
 import '../../chat/presentation/widgets/chat_network_image.dart';
 import '../../chat/data/chat_realtime_utils.dart';
 import '../../feed/presentation/widgets/feed_reactions.dart';
+import '../../gallery/presentation/widgets/fullscreen_zoom_photo.dart';
 import '../../gallery/presentation/widgets/gallery_carousel_thumbnail_strip.dart';
 import '../../gallery/presentation/widgets/gallery_fullscreen_viewer_core.dart';
 import 'face_tagging_sheet.dart';
@@ -85,6 +85,8 @@ class _GalleryPhotoViewerScreenState
   final _zoomPageKey = GlobalKey<ZoomAwarePageViewState>();
   bool _commentsExpanded = false;
   bool _reactBusy = false;
+  bool _peoplePanelExpanded = false;
+  bool _hasPeopleOnPhoto = false;
   int? _highlightUserId;
   String? _highlightSubjectKey;
   List<PhotoFaceBox> _highlightBoxes = const [];
@@ -214,6 +216,8 @@ class _GalleryPhotoViewerScreenState
     Map<String, dynamic> photo,
     int threadId, {
     required bool autoplay,
+    BoxFit imageFit = BoxFit.contain,
+    ValueChanged<Size>? onResolvedSize,
   }) {
     MediaLocalIndex.hydrateAttachment(photo);
     if (isVideoAttachment(photo)) {
@@ -228,10 +232,11 @@ class _GalleryPhotoViewerScreenState
     return ChatNetworkImage(
       threadId: threadId,
       attachment: photo,
-      fit: BoxFit.contain,
+      fit: imageFit,
       width: double.infinity,
       height: double.infinity,
       showTransferOverlay: false,
+      onResolvedSize: onResolvedSize,
     );
   }
 
@@ -394,10 +399,12 @@ class _GalleryPhotoViewerScreenState
       pageController: _pageController,
       itemCount: _photos.length,
       zoomPageKey: _zoomPageKey,
-      title: _isVideo ? 'Видео' : 'Фото',
+      title: '',
       onPageChanged: (i) => setState(() {
         _index = i;
         _commentsExpanded = false;
+        _peoplePanelExpanded = false;
+        _hasPeopleOnPhoto = false;
         _highlightUserId = null;
         _highlightSubjectKey = null;
         _highlightBoxes = const [];
@@ -423,15 +430,24 @@ class _GalleryPhotoViewerScreenState
             },
             icon: const Icon(LucideIcons.play),
           ),
-        if (attachmentId != null)
+        if (!_isVideo && _hasPeopleOnPhoto)
           IconButton(
-            tooltip: 'Поделиться',
-            onPressed: () => _shareCurrent(context),
-            icon: Icon(
-              defaultTargetPlatform == TargetPlatform.iOS ||
-                      defaultTargetPlatform == TargetPlatform.macOS
-                  ? Icons.ios_share
-                  : Icons.share,
+            tooltip: 'Кто на фото',
+            onPressed: () => setState(
+              () => _peoplePanelExpanded = !_peoplePanelExpanded,
+            ),
+            icon: Text(
+              '?',
+              style: TextStyle(
+                // Explicit white — theme onSurface is near-black on the
+                // fullscreen dark app bar and made «?» invisible.
+                color: _peoplePanelExpanded
+                    ? Colors.lightGreenAccent
+                    : Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                height: 1,
+              ),
             ),
           ),
         if (threadId != null && chatAsInt(_photo['message_id']) != null)
@@ -440,16 +456,12 @@ class _GalleryPhotoViewerScreenState
             onPressed: _forwardCurrent,
             icon: const Icon(LucideIcons.forward),
           ),
-        if (threadId != null && attachmentId != null && !_isVideo)
-          IconButton(
-            tooltip: 'Кто на фото',
-            onPressed: () => _openFaceTagging(context, ref),
-            icon: const Icon(LucideIcons.scan_face),
-          ),
         PopupMenuButton<String>(
           icon: const Icon(LucideIcons.ellipsis_vertical),
           onSelected: (value) async {
             switch (value) {
+              case 'share':
+                await _shareCurrent(context);
               case 'faces':
                 await _openFaceTagging(context, ref);
               case 'delete':
@@ -461,9 +473,16 @@ class _GalleryPhotoViewerScreenState
             }
           },
           itemBuilder: (context) => [
-            if (!_isVideo)
+            if (attachmentId != null)
               const PopupMenuItem(
-                  value: 'faces', child: Text('Указать, кто на фото')),
+                value: 'share',
+                child: Text('Поделиться'),
+              ),
+            if (threadId != null && attachmentId != null && !_isVideo)
+              const PopupMenuItem(
+                value: 'faces',
+                child: Text('Указать, кто на фото'),
+              ),
             if (_isOwnGallery && !_isOwnUpload)
               const PopupMenuItem(
                   value: 'delete', child: Text('Убрать из моей галереи')),
@@ -486,41 +505,44 @@ class _GalleryPhotoViewerScreenState
         final showPeopleOverlay = i == _index &&
             pageAttachmentId != null &&
             !isVideoAttachment(p);
+        final isVideo = isVideoAttachment(p);
         return LayoutBuilder(
           builder: (context, constraints) {
-            final media = SizedBox(
-              width: constraints.maxWidth,
-              height: constraints.maxHeight,
-              child: _buildMedia(
-                p,
-                tid,
-                autoplay: i == _index,
-              ),
-            );
+            if (isVideo) {
+              return Center(
+                child: SizedBox(
+                  width: constraints.maxWidth,
+                  height: constraints.maxHeight,
+                  child: _buildMedia(
+                    p,
+                    tid,
+                    autoplay: i == _index,
+                  ),
+                ),
+              );
+            }
             return Stack(
               fit: StackFit.expand,
-              clipBehavior: Clip.none,
+              clipBehavior: Clip.hardEdge,
               children: [
-                if (isVideoAttachment(p))
-                  Center(child: media)
-                else
-                  Center(
-                    child: SizedBox(
-                      width: constraints.maxWidth,
-                      height: constraints.maxHeight,
-                      child: ScaleReportingInteractiveViewer(
-                        minScale: 0.85,
-                        maxScale: 5,
-                        constrained: false,
-                        clipBehavior: Clip.none,
-                        onScaleChanged: i == _index
-                            ? (scale) =>
-                                _zoomPageKey.currentState?.reportScale(scale)
-                            : null,
-                        child: media,
-                      ),
+                SizedBox(
+                  width: constraints.maxWidth,
+                  height: constraints.maxHeight,
+                  child: FullscreenZoomAttachmentPhoto(
+                    attachment: p,
+                    onScaleChanged: i == _index
+                        ? (scale) =>
+                            _zoomPageKey.currentState?.reportScale(scale)
+                        : null,
+                    imageBuilder: (fit, onResolvedSize) => _buildMedia(
+                      p,
+                      tid,
+                      autoplay: i == _index,
+                      imageFit: fit,
+                      onResolvedSize: onResolvedSize,
                     ),
                   ),
+                ),
                 if (showHighlight)
                   PhotoFaceHighlightOverlay(boxes: _highlightBoxes),
                 if (showPeopleOverlay)
@@ -531,6 +553,15 @@ class _GalleryPhotoViewerScreenState
                     threadId: tid,
                     selectedSubjectKey: _highlightSubjectKey,
                     selectedUserId: _highlightUserId,
+                    showTriggerButton: false,
+                    expanded: _peoplePanelExpanded,
+                    onExpandedChanged: (v) =>
+                        setState(() => _peoplePanelExpanded = v),
+                    onHasPeopleChanged: (has) {
+                      if (!mounted) return;
+                      if (_hasPeopleOnPhoto == has) return;
+                      setState(() => _hasPeopleOnPhoto = has);
+                    },
                     onHighlightChanged: (highlight) {
                       setState(() {
                         if (highlight == null) {
@@ -579,10 +610,11 @@ class _GalleryPhotoViewerScreenState
                             visualDensity: VisualDensity.compact,
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
-                                minWidth: 24, minHeight: 24),
+                              minWidth: 24,
+                              minHeight: 24,
+                            ),
                             tooltip: 'Реакция',
-                            onPressed:
-                                _reactBusy ? null : _openReactionPicker,
+                            onPressed: _reactBusy ? null : _openReactionPicker,
                             icon: _myReaction.isNotEmpty
                                 ? Text(
                                     _myReaction,

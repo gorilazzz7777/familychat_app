@@ -5,6 +5,7 @@ import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:video_player/video_player.dart';
 
 import '../media/local_device_file.dart';
+import '../settings/app_screen_keep_on.dart';
 
 /// Compact play affordance — same look as multi-video album cells.
 class GalleryVideoPlayBadge extends StatelessWidget {
@@ -82,15 +83,16 @@ class GalleryVideoPlayer extends StatefulWidget {
 
 class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     with WidgetsBindingObserver {
+  static int _keepOnSeq = 0;
+
   VideoPlayerController? _controller;
   Object? _error;
   bool _scrubbing = false;
   double _scrubValue = 0;
   late bool _muted;
   bool _endedNotified = false;
-
-  bool get _wantTicker =>
-      widget.showControls || widget.showScrubber || widget.onEnded != null;
+  late final String _keepOnId = 'gallery_video_${++_keepOnSeq}';
+  bool _keepOnHeld = false;
 
   @override
   void initState() {
@@ -108,9 +110,29 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
       if (widget.autoplay) {
         unawaited(controller.play());
       }
+      _syncKeepOn();
     } else {
       unawaited(controller.pause());
+      _releaseKeepOn();
     }
+  }
+
+  void _syncKeepOn() {
+    final playing = _controller?.value.isInitialized == true &&
+        (_controller?.value.isPlaying ?? false);
+    if (playing) {
+      if (_keepOnHeld) return;
+      _keepOnHeld = true;
+      unawaited(AppScreenKeepOn.acquire(_keepOnId));
+    } else {
+      _releaseKeepOn();
+    }
+  }
+
+  void _releaseKeepOn() {
+    if (!_keepOnHeld) return;
+    _keepOnHeld = false;
+    unawaited(AppScreenKeepOn.release(_keepOnId));
   }
 
   @override
@@ -137,13 +159,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
       } else {
         unawaited(controller.pause());
       }
-    }
-    if (!_wantTicker) {
-      controller.removeListener(_onTick);
-    } else if (oldWidget.showControls != widget.showControls ||
-        oldWidget.showScrubber != widget.showScrubber) {
-      controller.removeListener(_onTick);
-      controller.addListener(_onTick);
+      _syncKeepOn();
     }
   }
 
@@ -175,13 +191,13 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
       if (widget.autoplay) {
         await controller.play();
       }
-      if (_wantTicker) {
-        controller.addListener(_onTick);
-      }
+      // Always listen for play/pause so wakelock tracks playback even without UI.
+      controller.addListener(_onTick);
       final size = controller.value.size;
       if (size.width > 0 && size.height > 0) {
         widget.onResolvedSize?.call(size);
       }
+      _syncKeepOn();
       if (mounted) setState(() {});
     } catch (e) {
       if (!mounted) return;
@@ -192,6 +208,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
   void _onTick() {
     if (!mounted) return;
     if (!_scrubbing) setState(() {});
+    _syncKeepOn();
     _maybeNotifyEnded();
   }
 
@@ -213,6 +230,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     _controller?.dispose();
     _controller = null;
     _error = null;
+    _releaseKeepOn();
   }
 
   @override
@@ -230,6 +248,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     } else {
       await controller.play();
     }
+    _syncKeepOn();
     if (mounted) setState(() {});
   }
 

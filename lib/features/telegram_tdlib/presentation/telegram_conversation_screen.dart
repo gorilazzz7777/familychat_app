@@ -1,12 +1,14 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:path/path.dart' as p;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/diagnostics/session_log.dart';
@@ -15,10 +17,12 @@ import '../../../core/widgets/family_app_bar.dart';
 import '../../chat/data/chat_location_utils.dart';
 import '../../chat/data/chat_send_options.dart';
 import '../../chat/data/chat_ui_connectivity.dart';
+import '../../chat/data/chat_voice_playback_coordinator.dart';
 import '../../chat/data/chat_voice_utils.dart';
 import '../../chat/data/link_preview_service.dart';
 import '../tdlib_io.dart';
 import '../../../core/media/gallery_media_utils.dart';
+import '../../chat/presentation/chat_call_screen.dart';
 import '../../chat/presentation/record_video_circle_screen.dart';
 import '../../chat/presentation/widgets/chat_animated_media_scope.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
@@ -53,6 +57,7 @@ class TelegramConversationScreen extends ConsumerStatefulWidget {
     required this.title,
     this.tgUserId,
     this.fcUserId,
+    this.fcThreadId,
     this.peerAvatarUrl = '',
     this.initialMessageId,
   });
@@ -61,6 +66,8 @@ class TelegramConversationScreen extends ConsumerStatefulWidget {
   final String title;
   final int? tgUserId;
   final int? fcUserId;
+  /// Known FC DM thread for a matched peer (hub FC row). Used for FC calls.
+  final int? fcThreadId;
   final String peerAvatarUrl;
   /// Deep-link target: jump here after history loads.
   final int? initialMessageId;
@@ -90,12 +97,12 @@ class _TelegramConversationScreenState
   bool _joiningLiveStream = false;
 
   /// First unread message id for the divider — sticky for this visit.
-  /// Captured on enter; not cleared by mark-as-read / scroll / FAB.
-  /// Resets when the screen is disposed (leave + re-enter).
+  /// Set once on enter (or once when first tip-pack arrives while scrolled
+  /// up). Never moves mid-visit; clears only on dispose (leave chat).
   int? _unreadAnchorMessageId;
   /// Snapshot of inbox cursor at open — survives history races.
   int? _openLastReadInboxId;
-  /// Unread count frozen at open — keeps divider placement stable mid-visit.
+  /// Unread count frozen at open — open jump / pin depth only.
   int _openUnreadCount = 0;
   bool _initialScrollDone = false;
   /// True once the unread frontier is on-screen (or there were no unreads).
@@ -152,9 +159,16 @@ class _TelegramConversationScreenState
 
   DateTime? _lastItemBuilderFlushAt;
 
+  /// Matched FC peer — call goes through FamilyChat (not Telegram).
+  int? _fcPeerUserId;
+  int? _fcDmThreadId;
+  bool _fcCallBusy = false;
+
   @override
   void initState() {
     super.initState();
+    _fcPeerUserId = widget.fcUserId;
+    _fcDmThreadId = widget.fcThreadId;
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_onScroll);
     TgJankLog.resetForChat(widget.chatId);
@@ -165,6 +179,116 @@ class _TelegramConversationScreenState
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_openAndWatch());
     });
+    unawaited(_resolveFcPeerForCalls());
+  }
+
+  Future<void> _resolveFcPeerForCalls() async {
+    if ((_fcPeerUserId ?? 0) > 0) return;
+    final tgUserId = widget.tgUserId;
+    if (tgUserId != null && tgUserId > 0) {
+      final match = await TelegramMatchStore.instance.get(tgUserId);
+      if (!mounted) return;
+      if (match != null && match.fcUserId > 0) {
+        setState(() => _fcPeerUserId = match.fcUserId);
+        return;
+      }
+    }
+    final all = await TelegramMatchStore.instance.loadAll();
+    if (!mounted) return;
+    for (final m in all.values) {
+      if (m.tgChatId == widget.chatId && m.fcUserId > 0) {
+        setState(() => _fcPeerUserId = m.fcUserId);
+        return;
+      }
+    }
+  }
+
+  bool get _canStartFcCall {
+    final fcId = _fcPeerUserId ?? 0;
+    if (fcId <= 0) return false;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    // FC calls are 1:1 DM only.
+    if (svc.isGroupChat(widget.chatId) || svc.isChannelChat(widget.chatId)) {
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _startFcCall({bool isVideo = false}) async {
+    if (_fcCallBusy || !_canStartFcCall) return;
+    setState(() => _fcCallBusy = true);
+    try {
+      var threadId = _fcDmThreadId ?? 0;
+      var title = widget.title;
+      if (threadId <= 0) {
+        final fcId = _fcPeerUserId!;
+        final thread = await ref
+            .read(familychatRepositoryProvider)
+            .memberDmThread(fcId);
+        if (!mounted) return;
+        threadId = (thread['id'] as num?)?.toInt() ?? 0;
+        title = thread['title']?.toString() ??
+            thread['default_title']?.toString() ??
+            widget.title;
+        if (threadId > 0) _fcDmThreadId = threadId;
+      }
+      if (threadId <= 0) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось начать звонок')),
+        );
+        return;
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ChatCallScreen(
+            threadId: threadId,
+            title: title,
+            isCaller: true,
+            isVideo: isVideo,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось начать звонок: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _fcCallBusy = false);
+    }
+  }
+
+  /// Decode tip photos into the image cache before Opacity flips to 1 —
+  /// otherwise the first painted frame is empty/light then the JPEGs pop in
+  /// (visible «мигание» on photo-heavy DMs like Киса).
+  Future<void> _precacheRecentMedia() async {
+    if (!mounted) return;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final msgs = svc.messagesFor(widget.chatId);
+    if (msgs.isEmpty) return;
+    final tip = msgs.length > 10 ? msgs.sublist(msgs.length - 10) : msgs;
+    final futures = <Future<void>>[];
+    for (final m in tip) {
+      final path = svc.resolvedPhotoPath(m);
+      if (path == null || path.isEmpty) continue;
+      try {
+        futures.add(precacheImage(FileImage(File(path)), context));
+      } catch (_) {}
+      final thumb = m.photoThumbBytes;
+      if (thumb != null && thumb.isNotEmpty) {
+        try {
+          futures.add(
+            precacheImage(MemoryImage(Uint8List.fromList(thumb)), context),
+          );
+        } catch (_) {}
+      }
+    }
+    if (futures.isEmpty) return;
+    try {
+      await Future.wait(futures).timeout(const Duration(milliseconds: 280));
+    } catch (_) {}
   }
 
   void _onFrameTimings(List<FrameTiming> timings) {
@@ -576,24 +700,29 @@ class _TelegramConversationScreenState
     _lastScrollPixels = pixels;
 
     final svc = ref.read(telegramTdlibServiceProvider);
+    final nearTip = pixels <= _scrollToBottomAwayPx;
+    svc.setOpenChatNearTip(nearTip);
     final unread = svc.unreadCountFor(widget.chatId);
-    // FAB catch-up uses live unread only — sticky visit divider must not
-    // keep the button forced after everything was marked read.
+    // FAB badge = live unread. Line sticky is independent (may outlive unread).
     final hasLiveUnread = unread > 0;
 
-    if (pixels <= _scrollToBottomAwayPx && !hasLiveUnread) {
+    // At tip: no unread FAB — user already sees fresh; do not arm/move line.
+    if (nearTip) {
       _hideScrollToBottomButton();
       return;
     }
 
-    // Keep FAB visible while there are unreads (jump to tip + catch up).
+    // Away from tip + live unread → FAB to sticky line (arm once if needed).
     if (hasLiveUnread && pixels > 48) {
+      _armLiveUnreadAnchor(svc, unread: unread);
       if (!_showScrollToBottom) {
         setState(() => _showScrollToBottom = true);
       }
       return;
     }
 
+    // unread=0: no unread FAB (sticky line may still paint until leave).
+    // Still allow the plain tip FAB when scrolling toward tip.
     final scrollingDown = delta < -1.5;
     final scrollingUp = delta > 1.5;
     if (scrollingUp) {
@@ -605,9 +734,45 @@ class _TelegramConversationScreenState
     _scrollToBottomHintTimer ??= Timer(_scrollToBottomHintDelay, () {
       _scrollToBottomHintTimer = null;
       if (!mounted || !_scroll.hasClients) return;
-      if (_scroll.position.pixels > _scrollToBottomAwayPx) {
+      if (_scroll.position.pixels > _scrollToBottomAwayPx &&
+          ref.read(telegramTdlibServiceProvider).unreadCountFor(widget.chatId) <=
+              0) {
         setState(() => _showScrollToBottom = true);
       }
+    });
+  }
+
+  /// Arm visit sticky divider at most once (open or first away-from-tip pack).
+  /// Never moves an existing anchor — that made the line "dynamic" mid-read.
+  void _armLiveUnreadAnchor(
+    TelegramTdlibService svc, {
+    int? unread,
+  }) {
+    if (_unreadAnchorMessageId != null) return;
+    final count = unread ?? svc.unreadCountFor(widget.chatId);
+    if (count <= 0) return;
+    final first = svc.firstUnreadMessageId(widget.chatId);
+    if (first == null) return;
+    _unreadAnchorMessageId = first;
+  }
+
+  /// Called from build when the transcript grows — must not setState sync.
+  void _maybeArmLiveUnreadFromBuild(TelegramTdlibService svc) {
+    if (!_contentReady || !_scroll.hasClients) return;
+    final pixels = _scroll.position.pixels;
+    final nearTip = pixels <= _scrollToBottomAwayPx;
+    svc.setOpenChatNearTip(nearTip);
+    // Tip: fresh messages stay in view — no new sticky, no FAB.
+    if (nearTip) return;
+    final unread = svc.unreadCountFor(widget.chatId);
+    if (unread <= 0) return;
+    final before = _unreadAnchorMessageId;
+    final shown = _showScrollToBottom;
+    _armLiveUnreadAnchor(svc, unread: unread);
+    if (_unreadAnchorMessageId == before && shown) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() => _showScrollToBottom = true);
     });
   }
 
@@ -645,10 +810,44 @@ class _TelegramConversationScreenState
   }
 
   Future<void> _scrollToLiveTail() async {
-    _hideScrollToBottomButton();
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final unread = svc.unreadCountFor(widget.chatId);
+    // FAB → sticky visit line (never retarget to live firstUnread mid-visit).
+    if (unread > 0 && _unreadAnchorMessageId == null) {
+      _armLiveUnreadAnchor(svc, unread: unread);
+    }
+    final anchor = _unreadAnchorMessageId;
+
     _unreadFrontierReady = true;
     _suppressMarkRead = false;
-    // Keep visit sticky unread divider; it resets only on leave + re-enter.
+
+    if (unread > 0 && anchor != null) {
+      if (mounted) setState(() => _showScrollToBottom = true);
+      _programmaticOpenScroll = true;
+      var ok = false;
+      try {
+        ok = await _ensureVisibleMessage(
+          anchor,
+          alignment: 0.0,
+          instant: true,
+          unreadHint: unread,
+        );
+        if (mounted && unread >= 2) {
+          await _pinUnreadSeparatorToTop();
+        }
+      } finally {
+        _programmaticOpenScroll = false;
+      }
+      if (!ok && mounted) {
+        _scrollToBottom(jump: false);
+      }
+      _scheduleMarkVisibleRead();
+      if (mounted) _updateScrollToBottomVisibility();
+      return;
+    }
+
+    _hideScrollToBottomButton();
+    // No live unread — tip only (sticky line may still paint until leave).
     _scrollToBottom(jump: false);
     await _markCaughtUp();
   }
@@ -664,36 +863,13 @@ class _TelegramConversationScreenState
     final msgs = svc.messagesFor(widget.chatId);
     if (msgs.isEmpty) return;
 
-    final timeline = _buildTimeline(msgs);
-    if (timeline.isEmpty) return;
-
     final lastRead = svc.lastReadInboxMessageId(widget.chatId);
     final floor = _maxMarkedReadId > lastRead ? _maxMarkedReadId : lastRead;
 
-    // Prefer real layout hit-test (media-heavy channels like Mash have uneven
-    // row heights — avgExtent estimate under-marked while scrolling).
-    var highestVisibleUnread =
+    // Layout hit-test only — avgExtent≈220 over-marked tall media rows and
+    // wiped the unread pack while the sticky divider was still on screen.
+    final highestVisibleUnread =
         _highestVisibleUnreadByLayout(msgs: msgs, floor: floor);
-    if (highestVisibleUnread <= 0) {
-      const avgExtent = 220.0;
-      final pixels = _scroll.position.pixels;
-      final viewport = _scroll.position.viewportDimension;
-      final topPx = pixels;
-      final bottomPx = pixels + viewport;
-      final firstRev =
-          (topPx / avgExtent).floor().clamp(0, timeline.length - 1);
-      final lastRev =
-          (bottomPx / avgExtent).ceil().clamp(0, timeline.length - 1);
-      for (var rev = firstRev; rev <= lastRev; rev++) {
-        final chrono = timeline.length - 1 - rev;
-        if (chrono < 0 || chrono >= timeline.length) continue;
-        for (final m in timeline[chrono].members) {
-          if (m.isOutgoing) continue;
-          if (m.id <= floor) continue;
-          if (m.id > highestVisibleUnread) highestVisibleUnread = m.id;
-        }
-      }
-    }
     if (highestVisibleUnread <= 0) return;
 
     _maxMarkedReadId = highestVisibleUnread;
@@ -1051,6 +1227,13 @@ class _TelegramConversationScreenState
     final target = (pos.pixels - delta).clamp(0.0, pos.maxScrollExtent);
     if ((target - pos.pixels).abs() < 0.5) return;
     pos.jumpTo(target);
+  }
+
+  /// Leave the conversation onto the hub chat list (not one-level back).
+  void _exitToChatList() {
+    final nav = Navigator.of(context);
+    if (!nav.canPop()) return;
+    nav.popUntil((route) => route.isFirst);
   }
 
   Future<void> _openSearch() async {
@@ -1428,9 +1611,18 @@ class _TelegramConversationScreenState
         if (!mounted) return;
         await _ensureUnreadHistoryLoaded(svc);
         final again = _resolveFirstUnreadId(svc);
-        if (again != null) anchorId = again;
-        if (mounted && again != null) {
-          setState(() => _unreadAnchorMessageId = again);
+        // Open only: allow refining to an older first-unread as history fills.
+        // Never move the visit sticky toward a newer id.
+        if (again != null) {
+          final cur = _unreadAnchorMessageId;
+          if (cur == null || again <= cur) {
+            anchorId = again;
+            if (mounted) {
+              setState(() => _unreadAnchorMessageId = again);
+            }
+          } else {
+            anchorId = cur;
+          }
         }
         ok = await _ensureVisibleMessage(
           anchorId,
@@ -1789,6 +1981,9 @@ class _TelegramConversationScreenState
     // Snapshot unread frontier before openChat / history mutate inbox state.
     _openLastReadInboxId = svc.lastReadInboxMessageId(widget.chatId);
     _openUnreadCount = svc.unreadCountFor(widget.chatId);
+    // Disk window before claim/reveal — cold start must not wait on remote.
+    await svc.seedTranscriptFromCache(widget.chatId);
+    if (!mounted) return;
     // Claim immediately so dispose during await still has a valid close token.
     _openChatToken = svc.claimOpenChat(widget.chatId);
     final preUnread = svc.firstUnreadMessageId(widget.chatId);
@@ -1803,6 +1998,9 @@ class _TelegramConversationScreenState
     // unread 0/1 → reverse list already sits on the tip (the only unread).
     final needsPositionGate = deepLink || unread >= 2;
     if (!needsPositionGate) {
+      // Warm tip photos first so reveal doesn't flash empty→JPEG.
+      await _precacheRecentMedia();
+      if (!mounted) return;
       _revealChatContent();
       _initialScrollDone = true;
       if (unread <= 0) {
@@ -1884,10 +2082,15 @@ class _TelegramConversationScreenState
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      unawaited(svc.persistTranscriptCache(widget.chatId));
+      return;
+    }
     if (state == AppLifecycleState.resumed && mounted) {
-      unawaited(
-        ref.read(telegramTdlibServiceProvider).syncChatTail(widget.chatId),
-      );
+      unawaited(svc.syncChatTail(widget.chatId));
       // Soft media may have been on-screen while paused — re-pick by layout.
       if (!_suppressViewportPrefetch) {
         _scheduleViewportPrefetch();
@@ -1987,14 +2190,15 @@ class _TelegramConversationScreenState
     );
   }
 
+  /// Like voice: always stage into app-owned `tdlib_upload_*` before TDLib.
   Future<String> _localPathForItem(ChatAttachSelectionItem item) async {
-    final existing = item.localPath?.trim() ?? '';
-    if (existing.isNotEmpty && File(existing).existsSync()) {
-      return existing;
-    }
-    return ref.read(telegramTdlibServiceProvider).materializeTempFile(
+    final name = item.filename.trim().isNotEmpty
+        ? item.filename
+        : (item.localPath != null ? p.basename(item.localPath!) : 'file.bin');
+    return ref.read(telegramTdlibServiceProvider).stageLocalFileForTdlib(
+          localPath: item.localPath,
           bytes: item.bytes,
-          filename: item.filename,
+          filename: name,
         );
   }
 
@@ -2137,6 +2341,14 @@ class _TelegramConversationScreenState
   }
 
   Future<void> _openPeerInfo() async {
+    final svc = ref.read(telegramTdlibServiceProvider);
+
+    // Saved Messages: TG user-info layout (media/links), titled «Избранное».
+    if (svc.isSavedMessagesChat(widget.chatId)) {
+      await _openSavedMessagesInfo();
+      return;
+    }
+
     final fcId = widget.fcUserId;
     if (fcId != null && fcId > 0) {
       await Navigator.of(context).push<void>(
@@ -2146,7 +2358,6 @@ class _TelegramConversationScreenState
       );
       return;
     }
-    final svc = ref.read(telegramTdlibServiceProvider);
     if (svc.isGroupChat(widget.chatId) || svc.isChannelChat(widget.chatId)) {
       final profile = await svc.loadChatProfile(widget.chatId);
       if (!mounted) return;
@@ -2160,12 +2371,44 @@ class _TelegramConversationScreenState
         context,
         chatId: widget.chatId,
         profile: profile,
+        onGoToMessage: _jumpToLinkedMessage,
       );
       return;
     }
-    final tgUserId = widget.tgUserId;
-    if (tgUserId == null) return;
+    final tgUserId =
+        widget.tgUserId ?? svc.privatePeerUserId(widget.chatId);
+    if (tgUserId == null || tgUserId <= 0) return;
     await _openSenderInfo(tgUserId);
+  }
+
+  Future<void> _openSavedMessagesInfo() async {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final myId = svc.myUserId ?? svc.privatePeerUserId(widget.chatId) ?? 0;
+    TdlibUserProfile? profile;
+    if (myId > 0) {
+      profile = await svc.loadUserProfile(myId);
+    }
+    if (!mounted) return;
+    final base = profile;
+    final savedProfile = TdlibUserProfile(
+      userId: base?.userId ?? myId,
+      displayName: widget.title.trim().isNotEmpty
+          ? widget.title.trim()
+          : 'Избранное',
+      username: base?.username ?? '',
+      phoneNumber: base?.phoneNumber ?? '',
+      bio: base?.bio ?? '',
+      statusText: 'Только вы',
+      avatarLocalPath: base?.avatarLocalPath ??
+          svc.peerAvatarPath(widget.chatId),
+      avatarFileId: base?.avatarFileId,
+    );
+    await TelegramUserInfoSheet.show(
+      context,
+      chatId: widget.chatId,
+      profile: savedProfile,
+      onGoToMessage: _jumpToLinkedMessage,
+    );
   }
 
   Future<void> _openSenderInfo(int tgUserId) async {
@@ -2198,6 +2441,10 @@ class _TelegramConversationScreenState
       context,
       chatId: dmChatId,
       profile: profile,
+      // Jump only when the sheet's link list is this open chat (not a DM
+      // opened from a group member row).
+      onGoToMessage:
+          dmChatId == widget.chatId ? _jumpToLinkedMessage : null,
     );
   }
 
@@ -2447,13 +2694,25 @@ class _TelegramConversationScreenState
   }
 
   Future<void> _toggleReaction(TdlibMessage m, String emoji) async {
-    final already = m.reactions.any((r) => r.emoji == emoji && r.chosen);
-    await ref.read(telegramTdlibServiceProvider).toggleReaction(
-          chatId: m.chatId,
-          messageId: m.id,
-          emoji: emoji,
-          add: !already,
-        );
+    final norm = TelegramTdlibService.normalizeReactionEmoji(emoji);
+    final already = m.reactions.any(
+      (r) =>
+          TelegramTdlibService.normalizeReactionEmoji(r.emoji) == norm &&
+          r.chosen,
+    );
+    try {
+      await ref.read(telegramTdlibServiceProvider).toggleReaction(
+            chatId: m.chatId,
+            messageId: m.id,
+            emoji: norm,
+            add: !already,
+          );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось поставить реакцию')),
+      );
+    }
   }
 
   Future<void> _deleteSelected({required bool revoke}) async {
@@ -2501,16 +2760,23 @@ class _TelegramConversationScreenState
     final svc = ref.read(telegramTdlibServiceProvider);
 
     if (m.isVoiceNote) {
+      final fileId = m.voiceFileId;
       final path = m.voiceLocalPath ??
-          (m.voiceFileId == null ? null : svc.cachedFilePath(m.voiceFileId!));
-      if (path == null || path.isEmpty) {
-        // Voice: only when this message is the scroll focus (no bulk warm).
-        return const [];
-      }
+          (fileId == null ? null : svc.cachedFilePath(fileId));
       final durationMs = m.voiceDurationMs ?? 0;
+      final hasPath = path != null && path.isNotEmpty;
+      // Always paint the voice player — empty attachments used to collapse
+      // to a blank bubble while the file was still remote.
+      // R70: do NOT ensure here — ChatVoiceMessagePlayer already auto-ensures
+      // once. Double ensure×N visible bubbles flooded FakeTLS slot=1 on
+      // mobile (purge/slot-fail while .oga was already on disk).
+      final downloading = !hasPath &&
+          fileId != null &&
+          fileId > 0 &&
+          svc.isFileDownloading(fileId);
       return [
         {
-          'id': m.voiceFileId ?? m.id,
+          'id': fileId ?? m.id,
           'kind': 'file',
           'content_type': 'audio/ogg',
           'filename': voiceMessageFilename(
@@ -2518,7 +2784,11 @@ class _TelegramConversationScreenState
             extension: 'ogg',
           ),
           'skip_age_defer': true,
-          'local_device_path': path,
+          if (fileId != null && fileId > 0) 'tdlib_file_id': fileId,
+          if (hasPath) 'local_device_path': path,
+          if (!hasPath) 'is_downloading': true,
+          if (downloading)
+            'download_progress': svc.fileDownloadProgress(fileId!),
         },
       ];
     }
@@ -2850,6 +3120,7 @@ class _TelegramConversationScreenState
     final svc = ref.watch(telegramTdlibServiceProvider);
     final messages = svc.messagesFor(widget.chatId);
     _maybeReassertUnreadAfterHistoryGrowth(messages.length);
+    _maybeArmLiveUnreadFromBuild(svc);
     final wallpaperId = ref.watch(chatWallpaperIdProvider);
     final title = svc.peerTitle(widget.chatId);
     final displayTitle = title == 'Telegram' ? widget.title : title;
@@ -2858,7 +3129,16 @@ class _TelegramConversationScreenState
     final isGroup = svc.isGroupChat(widget.chatId);
     final isChannel = svc.isChannelChat(widget.chatId);
     final isGroupLike = isGroup || isChannel;
+    final chronologicalRows = _timelineCached(messages);
     final reversedRows = _reversedTimelineCached(messages);
+    // Voice autoplay-next (same as FC): consecutive voices oldest→newest.
+    // Attachment id must match ChatVoiceMessagePlayer (`fileId ?? message.id`).
+    ChatVoicePlaybackCoordinator.instance.syncFromVoiceAttachmentIds([
+      for (final row in chronologicalRows)
+        row.primary.isVoiceNote
+            ? (row.primary.voiceFileId ?? row.primary.id)
+            : null,
+    ]);
     final messagesById = <int, TdlibMessage>{
       for (final m in messages) m.id: m,
     };
@@ -2893,9 +3173,16 @@ class _TelegramConversationScreenState
         final connPending = connLabel.isNotEmpty;
         final subtitle = connPending ? connLabel : status;
         return PopScope(
-      canPop: !_selectionMode,
+      // Always intercept: back must land on the chat list, not an
+      // intermediate route (profile / previous chat / push stack).
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _selectionMode) _exitSelection();
+        if (didPop) return;
+        if (_selectionMode) {
+          _exitSelection();
+          return;
+        }
+        _exitToChatList();
       },
       child: Scaffold(
         resizeToAvoidBottomInset: true,
@@ -2936,6 +3223,12 @@ class _TelegramConversationScreenState
                 ],
               )
             : FamilyAppBar.buildCustom(
+                automaticallyImplyLeading: false,
+                leading: IconButton(
+                  tooltip: 'Назад',
+                  onPressed: _exitToChatList,
+                  icon: const Icon(LucideIcons.arrow_left),
+                ),
                 title: InkWell(
                   onTap: _openPeerInfo,
                   child: Row(
@@ -3006,43 +3299,43 @@ class _TelegramConversationScreenState
                   ),
                 ),
                 actions: [
-                  if (kDebugMode)
-                    Tooltip(
-                      message: svc.mtprotoProxyEnabled
-                          ? 'MTProto proxy allow (follow geo)'
-                          : 'MTProto proxy OFF (user direct)',
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            'Proxy',
-                            style: Theme.of(context)
-                                .textTheme
-                                .labelSmall
-                                ?.copyWith(
-                                  color: svc.mtprotoProxyEnabled
-                                      ? Theme.of(context).colorScheme.primary
-                                      : Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant,
-                                ),
-                          ),
-                          Transform.scale(
-                            scale: 0.75,
-                            child: Switch.adaptive(
-                              value: svc.mtprotoProxyEnabled,
-                              onChanged: (v) => unawaited(
-                                svc.setMtprotoProxyEnabled(v),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                  if (_canStartFcCall)
+                    IconButton(
+                      tooltip: 'Звонок',
+                      onPressed: _fcCallBusy
+                          ? null
+                          : () => unawaited(_startFcCall()),
+                      icon: const Icon(LucideIcons.phone),
                     ),
-                  IconButton(
-                    tooltip: 'Поиск',
-                    onPressed: () => unawaited(_openSearch()),
-                    icon: const Icon(LucideIcons.search),
+                  PopupMenuButton<String>(
+                    tooltip: 'Ещё',
+                    onSelected: (value) {
+                      switch (value) {
+                        case 'video':
+                          unawaited(_startFcCall(isVideo: true));
+                        case 'search':
+                          unawaited(_openSearch());
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      if (_canStartFcCall)
+                        const PopupMenuItem(
+                          value: 'video',
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(LucideIcons.video),
+                            title: Text('Видеозвонок'),
+                          ),
+                        ),
+                      const PopupMenuItem(
+                        value: 'search',
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(LucideIcons.search),
+                          title: Text('Поиск'),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),

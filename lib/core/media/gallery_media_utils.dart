@@ -1,4 +1,7 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
+
+import 'package:flutter/painting.dart';
 
 String galleryAttachmentUrl(Map<String, dynamic> attachment) {
   return attachment['url']?.toString() ??
@@ -144,6 +147,75 @@ bool isImageAttachment(Map<String, dynamic> attachment) {
 
 bool isGalleryMediaAttachment(Map<String, dynamic> attachment) {
   return isImageAttachment(attachment) || isVideoAttachment(attachment);
+}
+
+/// Pixel size from attachment metadata / EXIF, if known.
+Size? galleryAttachmentPixelSize(Map<String, dynamic> attachment) {
+  double w = (attachment['width'] as num?)?.toDouble() ?? 0;
+  double h = (attachment['height'] as num?)?.toDouble() ?? 0;
+  if (w <= 0 || h <= 0) {
+    final exif = attachment['exif'];
+    if (exif is Map) {
+      w = (exif['ImageWidth'] as num?)?.toDouble() ??
+          (exif['PixelXDimension'] as num?)?.toDouble() ??
+          (exif['width'] as num?)?.toDouble() ??
+          0;
+      h = (exif['ImageLength'] as num?)?.toDouble() ??
+          (exif['PixelYDimension'] as num?)?.toDouble() ??
+          (exif['height'] as num?)?.toDouble() ??
+          0;
+    }
+  }
+  if (w > 0 && h > 0) return Size(w, h);
+  return null;
+}
+
+/// Fullscreen photo fit (legacy): portrait/square cover; landscape contain.
+/// Prefer [galleryFullscreenHomeScale] + [BoxFit.contain] for pinch-out reveal.
+BoxFit galleryFullscreenPhotoFit(Map<String, dynamic> attachment) {
+  final size = galleryAttachmentPixelSize(attachment);
+  if (size != null) {
+    return size.height >= size.width ? BoxFit.cover : BoxFit.contain;
+  }
+  return BoxFit.cover;
+}
+
+/// Max fraction of the photo that may be cropped when opening at cover.
+///
+/// Cover visible fraction = [contain]/[cover] (area and the cropped axis).
+/// Cropped = `1 - contain/cover`. Cover only when that is ≤ this threshold.
+const double kGalleryFullscreenMaxCoverCrop = 0.05;
+
+/// Initial InteractiveViewer scale when the child is [BoxFit.contain]-fitted.
+///
+/// Opens at cover only when that would crop ≤ [kGalleryFullscreenMaxCoverCrop]
+/// of the photo; otherwise stays at contain (full frame, may letterbox).
+/// Pinch in still zooms past home; pinch out can go below contain.
+double galleryFullscreenHomeScale({
+  required double viewportWidth,
+  required double viewportHeight,
+  required double imageWidth,
+  required double imageHeight,
+  double maxCoverCrop = kGalleryFullscreenMaxCoverCrop,
+}) {
+  if (viewportWidth <= 0 || viewportHeight <= 0) return 1.0;
+  var iw = imageWidth;
+  var ih = imageHeight;
+  if (iw <= 0 || ih <= 0) {
+    // Until real pixels arrive, assume a typical phone portrait still.
+    iw = 3;
+    ih = 4;
+  }
+  final contain = math.min(viewportWidth / iw, viewportHeight / ih);
+  final cover = math.max(viewportWidth / iw, viewportHeight / ih);
+  if (contain <= 0) return 1.0;
+  final coverOverContain = cover / contain;
+  // Visible fraction of the image under cover == contain/cover.
+  final cropped = 1.0 - (contain / cover);
+  if (cropped <= maxCoverCrop) {
+    return coverOverContain.clamp(1.0, 8.0);
+  }
+  return 1.0;
 }
 
 /// GIF/стикеры Klipy — только в чате, не в галерее и не в альбом телефона.

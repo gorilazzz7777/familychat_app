@@ -21,6 +21,7 @@ import '../core/routing/app_uri_parser.dart';
 import '../core/push/push_navigation.dart';
 import '../core/session/auth_session_bus.dart';
 import '../core/storage/device_id_storage.dart';
+import '../features/auth/data/auth_repository.dart';
 import '../features/auth/data/oauth_login_service.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/auth/session/local_anonymous.dart';
@@ -31,14 +32,18 @@ import '../features/chat/data/chat_send_trace.dart';
 import '../features/chat/data/chat_sync_service.dart';
 import '../features/chat/data/chat_scheduled_send_service.dart';
 import '../features/chat/data/familychat_realtime.dart';
+import '../features/chat/data/hub_first_paint_snapshot.dart';
 import '../features/chat/data/link_preview_service.dart';
+import '../core/local_db/chat_local_store.dart';
 import '../core/push/push_registration_service.dart';
 import '../core/push/web_push_bridge.dart';
+import '../core/theme/app_theme.dart';
 import '../core/theme/theme_seed_controller.dart';
 import '../core/settings/app_settings_controller.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import '../features/onboarding/presentation/family_transfer_flow.dart';
 import 'app_actions_scope.dart';
+import 'boot_prime.dart';
 import 'chat_boot_trace.dart';
 import 'push_permission_prompt.dart';
 import 'shell_screen.dart';
@@ -90,7 +95,38 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       if (!mounted) return;
       unawaited(_logout(explicit: false));
     });
-    unawaited(_boot());
+    // Hub list + last-message previews: open DB and warm snapshot ASAP so
+    // ChatHubScreen can paint frame 0 without a skeleton flash.
+    if (!kIsWeb) {
+      unawaited(ChatLocalStore.instance.ensureOpen());
+      unawaited(HubFirstPaintSnapshot.warm());
+    }
+    final primed = BootPrime.takeStatus();
+    if (primed != null) {
+      // Frame 0 = Shell (native splash → hub). No Flutter «Загрузка…».
+      ChatBootTrace.log('boot_prime_hit');
+      _checking = false;
+      _loggedIn = true;
+      _status = primed;
+      _ready = primed['onboarding_complete'] == true &&
+          primed['has_family'] == true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _wireEnteredStatus(primed, fromCache: true);
+        unawaited(
+          ref.read(themeSeedProvider.notifier).syncFromStatus(primed),
+        );
+        unawaited(
+          _validateCachedSessionInBackground(
+            ref.read(authRepositoryProvider),
+            primed,
+          ),
+        );
+        unawaited(_finishBootFromNetwork(background: true));
+      });
+    } else {
+      unawaited(_boot());
+    }
     if (!kIsWeb) {
       _listenInvites();
     }
@@ -268,16 +304,19 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   }
 
   /// OAuth return: consume session (нужен спиннер).
-  Future<void> _consumeOAuthIfNeeded() async {
+  ///
+  /// [linkTimeout] — cold start without deep link should not wait 3s;
+  /// OAuth return still needs a longer budget when the link is real.
+  Future<void> _consumeOAuthIfNeeded({
+    Duration linkTimeout = const Duration(milliseconds: 450),
+  }) async {
     Uri? uri;
     if (kIsWeb) {
       uri = Uri.base;
     } else {
       try {
         // app_links getInitialLink can hang on some iOS cold starts.
-        uri = await _appLinks.getInitialLink().timeout(
-          const Duration(seconds: 3),
-        );
+        uri = await _appLinks.getInitialLink().timeout(linkTimeout);
       } on TimeoutException {
         ChatBootTrace.log('oauth_initial_link_timeout');
         return;
@@ -314,7 +353,6 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
 
   void _enterWithStatus(Map<String, dynamic> status,
       {required bool fromCache}) {
-    final localAnon = isLocalAnonymousStatus(status);
     setState(() {
       _checking = false;
       _loggedIn = true;
@@ -323,6 +361,14 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
           status['onboarding_complete'] == true && status['has_family'] == true;
       _bootError = null;
     });
+    _wireEnteredStatus(status, fromCache: fromCache);
+  }
+
+  void _wireEnteredStatus(
+    Map<String, dynamic> status, {
+    required bool fromCache,
+  }) {
+    final localAnon = isLocalAnonymousStatus(status);
     if (localAnon) {
       ChatOfflineSync.instance.setOnline(false);
       _syncAppActions();
@@ -350,6 +396,9 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     final ready =
         status['onboarding_complete'] == true && status['has_family'] == true;
     if (!ready) return;
+    // Open SQLite + warm hub snapshot before shell paints ChatHubScreen.
+    unawaited(ChatLocalStore.instance.ensureOpen());
+    unawaited(HubFirstPaintSnapshot.warm());
     unawaited(
       ChatSyncService.instance.start(
         ref.read(familychatRepositoryProvider),
@@ -583,13 +632,23 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
     });
 
     try {
-      await _persistWebEntryLocal();
-      ChatBootTrace.log('boot_after_web_entry');
-      await _consumeOAuthIfNeeded();
+      // Web-entry (no-op on mobile) ∥ OAuth initial-link with short timeout.
+      await Future.wait<void>([
+        _persistWebEntryLocal(),
+        _consumeOAuthIfNeeded(),
+      ]);
       ChatBootTrace.log('boot_after_oauth');
 
       final auth = ref.read(authRepositoryProvider);
-      if (!await _hasSession()) {
+      // Session check ∥ status cache read (I/O bound).
+      final sessionAndCache = await Future.wait<Object?>([
+        _hasSession(),
+        FamilyChatLocalCache.readStatus(),
+      ]);
+      var hasSession = sessionAndCache[0] as bool;
+      final cachedEarly = sessionAndCache[1] as Map<String, dynamic>?;
+
+      if (!hasSession) {
         ChatBootTrace.log('boot_try_restore');
         try {
           final restored =
@@ -601,6 +660,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
             _enterWithStatus(localAnonymousStatus(), fromCache: false);
             return;
           }
+          hasSession = true;
         } on TimeoutException {
           if (!mounted) return;
           // Prefer local-anonymous over blocking on flaky network for scanners /
@@ -618,7 +678,7 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
         }
       }
 
-      if (!await _hasSession()) {
+      if (!hasSession) {
         ChatBootTrace.log('boot_local_anonymous_fallback');
         await DeviceIdStorage.getOrCreate();
         if (!mounted) return;
@@ -631,52 +691,28 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       }
       unawaited(auth.syncGuestSessionFlag());
 
-      // Cache-first: повторный запуск — Shell сразу, status в фоне.
-      final cached = await FamilyChatLocalCache.readStatus();
+      // Cache-first: повторный запуск — Shell сразу (без await сети).
+      // fetchMe / status догоняют в фоне; mismatch user_id → wipe + re-boot.
+      final cached = cachedEarly ?? await FamilyChatLocalCache.readStatus();
       if (cached != null &&
           cached.isNotEmpty &&
           !isLocalAnonymousStatus(cached)) {
         ChatBootTrace.log('boot_cache_hit');
-        Map<String, dynamic>? me;
-        Object? meError;
-        try {
-          me = await auth.fetchMe().timeout(const Duration(seconds: 12));
-        } on TimeoutException catch (e) {
-          meError = e;
-        } catch (e) {
-          meError = e;
-        }
-        final meId = _userIdFromMe(me);
-        final cachedId = cached['user_id'] is int
-            ? cached['user_id'] as int
-            : int.tryParse('${cached['user_id']}');
-        if (meId != null && cachedId != null && meId != cachedId) {
-          await FamilyChatLocalCache.clearStatus();
-          ChatBootTrace.log(
-            'boot_cache_stale',
-            detail: 'me=$meId cached=$cachedId',
+        // Brief head-start so hub frame-0 has SQLite rows (TG-like list).
+        if (!kIsWeb) {
+          await HubFirstPaintSnapshot.warmWithBudget(
+            const Duration(milliseconds: 120),
           );
-        } else {
-          // Network blip / Cronet timeout: keep cached shell instead of wipe.
-          if (meError != null) {
-            ChatBootTrace.log(
-              'boot_cache_offline',
-              detail: '$meError',
-            );
-            if (isLikelyCronetTransportFailure(meError)) {
-              _forceIoHttpTransport();
-            }
-          } else {
-            ChatBootTrace.log('boot_enter_cache');
-          }
-          try {
-            await ref.read(themeSeedProvider.notifier).syncFromStatus(cached);
-          } catch (_) {}
-          if (!mounted) return;
-          _enterWithStatus(cached, fromCache: true);
-          unawaited(_finishBootFromNetwork(background: true));
-          return;
         }
+        ChatBootTrace.log('boot_enter_cache');
+        unawaited(
+          ref.read(themeSeedProvider.notifier).syncFromStatus(cached),
+        );
+        if (!mounted) return;
+        _enterWithStatus(cached, fromCache: true);
+        unawaited(_validateCachedSessionInBackground(auth, cached));
+        unawaited(_finishBootFromNetwork(background: true));
+        return;
       }
 
       // Первый вход / нет кэша — ждём status (спиннер).
@@ -702,6 +738,50 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
       return int.tryParse('$id');
     }
     return null;
+  }
+
+  /// After cache-first shell: confirm session user matches cached hub.
+  /// Must not run on the critical path before first paint.
+  Future<void> _validateCachedSessionInBackground(
+    AuthRepository auth,
+    Map<String, dynamic> cached,
+  ) async {
+    Map<String, dynamic>? me;
+    Object? meError;
+    try {
+      me = await auth.fetchMe().timeout(const Duration(seconds: 12));
+    } on TimeoutException catch (e) {
+      meError = e;
+    } catch (e) {
+      meError = e;
+    }
+    if (!mounted) return;
+    final meId = _userIdFromMe(me);
+    final cachedId = cached['user_id'] is int
+        ? cached['user_id'] as int
+        : int.tryParse('${cached['user_id']}');
+    if (meId != null && cachedId != null && meId != cachedId) {
+      await FamilyChatLocalCache.clearStatus();
+      ChatBootTrace.log(
+        'boot_cache_stale',
+        detail: 'me=$meId cached=$cachedId',
+      );
+      if (!mounted) return;
+      setState(() {
+        _status = null;
+        _ready = false;
+        _checking = true;
+        _loggedIn = false;
+      });
+      unawaited(_boot());
+      return;
+    }
+    if (meError != null) {
+      ChatBootTrace.log('boot_cache_offline', detail: '$meError');
+      if (isLikelyCronetTransportFailure(meError)) {
+        _forceIoHttpTransport();
+      }
+    }
   }
 
   Future<void> _maybeHandleFamilyTransfer() async {
@@ -826,9 +906,10 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
   @override
   Widget build(BuildContext context) {
     if (_checking) {
+      // Match native splash (light + logo) so stage1→stage2 is not a theme flash.
       final scheme = Theme.of(context).colorScheme;
       return Scaffold(
-        backgroundColor: scheme.surface,
+        backgroundColor: AppTheme.splashBackground,
         body: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -851,13 +932,6 @@ class _BootstrapScreenState extends ConsumerState<BootstrapScreen> {
                   strokeWidth: 2.5,
                   color: scheme.primary,
                 ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Загрузка…',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
               ),
             ],
           ),

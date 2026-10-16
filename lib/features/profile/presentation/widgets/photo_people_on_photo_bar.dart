@@ -124,7 +124,7 @@ Future<List<_PhotoPerson>> loadRecognizedPeopleOnPhoto(
   return people;
 }
 
-/// Кнопка «?» в углу фото + раскрывающийся список узнанных людей.
+/// Список узнанных людей на фото (и опционально кнопка «?» в углу кадра).
 class PhotoPeopleOnPhotoOverlay extends ConsumerStatefulWidget {
   const PhotoPeopleOnPhotoOverlay({
     super.key,
@@ -134,6 +134,10 @@ class PhotoPeopleOnPhotoOverlay extends ConsumerStatefulWidget {
     this.selectedSubjectKey,
     @Deprecated('Use selectedSubjectKey') this.selectedUserId,
     this.onHighlightChanged,
+    this.showTriggerButton = true,
+    this.expanded,
+    this.onExpandedChanged,
+    this.onHasPeopleChanged,
   });
 
   final int attachmentId;
@@ -143,6 +147,14 @@ class PhotoPeopleOnPhotoOverlay extends ConsumerStatefulWidget {
   final int? selectedUserId;
   final ValueChanged<PhotoPersonHighlight?>? onHighlightChanged;
 
+  /// When false, the on-photo «?» is hidden (use an AppBar button instead).
+  final bool showTriggerButton;
+
+  /// Controlled expansion; null = internal toggle via on-photo «?».
+  final bool? expanded;
+  final ValueChanged<bool>? onExpandedChanged;
+  final ValueChanged<bool>? onHasPeopleChanged;
+
   @override
   ConsumerState<PhotoPeopleOnPhotoOverlay> createState() =>
       _PhotoPeopleOnPhotoOverlayState();
@@ -151,8 +163,10 @@ class PhotoPeopleOnPhotoOverlay extends ConsumerStatefulWidget {
 class _PhotoPeopleOnPhotoOverlayState
     extends ConsumerState<PhotoPeopleOnPhotoOverlay> {
   bool _loading = true;
-  bool _expanded = false;
+  bool _expandedLocal = false;
   List<_PhotoPerson> _people = const [];
+
+  bool get _expanded => widget.expanded ?? _expandedLocal;
 
   String? get _selectedKey {
     if (widget.selectedSubjectKey != null) return widget.selectedSubjectKey;
@@ -173,8 +187,9 @@ class _PhotoPeopleOnPhotoOverlayState
     if (oldWidget.attachmentId != widget.attachmentId ||
         oldWidget.profileUserId != widget.profileUserId ||
         oldWidget.threadId != widget.threadId) {
-      _expanded = false;
+      _expandedLocal = false;
       widget.onHighlightChanged?.call(null);
+      widget.onHasPeopleChanged?.call(false);
       _load();
     }
   }
@@ -183,7 +198,7 @@ class _PhotoPeopleOnPhotoOverlayState
     setState(() {
       _loading = true;
       _people = const [];
-      _expanded = false;
+      _expandedLocal = false;
     });
     try {
       final people = await loadRecognizedPeopleOnPhoto(
@@ -197,12 +212,22 @@ class _PhotoPeopleOnPhotoOverlayState
         _people = people;
         _loading = false;
       });
+      widget.onHasPeopleChanged?.call(people.isNotEmpty);
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _people = const [];
         _loading = false;
       });
+      widget.onHasPeopleChanged?.call(false);
+    }
+  }
+
+  void _setExpanded(bool value) {
+    if (widget.expanded != null) {
+      widget.onExpandedChanged?.call(value);
+    } else {
+      setState(() => _expandedLocal = value);
     }
   }
 
@@ -228,8 +253,17 @@ class _PhotoPeopleOnPhotoOverlayState
       return const SizedBox.shrink();
     }
 
+    final showTrigger = widget.showTriggerButton;
+    final showPanel = _expanded;
+    if (!showTrigger && !showPanel) {
+      return const SizedBox.shrink();
+    }
+
+    final top = widget.showTriggerButton
+        ? 8.0
+        : MediaQuery.paddingOf(context).top + kToolbarHeight + 4;
     return Positioned(
-      top: 8,
+      top: top,
       right: 8,
       child: Material(
         color: Colors.transparent,
@@ -237,38 +271,39 @@ class _PhotoPeopleOnPhotoOverlayState
           crossAxisAlignment: CrossAxisAlignment.end,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Material(
-              color: Colors.black.withValues(alpha: 0.55),
-              shape: const CircleBorder(),
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: () => setState(() => _expanded = !_expanded),
-                child: const SizedBox(
-                  width: 36,
-                  height: 36,
-                  child: Center(
-                    child: Text(
-                      '?',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        height: 1,
+            if (showTrigger)
+              Material(
+                color: Colors.black.withValues(alpha: 0.55),
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => _setExpanded(!_expanded),
+                  child: const SizedBox(
+                    width: 36,
+                    height: 36,
+                    child: Center(
+                      child: Text(
+                        '?',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          height: 1,
+                        ),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 180),
               switchInCurve: Curves.easeOutCubic,
               switchOutCurve: Curves.easeInCubic,
-              child: _expanded
+              child: showPanel
                   ? Padding(
                       key: const ValueKey('people-panel'),
-                      padding: const EdgeInsets.only(top: 8),
+                      padding: EdgeInsets.only(top: showTrigger ? 8 : 0),
                       child: Material(
                         color: Colors.black.withValues(alpha: 0.88),
                         elevation: 6,

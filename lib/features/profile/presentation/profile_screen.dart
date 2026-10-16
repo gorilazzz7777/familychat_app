@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../../core/widgets/family_public_image.dart';
 import '../../../core/widgets/family_tab_bar.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../../../core/legal/legal_page_launcher.dart';
@@ -27,7 +30,7 @@ import '../../auth/presentation/social_account_link.dart';
 import '../../auth/presentation/widgets/google_registration_warning.dart';
 import '../../auth/presentation/widgets/social_login_panel.dart';
 import '../../auth/utils/guest_status.dart';
-import '../../chat/presentation/widgets/chat_image_viewer.dart';
+import '../../chat/data/hub_first_paint_snapshot.dart';
 import '../../location/presentation/location_sharing_settings_screen.dart';
 import '../../members/presentation/members_screen.dart';
 import 'widgets/chat_avatar.dart';
@@ -57,6 +60,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   DateTime? _birthDate;
   bool _birthdayShowYear = true;
   String? _avatarUrl;
+  String? _avatarLocalPath;
   bool _avatarBusy = false;
   bool _saving = false;
   bool _linkingSocial = false;
@@ -67,6 +71,24 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
     _applyStatus(widget.status);
+    unawaited(_loadLocalAvatar());
+  }
+
+  Future<void> _loadLocalAvatar() async {
+    final cached = HubFirstPaintSnapshot.cachedProfileAvatarPath;
+    if (cached != null && cached.isNotEmpty && mounted) {
+      setState(() => _avatarLocalPath = cached);
+    }
+    final path = await HubFirstPaintSnapshot.profileAvatarPath();
+    if (!mounted) return;
+    if (path == _avatarLocalPath) return;
+    setState(() => _avatarLocalPath = path);
+  }
+
+  int? get _userId {
+    final raw = widget.status['user_id'];
+    if (raw is int) return raw;
+    return int.tryParse('$raw');
   }
 
   @override
@@ -231,12 +253,58 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
   }
 
   Future<void> _viewAvatar() async {
-    final url = _avatarUrl?.trim();
-    if (url == null || url.isEmpty || !mounted) return;
-    await ChatImageViewer.open(
-      context,
-      imageUrl: url,
-      filename: 'avatar.jpg',
+    final url = _avatarUrl?.trim() ?? '';
+    final local = _avatarLocalPath?.trim() ?? '';
+    if (url.isEmpty && local.isEmpty) return;
+    if (!mounted) return;
+    // Same path as member profile: FamilyPublicImage (URL + optional local),
+    // not ChatImageViewer (that hydrates MediaLocalIndex and can blank the
+    // photo when given only a public avatar URL).
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
+          children: [
+            InteractiveViewer(
+              minScale: 1,
+              maxScale: 4,
+              child: Center(
+                child: FamilyPublicImage(
+                  url: url,
+                  localPath: local.isEmpty ? null : local,
+                  userId: _userId,
+                  fit: BoxFit.contain,
+                  placeholder: const Center(
+                    child: CircularProgressIndicator(),
+                  ),
+                  error: Container(
+                    padding: const EdgeInsets.all(24),
+                    color: Colors.black54,
+                    child: Text(
+                      'Не удалось загрузить фото',
+                      style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+                            color: Colors.white,
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton.filledTonal(
+                onPressed: () => Navigator.of(ctx).pop(),
+                icon: const Icon(LucideIcons.x),
+                tooltip: 'Закрыть',
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -266,8 +334,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
           .uploadProfileAvatarBytes(croppedBytes);
       if (!mounted) return;
       final url = data['avatar_url']?.toString() ?? '';
-      setState(() => _avatarUrl = url.isEmpty ? null : url);
+      setState(() {
+        _avatarUrl = url.isEmpty ? null : url;
+        _avatarLocalPath = null;
+      });
       widget.onStatusChanged();
+      unawaited(
+        HubFirstPaintSnapshot.writeProfileAvatar(
+          profileAvatarUrl: url.isEmpty ? null : url,
+        ).then((_) => _loadLocalAvatar()),
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Фото сохранено')),
       );
@@ -286,7 +362,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     try {
       await ref.read(familychatRepositoryProvider).deleteProfileAvatar();
       if (!mounted) return;
-      setState(() => _avatarUrl = null);
+      setState(() {
+        _avatarUrl = null;
+        _avatarLocalPath = null;
+      });
       widget.onStatusChanged();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Фото удалено')),
@@ -422,6 +501,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
                           ChatAvatar(
                             name: _displayName,
                             avatarUrl: _avatarUrl,
+                            userId: _userId,
+                            localFilePath: _avatarLocalPath,
                             radius: avatarRadius,
                           ),
                           if (_avatarBusy)

@@ -168,8 +168,17 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
   }
 
   void _collapsePicker() {
+    if (!_pickerOpen) {
+      widget.focusNode.requestFocus();
+      return;
+    }
     setState(() => _pickerOpen = false);
     widget.focusNode.requestFocus();
+  }
+
+  void _handleSend(ChatSendOptions options) {
+    _collapsePicker();
+    widget.onSend(options);
   }
 
   @override
@@ -240,7 +249,7 @@ class _ChatComposeInputState extends State<ChatComposeInput> {
                 ),
               ChatComposeActionButton(
                 controller: widget.controller,
-                onSend: widget.onSend,
+                onSend: _handleSend,
                 onVoiceComplete: widget.onVoiceComplete,
                 onVideoCircleComplete: widget.onVideoCircleComplete,
                 forceSendButton: widget.forceSendButton,

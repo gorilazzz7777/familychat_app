@@ -16,6 +16,7 @@ import '../../core/network/api_client.dart';
 import '../../core/notifications/familychat_notifications.dart';
 import '../../firebase_options.dart';
 import '../chat/data/chat_media_display_policy.dart';
+import '../chat/data/hub_first_paint_snapshot.dart';
 import '../chat/data/link_preview_service.dart';
 import '../familychat/data/familychat_repository.dart';
 import 'tdlib_chat_folder.dart';
@@ -27,6 +28,8 @@ import 'tg_jank_log.dart';
 import 'telegram_link_utils.dart';
 import 'telegram_match_store.dart';
 import 'telegram_tdlib_push.dart';
+import 'tdlib_transcript_cache.dart';
+import 'tdlib_video_note_prep.dart';
 
 enum TdlibAuthPhase {
   unavailable,
@@ -37,6 +40,36 @@ enum TdlibAuthPhase {
   ready,
   loggingOut,
   error,
+}
+
+/// User FakeTLS policy (hub «Прокси»). Geo must never write this (R18).
+enum TdlibMtprotoProxyMode {
+  /// Follow geo: non-RU / VPN → direct; RU → FakeTLS.
+  auto,
+  /// Always FakeTLS, including under VPN.
+  alwaysOn,
+  /// Always direct MTProto.
+  alwaysOff,
+}
+
+extension TdlibMtprotoProxyModeStorage on TdlibMtprotoProxyMode {
+  String get storageValue => switch (this) {
+        TdlibMtprotoProxyMode.auto => 'auto',
+        TdlibMtprotoProxyMode.alwaysOn => 'on',
+        TdlibMtprotoProxyMode.alwaysOff => 'off',
+      };
+
+  static TdlibMtprotoProxyMode fromStorage(String? raw) {
+    switch (raw) {
+      case 'on':
+        return TdlibMtprotoProxyMode.alwaysOn;
+      case 'off':
+        return TdlibMtprotoProxyMode.alwaysOff;
+      case 'auto':
+      default:
+        return TdlibMtprotoProxyMode.auto;
+    }
+  }
 }
 
 class _TdlibDownloadJob {
@@ -513,6 +546,9 @@ class TelegramTdlibService extends ChangeNotifier {
   final Map<String, Map<String, dynamic>> _scopeNotificationSettings = {};
 
   int? _openChatId;
+  /// UI near the tip (reverse list ~0). When false, tip arrivals must not
+  /// auto viewMessages — user is reading history and needs unread FAB/line.
+  bool _openChatNearTip = true;
   /// Monotonic id for the current UI open session. Stale [closeChat] from a
   /// disposed route must carry the old token; otherwise a re-open of the same
   /// chat receives TDLib `closeChat` → `updateDeleteMessages(from_cache)` and
@@ -523,6 +559,10 @@ class TelegramTdlibService extends ChangeNotifier {
   /// (`_tearDown` clears RAM but must not blank the visible conversation).
   final Map<int, List<TdlibMessage>> _openTranscriptPreserve = {};
   final Set<int> _historyWarmInFlight = {};
+  /// Serial hub warm: oldest unread light preview per chat (not full video).
+  bool _unreadTipWarmRunning = false;
+  /// chatId → message id already tip-warmed this session (−1 = no media).
+  final Map<int, int> _unreadTipWarmedMsgByChat = {};
   int? _myUserId;
   /// Self [chatMember.status] per chat — used for send permissions.
   final Map<int, Map<String, dynamic>> _chatMemberStatus = {};
@@ -560,12 +600,16 @@ class TelegramTdlibService extends ChangeNotifier {
   static const prioOpenChatMedia = 16;
   /// Hub list avatars (visible rows only) — above generic background warm.
   static const prioHubAvatar = 10;
+  /// Oldest unread light media while on hub (below avatars, above bg warm).
+  static const prioUnreadTipWarm = 8;
   /// Alt-size / delayed retry after a hub-avatar 0B stall.
   /// Keep BELOW first-pass (10): poison remotes were jumping the queue at prio
   /// 18 and starving never-tried faces in the visible viewport for tens of
   /// seconds while Telegram/Шарий VPN etc. sat at 0B forever.
   static const prioHubAvatarRetry = 6;
   static const prioBackground = 4;
+  /// Cap how many unread chats get tip-media warm per pass (serial, slot=1).
+  static const warmUnreadTipChatLimit = 5;
   /// Hang with no new bytes → cancelDownloadFile + requeue / size fallback.
   ///
   /// Official guidance (levlam / td#2585): there are no "stalled" downloads —
@@ -594,6 +638,12 @@ class TelegramTdlibService extends ChangeNotifier {
   /// R22 (SessionLog 16:32–16:38): small thumbs (≤64KB) Ready+0B burned ~90s
   /// of the exclusive slot (CDN→origin→lastchance) while video taps waited.
   static const _stallZeroBytesThumbProxyReady = Duration(seconds: 12);
+  /// R57 (SessionLog 13 Oct 08:58 / 12:00 / 13:06 / 19:08 + mtg-wifi): a
+  /// non-video Ready+FakeTLS download that is still 0B is a domain-fronting
+  /// socket (lives ~26s, 0 bytes) and TDLib opens another every ~3s while
+  /// it stays in flight. Origin is another DF socket. Cancel on the next
+  /// watchdog tick instead of the 12s thumb budget.
+  static const _stallZeroBytesDfProxyReady = Duration(seconds: 4);
   static const _stallSmallFileBytes = 64 * 1024;
   static const _stallProgressIdle = Duration(seconds: 45);
   static const _stallProgressIdleProxy = Duration(seconds: 20);
@@ -605,12 +655,11 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Hub warm disabled in exclusive-focus mode.
   static const warmHubChatLimit = 0;
   static const warmHubMediaPerChat = 0;
-  /// Open-chat: only the focused message (no band prefetch).
-  /// Open-chat: focused photo first; one neighbor max after focus starts.
-  /// How many message-ids above/below focus to warm. Albums span several
-  /// consecutive ids — radius 1 only hit the next album sibling, leaving the
-  /// following post stuck on soft `m` / minithumb.
+  /// Open-chat: focused media first; then neighbors (after focus claims slot).
+  /// Direct MTProto: ±4. FakeTLS: ±1 only — enough to hide the next-bubble
+  /// loader on media channels without the old radius-4 DF storm (slotLimit=1).
   static const viewportMediaRadius = 4;
+  static const viewportMediaRadiusProxy = 1;
   /// Ordered exclusive focus queue (first = actively downloading).
   List<int> _focusDownloadOrder = const [];
   int? _focusMessageId;
@@ -739,6 +788,106 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Last successful [pingProxy] RTT in ms; null if never / last failed.
   int? _lastPongMs;
   DateTime? _lastPongAt;
+  /// Last failed health [pingProxy] on the enabled hop (Pong timeout etc.).
+  /// SessionLog 11:34–11:35: Ready+0B with fresh Pong fail = zombie FakeTLS
+  /// plane — cancel+requeue tore Ready→Connecting; soft-restart heals (R51).
+  DateTime? _lastProxyPingFailAt;
+  DateTime? _lastStallZombieSoftRestartAt;
+  /// Last net media complete — live bytes beat Pong-fail as plane health (R51b).
+  DateTime? _lastNetMediaDoneAt;
+  static const _recentNetMediaOk = Duration(seconds: 60);
+  /// Survive soft-restart tearDown so focus/tap requeues after Ready (R51).
+  final List<_TdlibDownloadJob> _pendingMediaAfterSoftRestart = [];
+  static const _proxyPingFailFresh = Duration(seconds: 90);
+  static const _stallZombieSoftRestartCooldown = Duration(seconds: 45);
+  /// R54/R54b (SessionLog 19:45–19:57): FakeTLS + !Ready → no wire downloads
+  /// (boot Connecting, soft-restart, quiet). Focus used to burn CDN→origin
+  /// and give-up before mtproto-up. Disk hits still OK. Not an auth Ready-gate
+  /// (td#1176) — only FakeTLS handshake hold.
+  bool get _fakeTlsMediaWireHold =>
+      _useMtprotoProxy &&
+      (!_tdlibReadyForMedia ||
+          (_softRestartFileGapUntil != null &&
+              DateTime.now().isBefore(_softRestartFileGapUntil!)));
+
+  /// R57: hold new file sockets so domain-fronting connections (~26s, 0B)
+  /// can die before the next downloadFile. At most two holds until a net
+  /// done resets the counter.
+  void _armDfStormHold(int fileId, String why) {
+    final until = _softRestartFileGapUntil;
+    if (until != null && DateTime.now().isBefore(until)) return;
+    if (_dfStormHolds >= 2) return;
+    _dfStormHolds++;
+    _softRestartFileGapUntil =
+        DateTime.now().add(const Duration(seconds: 22));
+    _softRestartFileGapTimer?.cancel();
+    _softRestartFileGapTimer = Timer(const Duration(seconds: 22), () {
+      _softRestartFileGapTimer = null;
+      _softRestartFileGapUntil = null;
+      _mediaLog('media-wire-hold clear (df-storm)');
+      if (_tearingDown || _client == null) return;
+      _pumpDownloadQueue();
+    });
+    _mediaLog(
+      'media-wire-hold arm 22s why=$why file=$fileId holds=$_dfStormHolds',
+    );
+  }
+
+  /// R71 (SessionLog 20:21 + mtg-wifi): after soft-restart, rapid next
+  /// `downloadFile` often opens `proxy.domain-fronting` while siblings just
+  /// RELAY'd (dc=203). Short cool between net completes — not a plane kick.
+  static const _postRestartMediaWindow = Duration(seconds: 25);
+  static const _postRestartMediaCool = Duration(seconds: 3);
+
+  bool get _inPostRestartMediaWindow {
+    if (!_useMtprotoProxy) return false;
+    final at = _lastSoftRestartAt;
+    if (at == null) return false;
+    return DateTime.now().difference(at) < _postRestartMediaWindow;
+  }
+
+  /// True when album tails should wait for one post-restart RELAY `done`
+  /// before joining the exclusive FakeTLS queue.
+  bool get _deferFocusTailsAfterRestart {
+    if (!_inPostRestartMediaWindow) return false;
+    final restart = _lastSoftRestartAt!;
+    final done = _lastNetMediaDoneAt;
+    return done == null || !done.isAfter(restart);
+  }
+
+  void _armPostRestartMediaCool({required String why}) {
+    if (!_inPostRestartMediaWindow) return;
+    final coolUntil = DateTime.now().add(_postRestartMediaCool);
+    final until = _softRestartFileGapUntil;
+    // Never shorten an active DF 22s quiet.
+    if (until != null && until.isAfter(coolUntil)) return;
+    _softRestartFileGapUntil = coolUntil;
+    _softRestartFileGapTimer?.cancel();
+    _softRestartFileGapTimer = Timer(_postRestartMediaCool, () {
+      _softRestartFileGapTimer = null;
+      _softRestartFileGapUntil = null;
+      _mediaLog('media-wire-hold clear (post-restart-cool)');
+      if (_tearingDown || _client == null) return;
+      _pumpDownloadQueue();
+    });
+    _mediaLog(
+      'media-wire-hold arm ${_postRestartMediaCool.inSeconds}s '
+      'why=post-restart-cool:$why',
+    );
+  }
+
+  /// R71: user tap must pierce Ready+DF / post-restart cool holds so
+  /// `tap:photo` is not stuck behind `disk-miss-requeue` for 22s
+  /// (SessionLog 20:22:27). Keep R54 !Ready wire hold.
+  void _releaseDfWireHoldForUserTap(String why) {
+    if (!_tdlibReadyForMedia) return;
+    final until = _softRestartFileGapUntil;
+    if (until == null || !DateTime.now().isBefore(until)) return;
+    _softRestartFileGapTimer?.cancel();
+    _softRestartFileGapTimer = null;
+    _softRestartFileGapUntil = null;
+    _mediaLog('media-wire-hold clear (user-tap) why=$why');
+  }
   /// Batches high-frequency media UI notifies (progress / completes mid-fling).
   Timer? _uiNotifyTimer;
   bool _uiNotifyPending = false;
@@ -747,6 +896,9 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Cached [hubChats] until the next [notifyListeners] — build() used to
   /// re-walk/sort/decode minithumbs dozens of times per frame.
   List<TdlibChatPreview>? _hubChatsCache;
+  /// Debounced hub first-paint persist for lastMessage / readInbox (muted OK).
+  final Set<int> _hubSnapshotPersistPending = {};
+  Timer? _hubSnapshotPersistTimer;
   /// chatId → decoded JPEG minithumb (null = known missing).
   final Map<int, List<int>?> _miniThumbByChatId = {};
   /// Per-chat last outgoing message id that peer has read.
@@ -774,20 +926,20 @@ class TelegramTdlibService extends ChangeNotifier {
   Future<void>? _connectionReadyJob;
   /// Last successfully enabled MTProto proxy id (for stuck-Connecting kick).
   int? _enabledProxyId;
-  /// Geo policy: RU (or unknown) → proxy; other countries → direct.
-  /// Debug AppBar OFF ([_debugMtprotoProxyPref]=false) forces direct.
-  /// Debug AppBar ON = allow FakeTLS and **follow geo** (R18) — not force-on.
+  /// Live wire: FakeTLS on/off after mode + geo resolution.
   bool _useMtprotoProxy = true;
   bool? _useMtprotoProxyResolved;
-  /// Debug AppBar switch — **user intent only**, persisted; default ON.
-  /// R18: geo must NOT write this (VPN leave-RU used to sticky-OFF the switch
-  /// and then skip all future geo rechecks).
+  /// Hub «Прокси» mode — **user intent only**, persisted; default [auto].
+  /// R18: geo must NOT write this (VPN leave-RU used to sticky-OFF the old
+  /// debug switch and then skip all future geo rechecks).
+  static const _kMtprotoProxyModePref = 'tdlib_mtproto_proxy_mode';
+  /// Legacy debug AppBar bool (migrated → mode).
   static const _kDebugMtprotoProxyPref = 'tdlib_debug_mtproto_proxy';
   /// One-shot: clear sticky AppBar OFF written by pre-R18 geo-off.
   static const _kDebugMtprotoProxyR18Migrated =
       'tdlib_debug_mtproto_proxy_r18';
-  bool _debugMtprotoProxyPref = true;
-  bool _debugMtprotoProxyPrefLoaded = false;
+  TdlibMtprotoProxyMode _mtprotoProxyMode = TdlibMtprotoProxyMode.auto;
+  bool _mtprotoProxyModeLoaded = false;
   /// Serializes ensure/disable so geo-off cannot race AppBar/ensure (SessionLog
   /// 13:09: geo-off → switch ON → ensure → switch OFF + TDLib timeouts).
   Future<void> _proxyMutateTail = Future<void>.value();
@@ -815,8 +967,44 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Old online=false grace skipped when already Connecting → zombie FakeTLS.
   Timer? _pauseOfflineGraceTimer;
   static const _pauseSuspendGrace = Duration(seconds: 2);
+  /// R52: defer late-None so Ready↔Connecting blips do not freeze the plane.
+  Timer? _lateNoneDeferTimer;
+  static const _lateNoneDefer = Duration(seconds: 2);
+  /// R72: deferred + soft-handshake timers must not both await None.
+  bool _lateNoneApplyInFlight = false;
+  /// R52: after skip-None mid soft-handshake, apply late-None when quiet ends
+  /// (still bg + !Ready) — keep R40 DF freeze without aborting the dial.
+  Timer? _softHandshakePauseNoneTimer;
+  /// R72: soft-restart-first cooldown (rapid lock while previous tearDown).
+  static const _softRestartFirstCooldown = Duration(seconds: 8);
+  /// R53 (SessionLog 19:40): soft-restart → Ready@0.4s → Ready→Connecting@+5s
+  /// in foreground; soft-resume flags already cleared on Ready so kick waited
+  /// 35s. Settle window: early soft-restart on Ready-drop (cap 2).
+  DateTime? _lastSoftRestartAt;
+  /// R56: after soft-restart, a 0B CDN try is domain-fronting (mtg, no dc=203).
+  /// Silence before the next downloadFile. Cold start's first file is RELAY.
+  DateTime? _softRestartFileGapUntil;
+  Timer? _softRestartFileGapTimer;
+  /// R57: file ids that already got the post-DF CDN retry. A second 0B
+  /// gives up without origin (origin restarts the domain-fronting storm).
+  final Set<int> _dfStormCdnRetried = {};
+  int _dfStormHolds = 0;
+  DateTime? _softRestartSettleUntil;
+  Timer? _softRestartSettleOkTimer;
+  int _softRestartSettleCount = 0;
+  static const _softRestartSettle = Duration(seconds: 15);
+  static const _softRestartSettleCap = 2;
+  static const _softRestartSettleArmWindow = Duration(seconds: 90);
   /// True after pause applied networkTypeNone until resume unsuspends.
   bool _appNetworkSuspended = false;
+  /// R61: background Connecting with the kick timer frozen. One
+  /// setNetworkType of the current bearer after 90s — the mobile→wifi
+  /// reassert that ended the 74m stall (13 Oct 10:37–11:51). Not the
+  /// foreground kick ladder.
+  Timer? _bgStuckReassertTimer;
+  int _bgStuckReassertCount = 0;
+  static const _bgStuckReassertCap = 3;
+  static const _bgStuckReassertWait = Duration(seconds: 90);
   /// R33/R34: short resume after our pause-suspend None — official
   /// resumeNetwork only; if still Connecting after short quiet, collapse to
   /// soft-restart early (not enableProxy + soft-nudge forever).
@@ -1000,7 +1188,9 @@ class TelegramTdlibService extends ChangeNotifier {
         lastOutgoing = last['is_outgoing'] == true;
         if (lastOutgoing) {
           final mid = (last['id'] as num?)?.toInt() ?? 0;
-          if (mid > 0 && lastOutbox > 0 && mid <= lastOutbox) {
+          if (isSavedMessagesChat(id)) {
+            lastReadStatus = 'read';
+          } else if (mid > 0 && lastOutbox > 0 && mid <= lastOutbox) {
             lastReadStatus = 'read';
           } else {
             lastReadStatus = 'sent';
@@ -1118,6 +1308,57 @@ class TelegramTdlibService extends ChangeNotifier {
     return out;
   }
 
+  void _scheduleHubSnapshotRowPersist(int chatId) {
+    if (kIsWeb || chatId == 0) return;
+    if (isSavedMessagesChat(chatId)) return;
+    _hubSnapshotPersistPending.add(chatId);
+    _hubSnapshotPersistTimer?.cancel();
+    _hubSnapshotPersistTimer = Timer(const Duration(milliseconds: 350), () {
+      final ids = _hubSnapshotPersistPending.toList(growable: false);
+      _hubSnapshotPersistPending.clear();
+      for (final id in ids) {
+        unawaited(_persistHubSnapshotRow(id));
+      }
+    });
+  }
+
+  /// Full hub-row write for cold-start snapshot (works with hub unmounted).
+  Future<void> _persistHubSnapshotRow(int chatId) async {
+    if (kIsWeb) return;
+    if (isSavedMessagesChat(chatId)) return;
+    final preview = chatPreviewById(chatId);
+    if (preview == null) return;
+    final created = preview.lastMessageDate > 0
+        ? DateTime.fromMillisecondsSinceEpoch(preview.lastMessageDate * 1000)
+            .toIso8601String()
+        : null;
+    final row = <String, dynamic>{
+      'id': -chatId.abs(),
+      'kind': 'tdlib_chat',
+      'title': preview.title,
+      'tdlib_chat_id': chatId,
+      if (!preview.isGroup && !preview.isChannel && preview.userId > 0)
+        'tdlib_user_id': preview.userId,
+      'tdlib_photo_path': preview.photoLocalPath,
+      'tdlib_photo_bytes': preview.photoMinithumbnailBytes,
+      'tdlib_photo_file_id': preview.photoFileId,
+      'notifications_enabled': !isChatMuted(chatId),
+      'unread_count': preview.unreadCount,
+      'last_message': {
+        'body': preview.lastMessageText,
+        if (created != null) 'created_at': created,
+        if (preview.lastMessageReadStatus != null)
+          'read_status': preview.lastMessageReadStatus,
+        if (preview.lastMessageOutgoing) 'is_mine': true,
+      },
+    };
+    try {
+      await HubFirstPaintSnapshot.upsertFullRow(row);
+    } catch (e) {
+      debugPrint('[tdlib] hub snapshot row persist failed: $e');
+    }
+  }
+
   /// Build a hub preview for any known chat (main list or folder-only).
   TdlibChatPreview? chatPreviewById(int chatId) {
     final chat = _chats[chatId];
@@ -1176,7 +1417,9 @@ class TelegramTdlibService extends ChangeNotifier {
       lastOutgoing = last['is_outgoing'] == true;
       if (lastOutgoing) {
         final mid = (last['id'] as num?)?.toInt() ?? 0;
-        if (mid > 0 && lastOutbox > 0 && mid <= lastOutbox) {
+        if (isSavedMessagesChat(chatId)) {
+          lastReadStatus = 'read';
+        } else if (mid > 0 && lastOutbox > 0 && mid <= lastOutbox) {
           lastReadStatus = 'read';
         } else {
           lastReadStatus = 'sent';
@@ -2035,6 +2278,185 @@ class TelegramTdlibService extends ChangeNotifier {
     _filePathCache.remove(fileId);
   }
 
+  /// Debug-only: wipe local media for [chatId] (RAM + TDLib deleteFile +
+  /// message path stamps) so bubbles re-download. Returns cleared file count.
+  Future<int> debugClearChatMediaCache(int chatId) async {
+    if (!kDebugMode) return 0;
+    final list = _messagesByChat[chatId];
+    if (list == null || list.isEmpty) return 0;
+
+    final fileIds = <int>{};
+    final stampedPaths = <String>{};
+    void addId(int? id) {
+      if (id != null && id > 0) fileIds.add(id);
+    }
+
+    void addPath(String? path) {
+      if (path != null && path.isNotEmpty) stampedPaths.add(path);
+    }
+
+    for (final m in list) {
+      addId(m.photoRemoteId);
+      for (final id in m.photoFallbackFileIds) {
+        addId(id);
+      }
+      addId(m.voiceFileId);
+      addId(m.videoNoteFileId);
+      addId(m.videoNoteThumbFileId);
+      addId(m.videoFileId);
+      addId(m.videoThumbFileId);
+      addId(m.documentFileId);
+      addId(m.documentThumbFileId);
+      addPath(m.photoLocalPath);
+      addPath(m.voiceLocalPath);
+      addPath(m.videoNoteLocalPath);
+      addPath(m.videoNoteThumbLocalPath);
+      addPath(m.videoLocalPath);
+      addPath(m.videoThumbLocalPath);
+      addPath(m.documentLocalPath);
+      addPath(m.documentThumbLocalPath);
+    }
+    if (fileIds.isEmpty && stampedPaths.isEmpty) return 0;
+
+    // Drop unfinished work for these ids so deleteFile is not racing.
+    for (final j in _downloadQueue.toList()) {
+      if (!fileIds.contains(j.fileId)) continue;
+      _downloadQueue.remove(j);
+      _downloadQueued.remove(j.fileId);
+      _downloadTrace.remove(j.fileId);
+      _fileDownloadProgress.remove(j.fileId);
+      final w = _downloadWaiters.remove(j.fileId);
+      if (w != null && !w.isCompleted) w.complete(null);
+    }
+    for (final id in fileIds.toList()) {
+      if (_downloadInFlight.contains(id)) {
+        await _cancelTdlibDownload(id);
+        _releaseDownloadSlot(id, failed: true);
+      }
+      _downloadTrace.remove(id);
+      _fileDownloadProgress.remove(id);
+      final w = _downloadWaiters.remove(id);
+      if (w != null && !w.isCompleted) w.complete(null);
+      _mediaGiveUpFileIds.remove(id);
+    }
+
+    final pathsToEvict = <String>{...stampedPaths};
+    for (final id in fileIds) {
+      final cached = _filePathCache.remove(id);
+      if (cached != null && cached.isNotEmpty) pathsToEvict.add(cached);
+    }
+    _durablePathByRemote
+        .removeWhere((_, path) => pathsToEvict.contains(path));
+    _remoteUniqueToFileId.removeWhere((_, id) => fileIds.contains(id));
+
+    final c = _client;
+    if (c != null) {
+      for (final id in fileIds) {
+        try {
+          await c.sendAwait({
+            '@type': 'deleteFile',
+            'file_id': id,
+          }, timeout: const Duration(seconds: 5));
+        } catch (e) {
+          debugPrint('[tdlib] debug deleteFile($id): $e');
+        }
+      }
+    }
+    for (final path in pathsToEvict) {
+      try {
+        final f = File(path);
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {}
+    }
+
+    // Strip stamped local paths so UI cannot paint from memory stamps.
+    final next = <TdlibMessage>[];
+    for (final m in list) {
+      next.add(
+        TdlibMessage(
+          id: m.id,
+          chatId: m.chatId,
+          senderUserId: m.senderUserId,
+          isOutgoing: m.isOutgoing,
+          date: m.date,
+          text: m.text,
+          textEntities: m.textEntities,
+          photoLocalPath: null,
+          photoRemoteId: m.photoRemoteId,
+          photoSizeType: m.photoSizeType,
+          photoWidth: m.photoWidth,
+          photoHeight: m.photoHeight,
+          photoFallbackFileIds: m.photoFallbackFileIds,
+          photoThumbBytes: m.photoThumbBytes,
+          voiceFileId: m.voiceFileId,
+          voiceLocalPath: null,
+          voiceDurationMs: m.voiceDurationMs,
+          videoNoteFileId: m.videoNoteFileId,
+          videoNoteLocalPath: null,
+          videoNoteDurationMs: m.videoNoteDurationMs,
+          videoNoteThumbFileId: m.videoNoteThumbFileId,
+          videoNoteThumbLocalPath: null,
+          videoNoteThumbBytes: m.videoNoteThumbBytes,
+          videoFileId: m.videoFileId,
+          videoLocalPath: null,
+          videoDurationMs: m.videoDurationMs,
+          videoWidth: m.videoWidth,
+          videoHeight: m.videoHeight,
+          videoSizeBytes: m.videoSizeBytes,
+          videoThumbFileId: m.videoThumbFileId,
+          videoThumbLocalPath: null,
+          videoThumbBytes: m.videoThumbBytes,
+          isAnimation: m.isAnimation,
+          isSticker: m.isSticker,
+          stickerEmoji: m.stickerEmoji,
+          documentFileId: m.documentFileId,
+          documentLocalPath: null,
+          documentFileName: m.documentFileName,
+          documentMimeType: m.documentMimeType,
+          documentSizeBytes: m.documentSizeBytes,
+          documentThumbFileId: m.documentThumbFileId,
+          documentThumbLocalPath: null,
+          documentThumbBytes: m.documentThumbBytes,
+          reactions: m.reactions,
+          replyToMessageId: m.replyToMessageId,
+          replyPreviewText: m.replyPreviewText,
+          canBeEdited: m.canBeEdited,
+          canBeDeletedForAllUsers: m.canBeDeletedForAllUsers,
+          canBeDeletedOnlyForSelf: m.canBeDeletedOnlyForSelf,
+          isPinned: m.isPinned,
+          isService: m.isService,
+          mediaAlbumId: m.mediaAlbumId,
+          forwardOriginName: m.forwardOriginName,
+          forwardOriginChatTitle: m.forwardOriginChatTitle,
+          forwardFromChatId: m.forwardFromChatId,
+          forwardFromMessageId: m.forwardFromMessageId,
+          sendingState: m.sendingState,
+        ),
+      );
+    }
+    _messagesByChat[chatId] = next;
+    final preserved = _openTranscriptPreserve[chatId];
+    if (preserved != null) {
+      _openTranscriptPreserve[chatId] = List<TdlibMessage>.from(next);
+    }
+
+    _clearFocusMediaClaim(why: 'debug-clear-chat-cache');
+    _mediaReadyEpoch++;
+    _mediaLog(
+      'debug-clear-chat-cache chat=$chatId files=${fileIds.length} '
+      'paths=${pathsToEvict.length} epoch=$_mediaReadyEpoch',
+    );
+    _slog('tg.media', 'debug_clear_chat_cache', {
+      'chatId': chatId,
+      'files': fileIds.length,
+      'paths': pathsToEvict.length,
+    });
+    notifyListeners();
+    // Kick tip media so the open chat immediately re-wires without scroll.
+    focusNewestPendingMedia(chatId);
+    return fileIds.length;
+  }
+
   /// Download progress 0..1, or null if idle / unknown.
   double? fileDownloadProgress(int fileId) => _fileDownloadProgress[fileId];
 
@@ -2252,18 +2674,31 @@ class TelegramTdlibService extends ChangeNotifier {
     }
   }
 
+  /// True for hub / peer avatars that must yield the FakeTLS slot to chat media.
+  /// [group-member] avatars (group info sheet) are intentionally excluded.
+  bool _isPurgableAvatarReason(String reason) {
+    if (reason == 'group-member' ||
+        reason.startsWith('stall-retry:group-member') ||
+        reason.startsWith('stall-lastchance:group-member')) {
+      return false;
+    }
+    return reason == 'peer-avatar' ||
+        reason == 'avatar' ||
+        reason == 'hub-avatar' ||
+        reason.startsWith('stall-retry:peer-avatar') ||
+        reason.startsWith('stall-retry:avatar') ||
+        reason.startsWith('stall-retry:hub-avatar') ||
+        reason.contains('peer-avatar') ||
+        reason.contains('hub-avatar') ||
+        reason == 'member-avatar' || // legacy name; treat as purgable
+        (reason.contains('avatar') && !reason.contains('group-member'));
+  }
+
   /// Drop queued avatars. With FakeTLS, soft-release leaves TDLib still
   /// pulling the avatar on the wire and starves the focus media slot — cancel.
   Future<void> _purgeAvatarDownloads() async {
     final dropQueued = _downloadQueue
-        .where(
-          (j) =>
-              j.reason == 'peer-avatar' ||
-              j.reason == 'avatar' ||
-              j.reason == 'hub-avatar' ||
-              j.reason.startsWith('stall-retry:peer-avatar') ||
-              j.reason.startsWith('stall-retry:avatar'),
-        )
+        .where((j) => _isPurgableAvatarReason(j.reason))
         .toList();
     for (final j in dropQueued) {
       _downloadQueue.remove(j);
@@ -2276,23 +2711,18 @@ class TelegramTdlibService extends ChangeNotifier {
     for (final id in _downloadInFlight.toList()) {
       final t = _downloadTrace[id];
       final reason = t?.reason ?? '';
-      if (reason == 'peer-avatar' ||
-          reason == 'avatar' ||
-          reason == 'hub-avatar' ||
-          reason.contains('peer-avatar') ||
-          reason.contains('avatar')) {
-        _downloadInFlight.remove(id);
-        _downloadBackgroundIds.remove(id);
-        _downloadActive = (_downloadActive - 1).clamp(0, 100);
-        _downloadTrace.remove(id);
-        _fileDownloadProgress.remove(id);
-        if (hardCancel) {
-          await _cancelTdlibDownload(id);
-          cancelled++;
-          _mediaLog('purge-avatar-hard file=$id reason=$reason');
-        } else {
-          _mediaLog('purge-avatar-soft file=$id reason=$reason');
-        }
+      if (!_isPurgableAvatarReason(reason)) continue;
+      _downloadInFlight.remove(id);
+      _downloadBackgroundIds.remove(id);
+      _downloadActive = (_downloadActive - 1).clamp(0, 100);
+      _downloadTrace.remove(id);
+      _fileDownloadProgress.remove(id);
+      if (hardCancel) {
+        await _cancelTdlibDownload(id);
+        cancelled++;
+        _mediaLog('purge-avatar-hard file=$id reason=$reason');
+      } else {
+        _mediaLog('purge-avatar-soft file=$id reason=$reason');
       }
     }
     if (cancelled > 0) {
@@ -2451,7 +2881,8 @@ class TelegramTdlibService extends ChangeNotifier {
       final rate = elapsed.inMilliseconds > 0 && t.lastBytes > 0
           ? (t.lastBytes / (elapsed.inMilliseconds / 1000.0))
           : 0.0;
-      final isFocus = t.reason.startsWith('focus:') ||
+      final isFocus = t.reason.startsWith('focus') ||
+          t.reason.contains(':focus') ||
           t.reason.startsWith('stall-fallback:') ||
           t.reason.startsWith('stall-retry:') ||
           t.reason.startsWith('stall-lastchance:') ||
@@ -2459,6 +2890,8 @@ class TelegramTdlibService extends ChangeNotifier {
       final isVideo = t.reason.contains('video:') ||
           t.reason.startsWith('auto:video:') ||
           t.reason.startsWith('tap:video:');
+      // R70: voice must not share the thumb DF 4s / give-up-small path.
+      final isVoice = t.reason.contains('voice:');
       final isHubAvatar = t.reason == 'hub-avatar';
       final isBareEnsure = t.reason == 'ensure' ||
           t.reason == 'peer-avatar' ||
@@ -2468,16 +2901,17 @@ class TelegramTdlibService extends ChangeNotifier {
       final mediaReady = _tdlibReadyForMedia;
       final isSmallFile = t.expectedSize > 0 &&
           t.expectedSize <= _stallSmallFileBytes &&
-          !isVideo;
-      // R42: tap:photo Ready+0B used focus 35s budget (14774 333KB ×30s+
-      // wedged 1/1). Photos are not R19 video — use thumb/proxy budget.
-      final isTapPhoto = !isVideo &&
-          (t.reason.startsWith('tap:photo:') ||
-              t.reason.contains('tap:photo:'));
+          !isVideo &&
+          !isVoice;
+      // R42 / R42b: tap:photo Ready+0B used focus 35s budget (wedged 1/1).
+      // R57: non-video FakeTLS Ready 0B is domain-fronting (~26s). Cancel at
+      // 4s (video keeps R19 35s) so TDLib stops opening a new DF socket
+      // every ~3s.
+      final isFocusPhoto = !isVideo && isFocus;
       final zeroLimit = (isHubAvatar || isBareEnsure)
           ? _stallZeroBytesHubAvatar
-          : (proxyOn && mediaReady && (isSmallFile || isTapPhoto))
-              ? _stallZeroBytesThumbProxyReady
+          : (proxyOn && mediaReady && (isSmallFile || isFocusPhoto))
+              ? _stallZeroBytesDfProxyReady
               : proxyOn
                   ? (mediaReady
                       ? (isVideo
@@ -2563,7 +2997,9 @@ class TelegramTdlibService extends ChangeNotifier {
         // pingProxy is NOT a media cure — only cancel / recover / free slot.
         // R48: hub-avatar under Ready must use [_recoverStalledDownload]
         // (alt size / delayed retry) — drop-zombie left blurry tiles forever.
-        if (!_canStartNetworkDownload || isBareEnsure) {
+        // R54: FakeTLS !Ready — free slot + requeue only (no origin ladder).
+        final proxyConnecting = proxyOn && !mediaReady;
+        if (!_canStartNetworkDownload || isBareEnsure || proxyConnecting) {
           unawaited(
             _dropInFlightWhileNotReady(
               id,
@@ -2747,6 +3183,8 @@ class TelegramTdlibService extends ChangeNotifier {
               : 'stall-retry:$reason',
         );
         _downloadTrace[fileId]?.recoverAttempted = true;
+        // Requeue no-ops when a temp path is cached; siblings must still run.
+        _pumpDownloadQueue();
       } else {
         _mediaLog('stall-progress-give-up file=$fileId');
         _pumpDownloadQueue();
@@ -2758,7 +3196,10 @@ class TelegramTdlibService extends ChangeNotifier {
     final prevFallbackAttempt = t?.sizeFallbackAttempt ?? 0;
     final recoverAttempted = t?.recoverAttempted == true;
     final proxyOn = _useMtprotoProxy && _enabledProxyId != null;
-    final isFocusish = reason.contains('focus:') ||
+    // focus-tail / focus-upgrade must share CDN→origin (R51f SessionLog
+    // 21:22: focus-tail gave up at 12s with no origin; album cells stuck).
+    final isFocusish = reason.startsWith('focus') ||
+        reason.contains(':focus') ||
         reason.startsWith('tap:') ||
         reason.startsWith('auto:video:') ||
         reason.startsWith('stall-retry:') ||
@@ -2771,43 +3212,206 @@ class TelegramTdlibService extends ChangeNotifier {
     final chatForRequeue = chatId ?? _openChatId;
     if (proxyOn &&
         !hadProgress &&
-        !recoverAttempted &&
         isFocusish &&
         !reason.startsWith('stall-fallback:') &&
         !reason.startsWith('stall-lastchance:') &&
         chatForRequeue != null) {
-      _mediaLog(
-        'stall-recover-same file=$fileId reason=$reason '
-        'conn=$_connectionState (proxy 0B → cancel+requeue)',
-      );
-      _downloadInFlight.remove(fileId);
-      _downloadBackgroundIds.remove(fileId);
-      _downloadActive = (_downloadActive - 1).clamp(0, 100);
-      _downloadTrace.remove(fileId);
-      _fileDownloadProgress.remove(fileId);
-      await _cancelTdlibDownload(fileId);
-      // Do NOT soft-nudge on Ready+0B here — SessionLog 21:19 show
-      // stall-0B-ready → Ready→Connecting with still 0B. CDN→origin next;
-      // hop probe only after ladder give-up (R10 / evenIfReady).
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      // First attempt is CDN (offset=0); after 0B force one origin try.
-      if (_enabledProxyId != null &&
-          !_downloadTriedBypassCdn.contains(fileId)) {
-        _downloadForceBypassCdnOnce.add(fileId);
-      }
-      _queueFileDownload(
-        fileId,
-        priority: prioFocused,
-        background: false,
-        chatId: chatForRequeue,
-        reason: reason.startsWith('stall-retry:')
+      // R51 / R51b / R51c / R51d (SessionLog 20:28–20:30): Pong alone is NOT
+      // zombie proof — first CDN 0B must try origin (R8). After CDN+origin
+      // both 0B + fresh Pong while Ready: do NOT soft-restart (R51d — tore
+      // working MTProto Ready/send → «прокси отлетел», then soft× kick for
+      // 40s×N). Heal with evenIfReady hop (R10); keep Ready when possible.
+      final pongFailAt = _lastProxyPingFailAt;
+      final pongFailAge = pongFailAt == null
+          ? null
+          : DateTime.now().difference(pongFailAt);
+      final recentMediaOk = _lastNetMediaDoneAt != null &&
+          DateTime.now().difference(_lastNetMediaDoneAt!) <= _recentNetMediaOk;
+      final originTried = recoverAttempted ||
+          _downloadTriedBypassCdn.contains(fileId);
+      final zombiePlane = _tdlibReadyForMedia &&
+          pongFailAge != null &&
+          pongFailAge <= _proxyPingFailFresh &&
+          originTried;
+      final zombieCooldownOk = _lastStallZombieSoftRestartAt == null ||
+          DateTime.now().difference(_lastStallZombieSoftRestartAt!) >=
+              _stallZombieSoftRestartCooldown;
+      if (zombiePlane && zombieCooldownOk) {
+        final priority = t?.priority ?? prioFocused;
+        final retryReason = reason.startsWith('stall-retry:')
             ? reason
-            : 'stall-retry:$reason',
-      );
-      _downloadTrace[fileId]?.recoverAttempted = true;
-      _downloadTrace[fileId]?.sizeFallbackAttempt = prevFallbackAttempt;
-      notifyListeners();
-      return;
+            : 'stall-retry:$reason';
+        _mediaLog(
+          'stall-recover-zombie-hop file=$fileId reason=$reason '
+          'pongFailAge=${_fmtDur(pongFailAge!)} originTried=$originTried '
+          'conn=$_connectionState → evenIfReady hop (no soft-restart)',
+        );
+        _slog('tg.media', 'stall_zombie_hop', {
+          'fileId': fileId,
+          'reason': reason,
+          'pongFailAgeMs': pongFailAge.inMilliseconds,
+          'originTried': originTried,
+        });
+        _downloadInFlight.remove(fileId);
+        _downloadBackgroundIds.remove(fileId);
+        _downloadActive = (_downloadActive - 1).clamp(0, 100);
+        _downloadTrace.remove(fileId);
+        _fileDownloadProgress.remove(fileId);
+        // Avoid cancelDownloadFile here — can Ready→Connecting (11:35);
+        // soft-restart is worse while Ready+send still work (20:28).
+        _lastProxyPingFailAt = null;
+        _lastStallZombieSoftRestartAt = DateTime.now();
+        notifyListeners();
+        unawaited(() async {
+          await _failoverProxy(
+            why: 'stall-0b-zombie-pong:$fileId',
+            evenIfReady: true,
+          );
+          if (_tearingDown || _client == null) return;
+          if (_downloadInFlight.contains(fileId) ||
+              _downloadQueued.contains(fileId)) {
+            return;
+          }
+          // After hop (or probe-miss hop-no-ping): prefer origin once —
+          // re-burning CDN 0B left media wedged (SessionLog 21:23–21:24).
+          if (_enabledProxyId != null) {
+            _downloadForceBypassCdnOnce.add(fileId);
+          }
+          _queueFileDownload(
+            fileId,
+            priority: priority,
+            background: false,
+            chatId: chatForRequeue,
+            reason: retryReason,
+          );
+          _downloadTrace[fileId]?.recoverAttempted = true;
+        }());
+        return;
+      }
+      if (pongFailAge != null &&
+          pongFailAge <= _proxyPingFailFresh &&
+          _tdlibReadyForMedia &&
+          !originTried) {
+        _mediaLog(
+          'stall-recover-zombie-defer file=$fileId '
+          'pongFailAge=${_fmtDur(pongFailAge)} '
+          'recentMediaOk=$recentMediaOk → try origin first (R51b)',
+        );
+      }
+      if (!recoverAttempted) {
+        final nonVideo = !reason.contains('video:');
+        // R57 (mtg-wifi 13 Oct): sibling net done does not make the next
+        // socket RELAY. 0B CDN is domain-fronting; origin is another DF
+        // socket and TDLib keeps opening one every ~3s. Quiet 22s (socket
+        // lifetime ~26s), then one CDN retry. A second 0B gives up.
+        if (nonVideo &&
+            _tdlibReadyForMedia &&
+            _dfStormCdnRetried.contains(fileId)) {
+          _mediaLog(
+            'stall-df-exhausted file=$fileId reason=$reason '
+            '(CDN retry still 0B, no origin)',
+          );
+          _downloadInFlight.remove(fileId);
+          _downloadBackgroundIds.remove(fileId);
+          _downloadActive = (_downloadActive - 1).clamp(0, 100);
+          _downloadTrace.remove(fileId);
+          _fileDownloadProgress.remove(fileId);
+          await _cancelTdlibDownload(fileId);
+          _mediaGiveUpFileIds.add(fileId);
+          _armDfStormHold(fileId, 'df-exhausted');
+          // R71: always drop exclusive focus — focus-tail used to leave
+          // hold+order busy → focus_hold_block / tap stuck during quiet.
+          _clearFocusMediaClaim(why: 'stall-df-exhausted:$fileId');
+          final wDf = _downloadWaiters.remove(fileId);
+          if (wDf != null && !wDf.isCompleted) {
+            wDf.complete(_filePathCache[fileId]);
+          }
+          _pumpDownloadQueue();
+          notifyListeners();
+          return;
+        }
+        if (nonVideo && _tdlibReadyForMedia && _dfStormHolds >= 2) {
+          // Two quiets already failed to bring dc=203 back. Another
+          // downloadFile only feeds the domain-fronting storm.
+          _mediaLog(
+            'stall-df-exhausted file=$fileId reason=$reason '
+            '(hold cap, no new socket)',
+          );
+          _downloadInFlight.remove(fileId);
+          _downloadBackgroundIds.remove(fileId);
+          _downloadActive = (_downloadActive - 1).clamp(0, 100);
+          _downloadTrace.remove(fileId);
+          _fileDownloadProgress.remove(fileId);
+          await _cancelTdlibDownload(fileId);
+          _mediaGiveUpFileIds.add(fileId);
+          _clearFocusMediaClaim(why: 'stall-df-exhausted-cap:$fileId');
+          final wCap = _downloadWaiters.remove(fileId);
+          if (wCap != null && !wCap.isCompleted) {
+            wCap.complete(_filePathCache[fileId]);
+          }
+          _pumpDownloadQueue();
+          notifyListeners();
+          return;
+        }
+        if (nonVideo && _tdlibReadyForMedia) {
+          _dfStormCdnRetried.add(fileId);
+          _mediaLog(
+            'stall-recover-gap file=$fileId reason=$reason '
+            '(DF 0B → quiet 22s, retry CDN, no origin)',
+          );
+          _downloadInFlight.remove(fileId);
+          _downloadBackgroundIds.remove(fileId);
+          _downloadActive = (_downloadActive - 1).clamp(0, 100);
+          _downloadTrace.remove(fileId);
+          _fileDownloadProgress.remove(fileId);
+          await _cancelTdlibDownload(fileId);
+          _armDfStormHold(fileId, 'df-storm');
+          _queueFileDownload(
+            fileId,
+            priority: prioFocused,
+            background: false,
+            chatId: chatForRequeue,
+            reason: reason.startsWith('stall-retry:')
+                ? reason
+                : 'stall-retry:$reason',
+          );
+          notifyListeners();
+          return;
+        }
+        _mediaLog(
+          'stall-recover-same file=$fileId reason=$reason '
+          'conn=$_connectionState (proxy 0B → cancel+requeue)',
+        );
+        _downloadInFlight.remove(fileId);
+        _downloadBackgroundIds.remove(fileId);
+        _downloadActive = (_downloadActive - 1).clamp(0, 100);
+        _downloadTrace.remove(fileId);
+        _fileDownloadProgress.remove(fileId);
+        await _cancelTdlibDownload(fileId);
+        // Do NOT soft-nudge on Ready+0B here — SessionLog 21:19 show
+        // stall-0B-ready → Ready→Connecting with still 0B. CDN→origin next;
+        // hop probe only after ladder give-up (R10 / evenIfReady).
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        // First attempt is CDN (offset=0); after 0B force origin. Always
+        // re-arm force even if tried set (zombie requeue cleared force-once
+        // and left CDN-only loops — SessionLog 21:24:13 offset=0 again).
+        if (_enabledProxyId != null) {
+          _downloadForceBypassCdnOnce.add(fileId);
+        }
+        _queueFileDownload(
+          fileId,
+          priority: prioFocused,
+          background: false,
+          chatId: chatForRequeue,
+          reason: reason.startsWith('stall-retry:')
+              ? reason
+              : 'stall-retry:$reason',
+        );
+        _downloadTrace[fileId]?.recoverAttempted = true;
+        _downloadTrace[fileId]?.sizeFallbackAttempt = prevFallbackAttempt;
+        notifyListeners();
+        return;
+      }
     }
 
     final fallbackId = chatId == null
@@ -2921,8 +3525,12 @@ class TelegramTdlibService extends ChangeNotifier {
     // R22/R42: small thumbs + tap:photo — skip lastchance (another ~35s 0B).
     // One CDN + one origin is enough; free the exclusive FakeTLS slot.
     // r41_check: tap:photo 333KB Ready+0B burned 30s+ before stall@35s.
+    // R70: voice is NOT a thumb — ≤64KB .oga hit stall-give-up-small and
+    // poisoned `_mediaGiveUpFileIds` so the bubble never retried after Ready.
+    final isVoice = reason.contains('voice:');
     final smallThumb = _enabledProxyId != null &&
         !reason.contains('video:') &&
+        !isVoice &&
         (((t?.expectedSize ?? 0) > 0 &&
                 t!.expectedSize <= _stallSmallFileBytes) ||
             reason.contains('tap:photo:'));
@@ -3026,6 +3634,9 @@ class TelegramTdlibService extends ChangeNotifier {
         wGive.complete(_filePathCache[fileId]);
       }
       _pumpDownloadQueue();
+      if (_isProtectedUserMediaReason(reason)) {
+        _notifyViewportMediaRescan();
+      }
       notifyListeners();
       return;
     }
@@ -3058,6 +3669,9 @@ class TelegramTdlibService extends ChangeNotifier {
         wEnd.complete(_filePathCache[fileId]);
       }
       _pumpDownloadQueue();
+      if (_isProtectedUserMediaReason(reason)) {
+        _notifyViewportMediaRescan();
+      }
     }
     notifyListeners();
   }
@@ -3471,6 +4085,7 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Right after Ready/Updating: drop truly hung 0B inflight and pump.
   Future<void> _nudgeDownloadsAfterReconnect() async {
     if (!_tdlibReadyForMedia) return;
+    _flushPendingMediaAfterSoftRestart();
     _mediaLog('nudge-after-ready ${_downloadQueueStats()}');
     // Do NOT cancel jobs that just started on this Ready transition —
     // give them a few seconds before treating 0B as a stall.
@@ -3489,6 +4104,15 @@ class TelegramTdlibService extends ChangeNotifier {
     _pumpDownloadQueue();
   }
 
+  /// Drop stall/DF give-ups after MTProto returns so open-chat media can retry.
+  void _clearMediaGiveUpsAfterPlaneUp() {
+    if (_mediaGiveUpFileIds.isEmpty) return;
+    final n = _mediaGiveUpFileIds.length;
+    _mediaGiveUpFileIds.clear();
+    _dfStormCdnRetried.clear();
+    _mediaLog('media-give-up clear n=$n why=mtproto-up');
+  }
+
   /// Async TDLib download with concurrency limit. Slot held until [updateFile]
   /// completes (not merely until downloadFile is acknowledged).
   void _queueFileDownload(
@@ -3499,10 +4123,16 @@ class TelegramTdlibService extends ChangeNotifier {
     String reason = '',
   }) {
     if (fileId <= 0) return;
+    // R57: a second 0B already gave up. Focus rebuilds must not open another
+    // domain-fronting socket for the same id (SessionLog 19:35 loop).
+    if (_mediaGiveUpFileIds.contains(fileId)) return;
     final cached = _filePathCache[fileId];
     if (cached != null && cached.isNotEmpty) {
-      // Silent: UI rebuilds hit this often.
-      return;
+      if (_isPaintReadyMediaPath(cached)) {
+        // Silent: UI rebuilds hit this often.
+        return;
+      }
+      _filePathCache.remove(fileId);
     }
 
     // R48: no new wire jobs while backgrounded (pause owns the queue).
@@ -3624,6 +4254,7 @@ class TelegramTdlibService extends ChangeNotifier {
       // R40 (r39_check mtg): R34a skip None while Ready, then TDLib drops
       // Ready→Connecting in bg and keeps dialing FakeTLS (LOCK 3 DF + QUIET
       // 12 DF / 0 RELAY). Freeze with None so unlock soft-restart ≈ boot.
+      // R52: defer ~2s — blips that return Ready must not late-None.
       if (!_appInForeground &&
           _softPausedReadyProxy &&
           _useMtprotoProxy &&
@@ -3631,10 +4262,26 @@ class TelegramTdlibService extends ChangeNotifier {
           !_tearingDown &&
           _client != null &&
           name != 'connectionStateWaitingForNetwork') {
-        unawaited(_applyLatePauseNoneAfterReadyDrop());
+        _armDeferredLatePauseNone();
+      } else if (!_appInForeground &&
+          name != 'connectionStateWaitingForNetwork') {
+        // R61: Ready already cleared the soft-pause flag, so this drop
+        // is not late-None. Kick is frozen for the whole pause.
+        _scheduleBgStuckReassert();
+      }
+      // R53: Ready just after soft-restart is unstable — drop in fg must not
+      // wait full kick 35s (SessionLog 19:40:31 Ready → 19:40:36 Connecting).
+      if (name != 'connectionStateWaitingForNetwork') {
+        _maybeSoftRestartAfterSettleReadyDrop();
       }
     } else if (name == 'connectionStateReady' ||
         name == 'connectionStateUpdating') {
+      _cancelDeferredLatePauseNone(why: 'ready:$name');
+      _cancelSoftHandshakePauseNone(why: 'ready:$name');
+      // R54b: wire hold lifts with Ready (getter); marker for SessionLog.
+      if (_useMtprotoProxy) {
+        _mediaLog('media-wire-hold clear (conn=$name)');
+      }
       if (_fakeTlsQuietUntil != null) {
         _fakeTlsQuietUntil = null;
         _mediaLog('faketls-quiet clear (conn=$name)');
@@ -3671,18 +4318,87 @@ class TelegramTdlibService extends ChangeNotifier {
       _connectingTimeoutTimer = null;
       _connectionStatusRevealTimer?.cancel();
       _connectionStatusRevealTimer = null;
+      _cancelBgStuckReassert('ready');
+      _armSoftRestartSettleIfNeeded(why: name);
       if (wasWaiting) {
+        // R70: WFN / Connecting / DF give-ups must not stick after the plane
+        // is live again (failed voice while !Ready never retried). Safe on
+        // wifi — wasWaiting is rare when the hop stays Ready.
+        _clearMediaGiveUpsAfterPlaneUp();
         _mediaReadyEpoch++;
+        // R72: shared waiters + one deferred openMessageContent.
+        _completeWaitMediaConn(true);
+        _flushPendingOpenMessageContent();
         // Hub watches mediaReadyEpoch to re-run avatar prefetch after Connecting.
+        warmUnreadTipMediaFromHub();
         notifyListeners();
       }
     } else {
       _connectingSince = null;
       _connectingTimeoutTimer?.cancel();
       _connectingTimeoutTimer = null;
+      _cancelBgStuckReassert('not-connecting');
       _connectionStatusRevealTimer?.cancel();
       _connectionStatusRevealTimer = null;
     }
+  }
+
+  void _armSoftRestartSettleIfNeeded({required String why}) {
+    if (!_useMtprotoProxy) return;
+    final last = _lastSoftRestartAt;
+    if (last == null) return;
+    if (DateTime.now().difference(last) > _softRestartSettleArmWindow) {
+      return;
+    }
+    _softRestartSettleUntil = DateTime.now().add(_softRestartSettle);
+    _softRestartSettleOkTimer?.cancel();
+    _softRestartSettleOkTimer = Timer(_softRestartSettle, () {
+      _softRestartSettleOkTimer = null;
+      if (!_tdlibReadyForMedia) return;
+      _softRestartSettleUntil = null;
+      _softRestartSettleCount = 0;
+      _mediaLog('soft-restart-settle clear (stable Ready)');
+    });
+    _mediaLog(
+      'soft-restart-settle arm ${_softRestartSettle.inSeconds}s '
+      'why=$why count=$_softRestartSettleCount '
+      'until=${_softRestartSettleUntil!.toUtc().toIso8601String()}',
+    );
+  }
+
+  void _maybeSoftRestartAfterSettleReadyDrop() {
+    if (!_appInForeground || !_useMtprotoProxy) return;
+    if (_tearingDown || _recoveringClient || _client == null) return;
+    final until = _softRestartSettleUntil;
+    if (until == null || DateTime.now().isAfter(until)) return;
+    if (_softRestartSettleCount >= _softRestartSettleCap) {
+      _mediaLog(
+        'soft-restart-settle cap=$_softRestartSettleCap '
+        '→ leave kick ladder conn=$_connectionState',
+      );
+      _softRestartSettleUntil = null;
+      _softRestartSettleOkTimer?.cancel();
+      _softRestartSettleOkTimer = null;
+      return;
+    }
+    _softRestartSettleCount++;
+    _softRestartSettleUntil = null;
+    _softRestartSettleOkTimer?.cancel();
+    _softRestartSettleOkTimer = null;
+    _mediaLog(
+      'soft-restart-settle Ready-drop → soft-restart '
+      '#$_softRestartSettleCount conn=$_connectionState',
+    );
+    _slog('tg.conn', 'settle_ready_drop', {
+      'count': _softRestartSettleCount,
+      'conn': _connectionState,
+    });
+    unawaited(
+      _recoverDeadClient(
+        'ready-drop-in-settle:$_softRestartSettleCount',
+        preserveSoftPauseEscalation: true,
+      ),
+    );
   }
 
   /// Notify UI once grace elapses so the connecting subtitle can appear.
@@ -3734,6 +4450,72 @@ class TelegramTdlibService extends ChangeNotifier {
     );
   }
 
+  /// R61 (13 Oct 10:37–11:51): pause freezes the kick ladder, and a later
+  /// Ready in the background clears the soft-pause flag. The next
+  /// Ready→Connecting then sits until a link event. mobile→wifi
+  /// `setNetworkType` ended that stall in 269ms. Same action, once the
+  /// Connecting has outlasted the 84s self-heal seen the same hour.
+  /// Not enableProxy, not soft-restart, not networkTypeNone.
+  void _cancelBgStuckReassert(String why) {
+    final had = _bgStuckReassertTimer != null || _bgStuckReassertCount != 0;
+    _bgStuckReassertTimer?.cancel();
+    _bgStuckReassertTimer = null;
+    _bgStuckReassertCount = 0;
+    if (had) _mediaLog('bg-stuck-reassert clear why=$why');
+  }
+
+  void _scheduleBgStuckReassert() {
+    if (_appInForeground || _tearingDown) return;
+    if (_bgStuckReassertTimer != null) return;
+    if (_bgStuckReassertCount >= _bgStuckReassertCap) return;
+    if (_tdlibReadyForMedia || _appNetworkSuspended || _softPausedReadyProxy) {
+      return;
+    }
+    if (_connectionState == 'connectionStateWaitingForNetwork') return;
+    if (_networkKind != ChatNetworkLinkKind.wifi &&
+        _networkKind != ChatNetworkLinkKind.mobile) {
+      return;
+    }
+    _bgStuckReassertTimer = Timer(_bgStuckReassertWait, () {
+      _bgStuckReassertTimer = null;
+      unawaited(_runBgStuckReassert());
+    });
+  }
+
+  Future<void> _runBgStuckReassert() async {
+    if (_appInForeground || _tearingDown || _client == null) return;
+    if (_tdlibReadyForMedia || _appNetworkSuspended || _softPausedReadyProxy) {
+      return;
+    }
+    if (_networkKind != ChatNetworkLinkKind.wifi &&
+        _networkKind != ChatNetworkLinkKind.mobile) {
+      return;
+    }
+    if (_connectionState != 'connectionStateConnecting' &&
+        _connectionState != 'connectionStateConnectingToProxy') {
+      return;
+    }
+    if (_inFakeTlsQuiet || _recoveringClient) {
+      _scheduleBgStuckReassert();
+      return;
+    }
+    _bgStuckReassertCount++;
+    _mediaLog(
+      'bg-stuck-reassert #$_bgStuckReassertCount '
+      'conn=$_connectionState net=$_networkKind',
+    );
+    await _setTdlibOnline(true);
+    if (_appInForeground || _tearingDown || _client == null) return;
+    if (_tdlibReadyForMedia) return;
+    await _applyNetworkTypeFromDevice(why: 'bg-stuck-reassert', force: true);
+    if (!_tdlibReadyForMedia && _useMtprotoProxy && !_tearingDown) {
+      _armFakeTlsQuiet(why: 'bg-stuck-reassert');
+    }
+    if (_bgStuckReassertCount < _bgStuckReassertCap) {
+      _scheduleBgStuckReassert();
+    }
+  }
+
   /// Escalating recovery for wedged Connecting (official tgnet + levlam):
   /// 1) soft enableProxy / setNetworkType nudge
   /// 2) second soft nudge (same hop — NOT proxy failover)
@@ -3755,12 +4537,16 @@ class TelegramTdlibService extends ChangeNotifier {
     if (_tdlibReadyForMedia) return;
     if (_networkKind == ChatNetworkLinkKind.offline) return;
     if (_connectionState == 'connectionStateWaitingForNetwork') return;
+    final mobileEarly = _networkKind == ChatNetworkLinkKind.mobile;
+    // R70: cellular FakeTLS hello is slower than wifi — do not kick while
+    // ConnectingToProxy still dialing (wifi keeps the prior 40s budget).
+    final connectingToProxyBudget =
+        Duration(seconds: mobileEarly ? 55 : 40);
     if (_connectionState == 'connectionStateConnectingToProxy' &&
-        waited < const Duration(seconds: 40)) {
-      // Let FakeTLS finish the first attempt (mobile RTT / DPI is slower).
+        waited < connectingToProxyBudget) {
       return;
     }
-    final mobile = _networkKind == ChatNetworkLinkKind.mobile;
+    final mobile = mobileEarly;
     final bearerAt = _lastBearerChangeAt;
     final recentBearer = bearerAt != null &&
         DateTime.now().difference(bearerAt) < const Duration(minutes: 3);
@@ -3958,6 +4744,29 @@ class TelegramTdlibService extends ChangeNotifier {
         // Soft nudge only — same hop. Official tgnet resumeNetwork does this;
         // None→WiFi / proxy RR made 17:04 pause → long Connecting worse.
         if (_enabledProxyId != null && _useMtprotoProxy) {
+          // R28/R29: soft-nudge while Connecting skips setNetworkType and
+          // enableProxy — a pure no-op. SessionLog 11:35 (WiFi→LTE, stall
+          // cancel tore Ready→Connecting): kick #1/#2 logged skip then sat
+          // ~90s until spontaneous Ready; soft-restart was stage 4 @~200s.
+          // After minWait (~40s) already elapsed, escalate to soft-restart
+          // same hop instead of burning empty soft-nudge stages.
+          if (!_tdlibReadyForMedia) {
+            _mediaLog(
+              'mtproto-kick #$stage soft-nudge noop → soft-restart '
+              '(Connecting+FakeTLS) waited=${_fmtDur(waited)}',
+            );
+            if (_longBackgroundResume || _resumeFromPauseSuspend) {
+              _longBackgroundSoftRestartCount =
+                  (_longBackgroundSoftRestartCount + 1)
+                      .clamp(1, _longBgSoftRestartCap);
+            }
+            await _recoverDeadClient(
+              'stuck-connecting-faketls-noop:${_fmtDur(waited)}',
+              preserveLongBgEscalation: _longBackgroundResume,
+              preserveSoftPauseEscalation: _resumeFromPauseSuspend,
+            );
+            return;
+          }
           _mediaLog(
             'mtproto-kick #$stage soft-nudge (skip none-bounce / no failover)',
           );
@@ -4133,6 +4942,7 @@ class TelegramTdlibService extends ChangeNotifier {
   /// setNetworkType when connectivity may have changed (td#2690, td#3144).
   Future<void> onAppResumed() async {
     _appInForeground = true;
+    _cancelBgStuckReassert('foreground');
     final pausedAt = _backgroundPausedAt;
     _backgroundPausedAt = null;
     final bgFor = pausedAt == null
@@ -4206,19 +5016,34 @@ class TelegramTdlibService extends ChangeNotifier {
       // Consensus: reopen ladder when resume finds not-Ready (R13).
       // R23: if already mid-ladder, keep restartCount (do not zero).
       // R27/R35: only when we did NOT soft-pause / suspend (true zombie).
-      _longBackgroundResume = true;
-      if (midLadder) {
+      // R68 (SessionLog 09:45): wifi→mobile fires a bogus resume with
+      // bg=0ms mid bearer-recover; arming longBg there → soft-restart@50s
+      // while FakeTLS quiet already owned the dial (0 RELAY / DF storm).
+      final recentBearer = _lastBearerRecoverAt != null &&
+          DateTime.now().difference(_lastBearerRecoverAt!) <
+              const Duration(seconds: 12);
+      if (recentBearer) {
+        _longBackgroundSoftRestartCount = 0;
+        _resumeWasTrueLongBackground = false;
         _mediaLog(
-          'connecting-on-resume escalate bg=${_fmtDur(bgFor)} '
-          'conn=$_connectionState → longbg-ladder preserve '
-          'restartCount=$priorRestartCount',
+          'connecting-on-resume skip R13 (bearer-flip) '
+          'bg=${_fmtDur(bgFor)} conn=$_connectionState',
         );
       } else {
-        _longBackgroundSoftRestartCount = 0;
-        _mediaLog(
-          'connecting-on-resume escalate bg=${_fmtDur(bgFor)} '
-          'conn=$_connectionState → same ladder as long-bg',
-        );
+        _longBackgroundResume = true;
+        if (midLadder) {
+          _mediaLog(
+            'connecting-on-resume escalate bg=${_fmtDur(bgFor)} '
+            'conn=$_connectionState → longbg-ladder preserve '
+            'restartCount=$priorRestartCount',
+          );
+        } else {
+          _longBackgroundSoftRestartCount = 0;
+          _mediaLog(
+            'connecting-on-resume escalate bg=${_fmtDur(bgFor)} '
+            'conn=$_connectionState → same ladder as long-bg',
+          );
+        }
       }
     } else {
       _longBackgroundSoftRestartCount = 0;
@@ -4232,6 +5057,8 @@ class TelegramTdlibService extends ChangeNotifier {
       _pauseOfflineGraceTimer = null;
       _mediaLog('app-pause-suspend cancel (resume before None)');
     }
+    _cancelDeferredLatePauseNone(why: 'app-resume');
+    _cancelSoftHandshakePauseNone(why: 'app-resume');
     if (_client == null || _tearingDown) return;
     await _setTdlibOnline(true);
     _ensureNetworkLinkWatch();
@@ -4249,7 +5076,20 @@ class TelegramTdlibService extends ChangeNotifier {
     // VPN / public IP may change without a ChatNetworkLinkKind flip.
     _scheduleProxyGeoRecheck(why: 'app-resume');
     final needUnsuspend = _appNetworkSuspended || !_tdlibReadyForMedia;
-    if (needUnsuspend) {
+    // R68: bearer-recover already did hold→proxy→up + quiet. A same-tick
+    // resume must not official-reopen / soft-restart on top of that dial.
+    final bearerOwnsDial = _lastBearerRecoverAt != null &&
+        DateTime.now().difference(_lastBearerRecoverAt!) <
+            const Duration(seconds: 12);
+    if (needUnsuspend && bearerOwnsDial) {
+      _mediaLog(
+        'app-resume skip recover (bearer-recover owns dial) '
+        'conn=$_connectionState',
+      );
+      if (!_tdlibReadyForMedia) {
+        _ensureConnectingWaitLogTimer();
+      }
+    } else if (needUnsuspend) {
       // Fresh kick clock (do not inherit hours of background "waited").
       if (!_tdlibReadyForMedia) {
         _resetMtprotoKickClock(why: 'app-resume-not-ready');
@@ -4301,6 +5141,17 @@ class TelegramTdlibService extends ChangeNotifier {
       _appNetworkSuspended = false;
       return;
     }
+    // R68: timer may have been armed before bearer-recover claimed the dial.
+    if (_lastBearerRecoverAt != null &&
+        DateTime.now().difference(_lastBearerRecoverAt!) <
+            const Duration(seconds: 12)) {
+      _mediaLog(
+        'app-resume-recover skip (bearer-recover) '
+        'conn=$_connectionState quiet=$_inFakeTlsQuiet',
+      );
+      await _setTdlibOnline(true);
+      return;
+    }
     final last = _lastAppResumeRecoverAt;
     if (last != null &&
         DateTime.now().difference(last) < const Duration(seconds: 12)) {
@@ -4316,6 +5167,40 @@ class TelegramTdlibService extends ChangeNotifier {
     if (_resumeFromPauseSuspend &&
         _useMtprotoProxy &&
         !_tdlibReadyForMedia) {
+      // 13 Oct 10:33 MSK: unlock while the previous soft-restart was still
+      // inside its 35s quiet tore that handshake and started another.
+      // Leave the in-flight dial alone; the quiet expiry ladder still runs.
+      if (_inFakeTlsQuiet) {
+        _mediaLog(
+          'app-resume-recover skip soft-restart (quiet) '
+          'until=${_fakeTlsQuietUntil!.toUtc().toIso8601String()} '
+          'conn=$_connectionState',
+        );
+        await _setTdlibOnline(true);
+        return;
+      }
+      // R72: official resumeNetwork once — do not tearDown again while the
+      // previous soft-restart is still building FakeTLS / cool-down.
+      if (_recoveringClient) {
+        _mediaLog(
+          'app-resume-recover skip soft-restart (recovering) '
+          'conn=$_connectionState',
+        );
+        await _setTdlibOnline(true);
+        return;
+      }
+      final lastSr = _lastSoftRestartAt;
+      if (lastSr != null &&
+          DateTime.now().difference(lastSr) < _softRestartFirstCooldown &&
+          !_tdlibReadyForMedia) {
+        _mediaLog(
+          'app-resume-recover skip soft-restart (cooldown) '
+          'age=${_fmtDur(DateTime.now().difference(lastSr))} '
+          'conn=$_connectionState',
+        );
+        await _setTdlibOnline(true);
+        return;
+      }
       _mediaLog(
         'app-resume-recover soft-restart-first '
         'suspended=$wasSuspended '
@@ -4378,6 +5263,10 @@ class TelegramTdlibService extends ChangeNotifier {
     _mediaLog(
       'app-pause freeze-kick conn=$_connectionState net=$_networkKind',
     );
+    if (!_tdlibReadyForMedia &&
+        _connectionState != 'connectionStateWaitingForNetwork') {
+      _scheduleBgStuckReassert();
+    }
     // R48: unfinished queue must not resume after unlock and steal the
     // active-screen slot. Disk cache stays; only drop pending / inflight.
     // Await so HOME mid-prefetch cannot race new enqueue after empty clear.
@@ -4454,6 +5343,30 @@ class TelegramTdlibService extends ChangeNotifier {
         _networkKind == ChatNetworkLinkKind.mobile) {
       _lastNonOfflineKind = _networkKind;
     }
+    // R55 (SessionLog 21:42:38): a second pause after late-None saw
+    // WaitingForNetwork, cleared `_softPausedReadyProxy`, and fired None
+    // again. Unlock then took official-reopen WiFi (0 RELAY) instead of
+    // R40 soft-restart-first — UI stuck «ожидание подключения».
+    if (_appNetworkSuspended || _softPausedReadyProxy) {
+      _mediaLog(
+        'app-pause-suspend skip repeat '
+        'suspended=$_appNetworkSuspended softPause=$_softPausedReadyProxy '
+        'conn=$_connectionState',
+      );
+      return;
+    }
+    // R72: already WaitingForNetwork (late-None / offline) — official
+    // pauseNetwork is a no-op when paused. Keep soft-pause so unlock still
+    // takes soft-restart-first (R40), do not write None again.
+    if (_connectionState == 'connectionStateWaitingForNetwork') {
+      _softPausedReadyProxy = true;
+      _appNetworkSuspended = true;
+      _mediaLog(
+        'app-pause-suspend skip already-WFN '
+        'conn=$_connectionState',
+      );
+      return;
+    }
     // R34 (r33_check + mtg-wifi): TDLib networkTypeNone ≠ tgnet pauseNetwork.
     // After None, unsuspend WiFi-only never upgrades FakeTLS→RELAY (0/21).
     // Short lock while still Ready — leave sockets alone (freeze-kick only).
@@ -4464,6 +5377,20 @@ class TelegramTdlibService extends ChangeNotifier {
         'app-pause-suspend skip None (Ready+FakeTLS) '
         'conn=$_connectionState fg=$_appInForeground',
       );
+      return;
+    }
+    // R52 (SessionLog 12:49:22 / 12:49:57): pause mid soft-restart quiet
+    // fired None → aborted FakeTLS dial → 62m WaitingForNetwork until unlock.
+    // Soft-handshake protect: leave dialing alone; late-None when quiet ends
+    // still bg+!Ready (keeps R40 DF freeze for long locks).
+    if (_useMtprotoProxy && (_recoveringClient || _inFakeTlsQuiet)) {
+      _softPausedReadyProxy = true;
+      _mediaLog(
+        'app-pause-suspend skip None (soft-handshake) '
+        'conn=$_connectionState recovering=$_recoveringClient '
+        'quiet=$_inFakeTlsQuiet',
+      );
+      _armLateNoneAfterSoftHandshakeQuiet();
       return;
     }
     _softPausedReadyProxy = false;
@@ -4480,6 +5407,62 @@ class TelegramTdlibService extends ChangeNotifier {
     _appNetworkSuspended = true;
   }
 
+  void _armDeferredLatePauseNone() {
+    if (_lateNoneDeferTimer != null) return;
+    _mediaLog(
+      'app-pause-suspend late-None defer ${_lateNoneDefer.inSeconds}s '
+      'conn=$_connectionState',
+    );
+    _lateNoneDeferTimer = Timer(_lateNoneDefer, () {
+      _lateNoneDeferTimer = null;
+      if (_appInForeground || _tearingDown || _client == null) return;
+      if (!_softPausedReadyProxy || _appNetworkSuspended) return;
+      if (_tdlibReadyForMedia) {
+        _mediaLog(
+          'app-pause-suspend late-None cancel (Ready recovered) '
+          'conn=$_connectionState',
+        );
+        return;
+      }
+      unawaited(_applyLatePauseNoneAfterReadyDrop());
+    });
+  }
+
+  void _cancelDeferredLatePauseNone({required String why}) {
+    if (_lateNoneDeferTimer == null) return;
+    _lateNoneDeferTimer!.cancel();
+    _lateNoneDeferTimer = null;
+    _mediaLog('app-pause-suspend late-None defer cancel why=$why');
+  }
+
+  void _armLateNoneAfterSoftHandshakeQuiet() {
+    _softHandshakePauseNoneTimer?.cancel();
+    final quietLeft = _fakeTlsQuietUntil == null
+        ? Duration.zero
+        : _fakeTlsQuietUntil!.difference(DateTime.now());
+    final delay = quietLeft > const Duration(milliseconds: 200)
+        ? quietLeft
+        : const Duration(milliseconds: 200);
+    _mediaLog(
+      'app-pause-suspend soft-handshake late-None arm '
+      '${_fmtDur(delay)} conn=$_connectionState',
+    );
+    _softHandshakePauseNoneTimer = Timer(delay, () {
+      _softHandshakePauseNoneTimer = null;
+      if (_appInForeground || _tearingDown || _client == null) return;
+      if (_appNetworkSuspended || _tdlibReadyForMedia) return;
+      if (!_softPausedReadyProxy) return;
+      unawaited(_applyLatePauseNoneAfterReadyDrop());
+    });
+  }
+
+  void _cancelSoftHandshakePauseNone({required String why}) {
+    if (_softHandshakePauseNoneTimer == null) return;
+    _softHandshakePauseNoneTimer!.cancel();
+    _softHandshakePauseNoneTimer = null;
+    _mediaLog('app-pause-suspend soft-handshake late-None cancel why=$why');
+  }
+
   /// R40: R34a left Ready alone; if TDLib later drops to Connecting in
   /// background, apply None so FakeTLS stops DF-dialing until unlock
   /// soft-restart (r39_check: LOCK+QUIET 0 RELAY while zombie lived).
@@ -4488,21 +5471,58 @@ class TelegramTdlibService extends ChangeNotifier {
     if (!_softPausedReadyProxy || _appNetworkSuspended) return;
     if (_tdlibReadyForMedia) return;
     if (!_useMtprotoProxy) return;
+    // R72: already WFN — plane frozen; mark suspended for R40 unlock only.
+    if (_connectionState == 'connectionStateWaitingForNetwork') {
+      _appNetworkSuspended = true;
+      _cancelDeferredLatePauseNone(why: 'already-WFN');
+      _cancelSoftHandshakePauseNone(why: 'already-WFN');
+      _mediaLog(
+        'app-pause-suspend late-None skip already-WFN '
+        'conn=$_connectionState',
+      );
+      return;
+    }
+    // R72: deferred + soft-handshake timers raced before either set
+    // `_appNetworkSuspended` (SessionLog pairs Δt~1ms).
+    if (_lateNoneApplyInFlight) {
+      _mediaLog(
+        'app-pause-suspend late-None skip in-flight '
+        'conn=$_connectionState',
+      );
+      return;
+    }
+    // R52: still inside soft-restart quiet — do not abort the dial; re-arm.
+    if (_recoveringClient || _inFakeTlsQuiet) {
+      _mediaLog(
+        'app-pause-suspend late-None defer (soft-handshake still active) '
+        'conn=$_connectionState',
+      );
+      _armLateNoneAfterSoftHandshakeQuiet();
+      return;
+    }
     if (_networkKind == ChatNetworkLinkKind.wifi ||
         _networkKind == ChatNetworkLinkKind.mobile) {
       _lastNonOfflineKind = _networkKind;
     }
-    _mediaLog(
-      'app-pause-suspend late-None (Ready-drop in bg) '
-      'conn=$_connectionState',
-    );
-    await _setNetworkType(
-      'networkTypeNone',
-      why: 'app-pause-late-None',
-      force: true,
-    );
-    if (_appInForeground || _tearingDown) return;
-    _appNetworkSuspended = true;
+    _lateNoneApplyInFlight = true;
+    _cancelDeferredLatePauseNone(why: 'late-None-apply');
+    _cancelSoftHandshakePauseNone(why: 'late-None-apply');
+    try {
+      _mediaLog(
+        'app-pause-suspend late-None (Ready-drop in bg) '
+        'conn=$_connectionState',
+      );
+      _cancelBgStuckReassert('late-None');
+      await _setNetworkType(
+        'networkTypeNone',
+        why: 'app-pause-late-None',
+        force: true,
+      );
+      if (_appInForeground || _tearingDown) return;
+      _appNetworkSuspended = true;
+    } finally {
+      _lateNoneApplyInFlight = false;
+    }
   }
 
   Future<void> _setTdlibOnline(bool online) async {
@@ -4550,15 +5570,27 @@ class TelegramTdlibService extends ChangeNotifier {
       return;
     }
     if (kind == ChatNetworkLinkKind.offline) {
+      _cancelBgStuckReassert('link-offline');
       await _applyNetworkTypeFromDevice(why: 'link:$kind', force: true);
       notifyListeners();
       return;
     }
-    // mobile→Wi‑Fi: always full recover. Plain setNetworkType while still
-    // Ready leaves a long Connecting hang (SessionLog 10:05).
-    final backToWifi = kind == ChatNetworkLinkKind.wifi &&
-        prev == ChatNetworkLinkKind.mobile;
-    if (backToWifi || !_tdlibReadyForMedia) {
+    // Bearer just reasserted the type. Give that dial its own 90s budget
+    // if it does not reach Ready (R61).
+    _bgStuckReassertCount = 0;
+    if (_bgStuckReassertTimer == null) _scheduleBgStuckReassert();
+    // wifi↔mobile: always full recover. Plain setNetworkType while still
+    // Ready leaves a long Connecting hang (SessionLog 10:05 mobile→wifi;
+    // 14 Oct 09:17 wifi→mobile — Ready→Connecting, ~50s, soft-restart
+    // thrash, no mtproto-up). Mobile path still skip-none-bounce inside
+    // recover (SessionLog 2026-10-02 08:41).
+    final wifiMobileFlip =
+        (kind == ChatNetworkLinkKind.wifi ||
+            kind == ChatNetworkLinkKind.mobile) &&
+        (prev == ChatNetworkLinkKind.wifi ||
+            prev == ChatNetworkLinkKind.mobile) &&
+        prev != kind;
+    if (wifiMobileFlip || !_tdlibReadyForMedia) {
       await _recoverAfterBearerChange(why: 'link:$kind');
       return;
     }
@@ -4581,12 +5613,12 @@ class TelegramTdlibService extends ChangeNotifier {
   Future<void> _recheckProxyGeo({required String why}) async {
     if (_tearingDown || _client == null) return;
     if (_networkKind == ChatNetworkLinkKind.offline) return;
-    await _loadDebugMtprotoProxyPref();
-    // R18: user AppBar OFF = forced direct — skip geo. AppBar ON = follow geo
-    // (VPN leave-RU drops FakeTLS; return-to-RU re-enables). Never write geo
-    // into [_debugMtprotoProxyPref] (that sticky-OFF'd the switch forever).
-    if (kDebugMode && !_debugMtprotoProxyPref) {
-      _mediaLog('proxy geo recheck skip (user AppBar OFF) why=$why');
+    await _loadMtprotoProxyMode();
+    // R18: alwaysOff = forced direct — skip geo. auto = follow geo
+    // (VPN leave-RU drops FakeTLS; return-to-RU re-enables). alwaysOn =
+    // force FakeTLS. Never write geo into [_mtprotoProxyMode].
+    if (_mtprotoProxyMode == TdlibMtprotoProxyMode.alwaysOff) {
+      _mediaLog('proxy geo recheck skip (user alwaysOff) why=$why');
       return;
     }
     final last = _lastProxyGeoRecheckAt;
@@ -4596,7 +5628,9 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     _lastProxyGeoRecheckAt = DateTime.now();
     final geoWant = await shouldUseTdlibMtprotoProxy();
-    final want = geoWant;
+    final want = _mtprotoProxyMode == TdlibMtprotoProxyMode.alwaysOn
+        ? true
+        : geoWant;
     final was = _useMtprotoProxy;
     if (want == was && _useMtprotoProxyResolved == want) {
       _mediaLog('proxy geo recheck $why unchanged use=$want');
@@ -4604,7 +5638,7 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     _mediaLog(
       'proxy geo recheck $why → use=$want (was $was) '
-      'appBar=${kDebugMode ? _debugMtprotoProxyPref : "-"}',
+      'mode=${_mtprotoProxyMode.storageValue}',
     );
     _useMtprotoProxyResolved = want;
     _useMtprotoProxy = want;
@@ -4613,7 +5647,7 @@ class TelegramTdlibService extends ChangeNotifier {
       'why': why,
       'use': want,
       'was': was,
-      'appBar': kDebugMode ? _debugMtprotoProxyPref : null,
+      'mode': _mtprotoProxyMode.storageValue,
     });
     notifyListeners();
     final c = _client;
@@ -4660,12 +5694,60 @@ class TelegramTdlibService extends ChangeNotifier {
       return;
     }
     _lastBearerRecoverAt = DateTime.now();
+    // R68: kill any pending resume recover — radio flips often co-fire a
+    // lifecycle resume (bg=0) that official-reopened on top of our dial.
+    _appResumeRecoverTimer?.cancel();
+    _appResumeRecoverTimer = null;
     final mobile = _networkKind == ChatNetworkLinkKind.mobile;
+    final linkBearerFlip = why.startsWith('link:ChatNetworkLinkKind.wifi') ||
+        why.startsWith('link:ChatNetworkLinkKind.mobile');
     _mediaLog(
       'bearer-recover start why=$why conn=$_connectionState '
       'proxyId=${_enabledProxyId ?? "?"} net=$_networkKind',
     );
     await _setTdlibOnline(true);
+    if (_tearingDown || _client == null) return;
+
+    // R69 (14 Oct official A/B + DrKLO): wifi↔mobile official only calls
+    // setNetworkAvailable / setNetworkType — same proxy, reopen sockets.
+    // Mid-session enableProxy hop switch (R67/R68 hold→proxy→up) left mtg
+    // with DF / hello-timeout / 0 RELAY while official TG on the same
+    // :8443 + cellular IP got RELAY dc=2. Match official:
+    //   same hop → setNetworkType only;
+    //   hop must change (443↔8443) → soft-restart so first dial is clean
+    //   FakeTLS on the new hop (boot R32), never enableProxy mid-session.
+    if (linkBearerFlip && _useMtprotoProxy) {
+      final beforeIdx = _proxyEndpointIndex;
+      final beforeId = _enabledProxyId;
+      _preferEndpointForCurrentBearer(why: why);
+      final afterIdx = _proxyEndpointIndex;
+      final wantId = _endpointProxyIds[afterIdx];
+      final hopChanged = beforeIdx != afterIdx ||
+          _enabledProxyId == null ||
+          (wantId != null && beforeId != wantId);
+      if (hopChanged) {
+        _mediaLog(
+          'bearer-recover hop-change → soft-restart '
+          'idx=$beforeIdx→$afterIdx id=${beforeId ?? "?"}→${wantId ?? "?"} '
+          'net=$_networkKind why=$why',
+        );
+        await _recoverDeadClient('bearer-hop:$why');
+        return;
+      }
+      _mediaLog(
+        'bearer-recover same-hop setNetworkType only '
+        'proxyId=${_enabledProxyId ?? "?"} net=$_networkKind why=$why',
+      );
+      await _applyNetworkTypeFromDevice(
+        why: 'bearer-recover:$why:same-hop',
+        force: true,
+      );
+      if (!_tdlibReadyForMedia) {
+        _armFakeTlsQuiet(why: 'bearer-recover:$why:same-hop');
+      }
+      return;
+    }
+
     await _applyNetworkTypeFromDevice(why: why, force: true);
     if (_tearingDown || _client == null) return;
     final proxyId = _enabledProxyId;
@@ -4688,11 +5770,10 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     if (_tearingDown || _client == null) return;
     // None→WiFi aborts an in-flight FakeTLS handshake (SessionLog 23:51:
-    // resume bounce → WaitingForNetwork → another 40s+ Connecting). Mobile
-    // already skipped this; same for app-resume while still Connecting —
-    // online=true + enableProxy above is enough; kicks handle a true wedge.
-    // R32: also never None-bounce under FakeTLS when already Ready — that is
-    // not official (tgnet reconnects proxy soft, does not tear the session).
+    // resume bounce → WaitingForNetwork → another 40s+ Connecting).
+    // App-resume while Connecting: online+setNetworkType only.
+    // Mid-handshake mobile (non-link) still skip-none-bounce (SessionLog
+    // 2026-10-02 08:41). Non-proxy wifi↔mobile / wifi !Ready: reopen.
     if (mobile ||
         why.startsWith('app-resume') ||
         (_useMtprotoProxy && _tdlibReadyForMedia)) {
@@ -4703,8 +5784,31 @@ class TelegramTdlibService extends ChangeNotifier {
       );
       return;
     }
-    // Real bearer change on Wi‑Fi while !Ready: bounce sockets.
     await _reopenNetworkConnections(why: 'bearer-recover:$why');
+  }
+
+  /// FakeTLS hop for the current radio. Compile-time order: mtg-wifi `:443`
+  /// first (home Wi‑Fi), direct mtg `:8443` second (mobile; `:443` often
+  /// ClientHello-timeout on cellular DPI — R67). Does not write preferred
+  /// prefs (wifi preferred stays for wifi boots / soft-restart).
+  void _preferEndpointForCurrentBearer({required String why}) {
+    final endpoints = _activeProxyEndpoints;
+    if (endpoints.length <= 1) return;
+    final int? wantPort = switch (_networkKind) {
+      ChatNetworkLinkKind.mobile => 8443,
+      ChatNetworkLinkKind.wifi => 443,
+      _ => null,
+    };
+    if (wantPort == null) return;
+    final idx = endpoints.indexWhere((e) => e.port == wantPort);
+    if (idx < 0) return;
+    final cur = _proxyEndpointIndex.clamp(0, endpoints.length - 1);
+    if (cur == idx) return;
+    _mediaLog(
+      'bearer-endpoint ${endpoints[cur].label} → ${endpoints[idx].label} '
+      'net=$_networkKind why=$why',
+    );
+    _proxyEndpointIndex = idx;
   }
 
   /// After mobile↔Wi‑Fi switches the old `_connectingSince` / kick stage made
@@ -4722,7 +5826,21 @@ class TelegramTdlibService extends ChangeNotifier {
     required String why,
     bool force = false,
   }) async {
-    final kind = force ? await ChatNetworkLink.current() : _networkKind;
+    var kind = force ? await ChatNetworkLink.current() : _networkKind;
+    // 13 Oct 10:36 MSK: the link stream had already said wifi/mobile, then
+    // checkConnectivity() flickered offline and this force-read wrote
+    // networkTypeNone. TDLib stayed WaitingForNetwork until a later read
+    // agreed with the stream.
+    if (force &&
+        (kind == ChatNetworkLinkKind.offline ||
+            kind == ChatNetworkLinkKind.unknown) &&
+        (_networkKind == ChatNetworkLinkKind.wifi ||
+            _networkKind == ChatNetworkLinkKind.mobile)) {
+      _mediaLog(
+        'network-type keep $_networkKind (current=$kind) why=$why',
+      );
+      kind = _networkKind;
+    }
     if (force) _networkKind = kind;
     if (kind == ChatNetworkLinkKind.wifi ||
         kind == ChatNetworkLinkKind.mobile) {
@@ -5181,17 +6299,31 @@ class TelegramTdlibService extends ChangeNotifier {
     }
 
     // Only one enabled proxy at a time (TDLib + FakeTLS hygiene).
-    try {
-      await c.sendAwait({
-        '@type': 'disableProxy',
-      }, timeout: const Duration(seconds: 3));
-    } catch (_) {}
     final enableId = _endpointProxyIds[idx];
     if (enableId == null) {
       _enabledProxyId = null;
       _mediaLog('proxy sync FAIL no id for enableIndex=$idx');
       return;
     }
+    // R51e (SessionLog 21:16:32): probe/failover sync while Ready re-ran
+    // disableProxy+enableProxy on the *same* hop → Ready→Connecting ~500ms
+    // (zombie-hop tore send-alive MTProto). Skip re-enable when already on
+    // that id and Ready; still add missing rows above (enable=false).
+    if (_tdlibReadyForMedia &&
+        _enabledProxyId != null &&
+        _enabledProxyId == enableId) {
+      _proxyEndpointIndex = idx;
+      _mediaLog(
+        'proxy sync skip re-enable (Ready+same hop) idx=$idx '
+        'label=${endpoints[idx].label} id=$enableId',
+      );
+      return;
+    }
+    try {
+      await c.sendAwait({
+        '@type': 'disableProxy',
+      }, timeout: const Duration(seconds: 3));
+    } catch (_) {}
     try {
       await c.sendAwait({
         '@type': 'enableProxy',
@@ -5327,7 +6459,17 @@ class TelegramTdlibService extends ChangeNotifier {
         await _tryNextHopNoPing(why: 'probe-miss:$why');
         return;
       }
-      // Still Connecting only — never enableProxy after Ready (R21).
+      // R21 / R51e / R51g: never soft-nudge or hop-no-ping after Ready on
+      // probe-miss. R51f hop-no-ping (SessionLog 21:39) enableProxy tore
+      // Ready→Connecting while siblings had just downloaded; blur stayed.
+      // Size-fallback on the live hop is the media heal (21:24 soft→upgrade).
+      if (_tdlibReadyForMedia) {
+        _mediaLog(
+          'proxy-failover skip probe-miss Ready keep=${from.label} '
+          'why=$why evenIfReady=$evenIfReady (no hop, no soft-nudge)',
+        );
+        return;
+      }
       if (_failoverAbortIfReady(
         evenIfReady: evenIfReady,
         why: 'probe-miss:$why',
@@ -5492,7 +6634,9 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     // Local disk hits must never wait on connection state.
     // Network downloads: gate on auth ready (td#1176), NOT connectionStateReady.
-    if (!_canStartNetworkDownload) {
+    // R54b: FakeTLS + !Ready → hold *wire* (boot/Connecting too, not auth-gate).
+    final wireHold = _fakeTlsMediaWireHold;
+    if (!_canStartNetworkDownload || wireHold) {
       _pumpLocalDiskHitsWhileConnecting();
       final now = DateTime.now();
       final shouldLog = _lastPumpWaitLogConn != _connectionState ||
@@ -5503,7 +6647,8 @@ class TelegramTdlibService extends ChangeNotifier {
         _lastPumpWaitLogAt = now;
         final since = _connectingSince;
         _mediaLog(
-          'pump-wait-auth queued=${_downloadQueue.length} '
+          '${wireHold ? 'pump-hold-until-ready' : 'pump-wait-auth'} '
+          'queued=${_downloadQueue.length} '
           'inflight=${_downloadInFlight.length} conn=$_connectionState '
           'phase=$phase net=$_networkKind '
           'connectingFor=${since == null ? '?' : _fmtDur(now.difference(since))}',
@@ -5546,6 +6691,12 @@ class TelegramTdlibService extends ChangeNotifier {
       if (idx < 0) break;
       final job = _downloadQueue.removeAt(idx);
       _downloadQueued.remove(job.fileId);
+      final cachedPath = _filePathCache[job.fileId];
+      if (cachedPath != null &&
+          cachedPath.isNotEmpty &&
+          !_isPaintReadyMediaPath(cachedPath)) {
+        _filePathCache.remove(job.fileId);
+      }
       if (_filePathCache.containsKey(job.fileId) ||
           _downloadInFlight.contains(job.fileId)) {
         _mediaLog(
@@ -5647,12 +6798,32 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Temp TDLib paths like `…/370` (no extension) are not paint-ready — completing
   /// the waiter with them opens the viewer stub (SessionLog 16:21 path=370 →
   /// real `_120.jpg` 3ms later).
+  ///
+  /// R70 (r69_post SessionLog): voice notes land as `.oga` / `.ogg`. The old
+  /// image/video-only list left `complete-defer … .oga` forever → stall-retry
+  /// → give-up while the file was already on disk (mobile FakeTLS worst).
   bool _isPaintReadyMediaPath(String path) {
     if (path.isEmpty) return false;
     final name = p.basename(path);
     if (!name.contains('.')) return false;
     final lower = name.toLowerCase();
-    const ok = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.mov', '.webm'];
+    const ok = [
+      '.jpg',
+      '.jpeg',
+      '.png',
+      '.webp',
+      '.gif',
+      '.mp4',
+      '.mov',
+      '.webm',
+      // Voice / audio (TDLib voiceNote → .oga).
+      '.oga',
+      '.ogg',
+      '.opus',
+      '.mp3',
+      '.m4a',
+      '.aac',
+    ];
     return ok.any(lower.endsWith);
   }
 
@@ -5762,8 +6933,16 @@ class TelegramTdlibService extends ChangeNotifier {
       return after.documentThumbFileId;
     }
     // Role unknown — prefer any new media id on the refreshed message.
+    // R70: voice before photo — unknown-role used to pick photo/webp and
+    // stamp a sticker path onto a voice bubble (tap:voice:30 → …_109.webp).
+    if (after.voiceFileId != null && after.voiceFileId != staleId) {
+      return after.voiceFileId;
+    }
     if (after.videoFileId != null && after.videoFileId != staleId) {
       return after.videoFileId;
+    }
+    if (after.videoNoteFileId != null && after.videoNoteFileId != staleId) {
+      return after.videoNoteFileId;
     }
     if (after.photoRemoteId != null && after.photoRemoteId != staleId) {
       return after.photoRemoteId;
@@ -5919,6 +7098,17 @@ class TelegramTdlibService extends ChangeNotifier {
       if (completed) {
         final path = local['path']?.toString();
         if (path == null || path.isEmpty) return false;
+        // SessionLog 21:58: completed path `mtproto <id>` has no extension.
+        // Caching it made _queueFileDownload return silently, so the
+        // FakeTLS queue (7 focus-tail files) never pumped after the slot
+        // was freed.
+        if (!_isPaintReadyMediaPath(path)) {
+          _mediaLog(
+            'probe-hit-unready file=$fileId '
+            'path=${p.basename(path)} (temp — do not cache)',
+          );
+          return false;
+        }
         _filePathCache[fileId] = path;
         if (remoteUid.isNotEmpty) {
           _durablePathByRemote[remoteUid] = path;
@@ -5989,12 +7179,14 @@ class TelegramTdlibService extends ChangeNotifier {
   }) async {
     final c = _client;
     final t = _downloadTrace[fileId];
-    if (!_canStartNetworkDownload) {
+    final wireHold = _fakeTlsMediaWireHold;
+    if (!_canStartNetworkDownload || wireHold) {
       _mediaLog(
-        'start-defer file=$fileId reason=${t?.reason ?? reason} '
+        '${wireHold ? 'start-hold-until-ready' : 'start-defer'} '
+        'file=$fileId reason=${t?.reason ?? reason} '
         'conn=$_connectionState phase=$phase net=$_networkKind',
       );
-      // Return slot to queue until auth ready / online (not connectionState).
+      // Return slot to queue until auth ready / online / post-restart Ready.
       _downloadInFlight.remove(fileId);
       _downloadBackgroundIds.remove(fileId);
       _downloadActive = (_downloadActive - 1).clamp(0, 100);
@@ -6217,15 +7409,27 @@ class TelegramTdlibService extends ChangeNotifier {
             t?.fromDiskCache != true
         ? effectiveBytes / (elapsed.inMilliseconds / 1000.0)
         : 0.0;
+    final fromDisk = t?.fromDiskCache == true;
     _mediaLog(
       'done file=$fileId reason=${t?.reason ?? ''} '
-      '${t?.fromDiskCache == true ? 'source=disk' : 'source=net'} '
+      '${fromDisk ? 'source=disk' : 'source=net'} '
       'size=${size > 0 ? _fmtBytes(size) : (bytes > 0 ? _fmtBytes(bytes) : '?')} '
       'dl=${elapsed == null ? '?' : _fmtDur(elapsed)} '
       'queued=${queued == null ? '?' : _fmtDur(queued)} '
       '${rate > 0 ? 'rate=${_fmtBytes(rate.round())}/s ' : ''}'
       'path=${p.basename(path)} ${_downloadQueueStats()}',
     );
+    // R51b: live CDN/origin bytes prove the FakeTLS plane — ignore stale Pong.
+    if (!fromDisk) {
+      _lastNetMediaDoneAt = now;
+      _lastProxyPingFailAt = null;
+      // Live bytes mean the next 0B is a new bad socket, not the same storm.
+      _dfStormCdnRetried.clear();
+      _dfStormHolds = 0;
+      // R71: after soft-restart, space the next FakeTLS file socket (~3s).
+      // mtg 20:21: RELAY dc=203 then immediate next stream → DF.
+      _armPostRestartMediaCool(why: 'net-done:$fileId');
+    }
     _filePathCache[fileId] = path;
     _fileDownloadProgress.remove(fileId);
     _hubAvatarStallAttempts.remove(fileId);
@@ -6279,6 +7483,9 @@ class TelegramTdlibService extends ChangeNotifier {
         // Another soft bubble may be on-screen — let UI re-pick by layout.
         _notifyViewportMediaRescan();
       }
+    } else if (_isProtectedUserMediaReason(reason)) {
+      // Tap/video finished — run focus that was deferred under tap-hold.
+      _notifyViewportMediaRescan();
     }
 
     // Soft focus / neighbor / stall-fallback succeeded — stamp path on the
@@ -6809,58 +8016,72 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Own Telegram user id after getMe (null until ready).
   int? get myUserId => _myUserId;
 
-  /// Debug AppBar: user allow-FakeTLS intent (not the live geo result).
-  /// Live wire state is [_useMtprotoProxy] (may be false under VPN while
-  /// AppBar stays ON — R18).
-  bool get mtprotoProxyEnabled =>
-      kDebugMode ? _debugMtprotoProxyPref : _useMtprotoProxy;
+  /// Live FakeTLS wire state (after mode + geo).
+  bool get mtprotoProxyEnabled => _useMtprotoProxy;
 
-  /// Debug AppBar toggle: user force-OFF vs allow-geo (persisted). Default ON.
-  /// ON → clear user-off and re-resolve via [_ensureProxy] (geo). OFF → direct.
-  Future<void> setMtprotoProxyEnabled(bool enabled) async {
-    if (kDebugMode) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kDebugMtprotoProxyPref, enabled);
-      _debugMtprotoProxyPref = enabled;
-      _debugMtprotoProxyPrefLoaded = true;
-    }
+  /// Hub «Прокси» user policy (not the live geo result).
+  TdlibMtprotoProxyMode get mtprotoProxyMode => _mtprotoProxyMode;
+
+  /// Persist hub «Прокси» mode and apply immediately.
+  Future<void> setMtprotoProxyMode(TdlibMtprotoProxyMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kMtprotoProxyModePref, mode.storageValue);
+    _mtprotoProxyMode = mode;
+    _mtprotoProxyModeLoaded = true;
     _useMtprotoProxyResolved = null;
-    if (!enabled) {
+    if (mode == TdlibMtprotoProxyMode.alwaysOff) {
       _useMtprotoProxy = false;
+    } else if (mode == TdlibMtprotoProxyMode.alwaysOn) {
+      _useMtprotoProxy = true;
     }
     notifyListeners();
 
     final c = _client;
     if (c == null) return;
-    if (enabled) {
-      _mediaLog('proxy switch → ON (follow geo)');
-      await _ensureProxy();
-    } else {
-      _mediaLog('proxy switch → OFF (user)');
-      await _disableAllProxies(c, why: 'debug-switch-off');
-      _enabledProxyId = null;
+    switch (mode) {
+      case TdlibMtprotoProxyMode.alwaysOff:
+        _mediaLog('proxy mode → alwaysOff');
+        await _disableAllProxies(c, why: 'user-mode-off');
+        _enabledProxyId = null;
+      case TdlibMtprotoProxyMode.alwaysOn:
+        _mediaLog('proxy mode → alwaysOn');
+        await _ensureProxy();
+      case TdlibMtprotoProxyMode.auto:
+        _mediaLog('proxy mode → auto (follow geo)');
+        await _ensureProxy();
     }
     notifyListeners();
   }
 
-  Future<void> _loadDebugMtprotoProxyPref() async {
-    if (!kDebugMode || _debugMtprotoProxyPrefLoaded) return;
+  Future<void> _loadMtprotoProxyMode() async {
+    if (_mtprotoProxyModeLoaded) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       if (prefs.getBool(_kDebugMtprotoProxyR18Migrated) != true) {
         // Pre-R18 geo wrote AppBar OFF and blocked all later rechecks.
         await prefs.setBool(_kDebugMtprotoProxyPref, true);
         await prefs.setBool(_kDebugMtprotoProxyR18Migrated, true);
-        _debugMtprotoProxyPref = true;
         _mediaLog('proxy R18 migrate: reset sticky AppBar OFF → allow');
+      }
+      final stored = prefs.getString(_kMtprotoProxyModePref);
+      if (stored != null) {
+        _mtprotoProxyMode =
+            TdlibMtprotoProxyModeStorage.fromStorage(stored);
       } else {
-        _debugMtprotoProxyPref =
-            prefs.getBool(_kDebugMtprotoProxyPref) ?? true;
+        // Legacy debug bool: false → alwaysOff, else auto.
+        final legacy = prefs.getBool(_kDebugMtprotoProxyPref);
+        _mtprotoProxyMode = legacy == false
+            ? TdlibMtprotoProxyMode.alwaysOff
+            : TdlibMtprotoProxyMode.auto;
+        await prefs.setString(
+          _kMtprotoProxyModePref,
+          _mtprotoProxyMode.storageValue,
+        );
       }
     } catch (_) {
-      _debugMtprotoProxyPref = true;
+      _mtprotoProxyMode = TdlibMtprotoProxyMode.auto;
     }
-    _debugMtprotoProxyPrefLoaded = true;
+    _mtprotoProxyModeLoaded = true;
   }
 
   /// True when [chatId] is Telegram Saved Messages (private chat with self).
@@ -7100,6 +8321,7 @@ class TelegramTdlibService extends ChangeNotifier {
       _advanceReadInboxFloor(chatId, maxId);
       _hubChatsCache = null;
       _notifyListenersForChat(chatId);
+      _scheduleHubSnapshotRowPersist(chatId);
     }
     assert(() {
       debugPrint(
@@ -7120,7 +8342,8 @@ class TelegramTdlibService extends ChangeNotifier {
     }
   }
 
-  /// Mark the current tip as read (matched FC DM / catch-up without opening TG).
+  /// Mark the current tip as read (explicit catch-up only — do not call from
+  /// FC mark-read; that wiped TG unread without opening the TG chat).
   Future<void> markChatTipRead(int chatId) async {
     if (chatId == 0 || !isReady) return;
     final chat = _chats[chatId];
@@ -7133,16 +8356,26 @@ class TelegramTdlibService extends ChangeNotifier {
     await markMessagesRead(chatId, [tipId]);
   }
 
-  /// Auto-mark incoming tip only when the inbox is already caught up. Otherwise
-  /// opening a chat / syncing the tip would wipe the unread divider.
+  /// Conversation UI: tip visible vs scrolled into history.
+  void setOpenChatNearTip(bool nearTip) {
+    if (_openChatNearTip == nearTip) return;
+    _openChatNearTip = nearTip;
+  }
+
+  /// Auto-mark incoming tip only when the inbox is already caught up **and**
+  /// the open chat is parked on the tip. Otherwise opening / history-scroll
+  /// would wipe the unread divider, or tip arrivals while scrolled up would
+  /// never arm the FAB unread badge.
   void _maybeAutoMarkRead(int chatId, int messageId) {
     if (chatId != _openChatId || messageId <= 0) return;
+    if (!_openChatNearTip) return;
     if (unreadCountFor(chatId) > 0) return;
     assert(() {
       debugPrint('[unread-dbg] autoMarkRead chat=$chatId msg=$messageId');
       return true;
     }());
     _advanceReadInboxFloor(chatId, messageId);
+    _scheduleHubSnapshotRowPersist(chatId);
     unawaited(_client?.sendAwait({
       '@type': 'viewMessages',
       'chat_id': chatId,
@@ -7159,6 +8392,9 @@ class TelegramTdlibService extends ChangeNotifier {
         (m.sendingState == null && m.id < 0)) {
       return 'sending';
     }
+    // Saved Messages = chat with self: once delivered, always «прочитано»
+    // (TDLib last_read_outbox often lags / stays behind for this chat).
+    if (isSavedMessagesChat(m.chatId)) return 'read';
     final last = _lastReadOutboxId[m.chatId] ?? 0;
     if (last > 0 && m.id <= last) return 'read';
     return 'sent';
@@ -7371,7 +8607,7 @@ class TelegramTdlibService extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    await _loadDebugMtprotoProxyPref();
+    await _loadMtprotoProxyMode();
     if (forceRestart) {
       _didWipeForEncryption = false;
       await _tearDown(wipeDatabase: true);
@@ -7448,6 +8684,16 @@ class TelegramTdlibService extends ChangeNotifier {
       return;
     }
     _lastDeadClientRecoverAt = DateTime.now();
+    _lastSoftRestartAt = _lastDeadClientRecoverAt;
+    _dfStormCdnRetried.clear();
+    _dfStormHolds = 0;
+    _softRestartFileGapUntil = null;
+    _softRestartFileGapTimer?.cancel();
+    _softRestartFileGapTimer = null;
+    // R54b: FakeTLS soft-restart → !Ready → wire hold via getter.
+    if (_useMtprotoProxy) {
+      _mediaLog('media-wire-hold arm why=$why');
+    }
     _recoveringClient = true;
     // Soft-restart must not wipe long-bg escalation (SessionLog 21:50:
     // soft-restart → longBg=false → slow soft ladder on same dead hop).
@@ -7582,12 +8828,22 @@ class TelegramTdlibService extends ChangeNotifier {
     _remoteUniqueToFileId.clear();
     // R47: stale ids from prior client must not stay poisoned across restart.
     _mediaGiveUpFileIds.clear();
+    _unreadTipWarmRunning = false;
+    _unreadTipWarmedMsgByChat.clear();
+    _historyWarmInFlight.clear();
+    _completeWaitMediaConn(false);
+    _pendingOpenMessageContent = null;
+    _lastOpenMessageContentDeferKey = null;
+    _lastOpenMessageContentDeferLogAt = null;
+    _lateNoneApplyInFlight = false;
     _downloadWatchdog?.cancel();
     _downloadWatchdog = null;
     _proxyPlaneTimer?.cancel();
     _proxyPlaneTimer = null;
     _lastPongMs = null;
     _lastPongAt = null;
+    // Keep [_lastProxyPingFailAt] / [_pendingMediaAfterSoftRestart] across
+    // soft-restart (R51). Full wipe clears pending below.
     _uiNotifyTimer?.cancel();
     _uiNotifyTimer = null;
     _uiNotifyPending = false;
@@ -7597,12 +8853,29 @@ class TelegramTdlibService extends ChangeNotifier {
     _miniThumbByChatId.clear();
     _connectingTimeoutTimer?.cancel();
     _connectingTimeoutTimer = null;
+    _bgStuckReassertTimer?.cancel();
+    _bgStuckReassertTimer = null;
+    _bgStuckReassertCount = 0;
     _connectionStatusRevealTimer?.cancel();
     _connectionStatusRevealTimer = null;
     _appResumeRecoverTimer?.cancel();
     _appResumeRecoverTimer = null;
     _pauseOfflineGraceTimer?.cancel();
     _pauseOfflineGraceTimer = null;
+    _lateNoneDeferTimer?.cancel();
+    _lateNoneDeferTimer = null;
+    _softHandshakePauseNoneTimer?.cancel();
+    _softHandshakePauseNoneTimer = null;
+    _softRestartSettleOkTimer?.cancel();
+    _softRestartSettleOkTimer = null;
+    _softRestartSettleUntil = null;
+    _softRestartFileGapTimer?.cancel();
+    _softRestartFileGapTimer = null;
+    _softRestartFileGapUntil = null;
+    _dfStormCdnRetried.clear();
+    _dfStormHolds = 0;
+    // Keep [_lastSoftRestartAt] / [_softRestartSettleCount] across soft-restart
+    // so the next Ready re-arms settle (R53).
     _appNetworkSuspended = false;
     _resumeFromPauseSuspend = false;
     _softPausedReadyProxy = false;
@@ -7639,11 +8912,29 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     await _networkLinkSub?.cancel();
     _networkLinkSub = null;
-    for (final w in _downloadWaiters.values) {
-      if (!w.isCompleted) w.complete(null);
+    // R51: keep waiters for files we will requeue after Ready so tap:video
+    // does not complete(null) mid soft-restart.
+    final pendingIds =
+        _pendingMediaAfterSoftRestart.map((j) => j.fileId).toSet();
+    final keepWaiters = <int, Completer<String?>>{};
+    for (final e in _downloadWaiters.entries) {
+      if (pendingIds.contains(e.key) && !e.value.isCompleted) {
+        keepWaiters[e.key] = e.value;
+      } else if (!e.value.isCompleted) {
+        e.value.complete(null);
+      }
     }
-    _downloadWaiters.clear();
+    _downloadWaiters
+      ..clear()
+      ..addAll(keepWaiters);
     if (wipeDatabase) {
+      _pendingMediaAfterSoftRestart.clear();
+      _lastProxyPingFailAt = null;
+      _lastStallZombieSoftRestartAt = null;
+      for (final w in _downloadWaiters.values) {
+        if (!w.isCompleted) w.complete(null);
+      }
+      _downloadWaiters.clear();
       // Full local TG wipe / force restart — drop server self-link too.
       unawaited(_deactivateTdlibIdentityOnServer());
       await _wipeTdlibFiles();
@@ -7977,6 +9268,8 @@ class TelegramTdlibService extends ChangeNotifier {
     final token = (_openChatId == chatId && _activeOpenToken != null)
         ? _activeOpenToken!
         : _claimOpenChat(chatId, rotateToken: false);
+    // Durable window from last visit — before tip-only seed / remote history.
+    await seedTranscriptFromCache(chatId);
     final preCount = _messagesByChat[chatId]?.length ?? 0;
     _slog('tg.chat', 'open_begin', {
       'chatId': chatId,
@@ -8166,6 +9459,8 @@ class TelegramTdlibService extends ChangeNotifier {
       });
       return prevToken;
     }
+    // Fresh open — assume tip until conversation scroll reports otherwise.
+    _openChatNearTip = true;
     final token = ++_openChatTokenSeq;
     _openChatId = chatId;
     _activeOpenToken = token;
@@ -8312,6 +9607,72 @@ class TelegramTdlibService extends ChangeNotifier {
     _openTranscriptPreserve[chatId] = List<TdlibMessage>.of(list);
   }
 
+  /// Restore last-visit transcript window from SQLite (survives process death).
+  ///
+  /// TDLib `only_local` after cold start often has tip-only until remote pages
+  /// land — without this, open paints 1 message then drips the rest.
+  Future<int> seedTranscriptFromCache(int chatId) async {
+    final existing = _messagesByChat[chatId]?.length ?? 0;
+    if (existing >= 8) return existing;
+    final cached = await TdlibTranscriptCache.read(chatId);
+    if (cached.isEmpty) return existing;
+    final byId = <int, TdlibMessage>{
+      for (final m in _messagesByChat[chatId] ?? const <TdlibMessage>[])
+        m.id: m,
+    };
+    for (final m in cached) {
+      byId.putIfAbsent(m.id, () => m);
+      _seedFilePathCacheFromMessage(m);
+    }
+    final sorted = byId.values.toList()..sort((a, b) => a.id.compareTo(b.id));
+    _messagesByChat[chatId] = sorted;
+    _touchOpenTranscriptPreserve(chatId);
+    if (sorted.length > existing) {
+      notifyListeners();
+      _mediaLog(
+        'transcript-cache seed chat=$chatId '
+        'was=$existing now=${sorted.length}',
+      );
+      _slog('tg.history', 'cache_seed', {
+        'chatId': chatId,
+        'was': existing,
+        'now': sorted.length,
+      });
+    }
+    return sorted.length;
+  }
+
+  void _seedFilePathCacheFromMessage(TdlibMessage m) {
+    void seed(int? id, String? path) {
+      if (id == null || id <= 0) return;
+      final p = path?.trim() ?? '';
+      if (p.isEmpty) return;
+      _filePathCache[id] = p;
+    }
+
+    seed(m.photoRemoteId, m.photoLocalPath);
+    for (final id in m.photoFallbackFileIds) {
+      seed(id, m.photoLocalPath);
+    }
+    seed(m.voiceFileId, m.voiceLocalPath);
+    seed(m.videoNoteFileId, m.videoNoteLocalPath);
+    seed(m.videoNoteThumbFileId, m.videoNoteThumbLocalPath);
+    seed(m.videoFileId, m.videoLocalPath);
+    seed(m.videoThumbFileId, m.videoThumbLocalPath);
+    seed(m.documentFileId, m.documentLocalPath);
+    seed(m.documentThumbFileId, m.documentThumbLocalPath);
+  }
+
+  Future<void> _persistTranscriptCache(int chatId) async {
+    final list = _messagesByChat[chatId];
+    if (list == null || list.length < 2) return;
+    await TdlibTranscriptCache.write(chatId, list);
+  }
+
+  /// Flush open chat transcript to disk (app pause / leave).
+  Future<void> persistTranscriptCache(int chatId) =>
+      _persistTranscriptCache(chatId);
+
   /// Write history pages without ever shrinking an already-painted transcript.
   void _writeChatMessages(int chatId, Map<int, TdlibMessage> byId) {
     final existing = _messagesByChat[chatId];
@@ -8360,28 +9721,81 @@ class TelegramTdlibService extends ChangeNotifier {
     await syncChatTail(chatId, limit: 30);
   }
 
+  /// Shared Ready wait (R72) — many openChat/ping callers join one poll.
+  Completer<bool>? _waitMediaConnCompleter;
+  DateTime? _waitMediaConnStartedAt;
+  Timer? _waitMediaConnPoll;
+  static const _waitMediaConnSharedCap = Duration(seconds: 90);
+
   /// Wait until TDLib can carry media/history bytes (Ready/Updating).
   Future<bool> _waitForMediaConnection({
     Duration timeout = const Duration(seconds: 40),
   }) async {
     if (_tdlibReadyForMedia) return true;
-    final start = DateTime.now();
-    _mediaLog(
-      'wait-media-conn start conn=$_connectionState '
-      'timeout=${timeout.inSeconds}s',
-    );
-    while (!_tdlibReadyForMedia) {
-      if (DateTime.now().difference(start) >= timeout) {
-        _mediaLog('wait-media-conn TIMEOUT conn=$_connectionState');
-        return false;
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+    var shared = _waitMediaConnCompleter;
+    if (shared == null) {
+      shared = Completer<bool>();
+      _waitMediaConnCompleter = shared;
+      _waitMediaConnStartedAt = DateTime.now();
+      _mediaLog(
+        'wait-media-conn start conn=$_connectionState '
+        'timeout=${timeout.inSeconds}s shared=true',
+      );
+      _waitMediaConnPoll?.cancel();
+      _waitMediaConnPoll = Timer.periodic(const Duration(milliseconds: 200), (
+        t,
+      ) {
+        if (_tdlibReadyForMedia) {
+          t.cancel();
+          _completeWaitMediaConn(true);
+          return;
+        }
+        final started = _waitMediaConnStartedAt;
+        if (started != null &&
+            DateTime.now().difference(started) >= _waitMediaConnSharedCap) {
+          t.cancel();
+          _mediaLog('wait-media-conn TIMEOUT conn=$_connectionState shared');
+          _completeWaitMediaConn(false);
+        }
+      });
+    } else {
+      _mediaLog(
+        'wait-media-conn join conn=$_connectionState '
+        'timeout=${timeout.inSeconds}s',
+      );
     }
-    _mediaLog(
-      'wait-media-conn ok after '
-      '${_fmtDur(DateTime.now().difference(start))} conn=$_connectionState',
-    );
-    return true;
+    try {
+      return await shared.future.timeout(
+        timeout,
+        onTimeout: () {
+          _mediaLog(
+            'wait-media-conn TIMEOUT (waiter) conn=$_connectionState '
+            'timeout=${timeout.inSeconds}s',
+          );
+          return _tdlibReadyForMedia;
+        },
+      );
+    } catch (_) {
+      return _tdlibReadyForMedia;
+    }
+  }
+
+  void _completeWaitMediaConn(bool ok) {
+    _waitMediaConnPoll?.cancel();
+    _waitMediaConnPoll = null;
+    final c = _waitMediaConnCompleter;
+    _waitMediaConnCompleter = null;
+    final started = _waitMediaConnStartedAt;
+    _waitMediaConnStartedAt = null;
+    if (c == null) return;
+    if (ok && started != null) {
+      _mediaLog(
+        'wait-media-conn ok after '
+        '${_fmtDur(DateTime.now().difference(started))} '
+        'conn=$_connectionState',
+      );
+    }
+    if (!c.isCompleted) c.complete(ok);
   }
 
   /// Remove queued/inflight downloads that aren't exclusive-focus media.
@@ -8398,11 +9812,15 @@ class TelegramTdlibService extends ChangeNotifier {
           keepChatId != null && chatId != null && chatId != keepChatId;
       if (foreign) return false;
       if (focus.contains(fileId)) return true;
+      // R70: auto `voice:` / `tap:voice:` must survive purge while this chat
+      // is open (chatId may be null during list rebuild — still keep).
+      if (reason.contains('voice:')) return true;
       return reason.startsWith('focus:') ||
           reason.startsWith('focus-tail:') ||
           reason.startsWith('demoted-after-focus:') ||
           reason.startsWith('tap:') ||
           reason.startsWith('ensure') ||
+          reason.startsWith('sheet-media') ||
           reason.startsWith('stall-retry:') ||
           reason.startsWith('stall-fallback:') ||
           reason.startsWith('stall-lastchance:');
@@ -8472,12 +9890,18 @@ class TelegramTdlibService extends ChangeNotifier {
     };
 
     // Seed from chat.last_message so UI isn't empty while history loads.
+    // Never clobber an already-painted row's local media paths (open blink).
     final last = _chats[chatId]?['last_message'];
     if (last is Map) {
       final lastMap = Map<String, dynamic>.from(last);
       lastMap.putIfAbsent('chat_id', () => chatId);
       final seeded = _parseMessage(lastMap);
-      if (seeded != null) byId[seeded.id] = seeded;
+      if (seeded != null) {
+        final prev = byId[seeded.id];
+        byId[seeded.id] = prev == null
+            ? seeded
+            : _mergePreservingLocalMedia(prev, seeded);
+      }
     }
     if (byId.isNotEmpty) {
       _writeChatMessages(chatId, byId);
@@ -8585,7 +10009,9 @@ class TelegramTdlibService extends ChangeNotifier {
         map.putIfAbsent('chat_id', () => chatId);
         final msg = _parseMessage(map);
         if (msg == null) continue;
-        byId[msg.id] = msg;
+        final prev = byId[msg.id];
+        byId[msg.id] =
+            prev == null ? msg : _mergePreservingLocalMedia(prev, msg);
         if (oldestId == 0 || msg.id < oldestId) oldestId = msg.id;
       }
 
@@ -8631,6 +10057,9 @@ class TelegramTdlibService extends ChangeNotifier {
     // One coalesce after the full window is ready (skip for silent warm).
     if (!silent) _notifyUi();
     final count = _messagesByChat[chatId]?.length ?? 0;
+    if (count > 1) {
+      unawaited(_persistTranscriptCache(chatId));
+    }
     _mediaLog(
       'history-done chat=$chatId count=$count '
       'channel=$isChannel onlyLocal=$onlyLocal '
@@ -8707,6 +10136,31 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Prefers stacks with unread ≥ 2 — those need a scroll jump on open.
   void warmUnreadChatsFromHub({int maxChats = 8}) {
     if (!isReady) return;
+    for (final c in _unreadWarmCandidates(maxChats: maxChats)) {
+      unawaited(warmUnreadChatHistory(c.id));
+    }
+    // After history pages: serial light preview for oldest unread media.
+    warmUnreadTipMediaFromHub(
+      maxChats: maxChats < warmUnreadTipChatLimit
+          ? maxChats
+          : warmUnreadTipChatLimit,
+    );
+  }
+
+  /// Hub-only: download the oldest unread *light* media (photo / video thumb)
+  /// for a few unread chats — serial on FakeTLS slot=1. Yields to open chat,
+  /// tap, and hub avatars (prio 8 < avatar 10). Soft `m` is enough; no video
+  /// body / no focus_hold.
+  void warmUnreadTipMediaFromHub({int maxChats = warmUnreadTipChatLimit}) {
+    if (!isReady) return;
+    if (_openChatId != null) return;
+    if (!_appInForeground) return;
+    if (!_tdlibReadyForMedia) return;
+    if (_unreadTipWarmRunning) return;
+    unawaited(_runUnreadTipMediaWarm(maxChats: maxChats));
+  }
+
+  List<({int id, int unread})> _unreadWarmCandidates({required int maxChats}) {
     final candidates = <({int id, int unread})>[];
     for (final id in _chatOrder) {
       if (_openChatId == id) continue;
@@ -8720,12 +10174,245 @@ class TelegramTdlibService extends ChangeNotifier {
       if (aDeep != bDeep) return aDeep.compareTo(bDeep);
       return b.unread.compareTo(a.unread);
     });
-    var n = 0;
-    for (final c in candidates) {
-      unawaited(warmUnreadChatHistory(c.id));
-      n++;
-      if (n >= maxChats) break;
+    if (candidates.length <= maxChats) return candidates;
+    return candidates.sublist(0, maxChats);
+  }
+
+  Future<void> _runUnreadTipMediaWarm({required int maxChats}) async {
+    if (_unreadTipWarmRunning) return;
+    _unreadTipWarmRunning = true;
+    try {
+      final candidates = _unreadWarmCandidates(maxChats: maxChats);
+      if (candidates.isEmpty) return;
+      _mediaLog(
+        'warm-unread-tip start n=${candidates.length} '
+        'proxy=${_enabledProxyId != null}',
+      );
+      for (final c in candidates) {
+        if (!_appInForeground || _openChatId != null) break;
+        if (!_tdlibReadyForMedia) break;
+        if (unreadCountFor(c.id) <= 0) continue;
+        await _warmOldestUnreadLightMedia(c.id);
+      }
+      _mediaLog('warm-unread-tip pass-done');
+    } finally {
+      _unreadTipWarmRunning = false;
     }
+  }
+
+  /// Soft path / thumb on disk is enough for open-chat first paint.
+  bool _unreadTipPreviewReady(TdlibMessage m) {
+    if (m.isPhoto ||
+        (m.photoRemoteId != null && m.photoRemoteId! > 0) ||
+        (m.photoThumbBytes != null && m.photoThumbBytes!.isNotEmpty)) {
+      return _photoHasUsablePath(m);
+    }
+    if (m.isVideo || m.isAnimation) {
+      if (m.videoThumbBytes != null && m.videoThumbBytes!.isNotEmpty) {
+        return true;
+      }
+      final path = m.videoThumbLocalPath;
+      if (path != null && path.isNotEmpty) return true;
+      final vt = m.videoThumbFileId;
+      return vt != null && vt > 0 && _hasCachedPath(vt);
+    }
+    if (m.isVideoNote) {
+      if (m.videoNoteThumbBytes != null &&
+          m.videoNoteThumbBytes!.isNotEmpty) {
+        return true;
+      }
+      final path = m.videoNoteThumbLocalPath;
+      if (path != null && path.isNotEmpty) return true;
+      final vt = m.videoNoteThumbFileId;
+      return vt != null && vt > 0 && _hasCachedPath(vt);
+    }
+    if (m.isSticker) {
+      final id = m.photoRemoteId;
+      return id != null && id > 0 && _hasCachedPath(id);
+    }
+    if (m.isPdfDocument) {
+      final dt = m.documentThumbFileId;
+      return dt != null && dt > 0 && _hasCachedPath(dt);
+    }
+    return true;
+  }
+
+  TdlibMessage? _findOldestUnreadLightMedia(int chatId) {
+    final lastRead = lastReadInboxMessageId(chatId);
+    final list = _messagesByChat[chatId];
+    if (list == null || list.isEmpty) return null;
+    for (final m in list) {
+      if (m.id <= lastRead) continue;
+      if (!_messageHasLightMedia(m)) continue;
+      if (_unreadTipPreviewReady(m)) continue;
+      return m;
+    }
+    return null;
+  }
+
+  int? _unreadTipLightFileId(TdlibMessage m) {
+    if (m.isPhoto || m.photoRemoteId != null) {
+      final soft = m.photoSizeType == null ||
+          m.photoSizeType == 'm' ||
+          m.photoSizeType == 's';
+      if (soft && m.photoFallbackFileIds.isNotEmpty) {
+        for (final id in m.photoFallbackFileIds) {
+          if (id > 0 && !_hasCachedPath(id)) return id;
+        }
+      }
+      final primary = m.photoRemoteId;
+      if (primary != null && primary > 0 && !_hasCachedPath(primary)) {
+        return primary;
+      }
+    }
+    if (m.isVideo || m.isAnimation) {
+      final vt = m.videoThumbFileId;
+      if (vt != null && vt > 0 && !_hasCachedPath(vt)) return vt;
+    }
+    if (m.isVideoNote) {
+      final vt = m.videoNoteThumbFileId;
+      if (vt != null && vt > 0 && !_hasCachedPath(vt)) return vt;
+    }
+    if (m.isSticker) {
+      final id = m.photoRemoteId;
+      if (id != null && id > 0 && !_hasCachedPath(id)) return id;
+    }
+    if (m.isPdfDocument) {
+      final dt = m.documentThumbFileId;
+      if (dt != null && dt > 0 && !_hasCachedPath(dt)) return dt;
+    }
+    return null;
+  }
+
+  Future<String?> _ensureUnreadTipFile(
+    int fileId, {
+    required int chatId,
+    required String reason,
+  }) async {
+    if (fileId <= 0) return null;
+    final cached = cachedFilePath(fileId);
+    if (cached != null && cached.isNotEmpty) return cached;
+    if (await _probeLocalFile(fileId)) return _filePathCache[fileId];
+
+    final existing = _downloadWaiters[fileId];
+    final waitFor = Duration(
+      seconds: _enabledProxyId != null ? 22 : 35,
+    );
+    if (existing != null) {
+      try {
+        return await existing.future.timeout(
+          waitFor,
+          onTimeout: () => _filePathCache[fileId],
+        );
+      } catch (_) {
+        return _filePathCache[fileId];
+      }
+    }
+
+    final completer = Completer<String?>();
+    _downloadWaiters[fileId] = completer;
+    _queueFileDownload(
+      fileId,
+      priority: prioUnreadTipWarm,
+      background: true,
+      chatId: chatId,
+      reason: reason,
+    );
+    _pumpDownloadQueue();
+    try {
+      return await completer.future.timeout(
+        waitFor,
+        onTimeout: () {
+          _mediaLog(
+            'warm-unread-tip timeout file=$fileId reason=$reason',
+          );
+          return _filePathCache[fileId];
+        },
+      );
+    } catch (_) {
+      return _filePathCache[fileId];
+    } finally {
+      if (identical(_downloadWaiters[fileId], completer)) {
+        _downloadWaiters.remove(fileId);
+      }
+      if (!completer.isCompleted) {
+        completer.complete(_filePathCache[fileId]);
+      }
+    }
+  }
+
+  Future<void> _warmOldestUnreadLightMedia(int chatId) async {
+    if (chatId == 0 || !isReady) return;
+    if (_openChatId != null || !_appInForeground) return;
+    if (!_tdlibReadyForMedia) return;
+    if (unreadCountFor(chatId) <= 0) return;
+
+    if (!isUnreadHistoryWarm(chatId) ||
+        firstUnreadMessageId(chatId) == null) {
+      await warmUnreadChatHistory(chatId);
+    }
+    if (_openChatId != null || !_appInForeground) return;
+    if (unreadCountFor(chatId) <= 0) return;
+
+    final target = _findOldestUnreadLightMedia(chatId);
+    if (target == null) {
+      if (isUnreadHistoryWarm(chatId)) {
+        _unreadTipWarmedMsgByChat[chatId] = -1;
+      }
+      return;
+    }
+    final prev = _unreadTipWarmedMsgByChat[chatId];
+    if (prev == target.id) return;
+
+    var m = target;
+    final softPhoto = m.isPhoto &&
+        (m.photoSizeType == null ||
+            m.photoSizeType == 'm' ||
+            m.photoSizeType == 's' ||
+            m.photoFallbackFileIds.isEmpty);
+    if (softPhoto) {
+      await _openMessageContent(chatId, m.id);
+      if (_openChatId != null || !_appInForeground) return;
+      final c = _client;
+      if (c != null) {
+        try {
+          final res = await c.sendAwait({
+            '@type': 'getMessage',
+            'chat_id': chatId,
+            'message_id': m.id,
+          }, timeout: const Duration(seconds: 6));
+          final parsed = _parseMessage(res);
+          if (parsed != null) {
+            _upsertMessage(parsed);
+            m = parsed;
+          }
+        } catch (_) {}
+      }
+      if (_unreadTipPreviewReady(m)) {
+        _unreadTipWarmedMsgByChat[chatId] = m.id;
+        return;
+      }
+    }
+
+    final fileId = _unreadTipLightFileId(m);
+    if (fileId == null) {
+      _unreadTipWarmedMsgByChat[chatId] = m.id;
+      return;
+    }
+
+    _mediaLog(
+      'warm-unread-tip chat=$chatId msg=${m.id} file=$fileId',
+    );
+    final path = await _ensureUnreadTipFile(
+      fileId,
+      chatId: chatId,
+      reason: 'unread-tip:$chatId:${m.id}',
+    );
+    _unreadTipWarmedMsgByChat[chatId] = m.id;
+    _mediaLog(
+      'warm-unread-tip done chat=$chatId file=$fileId '
+      'ok=${path != null && path.isNotEmpty}',
+    );
   }
 
   /// Hub-row fields of a `chat` payload, hashed — [syncChatTail] re-reads
@@ -8923,10 +10610,10 @@ class TelegramTdlibService extends ChangeNotifier {
     if (focusMessageId == null || focusMessageId <= 0) return;
     final list = _messagesByChat[chatId];
     if (list == null || list.isEmpty) return;
-    // FakeTLS: neighbor openMessageContent + downloadFile floods mtg with
-    // domain-fronting (A/B 16:38: 118× neighbor / 37× open+view, DF=50).
-    // Focus-only until we prove parallel is safe on this proxy.
-    final effectiveRadius = _enabledProxyId != null ? 0 : radius;
+    // FakeTLS: keep a tiny ±1 band (not full ±4). Full radius flooded mtg
+    // with domain-fronting (A/B 16:38); ±1 still serial behind focus (slot=1).
+    final effectiveRadius =
+        _enabledProxyId != null ? viewportMediaRadiusProxy : radius;
     final idx = list.indexWhere((m) => m.id == focusMessageId);
     if (idx < 0) {
       _pendingNeighborMessageIds = const [];
@@ -8971,13 +10658,38 @@ class TelegramTdlibService extends ChangeNotifier {
     }
   }
 
+  /// User-driven media (tap / its stall ladder) must keep the FakeTLS slot.
+  /// Ostashko SessionLog 10:41: focus thumb `yield soft=15860` canceled
+  /// `stall-lastchance` of tap:video — photos OK, video body forever 0B.
+  bool _isProtectedUserMediaReason(String reason) {
+    if (reason.startsWith('tap:')) return true;
+    if (reason.startsWith('stall-retry:tap:')) return true;
+    if (reason.startsWith('stall-fallback:tap:')) return true;
+    if (reason.startsWith('stall-lastchance:')) return true;
+    if (reason.startsWith('auto:video:')) return true;
+    if (reason.startsWith('stall-retry:auto:video:')) return true;
+    return false;
+  }
+
+  bool _userTapMediaHoldsWire() {
+    for (final id in _downloadInFlight) {
+      final r = _downloadTrace[id]?.reason ?? '';
+      if (_isProtectedUserMediaReason(r)) return true;
+    }
+    for (final j in _downloadQueue) {
+      if (_isProtectedUserMediaReason(j.reason)) return true;
+    }
+    return false;
+  }
+
   /// Free slots held by idle neighbor/demoted jobs so focus can start.
   Future<void> _yieldSlotsToFocus(Set<int> want) async {
-    // Drop queued neighbors so they don't steal the next free slot.
+    // Drop queued neighbors / unread-tip so they don't steal the next free slot.
     final dropQueuedEarly = _downloadQueue
         .where((j) =>
             !want.contains(j.fileId) &&
             (j.reason.startsWith('neighbor:') ||
+                j.reason.startsWith('unread-tip:') ||
                 j.reason.startsWith('demoted-after-focus')))
         .toList();
     for (final j in dropQueuedEarly) {
@@ -8997,7 +10709,8 @@ class TelegramTdlibService extends ChangeNotifier {
       if (want.contains(id)) continue;
       final t = _downloadTrace[id];
       final reason = t?.reason ?? '';
-      if (reason.startsWith('tap:')) continue;
+      // Never cancel tap:video / lastchance / auto:video for a focus thumb.
+      if (_isProtectedUserMediaReason(reason)) continue;
       final zeroBytes = (t?.lastBytes ?? 0) <= 0;
       // Under proxy: cancel 0B focus so the tapped file can start.
       if (_enabledProxyId != null &&
@@ -9006,7 +10719,7 @@ class TelegramTdlibService extends ChangeNotifier {
               reason.startsWith('focus-tail:') ||
               reason.startsWith('focus-upgrade:') ||
               reason.startsWith('stall-fallback:') ||
-              reason.startsWith('stall-lastchance:') ||
+              reason.startsWith('stall-retry:focus') ||
               reason.startsWith('ensure'))) {
         blockers.add(id);
         if (blockers.length >= 1) break;
@@ -9023,11 +10736,12 @@ class TelegramTdlibService extends ChangeNotifier {
       blockers.add(id);
       if (blockers.length >= 1) break; // free one slot, not a cancel storm
     }
-    // Also drop queued neighbors so they don't refill the slot.
+    // Also drop queued neighbors / unread-tip so they don't refill the slot.
     final dropQueued = _downloadQueue
         .where((j) =>
             !want.contains(j.fileId) &&
             (j.reason.startsWith('neighbor:') ||
+                j.reason.startsWith('unread-tip:') ||
                 j.reason.startsWith('demoted-after-focus') ||
                 (j.reason.startsWith('stall-lastchance:') &&
                     j.priority < prioFocused)))
@@ -9073,8 +10787,8 @@ class TelegramTdlibService extends ChangeNotifier {
     required int messageId,
   }) async {
     if (_openChatId != chatId) return;
-    // See prefetchOpenChatViewport — no neighbor wire under FakeTLS.
-    if (_enabledProxyId != null) return;
+    // FakeTLS allows only the ±1 band from prefetchOpenChatViewport
+    // (pending list already capped). Do not hard-skip here.
     final list = _messagesByChat[chatId];
     if (list == null) return;
     TdlibMessage? m;
@@ -9666,6 +11380,18 @@ class TelegramTdlibService extends ChangeNotifier {
       }
     }
 
+    // R71: under FakeTLS post soft-restart, queue head only until one net
+    // `done` proves RELAY — tails opened ~300ms later were DF (mtg 20:21:48).
+    // After that done (+ cool), idle same-album re-enqueue picks up tails.
+    if (ordered.length > 1 && _deferFocusTailsAfterRestart) {
+      _mediaLog(
+        'focus-album-queue defer-tails (post-restart) '
+        'msg=$messageId keep=${ordered.first} '
+        'deferred=${ordered.sublist(1)}',
+      );
+      ordered.removeRange(1, ordered.length);
+    }
+
     // R44: keep full album / multi-file focus order. FakeTLS slotLimit=1
     // already serializes the wire — the old focus-cap→1 dropped siblings and
     // left gallery cells on minithumb forever (same-focus never re-queued).
@@ -9694,6 +11420,11 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Last successful openMessageContent key (`chatId:messageId`) + time.
   String? _lastOpenMessageContentKey;
   DateTime? _lastOpenMessageContentAt;
+  /// R72: while !Ready, keep one pending open (official does not spam media
+  /// RPCs while network paused). Flush on Ready.
+  ({int chatId, int messageId, bool force})? _pendingOpenMessageContent;
+  String? _lastOpenMessageContentDeferKey;
+  DateTime? _lastOpenMessageContentDeferLogAt;
 
   /// Helps TDLib authorize CDN access for channel media (esp. through proxy).
   ///
@@ -9708,11 +11439,27 @@ class TelegramTdlibService extends ChangeNotifier {
     if (c == null || messageId <= 0) return;
     // open/view while Connecting floods FakeTLS before media DCs are up
     // (Shariy: 15s of openMessageContent spam, then Ready + 0B downloads).
+    // R72: coalesce — one pending + rare log; flush when Ready lands.
     if (!_tdlibReadyForMedia) {
-      _mediaLog(
-        'openMessageContent defer chat=$chatId msg=$messageId '
-        'conn=$_connectionState',
+      final prev = _pendingOpenMessageContent;
+      _pendingOpenMessageContent = (
+        chatId: chatId,
+        messageId: messageId,
+        force: force || (prev?.force ?? false),
       );
+      final key = '$chatId:$messageId';
+      final now = DateTime.now();
+      final lastLog = _lastOpenMessageContentDeferLogAt;
+      if (_lastOpenMessageContentDeferKey != key ||
+          lastLog == null ||
+          now.difference(lastLog) >= const Duration(seconds: 5)) {
+        _lastOpenMessageContentDeferKey = key;
+        _lastOpenMessageContentDeferLogAt = now;
+        _mediaLog(
+          'openMessageContent defer chat=$chatId msg=$messageId '
+          'conn=$_connectionState',
+        );
+      }
       return;
     }
     final key = '$chatId:$messageId';
@@ -9733,22 +11480,51 @@ class TelegramTdlibService extends ChangeNotifier {
       _lastOpenMessageContentAt = DateTime.now();
       _mediaLog('openMessageContent ok chat=$chatId msg=$messageId');
       // Official clients also view the message; some channel CDNs stay closed
-      // until viewMessages (FC had offset=0 but VPS saw no DC203).
-      try {
-        await c.sendAwait({
-          '@type': 'viewMessages',
-          'chat_id': chatId,
-          'message_ids': [messageId],
-          'source': {'@type': 'messageSourceChatHistory'},
-          'force_read': false,
-        }, timeout: const Duration(seconds: 5));
-        _mediaLog('viewMessages ok chat=$chatId msg=$messageId');
-      } catch (e) {
-        _mediaLog('viewMessages soft-fail chat=$chatId msg=$messageId err=$e');
+      // until viewMessages. But with the chat open, viewMessages(id) marks
+      // everything ≤ id as read — focus/prefetch on tip wiped the unread gap
+      // while the user was still at the frontier.
+      // Already-read: view for CDN auth. Unread: only on force (user tap);
+      // progressive viewport mark-read covers the rest.
+      final lastRead = _effectiveLastReadInbox(chatId);
+      if (messageId > lastRead && !force) {
+        _mediaLog(
+          'viewMessages skip unread chat=$chatId msg=$messageId '
+          'lastRead=$lastRead',
+        );
+      } else {
+        try {
+          await c.sendAwait({
+            '@type': 'viewMessages',
+            'chat_id': chatId,
+            'message_ids': [messageId],
+            'source': {'@type': 'messageSourceChatHistory'},
+            'force_read': false,
+          }, timeout: const Duration(seconds: 5));
+          _mediaLog('viewMessages ok chat=$chatId msg=$messageId');
+        } catch (e) {
+          _mediaLog(
+            'viewMessages soft-fail chat=$chatId msg=$messageId err=$e',
+          );
+        }
       }
     } catch (e) {
       _mediaLog('openMessageContent err chat=$chatId msg=$messageId err=$e');
     }
+  }
+
+  /// R72: run the one deferred open after WFN/Connecting → Ready.
+  void _flushPendingOpenMessageContent() {
+    final p = _pendingOpenMessageContent;
+    if (p == null) return;
+    _pendingOpenMessageContent = null;
+    if (!_tdlibReadyForMedia || _client == null) return;
+    _mediaLog(
+      'openMessageContent flush-pending chat=${p.chatId} msg=${p.messageId} '
+      'force=${p.force}',
+    );
+    unawaited(
+      _openMessageContent(p.chatId, p.messageId, force: p.force),
+    );
   }
 
   Future<void> _openMessageContentForFile(
@@ -10037,6 +11813,18 @@ class TelegramTdlibService extends ChangeNotifier {
     final previousOrder = List<int>.from(_focusDownloadOrder);
     _focusMessageId = messageId;
     _focusDownloadOrder = List<int>.from(ordered);
+
+    // Remember focus for openMessageContent / lastchance msg id, but do not
+    // enqueue thumbs or yield while tap:video holds the exclusive slot.
+    if (_userTapMediaHoldsWire()) {
+      _mediaLog(
+        'focus-defer tap-hold msg=$messageId files=$ordered '
+        '${_downloadQueueStats()}',
+      );
+      notifyListeners();
+      return;
+    }
+
     _focusHoldUntil = DateTime.now().add(
       Duration(seconds: _enabledProxyId != null ? 45 : 8),
     );
@@ -10051,13 +11839,13 @@ class TelegramTdlibService extends ChangeNotifier {
 
     // Drop queued jobs that aren't the new focus. Neighbors are re-flushed
     // after focus claims slots — keeping them queued let them pump first
-    // when slots free mid-await.
+    // when slots free mid-await. Never drop tap / lastchance ladder.
     final dropped = _downloadQueue
         .where(
           (j) =>
               !want.contains(j.fileId) &&
               j.reason != 'ensure' &&
-              !j.reason.startsWith('tap:'),
+              !_isProtectedUserMediaReason(j.reason),
         )
         .toList();
     for (final j in dropped) {
@@ -10187,13 +11975,66 @@ class TelegramTdlibService extends ChangeNotifier {
 
   /// Returns true when the transcript actually moved (new message, or content
   /// the UI paints differs). Callers on a timer use it to skip no-op notifies.
+  /// Keep painted disk paths when a fresher TDLib row omits them.
+  ///
+  /// `openChat` / `getChatHistory` often re-seed `chat.last_message` without
+  /// local file paths — a blind replace made photo bubbles flash empty then
+  /// repaint (Киса DM open blink).
+  TdlibMessage _mergePreservingLocalMedia(
+    TdlibMessage before,
+    TdlibMessage after,
+  ) {
+    String? keep(String? prev, String? next) {
+      if (next != null && next.isNotEmpty) return next;
+      if (prev != null && prev.isNotEmpty) return prev;
+      return next;
+    }
+
+    final photoPath = keep(before.photoLocalPath, after.photoLocalPath);
+    final voicePath = keep(before.voiceLocalPath, after.voiceLocalPath);
+    final videoPath = keep(before.videoLocalPath, after.videoLocalPath);
+    final videoThumbPath =
+        keep(before.videoThumbLocalPath, after.videoThumbLocalPath);
+    final videoNotePath =
+        keep(before.videoNoteLocalPath, after.videoNoteLocalPath);
+    final videoNoteThumbPath =
+        keep(before.videoNoteThumbLocalPath, after.videoNoteThumbLocalPath);
+    final documentPath =
+        keep(before.documentLocalPath, after.documentLocalPath);
+    final documentThumbPath =
+        keep(before.documentThumbLocalPath, after.documentThumbLocalPath);
+
+    final same = identical(photoPath, after.photoLocalPath) &&
+        identical(voicePath, after.voiceLocalPath) &&
+        identical(videoPath, after.videoLocalPath) &&
+        identical(videoThumbPath, after.videoThumbLocalPath) &&
+        identical(videoNotePath, after.videoNoteLocalPath) &&
+        identical(videoNoteThumbPath, after.videoNoteThumbLocalPath) &&
+        identical(documentPath, after.documentLocalPath) &&
+        identical(documentThumbPath, after.documentThumbLocalPath);
+    if (same) return after;
+
+    return _copyMessage(
+      after,
+      photoLocalPath: photoPath,
+      voiceLocalPath: voicePath,
+      videoLocalPath: videoPath,
+      videoThumbLocalPath: videoThumbPath,
+      videoNoteLocalPath: videoNotePath,
+      videoNoteThumbLocalPath: videoNoteThumbPath,
+      documentLocalPath: documentPath,
+      documentThumbLocalPath: documentThumbPath,
+    );
+  }
+
   bool _upsertMessage(TdlibMessage msg) {
     final list = _messagesByChat.putIfAbsent(msg.chatId, () => []);
     final idx = list.indexWhere((m) => m.id == msg.id);
     if (idx >= 0) {
       final prev = list[idx];
-      list[idx] = msg;
-      return prev.uiFingerprint != msg.uiFingerprint;
+      final merged = _mergePreservingLocalMedia(prev, msg);
+      list[idx] = merged;
+      return prev.uiFingerprint != merged.uiFingerprint;
     }
     list.add(msg);
     list.sort((a, b) => a.id.compareTo(b.id));
@@ -10247,12 +12088,16 @@ class TelegramTdlibService extends ChangeNotifier {
         'token': openToken ?? _activeOpenToken,
         'msgs': _messagesByChat[chatId]?.length ?? 0,
       });
+      // Persist before clearing open ownership so cold start paints a window.
+      unawaited(_persistTranscriptCache(chatId));
       _openChatId = null;
       _activeOpenToken = null;
+      _openChatNearTip = true;
       AppSessionDiagnostics.instance.setTgOpenChat(null);
       _openTranscriptPreserve.remove(chatId);
       // Resume background jobs that were waiting; rebuild hub so avatars re-queue.
       _pumpDownloadQueue();
+      warmUnreadTipMediaFromHub();
       // Never notify synchronously from a widget dispose path.
       scheduleMicrotask(() {
         notifyListeners();
@@ -10390,30 +12235,50 @@ class TelegramTdlibService extends ChangeNotifier {
     String localPath, {
     String caption = '',
     int? replyToMessageId,
+    List<int>? bytes,
   }) async {
     final c = _client;
     if (c == null) return;
-    await c.sendAwait({
-      '@type': 'sendMessage',
-      'chat_id': chatId,
-      if (replyToMessageId != null)
-        'reply_to': {
-          '@type': 'inputMessageReplyToMessage',
-          'message_id': replyToMessageId,
-        },
-      'input_message_content': {
-        '@type': 'inputMessagePhoto',
-        'photo': {
-          '@type': 'inputFileLocal',
-          'path': localPath,
-        },
-        if (caption.isNotEmpty)
-          'caption': {
-            '@type': 'formattedText',
-            'text': caption,
+    final staged = await stageLocalFileForTdlib(
+      localPath: localPath,
+      bytes: bytes,
+      filename: p.basename(localPath),
+    );
+    _mediaLog(
+      'sendPhoto chat=$chatId path=${p.basename(staged)} '
+      'src=${p.basename(localPath)}',
+    );
+    try {
+      await c.sendAwait({
+        '@type': 'sendMessage',
+        'chat_id': chatId,
+        if (replyToMessageId != null)
+          'reply_to': {
+            '@type': 'inputMessageReplyToMessage',
+            'message_id': replyToMessageId,
           },
-      },
-    });
+        'input_message_content': {
+          '@type': 'inputMessagePhoto',
+          'photo': {
+            '@type': 'inputFileLocal',
+            'path': staged,
+          },
+          if (caption.isNotEmpty)
+            'caption': {
+              '@type': 'formattedText',
+              'text': caption,
+            },
+        },
+      });
+    } on TdlibApiException catch (e) {
+      _mediaLog('sendPhoto FAIL chat=$chatId code=${e.code} ${e.message}');
+      _slog('tg.send', 'photo_fail', {
+        'chatId': chatId,
+        'code': e.code,
+        'message': e.message,
+      });
+      rethrow;
+    }
   }
 
   Future<void> sendVideo(
@@ -10421,30 +12286,50 @@ class TelegramTdlibService extends ChangeNotifier {
     String localPath, {
     String caption = '',
     int? replyToMessageId,
+    List<int>? bytes,
   }) async {
     final c = _client;
     if (c == null) return;
-    await c.sendAwait({
-      '@type': 'sendMessage',
-      'chat_id': chatId,
-      if (replyToMessageId != null)
-        'reply_to': {
-          '@type': 'inputMessageReplyToMessage',
-          'message_id': replyToMessageId,
-        },
-      'input_message_content': {
-        '@type': 'inputMessageVideo',
-        'video': {
-          '@type': 'inputFileLocal',
-          'path': localPath,
-        },
-        if (caption.isNotEmpty)
-          'caption': {
-            '@type': 'formattedText',
-            'text': caption,
+    final staged = await stageLocalFileForTdlib(
+      localPath: localPath,
+      bytes: bytes,
+      filename: p.basename(localPath),
+    );
+    _mediaLog(
+      'sendVideo chat=$chatId path=${p.basename(staged)} '
+      'src=${p.basename(localPath)}',
+    );
+    try {
+      await c.sendAwait({
+        '@type': 'sendMessage',
+        'chat_id': chatId,
+        if (replyToMessageId != null)
+          'reply_to': {
+            '@type': 'inputMessageReplyToMessage',
+            'message_id': replyToMessageId,
           },
-      },
-    });
+        'input_message_content': {
+          '@type': 'inputMessageVideo',
+          'video': {
+            '@type': 'inputFileLocal',
+            'path': staged,
+          },
+          if (caption.isNotEmpty)
+            'caption': {
+              '@type': 'formattedText',
+              'text': caption,
+            },
+        },
+      });
+    } on TdlibApiException catch (e) {
+      _mediaLog('sendVideo FAIL chat=$chatId code=${e.code} ${e.message}');
+      _slog('tg.send', 'video_fail', {
+        'chatId': chatId,
+        'code': e.code,
+        'message': e.message,
+      });
+      rethrow;
+    }
   }
 
   Future<void> sendDocument(
@@ -10452,30 +12337,54 @@ class TelegramTdlibService extends ChangeNotifier {
     String localPath, {
     String caption = '',
     int? replyToMessageId,
+    List<int>? bytes,
   }) async {
     final c = _client;
     if (c == null) return;
-    await c.sendAwait({
-      '@type': 'sendMessage',
-      'chat_id': chatId,
-      if (replyToMessageId != null)
-        'reply_to': {
-          '@type': 'inputMessageReplyToMessage',
-          'message_id': replyToMessageId,
-        },
-      'input_message_content': {
-        '@type': 'inputMessageDocument',
-        'document': {
-          '@type': 'inputFileLocal',
-          'path': localPath,
-        },
-        if (caption.isNotEmpty)
-          'caption': {
-            '@type': 'formattedText',
-            'text': caption,
+    final staged = await stageLocalFileForTdlib(
+      localPath: localPath,
+      bytes: bytes,
+      filename: p.basename(localPath).isNotEmpty
+          ? p.basename(localPath)
+          : 'file.bin',
+    );
+    _mediaLog(
+      'sendDocument chat=$chatId path=${p.basename(staged)} '
+      'src=${p.basename(localPath)}',
+    );
+    try {
+      await c.sendAwait({
+        '@type': 'sendMessage',
+        'chat_id': chatId,
+        if (replyToMessageId != null)
+          'reply_to': {
+            '@type': 'inputMessageReplyToMessage',
+            'message_id': replyToMessageId,
           },
-      },
-    });
+        'input_message_content': {
+          '@type': 'inputMessageDocument',
+          'document': {
+            '@type': 'inputFileLocal',
+            'path': staged,
+          },
+          if (caption.isNotEmpty)
+            'caption': {
+              '@type': 'formattedText',
+              'text': caption,
+            },
+        },
+      });
+    } on TdlibApiException catch (e) {
+      _mediaLog(
+        'sendDocument FAIL chat=$chatId code=${e.code} ${e.message}',
+      );
+      _slog('tg.send', 'document_fail', {
+        'chatId': chatId,
+        'code': e.code,
+        'message': e.message,
+      });
+      rethrow;
+    }
   }
 
   Future<void> sendVideoNote(
@@ -10487,24 +12396,43 @@ class TelegramTdlibService extends ChangeNotifier {
     final c = _client;
     if (c == null) return;
     final durationSec = (durationMs / 1000).round().clamp(1, 60);
-    await c.sendAwait({
-      '@type': 'sendMessage',
-      'chat_id': chatId,
-      if (replyToMessageId != null)
-        'reply_to': {
-          '@type': 'inputMessageReplyToMessage',
-          'message_id': replyToMessageId,
+    // Camera mp4 is typically 720×480 — TDLib requires square ≤640.
+    final prepared = await TdlibVideoNotePrep.prepareSquare(localPath);
+    _mediaLog(
+      'sendVideoNote chat=$chatId path=${p.basename(prepared.path)} '
+      'length=${prepared.length} duration=${durationSec}s '
+      'src=${p.basename(localPath)}',
+    );
+    try {
+      await c.sendAwait({
+        '@type': 'sendMessage',
+        'chat_id': chatId,
+        if (replyToMessageId != null)
+          'reply_to': {
+            '@type': 'inputMessageReplyToMessage',
+            'message_id': replyToMessageId,
+          },
+        'input_message_content': {
+          '@type': 'inputMessageVideoNote',
+          'video_note': {
+            '@type': 'inputFileLocal',
+            'path': prepared.path,
+          },
+          'duration': durationSec,
+          'length': prepared.length,
         },
-      'input_message_content': {
-        '@type': 'inputMessageVideoNote',
-        'video_note': {
-          '@type': 'inputFileLocal',
-          'path': localPath,
-        },
-        'duration': durationSec,
-        'length': 384,
-      },
-    });
+      });
+    } on TdlibApiException catch (e) {
+      _mediaLog(
+        'sendVideoNote FAIL chat=$chatId code=${e.code} ${e.message}',
+      );
+      _slog('tg.send', 'video_note_fail', {
+        'chatId': chatId,
+        'code': e.code,
+        'message': e.message,
+      });
+      rethrow;
+    }
   }
 
   Future<void> sendVoiceNote(
@@ -10516,23 +12444,41 @@ class TelegramTdlibService extends ChangeNotifier {
     final c = _client;
     if (c == null) return;
     final durationSec = (durationMs / 1000).round().clamp(1, 3600);
-    await c.sendAwait({
-      '@type': 'sendMessage',
-      'chat_id': chatId,
-      if (replyToMessageId != null)
-        'reply_to': {
-          '@type': 'inputMessageReplyToMessage',
-          'message_id': replyToMessageId,
+    _mediaLog(
+      'sendVoiceNote chat=$chatId path=${p.basename(localPath)} '
+      'duration=${durationSec}s',
+    );
+    try {
+      await c.sendAwait({
+        '@type': 'sendMessage',
+        'chat_id': chatId,
+        if (replyToMessageId != null)
+          'reply_to': {
+            '@type': 'inputMessageReplyToMessage',
+            'message_id': replyToMessageId,
+          },
+        'input_message_content': {
+          '@type': 'inputMessageVoiceNote',
+          'voice_note': {
+            '@type': 'inputFileLocal',
+            'path': localPath,
+          },
+          'duration': durationSec,
+          // Empty waveform — TDLib/server fills for small notes.
+          'waveform': '',
         },
-      'input_message_content': {
-        '@type': 'inputMessageVoiceNote',
-        'voice_note': {
-          '@type': 'inputFileLocal',
-          'path': localPath,
-        },
-        'duration': durationSec,
-      },
-    });
+      });
+    } on TdlibApiException catch (e) {
+      _mediaLog(
+        'sendVoiceNote FAIL chat=$chatId code=${e.code} ${e.message}',
+      );
+      _slog('tg.send', 'voice_note_fail', {
+        'chatId': chatId,
+        'code': e.code,
+        'message': e.message,
+      });
+      rethrow;
+    }
   }
 
   Future<void> sendLocation(
@@ -10580,6 +12526,44 @@ class TelegramTdlibService extends ChangeNotifier {
     );
     await file.writeAsBytes(bytes, flush: true);
     return file.path;
+  }
+
+  /// Stage a path/bytes into an app-owned `tdlib_upload_*` file.
+  ///
+  /// Same class of fix as voice (always materialize) / video-note prep:
+  /// Android SAF / MediaStore / file_picker paths often `exists` for Dart but
+  /// TDLib native `fopen` → 400.
+  Future<String> stageLocalFileForTdlib({
+    String? localPath,
+    List<int>? bytes,
+    required String filename,
+  }) async {
+    if (bytes != null && bytes.isNotEmpty) {
+      return materializeTempFile(bytes: bytes, filename: filename);
+    }
+    final srcPath = localPath?.trim() ?? '';
+    if (srcPath.isEmpty) {
+      throw StateError('No local file for TDLib upload');
+    }
+    final src = File(srcPath);
+    if (!await src.exists()) {
+      throw StateError('Local file missing for TDLib upload');
+    }
+    final base = p.basename(srcPath);
+    if (base.startsWith('tdlib_upload_')) {
+      return srcPath;
+    }
+    final dir = await getTemporaryDirectory();
+    final safe = filename.replaceAll(RegExp(r'[^\w.\-]+'), '_');
+    final name = safe.isEmpty ? 'file.bin' : safe;
+    final dest = File(
+      p.join(
+        dir.path,
+        'tdlib_upload_${DateTime.now().microsecondsSinceEpoch}_$name',
+      ),
+    );
+    await src.copy(dest.path);
+    return dest.path;
   }
 
   Future<void> editMessageText(
@@ -10884,34 +12868,48 @@ class TelegramTdlibService extends ChangeNotifier {
         'filter': {'@type': 'searchMessagesFilterPhotoAndVideo'},
       });
       final parsed = _parseMessagesList(res);
-      // Warm thumbs so the grid isn't empty gray tiles.
+      // Warm soft/chat-quality thumbs. Must be foreground — pump skips all
+      // background jobs while a chat is open (profile sheet is opened from
+      // chat → background sheet-media never started → gray placeholders).
       for (final m in parsed) {
-        final photoId = m.photoRemoteId;
-        if (photoId != null && !_filePathCache.containsKey(photoId)) {
-          _queueFileDownload(
-            photoId,
-            priority: prioBackground,
-            background: true,
-            chatId: chatId,
-            reason: 'sheet-media',
-          );
-        }
-        final thumbId = m.videoThumbFileId;
-        if (thumbId != null && !_filePathCache.containsKey(thumbId)) {
-          _queueFileDownload(
-            thumbId,
-            priority: prioBackground,
-            background: true,
-            chatId: chatId,
-            reason: 'sheet-media-thumb',
-          );
-        }
+        unawaited(ensureSheetMediaPreview(m));
       }
       return parsed;
     } catch (e) {
       debugPrint('[tdlib] searchChatMedia($chatId): $e');
       return const [];
     }
+  }
+
+  /// Soft `m` / video thumb for profile+chat info gallery grids.
+  int? sheetMediaPreviewFileId(TdlibMessage m) {
+    if (m.isPhoto || m.photoRemoteId != null) {
+      // Chat bubbles paint soft `m` first — same quality for the grid.
+      if (m.photoFallbackFileIds.isNotEmpty) {
+        return m.photoFallbackFileIds.first;
+      }
+      return m.photoRemoteId;
+    }
+    return m.videoThumbFileId ?? m.videoNoteThumbFileId;
+  }
+
+  /// Queue a chat-quality preview for a sheet gallery tile (wire allowed).
+  Future<String?> ensureSheetMediaPreview(TdlibMessage m) async {
+    final cached = resolvedPhotoPath(m);
+    if (cached != null && cached.isNotEmpty) return cached;
+    if (m.videoThumbLocalPath != null && m.videoThumbLocalPath!.isNotEmpty) {
+      return m.videoThumbLocalPath;
+    }
+    final id = sheetMediaPreviewFileId(m);
+    if (id == null || id <= 0) return null;
+    final ram = cachedFilePath(id);
+    if (ram != null && ram.isNotEmpty) return ram;
+    return ensureFileLocal(
+      id,
+      priority: prioHubAvatar,
+      reason: 'sheet-media:${m.chatId}:${m.id}',
+      waitFor: const Duration(seconds: 45),
+    );
   }
 
   Future<List<({int messageId, String url})>> searchChatLinks(
@@ -10934,6 +12932,9 @@ class TelegramTdlibService extends ChangeNotifier {
       final seen = <String>{};
       for (final m in _parseMessagesList(res)) {
         for (final url in _urlsFromMessage(m)) {
+          // Profile «Ссылки»: hide t.me / telegram.me — redundant next to
+          // chat identity / in-app navigation.
+          if (TelegramLinkUtils.isTelegramHostUrl(url)) continue;
           if (!seen.add(url)) continue;
           out.add((messageId: m.id, url: url));
         }
@@ -10992,6 +12993,11 @@ class TelegramTdlibService extends ChangeNotifier {
     return parsed;
   }
 
+  /// TDLib stores active emoji reactions **without** U+FE0F (td#1928;
+  /// SessionLog: `The reaction isn't available` for `❤️` vs `❤`).
+  static String normalizeReactionEmoji(String emoji) =>
+      emoji.replaceAll('\uFE0F', '').trim();
+
   Future<void> toggleReaction({
     required int chatId,
     required int messageId,
@@ -11000,6 +13006,55 @@ class TelegramTdlibService extends ChangeNotifier {
   }) async {
     final c = _client;
     if (c == null) return;
+    var normalized = normalizeReactionEmoji(emoji);
+    if (normalized.isEmpty) return;
+    try {
+      await _sendReactionToggle(
+        c,
+        chatId: chatId,
+        messageId: messageId,
+        emoji: normalized,
+        add: add,
+      );
+      _mediaLog(
+        'reaction ${add ? 'add' : 'remove'} ok '
+        'chat=$chatId msg=$messageId emoji=$normalized',
+      );
+    } catch (e) {
+      _mediaLog(
+        'reaction ${add ? 'add' : 'remove'} fail '
+        'chat=$chatId msg=$messageId emoji=$normalized err=$e',
+      );
+      // Restricted chats / FE0F variants: match against TDLib's available list
+      // (levlam td#1928 — open chat keeps this list warm).
+      if (!add) rethrow;
+      final matched = await _matchAvailableReactionEmoji(
+        chatId,
+        messageId,
+        normalized,
+      );
+      if (matched == null || matched == normalized) rethrow;
+      await _sendReactionToggle(
+        c,
+        chatId: chatId,
+        messageId: messageId,
+        emoji: matched,
+        add: true,
+      );
+      _mediaLog(
+        'reaction add ok (matched available) '
+        'chat=$chatId msg=$messageId emoji=$matched',
+      );
+    }
+  }
+
+  Future<void> _sendReactionToggle(
+    TdlibJsonClient c, {
+    required int chatId,
+    required int messageId,
+    required String emoji,
+    required bool add,
+  }) async {
     if (add) {
       await c.sendAwait({
         '@type': 'addMessageReaction',
@@ -11022,6 +13077,48 @@ class TelegramTdlibService extends ChangeNotifier {
           'emoji': emoji,
         },
       });
+    }
+  }
+
+  /// Pick an available emoji that matches [want] after FE0F-normalize.
+  Future<String?> _matchAvailableReactionEmoji(
+    int chatId,
+    int messageId,
+    String want,
+  ) async {
+    final c = _client;
+    if (c == null) return null;
+    try {
+      final res = await c.sendAwait({
+        '@type': 'getMessageAvailableReactions',
+        'chat_id': chatId,
+        'message_id': messageId,
+        'row_size': 8,
+      }, timeout: const Duration(seconds: 8));
+      if (res['@type'] != 'availableReactions') return null;
+      final wantN = normalizeReactionEmoji(want);
+      String? fromList(dynamic raw) {
+        if (raw is! List) return null;
+        for (final item in raw) {
+          if (item is! Map) continue;
+          final type = item['type'] ?? item;
+          if (type is! Map) continue;
+          if (type['@type']?.toString() != 'reactionTypeEmoji') continue;
+          final e = normalizeReactionEmoji(type['emoji']?.toString() ?? '');
+          if (e.isEmpty) continue;
+          if (e == wantN) return type['emoji']?.toString() ?? e;
+        }
+        return null;
+      }
+
+      return fromList(res['top_reactions']) ??
+          fromList(res['recent_reactions']) ??
+          fromList(res['popular_reactions']);
+    } catch (e) {
+      _mediaLog(
+        'reaction available-list fail chat=$chatId msg=$messageId err=$e',
+      );
+      return null;
     }
   }
 
@@ -11058,14 +13155,24 @@ class TelegramTdlibService extends ChangeNotifier {
     if (fileId <= 0) return;
     _focusHoldUntil = null;
     _pendingNeighborMessageIds = const [];
+    // R71: pierce Ready DF / post-restart cool so tap is not disk-miss for 22s.
+    _releaseDfWireHoldForUserTap('preempt-tap:$reason');
+    // R70: user tap retries a previously poisoned id (voice give-up while
+    // !Ready / complete-defer loop). Clear only this file — not the set.
+    if (_mediaGiveUpFileIds.remove(fileId)) {
+      _dfStormCdnRetried.remove(fileId);
+      _mediaLog('media-give-up clear file=$fileId why=preempt-tap:$reason');
+    }
 
     // Channel videos often need openMessageContent or CDN never unlocks.
     // R49: force — focus debounce must not skip open/view on the tap itself.
-    if (reason.contains('video:') || reason.contains('tap:photo:')) {
+    if (reason.contains('video:') ||
+        reason.contains('tap:photo:') ||
+        reason.contains('voice:')) {
       await _openMessageContentForFile(
         chatId,
         fileId,
-        force: reason.contains('video:'),
+        force: reason.contains('video:') || reason.contains('voice:'),
       );
     }
 
@@ -11074,6 +13181,7 @@ class TelegramTdlibService extends ChangeNotifier {
         r.startsWith('focus-tail:') ||
         r.startsWith('focus-upgrade:') ||
         r.startsWith('neighbor:') ||
+        r.startsWith('unread-tip:') ||
         r.startsWith('auto:video:') ||
         r.startsWith('stall-fallback:') ||
         r.startsWith('stall-retry:') ||
@@ -11184,6 +13292,7 @@ class TelegramTdlibService extends ChangeNotifier {
     // User taps use reason tap:* / focus paths — those still go on the wire.
     // R22: album:prefetch also stays disk-only — 5 waiters piled behind one
     // 0B focus (SessionLog 16:37 queued=6).
+    // sheet-media:* is intentional foreground (info Gallery tab) — allow wire.
     final isBareEnsure = reason == 'ensure' ||
         reason == 'peer-avatar' ||
         reason == 'avatar' ||
@@ -11238,11 +13347,18 @@ class TelegramTdlibService extends ChangeNotifier {
       'ensure-queue file=$fileId reason=$reason prio=$priority '
       'timeout=${waitFor.inSeconds}s ${_downloadQueueStats()}',
     );
+    // Prefer chat id embedded in sheet-media:* so purge keeps the right chat.
+    final sheetChat = () {
+      if (!reason.startsWith('sheet-media:')) return null;
+      final parts = reason.split(':');
+      if (parts.length < 2) return null;
+      return int.tryParse(parts[1]);
+    }();
     _queueFileDownload(
       fileId,
       priority: priority,
       background: false,
-      chatId: _openChatId,
+      chatId: sheetChat ?? _openChatId,
       reason: reason,
     );
     try {
@@ -11523,7 +13639,7 @@ class TelegramTdlibService extends ChangeNotifier {
     final type = chat['type'];
     if (type is! Map) return const [];
     final typeName = type['@type']?.toString() ?? '';
-    final out = <TdlibChatMember>[];
+    final specs = <({int userId, bool isCreator, bool isAdmin})>[];
 
     try {
       if (typeName == 'chatTypeBasicGroup') {
@@ -11549,8 +13665,8 @@ class TelegramTdlibService extends ChangeNotifier {
           final status = m['status'];
           final statusType =
               status is Map ? status['@type']?.toString() ?? '' : '';
-          out.add(_chatMemberFromUserId(
-            userId,
+          specs.add((
+            userId: userId,
             isCreator: statusType == 'chatMemberStatusCreator',
             isAdmin: statusType == 'chatMemberStatusAdministrator',
           ));
@@ -11559,13 +13675,13 @@ class TelegramTdlibService extends ChangeNotifier {
         final isChannel = type['is_channel'] == true;
         if (isChannel) return const [];
         var offset = '';
-        while (out.length < limit) {
+        while (specs.length < limit) {
           final res = await c.sendAwait({
             '@type': 'getSupergroupMembers',
             'supergroup_id': _tdlibInt(type['supergroup_id']),
             'filter': {'@type': 'supergroupMembersFilterRecent'},
-            'offset': offset.isEmpty ? 0 : int.tryParse(offset) ?? out.length,
-            'limit': (limit - out.length).clamp(1, 200),
+            'offset': offset.isEmpty ? 0 : int.tryParse(offset) ?? specs.length,
+            'limit': (limit - specs.length).clamp(1, 200),
           });
           if (res['@type'] != 'chatMembers') break;
           final members = res['members'];
@@ -11584,17 +13700,17 @@ class TelegramTdlibService extends ChangeNotifier {
             final status = m['status'];
             final statusType =
                 status is Map ? status['@type']?.toString() ?? '' : '';
-            out.add(_chatMemberFromUserId(
-              userId,
+            specs.add((
+              userId: userId,
               isCreator: statusType == 'chatMemberStatusCreator',
               isAdmin: statusType == 'chatMemberStatusAdministrator',
             ));
-            if (out.length >= limit) break;
+            if (specs.length >= limit) break;
           }
-          final total = (res['total_count'] as num?)?.toInt() ?? out.length;
-          if (out.length >= total || members.isEmpty) break;
+          final total = (res['total_count'] as num?)?.toInt() ?? specs.length;
+          if (specs.length >= total || members.isEmpty) break;
           // getSupergroupMembers uses numeric offset in recent TDLib.
-          offset = '${out.length}';
+          offset = '${specs.length}';
           if (members.length < 10) break;
         }
       }
@@ -11602,12 +13718,63 @@ class TelegramTdlibService extends ChangeNotifier {
       debugPrint('[tdlib] chatMembers($chatId): $e');
     }
 
+    // Hydrate users (names / profile_photo) before painting the list.
+    const chunk = 8;
+    for (var i = 0; i < specs.length; i += chunk) {
+      final slice = specs.skip(i).take(chunk);
+      await Future.wait([
+        for (final s in slice)
+          _refreshUser(s.userId, queueAvatar: false),
+      ]);
+    }
+
+    final out = <TdlibChatMember>[
+      for (final s in specs)
+        _chatMemberFromUserId(
+          s.userId,
+          isCreator: s.isCreator,
+          isAdmin: s.isAdmin,
+        ),
+    ];
     out.sort((a, b) {
       if (a.isCreator != b.isCreator) return a.isCreator ? -1 : 1;
       if (a.isAdmin != b.isAdmin) return a.isAdmin ? -1 : 1;
       return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
     });
+
+    // Progressive disk/wire fill — sheet listens via [userAvatarLocalPath].
+    unawaited(_prefetchGroupMemberAvatars([
+      for (final m in out) m.userId,
+    ]));
     return out;
+  }
+
+  /// Local path for a TG user's small profile photo (if already on disk).
+  String? userAvatarLocalPath(int userId) {
+    if (userId <= 0) return null;
+    final fileId = _resolveUserAvatarFileId(_users[userId]);
+    if (fileId == null || fileId <= 0) return null;
+    return cachedFilePath(fileId);
+  }
+
+  Future<void> _prefetchGroupMemberAvatars(List<int> userIds) async {
+    for (final userId in userIds) {
+      if (_tearingDown || _client == null) return;
+      final fileId = _resolveUserAvatarFileId(_users[userId]);
+      if (fileId == null || fileId <= 0) continue;
+      if (cachedFilePath(fileId) != null) continue;
+      try {
+        await ensureFileLocal(
+          fileId,
+          priority: prioBackground,
+          waitFor: const Duration(seconds: 20),
+          reason: 'group-member',
+        );
+      } catch (_) {}
+      if (cachedFilePath(fileId) != null) {
+        _notifyUi();
+      }
+    }
   }
 
   TdlibChatMember _chatMemberFromUserId(
@@ -11636,15 +13803,7 @@ class TelegramTdlibService extends ChangeNotifier {
     }
     String? path;
     if (fileId != null && fileId > 0) {
-      path = _filePathCache[fileId];
-      if (path == null || path.isEmpty) {
-        _queueFileDownload(
-          fileId,
-          priority: prioBackground,
-          background: true,
-          reason: 'member-avatar',
-        );
-      }
+      path = cachedFilePath(fileId);
     }
     return TdlibChatMember(
       userId: userId,
@@ -12047,6 +14206,9 @@ class TelegramTdlibService extends ChangeNotifier {
     return (type['user_id'] as num?)?.toInt();
   }
 
+  /// Peer user id for a private chat (including Saved Messages = self).
+  int? privatePeerUserId(int chatId) => _privateUserId(chatId);
+
   /// Private chat id for [userId], if that DM already exists in the cache.
   int? privateChatIdForUser(int userId) {
     if (userId <= 0) return null;
@@ -12057,6 +14219,32 @@ class TelegramTdlibService extends ChangeNotifier {
       if (_tdlibInt(type['user_id']) == userId) return entry.key;
     }
     return null;
+  }
+
+  /// Find or create the private chat with [userId] (TDLib `createPrivateChat`).
+  Future<int?> ensurePrivateChatId(int userId) async {
+    if (userId <= 0) return null;
+    final existing = privateChatIdForUser(userId);
+    if (existing != null && existing != 0) return existing;
+    final c = _client;
+    if (c == null || !isReady) return null;
+    try {
+      final res = await c.sendAwait({
+        '@type': 'createPrivateChat',
+        'user_id': userId,
+        'force': true,
+      }, timeout: const Duration(seconds: 15));
+      final chatId = _tdlibInt(res['id']);
+      if (chatId > 0) {
+        if (res['@type']?.toString() == 'chat') {
+          _applyChatRow(chatId, Map<String, dynamic>.from(res));
+        }
+        return chatId;
+      }
+    } catch (e) {
+      debugPrint('[tdlib] ensurePrivateChatId($userId): $e');
+    }
+    return privateChatIdForUser(userId);
   }
 
   /// Ensure Saved Messages private chat exists; returns its chat id.
@@ -12212,29 +14400,46 @@ class TelegramTdlibService extends ChangeNotifier {
   }
 
   Future<void> _onActiveNotifications(Map<String, dynamic> update) async {
+    // Bootstrap snapshot on TDLib start / reconnect — NOT live traffic.
+    // Raising banners here re-fired the same unread as a "new" push on every
+    // app open (and resurrected old unread as zombie pushes). Sync maps +
+    // ack TDLib's queue only; live shows come from updateNotificationGroup.
     final groups = update['groups'];
     if (groups is! List) return;
+    var groupsN = 0;
+    var notifsN = 0;
+    var acked = 0;
     for (final g in groups) {
       if (g is! Map) continue;
       final groupId = (g['id'] as num?)?.toInt();
       final chatId = (g['chat_id'] as num?)?.toInt();
       final notifications = g['notifications'];
       if (groupId == null || chatId == null) continue;
+      groupsN++;
       _notifGroupChatId[groupId] = chatId;
       if (notifications is! List || notifications.isEmpty) {
         await _cancelLocalTdlibNotification(chatId);
         continue;
       }
-      final last = notifications.last;
-      if (last is Map) {
-        await _showOrSkipTdlibNotification(
-          groupId: groupId,
-          chatId: chatId,
-          notification: Map<String, dynamic>.from(last),
-          isSilent: last['is_silent'] == true,
-        );
+      for (final raw in notifications) {
+        if (raw is! Map) continue;
+        notifsN++;
+        final notification = Map<String, dynamic>.from(raw);
+        await _ackRemoveNotification(groupId, notification);
+        acked++;
       }
+      await _cancelLocalTdlibNotification(chatId);
     }
+    _slog('tg.push', 'active_bootstrap', {
+      'groups': groupsN,
+      'notifs': notifsN,
+      'acked': acked,
+      'raised': 0,
+    });
+    _mediaLog(
+      'notif active-bootstrap groups=$groupsN notifs=$notifsN '
+      'acked=$acked raised=0',
+    );
   }
 
   Future<void> _onNotificationGroup(Map<String, dynamic> update) async {
@@ -12273,6 +14478,7 @@ class TelegramTdlibService extends ChangeNotifier {
           chatId: chatId,
           notification: Map<String, dynamic>.from(last),
           isSilent: silent,
+          source: 'group_added',
         );
       }
     } else if (total <= 0) {
@@ -12292,6 +14498,7 @@ class TelegramTdlibService extends ChangeNotifier {
       chatId: chatId,
       notification: Map<String, dynamic>.from(notification),
       isSilent: notification['is_silent'] == true,
+      source: 'notif_update',
     );
   }
 
@@ -12304,26 +14511,82 @@ class TelegramTdlibService extends ChangeNotifier {
     return _openChatId == chatId;
   }
 
+  int? _tdlibNotificationMessageId(Map<String, dynamic> notification) {
+    final type = notification['type'];
+    if (type is! Map) return null;
+    final typeName = type['@type']?.toString() ?? '';
+    if (typeName == 'notificationTypeNewMessage') {
+      final message = type['message'];
+      if (message is Map) {
+        final id = _tdlibInt(message['id']);
+        return id == 0 ? null : id;
+      }
+    }
+    if (typeName == 'notificationTypeNewPushMessage') {
+      final id = _tdlibInt(type['message_id']);
+      return id == 0 ? null : id;
+    }
+    return null;
+  }
+
   Future<void> _showOrSkipTdlibNotification({
     required int groupId,
     required int chatId,
     required Map<String, dynamic> notification,
     required bool isSilent,
+    String source = 'live',
   }) async {
     if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
+
+    final notifId = (notification['id'] as num?)?.toInt();
+    final messageId = _tdlibNotificationMessageId(notification);
+    final notifDate = (notification['date'] as num?)?.toInt() ?? 0;
 
     // Muted / silent (TDLib is_silent or notification_sound_id=0): never raise
     // a system banner — matches official TG. Do not removeNotification: that
     // would ack the group and can wipe unread while the chat stays muted.
     if (isSilent) {
       await _cancelLocalTdlibNotification(chatId);
+      _slog('tg.push', 'skip_silent', {
+        'chatId': chatId,
+        'groupId': groupId,
+        'notifId': notifId,
+        'messageId': messageId,
+        'source': source,
+      });
       return;
     }
 
     if (await _shouldSkipTdlibLocalPush(chatId)) {
       await _ackRemoveNotification(groupId, notification);
       await _cancelLocalTdlibNotification(chatId);
+      _slog('tg.push', 'skip_open_chat', {
+        'chatId': chatId,
+        'groupId': groupId,
+        'notifId': notifId,
+        'messageId': messageId,
+        'source': source,
+      });
       return;
+    }
+
+    // Stale TDLib notification (old unread kept in the group): do not raise —
+    // this is the "zombie push" class. Ack so it does not return next boot.
+    if (notifDate > 0) {
+      final ageSec =
+          DateTime.now().millisecondsSinceEpoch ~/ 1000 - notifDate;
+      if (ageSec > 180) {
+        await _ackRemoveNotification(groupId, notification);
+        _slog('tg.push', 'skip_stale', {
+          'chatId': chatId,
+          'groupId': groupId,
+          'notifId': notifId,
+          'messageId': messageId,
+          'ageSec': ageSec,
+          'source': source,
+        });
+        return;
+      }
     }
 
     final parsed = _parseTdlibNotificationContent(chatId, notification);
@@ -12333,6 +14596,8 @@ class TelegramTdlibService extends ChangeNotifier {
       'type': kTdlibPushType,
       'chat_id': '$chatId',
       'notification_group_id': '$groupId',
+      if (notifId != null) 'notification_id': '$notifId',
+      if (messageId != null) 'message_id': '$messageId',
       'title': parsed.title,
       'body': parsed.body,
       'thread_title': parsed.title,
@@ -12343,6 +14608,17 @@ class TelegramTdlibService extends ChangeNotifier {
       body: parsed.body,
       data: data,
     );
+    // Ack after raise so reconnect does not re-deliver the same group as a
+    // fresh banner (duplicate-on-open). Unread on the chat is unchanged.
+    await _ackRemoveNotification(groupId, notification);
+    _slog('tg.push', 'raised', {
+      'chatId': chatId,
+      'groupId': groupId,
+      'notifId': notifId,
+      'messageId': messageId,
+      'source': source,
+      'preview': SessionLog.textPreview(parsed.body),
+    });
   }
 
   ({String title, String body})? _parseTdlibNotificationContent(
@@ -12603,6 +14879,7 @@ class TelegramTdlibService extends ChangeNotifier {
           }
           if (unreadCountFor(chatId) > 0) {
             unawaited(warmUnreadChatHistory(chatId));
+            warmUnreadTipMediaFromHub();
           }
         } else if (type == 'updateChatReadOutbox') {
           final lastOut =
@@ -12626,6 +14903,10 @@ class TelegramTdlibService extends ChangeNotifier {
           if (_canSendMessages[chatId] != next) {
             _canSendMessages[chatId] = next;
           }
+        }
+        if (type == 'updateChatLastMessage' ||
+            type == 'updateChatReadInbox') {
+          _scheduleHubSnapshotRowPersist(chatId);
         }
         _notifyListenersForChat(chatId);
         break;
@@ -12840,6 +15121,7 @@ class TelegramTdlibService extends ChangeNotifier {
               // Tip heuristic in unreadCountFor covers hub badges; do not
               // permanently bump chat['unread_count'] (revives after getChat).
               unawaited(warmUnreadChatHistory(msg.chatId));
+              warmUnreadTipMediaFromHub();
             }
             if (!msg.isService && _bridgeNewMessageListeners.isNotEmpty) {
               for (final bridgeHook in List.of(_bridgeNewMessageListeners)) {
@@ -13290,25 +15572,31 @@ class TelegramTdlibService extends ChangeNotifier {
     final c = _client;
     if (c == null) return;
 
-    await _loadDebugMtprotoProxyPref();
-    if (kDebugMode && !_debugMtprotoProxyPref) {
+    await _loadMtprotoProxyMode();
+    if (_mtprotoProxyMode == TdlibMtprotoProxyMode.alwaysOff) {
       _useMtprotoProxy = false;
       _useMtprotoProxyResolved = false;
-      _mediaLog('proxy skipped (user AppBar OFF)');
-      await _disableAllProxiesUnlocked(c, why: 'debug-switch-off');
+      _mediaLog('proxy skipped (user alwaysOff)');
+      await _disableAllProxiesUnlocked(c, why: 'user-mode-off');
       _enabledProxyId = null;
       return;
     }
 
-    // R18: AppBar ON (or release) → follow geo. Do not force FakeTLS abroad
-    // (VPN leave-RU must stay direct; return-to-RU re-enables via geo recheck).
-    _useMtprotoProxyResolved ??= await shouldUseTdlibMtprotoProxy();
-    _useMtprotoProxy = _useMtprotoProxyResolved!;
-    if (!_useMtprotoProxy) {
-      _mediaLog('proxy skipped (IP outside RU — direct MTProto)');
-      await _disableAllProxiesUnlocked(c, why: 'geo-non-ru');
-      _enabledProxyId = null;
-      return;
+    if (_mtprotoProxyMode == TdlibMtprotoProxyMode.alwaysOn) {
+      // User force-on: skip geo (VPN / non-RU still FakeTLS).
+      _useMtprotoProxyResolved = true;
+      _useMtprotoProxy = true;
+    } else {
+      // R18 auto: follow geo. Do not force FakeTLS abroad
+      // (VPN leave-RU must stay direct; return-to-RU re-enables via geo recheck).
+      _useMtprotoProxyResolved ??= await shouldUseTdlibMtprotoProxy();
+      _useMtprotoProxy = _useMtprotoProxyResolved!;
+      if (!_useMtprotoProxy) {
+        _mediaLog('proxy skipped (IP outside RU — direct MTProto)');
+        await _disableAllProxiesUnlocked(c, why: 'geo-non-ru');
+        _enabledProxyId = null;
+        return;
+      }
     }
 
     await _refreshRemoteProxyEndpoints();
@@ -13339,6 +15627,9 @@ class TelegramTdlibService extends ChangeNotifier {
       // Prefer the hop that last reached Ready on this device/network.
       // (R24 mid-ladder skip stuck us on dead 8443 — SessionLog 14:41–14:44.)
       await _loadPreferredProxyEndpointIndex();
+      // R67: soft-restart on cellular must not restore wifi preferred :443
+      // (ClientHello timeout). Override after preferred load.
+      _preferEndpointForCurrentBearer(why: 'ensure');
     }
     if (_proxyEndpointIndex < 0 || _proxyEndpointIndex >= endpoints.length) {
       _proxyEndpointIndex = 0;
@@ -13447,6 +15738,7 @@ class TelegramTdlibService extends ChangeNotifier {
       if (sec != null && sec >= 0) {
         _lastPongMs = (sec * 1000).round();
         _lastPongAt = DateTime.now();
+        _lastProxyPingFailAt = null;
       }
       _mediaLog('proxy ping ok id=$proxyId seconds=$sec');
       _slog('tg.proxy', 'pong', {
@@ -13460,10 +15752,45 @@ class TelegramTdlibService extends ChangeNotifier {
     } on TdlibApiException catch (e) {
       // Soft-fail only: do NOT failover here. Blind RR after a single Pong
       // timeout dropped a working Ready session into long Connecting.
+      // R51: remember fail so Ready+0B stall can soft-restart zombie plane.
+      _noteProxyPingFail(e);
       _mediaLog('proxy ping soft-fail id=$proxyId err=$e');
     } catch (e) {
+      _noteProxyPingFail(e);
       _mediaLog('proxy ping soft-fail id=$proxyId err=$e');
     }
+  }
+
+  void _noteProxyPingFail(Object err) {
+    final s = err.toString();
+    // TearDown / dispose races are not plane-health signals.
+    if (s.contains('disposed') ||
+        s.contains('closed') ||
+        s.contains('client is null')) {
+      return;
+    }
+    _lastProxyPingFailAt = DateTime.now();
+  }
+
+  void _flushPendingMediaAfterSoftRestart() {
+    if (_pendingMediaAfterSoftRestart.isEmpty) return;
+    if (!_tdlibReadyForMedia || !_canStartNetworkDownload) return;
+    final jobs = List<_TdlibDownloadJob>.of(_pendingMediaAfterSoftRestart);
+    _pendingMediaAfterSoftRestart.clear();
+    _mediaLog(
+      'flush-pending-after-soft-restart n=${jobs.length} '
+      'files=${jobs.map((j) => j.fileId).join(',')}',
+    );
+    for (final j in jobs) {
+      _queueFileDownload(
+        j.fileId,
+        priority: j.priority,
+        background: j.background,
+        chatId: j.chatId ?? _openChatId,
+        reason: j.reason.isEmpty ? 'stall-retry:zombie-plane' : j.reason,
+      );
+    }
+    _pumpDownloadQueue();
   }
 
   TdlibMessage? _parseMessage(Map<String, dynamic> m) {

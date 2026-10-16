@@ -40,11 +40,27 @@ class ChatVoicePlaybackCoordinator {
     return next;
   }
 
+  /// [messages] must be chronological oldest→newest (same order as FC `_messages`
+  /// / TG timeline before reverse). Autoplay advances to the next voice only when
+  /// it is the immediately following message («ниже по чату»).
   void syncFromMessages(List<Map<String, dynamic>> messages) {
     final next = <({int messageIndex, int attachmentId})>[];
     for (var i = 0; i < messages.length; i++) {
       final id = firstVoiceAttachmentId(messages[i]);
-      if (id != null) {
+      if (id != null && id > 0) {
+        next.add((messageIndex: i, attachmentId: id));
+      }
+    }
+    _sequence = next;
+  }
+
+  /// Same contract as [syncFromMessages], for screens that already know voice ids
+  /// per chronological row (null / ≤0 = not a voice bubble).
+  void syncFromVoiceAttachmentIds(List<int?> voiceAttachmentIdByMessage) {
+    final next = <({int messageIndex, int attachmentId})>[];
+    for (var i = 0; i < voiceAttachmentIdByMessage.length; i++) {
+      final id = voiceAttachmentIdByMessage[i];
+      if (id != null && id > 0) {
         next.add((messageIndex: i, attachmentId: id));
       }
     }
@@ -85,9 +101,15 @@ class ChatVoicePlaybackCoordinator {
     final next = _sequence[idx + 1];
     // Only autoplay when the next voice is the immediately following message.
     if (next.messageIndex != current.messageIndex + 1) return;
-    final handle = _handles[next.attachmentId];
-    if (handle == null) return;
-    await handle.playFromAutoplay();
+    // Next bubble may mount one frame later (TG list keepAlives=false).
+    for (var attempt = 0; attempt < 6; attempt++) {
+      final handle = _handles[next.attachmentId];
+      if (handle != null) {
+        await handle.playFromAutoplay();
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
   }
 
   static int? firstVoiceAttachmentId(Map<String, dynamic> message) {

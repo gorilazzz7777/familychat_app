@@ -18,5 +18,6 @@ Widget tdlibLocalFileImage(
     fit: fit,
     width: width,
     height: height,
+    gaplessPlayback: true,
   );
 }

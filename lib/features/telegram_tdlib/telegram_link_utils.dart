@@ -5,6 +5,17 @@ abstract final class TelegramLinkUtils {
     caseSensitive: false,
   );
 
+  /// True when the URL host is a Telegram short-link domain (`t.me`, …).
+  /// Used to hide redundant internal links from profile «Ссылки» tabs.
+  static bool isTelegramHostUrl(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return false;
+    if (value.startsWith('tg://')) return true;
+    final uri = Uri.tryParse(_ensureScheme(value));
+    if (uri == null) return false;
+    return _hostPattern.hasMatch(uri.host);
+  }
+
   /// True for public/private Telegram message / chat / username links.
   static bool looksLikeTelegramLink(String raw) {
     final value = raw.trim();

@@ -3,9 +3,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
+/// TDLib rejects U+FE0F on emoji reactions (`❤️` → use `❤`).
 const kGorilaQuickReactionEmojis = [
   '👍',
-  '❤️',
+  '❤',
   '😂',
   '😮',
   '😢',

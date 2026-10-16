@@ -1,12 +1,16 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/audio/voice_playback_proximity_route.dart';
+import '../../../../core/diagnostics/session_log.dart';
 import '../../../../core/media/gallery_media_utils.dart';
 import '../../../../core/media/local_device_file.dart';
 import '../../../../core/media/media_local_index.dart';
@@ -20,6 +24,8 @@ import '../../data/chat_realtime_utils.dart';
 import '../../data/chat_voice_playback_coordinator.dart';
 import '../../data/chat_voice_transcription_prefs.dart';
 import '../../data/chat_voice_utils.dart';
+import '../../../telegram_tdlib/telegram_tdlib_providers.dart';
+import '../../../telegram_tdlib/telegram_tdlib_service.dart';
 import 'chat_network_image.dart';
 
 class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
@@ -55,7 +61,8 @@ class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
       _ChatVoiceMessagePlayerState();
 }
 
-class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer> {
+class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
+    with WidgetsBindingObserver {
   final _player = AudioPlayer();
   late final ChatVoicePlayerHandle _handle;
   bool _playing = false;
@@ -67,12 +74,41 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
   StreamSubscription<PlayerState>? _stateSub;
   StreamSubscription<Duration>? _durationSub;
   StreamSubscription<Duration>? _positionSub;
+  Duration? _lastLoggedPosition;
+  DateTime? _lastPositionAt;
+  HardwareKeyboard? _keyboard;
+  bool _keyboardHooked = false;
 
   int? get _attachmentId => chatAsInt(widget.attachment['id']);
+
+  void _voiceLog(String evt, [Map<String, Object?> fields = const {}]) {
+    SessionLog.instance.event('voice.play', evt, {
+      'att': _attachmentId,
+      'thread': widget.threadId,
+      'tdlib': _isTdlibVoice,
+      'playing': _playing,
+      'preparing': _preparing,
+      'posMs': _position.inMilliseconds,
+      'totalMs': _total.inMilliseconds,
+      'rate': _rate,
+      ...fields,
+    });
+  }
+
+  bool get _isTdlibVoice =>
+      widget.attachment['tdlib_file_id'] != null ||
+      (widget.attachment['skip_age_defer'] == true &&
+          widget.messageMetadata['source']?.toString() == 'telegram');
+
+  int? get _tdlibFileId =>
+      chatAsInt(widget.attachment['tdlib_file_id']) ??
+      chatAsInt(widget.attachment['id']);
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _hookVolumeKeys(true);
     final durationMs = widget.durationMs;
     if (durationMs != null && durationMs > 0) {
       _total = Duration(milliseconds: durationMs);
@@ -89,7 +125,19 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     _scheduleAutoDownload();
     _stateSub = _player.onPlayerStateChanged.listen((state) {
       if (!mounted) return;
-      setState(() => _playing = state == PlayerState.playing);
+      final playing = state == PlayerState.playing;
+      final wasPlaying = _playing;
+      _voiceLog('player_state', {
+        'state': state.name,
+        'wasPlaying': wasPlaying,
+        'nowPlaying': playing,
+      });
+      setState(() => _playing = playing);
+      if (playing && !wasPlaying) {
+        unawaited(VoicePlaybackProximityRoute.instance.onPlaying());
+      } else if (!playing && wasPlaying) {
+        unawaited(VoicePlaybackProximityRoute.instance.onNotPlaying());
+      }
     });
     _durationSub = _player.onDurationChanged.listen((duration) {
       if (!mounted) return;
@@ -97,14 +145,39 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     });
     _positionSub = _player.onPositionChanged.listen((position) {
       if (!mounted) return;
+      final prev = _lastLoggedPosition;
+      final prevAt = _lastPositionAt;
+      final now = DateTime.now();
+      if (prev != null && prevAt != null) {
+        final wallMs = now.difference(prevAt).inMilliseconds;
+        final mediaDelta = position.inMilliseconds - prev.inMilliseconds;
+        // Stall / jump / rewind while supposedly playing.
+        if (_playing &&
+            (mediaDelta.abs() > 600 ||
+                (wallMs >= 700 && mediaDelta.abs() < 40))) {
+          _voiceLog('position_anomaly', {
+            'fromMs': prev.inMilliseconds,
+            'toMs': position.inMilliseconds,
+            'mediaDeltaMs': mediaDelta,
+            'wallMs': wallMs,
+          });
+        }
+      }
+      _lastLoggedPosition = position;
+      _lastPositionAt = now;
       setState(() => _position = position);
     });
     _completeSub = _player.onPlayerComplete.listen((_) async {
       if (!mounted) return;
+      final wasPlaying = _playing;
+      _voiceLog('complete', {'wasPlaying': wasPlaying});
       setState(() {
         _playing = false;
         _position = Duration.zero;
       });
+      if (wasPlaying) {
+        unawaited(VoicePlaybackProximityRoute.instance.onNotPlaying());
+      }
       final id = _attachmentId;
       if (id != null && id > 0) {
         await ChatVoicePlaybackCoordinator.instance.notifyCompleted(id);
@@ -113,10 +186,70 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _voiceLog('lifecycle', {'state': state.name});
+  }
+
+  void _hookVolumeKeys(bool enable) {
+    if (enable == _keyboardHooked) return;
+    _keyboard ??= HardwareKeyboard.instance;
+    if (enable) {
+      _keyboard!.addHandler(_onKeyEvent);
+      _keyboardHooked = true;
+    } else {
+      _keyboard!.removeHandler(_onKeyEvent);
+      _keyboardHooked = false;
+    }
+  }
+
+  bool _onKeyEvent(KeyEvent event) {
+    // Log only while this bubble is playing — cheek may hit volume/power.
+    if (!_playing) return false;
+    if (event is! KeyDownEvent && event is! KeyUpEvent) return false;
+    final key = event.logicalKey;
+    final isVol = key == LogicalKeyboardKey.audioVolumeUp ||
+        key == LogicalKeyboardKey.audioVolumeDown ||
+        key == LogicalKeyboardKey.audioVolumeMute ||
+        key == LogicalKeyboardKey.power ||
+        key == LogicalKeyboardKey.headsetHook ||
+        key == LogicalKeyboardKey.mediaPlayPause ||
+        key == LogicalKeyboardKey.mediaPlay ||
+        key == LogicalKeyboardKey.mediaPause ||
+        key == LogicalKeyboardKey.mediaStop;
+    if (!isVol) return false;
+    _voiceLog('key', {
+      'type': event.runtimeType.toString(),
+      'key': key.keyLabel.isNotEmpty ? key.keyLabel : key.debugName,
+      'keyId': key.keyId,
+    });
+    return false;
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatVoiceMessagePlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldId = chatAsInt(oldWidget.attachment['id']);
+    final newId = _attachmentId;
+    if (oldId == newId) return;
+    if (oldId != null && oldId > 0) {
+      ChatVoicePlaybackCoordinator.instance.unregister(oldId, _handle);
+    }
+    if (newId != null && newId > 0) {
+      ChatVoicePlaybackCoordinator.instance.register(newId, _handle);
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _hookVolumeKeys(false);
     final id = _attachmentId;
     if (id != null && id > 0) {
       ChatVoicePlaybackCoordinator.instance.unregister(id, _handle);
+    }
+    if (_playing) {
+      _voiceLog('dispose_while_playing');
+      unawaited(VoicePlaybackProximityRoute.instance.onNotPlaying());
     }
     unawaited(_stateSub?.cancel() ?? Future<void>.value());
     unawaited(_durationSub?.cancel() ?? Future<void>.value());
@@ -128,11 +261,13 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
 
   Future<void> _pauseIfPlaying() async {
     if (!_playing) return;
+    _voiceLog('pause_if_playing', {'why': 'coordinator'});
     await _player.pause();
   }
 
   Future<void> _applyRate(double rate) async {
     _rate = rate;
+    _voiceLog('rate', {'rate': rate});
     try {
       await _player.setPlaybackRate(rate);
     } catch (_) {}
@@ -140,13 +275,40 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
   }
 
   void _cycleSpeed() {
+    _voiceLog('ui_speed_tap');
     final next = ChatVoicePlaybackCoordinator.instance.cyclePlaybackRate();
     unawaited(_applyRate(next));
   }
 
-  void _scheduleAutoDownload() {
+  int _lastVoiceEnsureEpoch = -1;
+
+  void _scheduleAutoDownload({bool force = false}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      if (_isTdlibVoice) {
+        final fileId = _tdlibFileId;
+        if (fileId == null || fileId <= 0) return;
+        if (galleryLocalDevicePath(widget.attachment).isNotEmpty) return;
+        final svc = ref.read(telegramTdlibServiceProvider);
+        final cached = svc.cachedFilePath(fileId);
+        if (cached != null && cached.isNotEmpty) return;
+        // R70: after mtproto-up clears give-ups, retry once per epoch so a
+        // voice that failed while !Ready can load without a second tap.
+        final epoch = svc.mediaReadyEpoch;
+        if (!force && epoch == _lastVoiceEnsureEpoch) return;
+        _lastVoiceEnsureEpoch = epoch;
+        unawaited(() async {
+          final path = await svc.ensureFileLocal(
+            fileId,
+            priority: TelegramTdlibService.prioOpenChat,
+            reason: 'voice:$fileId',
+            waitFor: const Duration(seconds: 120),
+          );
+          if (!mounted) return;
+          if (path != null && path.isNotEmpty) setState(() {});
+        }());
+        return;
+      }
       final attachmentId = _attachmentId;
       if (attachmentId == null || attachmentId <= 0) return;
       final settings = ref.read(appSettingsProvider);
@@ -164,6 +326,23 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     });
   }
 
+  Future<String?> _ensureTdlibLocal() async {
+    final fileId = _tdlibFileId;
+    if (fileId == null || fileId <= 0) return null;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    await svc.preemptForUserTap(
+      fileId: fileId,
+      chatId: widget.threadId,
+      reason: 'tap:voice:$fileId',
+    );
+    return svc.ensureFileLocal(
+      fileId,
+      priority: TelegramTdlibService.prioFocused,
+      reason: 'tap:voice:$fileId',
+      waitFor: const Duration(minutes: 10),
+    );
+  }
+
   bool _isLocallyReady() {
     MediaLocalIndex.hydrateAttachment(widget.attachment);
     return ChatMediaAutoDownloadPolicy.isLocallyAvailable(
@@ -176,12 +355,17 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
   }
 
   Future<void> _togglePlayback({bool fromAutoplay = false}) async {
-    if (_preparing) return;
+    if (_preparing) {
+      _voiceLog('toggle_busy', {'fromAutoplay': fromAutoplay});
+      return;
+    }
     if (_playing) {
+      _voiceLog('ui_pause', {'fromAutoplay': fromAutoplay});
       await _player.pause();
       return;
     }
 
+    _voiceLog('ui_play', {'fromAutoplay': fromAutoplay});
     setState(() => _preparing = true);
     try {
       await _ensureMediaAudioContext();
@@ -197,15 +381,26 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
 
       await _player.setPlaybackRate(_rate);
 
-      final localPath = galleryLocalDevicePath(widget.attachment);
+      var localPath = galleryLocalDevicePath(widget.attachment);
+      if (localPath.isEmpty && _isTdlibVoice) {
+        localPath = await _ensureTdlibLocal() ?? '';
+      }
       if (localPath.isNotEmpty && localDeviceFileExists(localPath)) {
+        _voiceLog('play_source', {'src': 'file', 'pathTail': _pathTail(localPath)});
         await _player.play(DeviceFileSource(localPath, mimeType: mime));
         return;
       }
 
       final localBytes = widget.attachment['local_bytes'];
       if (localBytes is Uint8List && localBytes.isNotEmpty) {
+        _voiceLog('play_source', {'src': 'bytes', 'len': localBytes.length});
         await _player.play(BytesSource(localBytes, mimeType: mime));
+        return;
+      }
+
+      if (_isTdlibVoice) {
+        // TDLib path failed — do not hit FC /attachments HTTP (404 forever).
+        _voiceLog('play_abort', {'why': 'tdlib-no-local'});
         return;
       }
 
@@ -217,7 +412,11 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
                   attachmentId: attachmentId,
                   manual: true,
                 );
-        if (bytes == null || bytes.isEmpty) return;
+        if (bytes == null || bytes.isEmpty) {
+          _voiceLog('play_abort', {'why': 'download-empty'});
+          return;
+        }
+        _voiceLog('play_source', {'src': 'download', 'len': bytes.length});
         await _player.play(BytesSource(bytes, mimeType: mime));
         return;
       }
@@ -229,9 +428,13 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
         attachment: widget.attachment,
       );
       if (url.isNotEmpty) {
+        _voiceLog('play_source', {'src': 'url'});
         await _player.play(UrlSource(url, mimeType: mime));
+      } else {
+        _voiceLog('play_abort', {'why': 'no-url'});
       }
     } catch (e, st) {
+      _voiceLog('play_fail', {'err': '$e'});
       debugPrint('voice playback failed: $e\n$st');
       if (!mounted) return;
       if (!fromAutoplay) {
@@ -244,25 +447,17 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     }
   }
 
+  static String _pathTail(String path) {
+    final i = path.lastIndexOf('/');
+    final j = path.lastIndexOf('\\');
+    final cut = i > j ? i : j;
+    return cut >= 0 ? path.substring(cut + 1) : path;
+  }
+
   /// Scrapbook ставит global AudioContext в sonification/ambient — голос молчит.
+  /// Opens the routable pipeline once before play (no mid-play context swap).
   Future<void> _ensureMediaAudioContext() async {
-    try {
-      await AudioPlayer.global.setAudioContext(
-        AudioContext(
-          android: const AudioContextAndroid(
-            isSpeakerphoneOn: false,
-            stayAwake: false,
-            contentType: AndroidContentType.speech,
-            usageType: AndroidUsageType.media,
-            audioFocus: AndroidAudioFocus.gain,
-          ),
-          iOS: AudioContextIOS(
-            category: AVAudioSessionCategory.playback,
-            options: const {},
-          ),
-        ),
-      );
-    } catch (_) {}
+    await VoicePlaybackProximityRoute.prepareForPlayback();
   }
 
   Widget _buildPlayControl({
@@ -318,6 +513,17 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     final onAccent = widget.isMine
         ? theme.colorScheme.primary
         : theme.colorScheme.onPrimary;
+
+    // R70: re-ensure after plane restore (mediaReadyEpoch bump clears give-ups).
+    if (_isTdlibVoice &&
+        galleryLocalDevicePath(widget.attachment).isEmpty) {
+      final epoch = ref.watch(
+        telegramTdlibServiceProvider.select((s) => s.mediaReadyEpoch),
+      );
+      if (epoch != _lastVoiceEnsureEpoch) {
+        _scheduleAutoDownload();
+      }
+    }
 
     final transcript = widget.transcript?.trim();
     final hasTranscript =
@@ -451,6 +657,10 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
                           ? null
                           : (v) async {
                               final ms = (v * totalMs).round();
+                              _voiceLog('ui_seek', {
+                                'toMs': ms,
+                                'fromMs': _position.inMilliseconds,
+                              });
                               await _player.seek(Duration(milliseconds: ms));
                             },
                     ),

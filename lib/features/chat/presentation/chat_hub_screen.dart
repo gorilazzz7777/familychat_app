@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -32,6 +33,7 @@ import 'chat_conversation_screen.dart';
 import 'chat_thread_avatars.dart';
 import 'create_group_screen.dart';
 import '../../telegram_tdlib/presentation/telegram_conversation_screen.dart';
+import '../../telegram_tdlib/presentation/telegram_proxy_settings_screen.dart';
 import '../../telegram_tdlib/tdlib_chat_folder.dart';
 import '../../telegram_tdlib/telegram_group_bridge.dart';
 import '../../telegram_tdlib/telegram_saved_bridge.dart';
@@ -126,6 +128,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   List<Map<String, dynamic>> _snapshotTgRows = const [];
   /// First frame came from [HubFirstPaintSnapshot] (skip skeleton / gates).
   bool _paintedFromSnapshot = false;
+  /// Hold sharp-avatar prefetch so cold-start path swaps don't flash tiles.
+  DateTime? _hubAvatarPrefetchAfter;
+  /// Suppress noisy setState while frozen snapshot is on screen awaiting TG.
+  bool _coldStartCoalesce = false;
+  /// Matched FC+TG DMs: tip from last-session snapshot / live TG enrich.
+  /// Survives SQLite watch replace (FC tip is often stale; activity lives on TG).
+  final Map<int, Map<String, dynamic>> _matchedFcSnapTips = {};
 
   void toggleSearch() {
     setState(() {
@@ -168,36 +177,67 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   @override
   void initState() {
     super.initState();
-    // Premium hubs wait for TG surface so FC rows/folders don't flash alone —
-    // unless we have a frozen last-session snapshot (paint immediately).
-    _pendingFirstPaint = widget.hasIndividualPremium;
-    if (_pendingFirstPaint) {
-      _tdlibRevealTimeout = Timer(const Duration(seconds: 12), () {
-        if (!mounted || !_pendingFirstPaint) return;
-        debugPrint('[hub] first-paint timeout — revealing anyway');
-        _forceFirstPaintReveal();
-      });
-    } else {
+    // Frame-0: full FC from SQLite warm + TG from last-session snapshot.
+    final warmFc = HubFirstPaintSnapshot.warmedFcThreads;
+    final warm = HubFirstPaintSnapshot.warmed;
+    final warmFolders = HubFirstPaintSnapshot.warmedFolders;
+    if (warmFolders != null && warmFolders.isNotEmpty) {
+      _customFolders = warmFolders.map(ChatFolderData.fromJson).toList();
       _fcFoldersLoaded = true;
-      _tdlibMatchesLoaded = true;
-      _mirrorStateLoaded = true;
     }
+    if ((warmFc != null && warmFc.isNotEmpty) ||
+        (warm != null && warm.rows.isNotEmpty)) {
+      _applyColdStartPaint(
+        fcThreads: warmFc,
+        snapshot: warm,
+        notify: false,
+      );
+    } else {
+      // Premium hubs wait for TG surface so FC rows/folders don't flash alone —
+      // unless hydrate fills a frozen snapshot shortly.
+      _pendingFirstPaint = widget.hasIndividualPremium;
+      if (_pendingFirstPaint) {
+        _tdlibRevealTimeout = Timer(const Duration(seconds: 12), () {
+          if (!mounted || !_pendingFirstPaint) return;
+          debugPrint('[hub] first-paint timeout — revealing anyway');
+          _forceFirstPaintReveal();
+        });
+      } else {
+        _fcFoldersLoaded = true;
+        _tdlibMatchesLoaded = true;
+        _mirrorStateLoaded = true;
+      }
+    }
+    // Still async-hydrate in case warm missed (bootstrap race).
     unawaited(_hydrateFromSnapshot());
     unawaited(_reloadTdlibMatches());
     TelegramMatchStore.instance.revision.addListener(_onTdlibMatchesChanged);
-    // Start TDLib immediately — post-frame was too late and let FC paint
-    // first while phase was still unavailable.
-    unawaited(ref.read(telegramTdlibServiceProvider).ensureStarted());
-    unawaited(
-      ref.read(telegramTdlibServiceProvider).reconcileFamilyIdentities(),
-    );
+    // Cold-start: paint hub from SQLite first; start TDLib after 2 frames so
+    // params/proxy CPU does not compete with first list layout.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(ref.read(telegramTdlibServiceProvider).ensureStarted());
+        unawaited(
+          ref.read(telegramTdlibServiceProvider).reconcileFamilyIdentities(),
+        );
+      });
+    });
     WidgetsBinding.instance.addObserver(this);
-    _chips = _systemChipsFor(
+    final baseChips = _systemChipsFor(
       hasIndividualPremium: widget.hasIndividualPremium,
       // Phase may already be ready from a previous session.
       telegramConnected: widget.telegramConnected ||
           ref.read(telegramTdlibServiceProvider).phase == TdlibAuthPhase.ready,
     );
+    // Frame-0: restore full chip bar (FC + TG folders) from last session.
+    final warmChips = HubFirstPaintSnapshot.chipsFromWarm();
+    _chips = warmChips.isNotEmpty
+        ? warmChips
+        : (_customFolders.isNotEmpty
+            ? _composeChips(orderKeys: baseChips.map((c) => c.key).toList())
+            : baseChips);
     _tabController = TabController(length: _chips.length, vsync: this);
     _tabController.addListener(_onFilterTabChanged);
     FamilyChatRealtime.instance.addListener(_onRealtime);
@@ -215,45 +255,126 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     }
   }
 
-  /// Cold start: paint last-session top-15 (FC+TG) without waiting for TDLib.
-  Future<void> _hydrateFromSnapshot() async {
-    final data = await HubFirstPaintSnapshot.read();
-    if (!mounted || data == null || data.rows.isEmpty) return;
+  void _applyColdStartPaint({
+    List<Map<String, dynamic>>? fcThreads,
+    HubFirstPaintData? snapshot,
+    required bool notify,
+  }) {
     final fc = <Map<String, dynamic>>[];
     final tg = <Map<String, dynamic>>[];
-    for (final row in data.rows) {
-      final kind = row['kind']?.toString() ?? '';
-      if (kind == 'tdlib_dm' || kind == 'tdlib_chat') {
-        if (widget.hasIndividualPremium) {
-          tg.add(Map<String, dynamic>.from(row));
-        }
-      } else {
+    if (fcThreads != null && fcThreads.isNotEmpty) {
+      for (final row in fcThreads) {
         fc.add(Map<String, dynamic>.from(row));
       }
     }
+    if (snapshot != null) {
+      final snapFcById = <int, Map<String, dynamic>>{};
+      for (final row in snapshot.rows) {
+        final kind = row['kind']?.toString() ?? '';
+        if (kind == 'tdlib_dm' || kind == 'tdlib_chat') {
+          if (widget.hasIndividualPremium) {
+            tg.add(Map<String, dynamic>.from(row));
+          }
+        } else {
+          final id = chatAsInt(row['id']);
+          if (id != null) snapFcById[id] = row;
+          if (fc.isEmpty) {
+            // SQLite miss — fall back to snapshot FC rows.
+            final copy = Map<String, dynamic>.from(row);
+            fc.add(copy);
+            final sid = chatAsInt(copy['id']);
+            if (sid != null) _rememberMatchedFcTip(sid, copy);
+          }
+        }
+      }
+      // Overlay snapshot last_message onto SQLite FC when snap tip is fresher
+      // (matched FC+TG like Киса: FC tip stale, real activity on TG / snap).
+      if (fc.isNotEmpty && snapFcById.isNotEmpty) {
+        for (var i = 0; i < fc.length; i++) {
+          final id = chatAsInt(fc[i]['id']);
+          if (id == null) continue;
+          final snap = snapFcById[id];
+          if (snap == null) continue;
+          final snapLast = snap['last_message'];
+          if (snapLast is! Map) continue;
+          final applied = _applyFresherLastMessage(
+            fc[i],
+            Map<String, dynamic>.from(snapLast),
+          );
+          if (applied != null) {
+            fc[i] = applied;
+            _rememberMatchedFcTip(id, fc[i]);
+          } else if (_isLinkedFcDm(fc[i])) {
+            final cur = fc[i]['last_message'];
+            if (cur is Map) {
+              _matchedFcSnapTips[id] = Map<String, dynamic>.from(cur);
+            }
+          }
+        }
+      }
+    }
     if (fc.isEmpty && tg.isEmpty) return;
-    _tdlibRevealTimeout?.cancel();
-    _tdlibRevealTimeout = null;
-    setState(() {
+    final tdlibReadyNow = widget.hasIndividualPremium &&
+        ref.read(telegramTdlibServiceProvider).hubSurfaceReady;
+    // Keep gate for premium until live TG replaces frozen overlay — but still
+    // paint the snapshot (skeleton only when we have nothing to show).
+    final holdForTg = widget.hasIndividualPremium && !tdlibReadyNow;
+    if (holdForTg && _tdlibRevealTimeout == null) {
+      _tdlibRevealTimeout = Timer(const Duration(seconds: 12), () {
+        if (!mounted || !_pendingFirstPaint) return;
+        debugPrint('[hub] first-paint timeout — revealing anyway');
+        _forceFirstPaintReveal();
+      });
+    } else if (!holdForTg) {
+      _tdlibRevealTimeout?.cancel();
+      _tdlibRevealTimeout = null;
+    }
+    void apply() {
       if (fc.isNotEmpty) {
         _threads = _sortedThreads(fc);
       }
       _snapshotTgRows = tg;
       _paintedFromSnapshot = true;
       _loading = false;
-      _pendingFirstPaint = false;
+      _pendingFirstPaint = holdForTg;
+      _coldStartCoalesce = holdForTg;
       _fcFoldersLoaded = true;
       _tdlibMatchesLoaded = true;
       _mirrorStateLoaded = true;
-    });
+      _hubAvatarPrefetchAfter =
+          DateTime.now().add(const Duration(milliseconds: 1800));
+    }
+
+    if (notify && mounted) {
+      setState(apply);
+    } else {
+      apply();
+    }
     if (fc.isNotEmpty) {
       unawaited(_seedMatchesFromFcThreads(fc));
+      unawaited(_persistMatchedFcTipsToSqlite(fc));
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _lastHubAvatarPrefetchKey = null;
-      _debounceHubAvatarPrefetch(_filteredBy(_selectedChip));
-    });
+    if (!holdForTg) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _lastHubAvatarPrefetchKey = null;
+        _debounceHubAvatarPrefetch(_filteredBy(_selectedChip));
+      });
+    }
+  }
+
+  /// Cold start: paint last-session hub (FC+TG) without waiting for TDLib.
+  Future<void> _hydrateFromSnapshot() async {
+    if (_paintedFromSnapshot) return;
+    await HubFirstPaintSnapshot.warm();
+    if (!mounted || _paintedFromSnapshot) return;
+    final fc = HubFirstPaintSnapshot.warmedFcThreads;
+    final data = HubFirstPaintSnapshot.warmed ?? await HubFirstPaintSnapshot.read();
+    if (!mounted || _paintedFromSnapshot) return;
+    if ((fc == null || fc.isEmpty) && (data == null || data.rows.isEmpty)) {
+      return;
+    }
+    _applyColdStartPaint(fcThreads: fc, snapshot: data, notify: true);
   }
 
   /// Drop frozen TG overlay once live hub surface is ready (same-frame swap).
@@ -264,10 +385,31 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           tdlib ?? ref.read(telegramTdlibServiceProvider);
       if (!svc.hubSurfaceReady) return;
     }
+    // One-shot: mark not painted so we don't re-enter while hydrating.
+    _paintedFromSnapshot = false;
+    unawaited(_releaseSnapshotOverlayBody());
+  }
+
+  Future<void> _releaseSnapshotOverlayBody() async {
+    if (!mounted) return;
+    try {
+      if (_threads.isNotEmpty) {
+        final hydrated =
+            await HubFirstPaintSnapshot.hydrateFcThreadsLastMessages(_threads);
+        // hydrate fills empty-body tips from FC messages — don't let that
+        // demote a matched snap/TG tip (Киса).
+        _threads = _sortedThreads(_mergeIncomingKeepFresherTips(hydrated));
+      }
+    } catch (_) {}
+    if (!mounted) return;
     setState(() {
       _snapshotTgRows = const [];
-      _paintedFromSnapshot = false;
+      _pendingFirstPaint = false;
+      _coldStartCoalesce = false;
+      _hubAvatarPrefetchAfter =
+          DateTime.now().add(const Duration(milliseconds: 1200));
     });
+    unawaited(_persistMatchedFcTipsToSqlite(_threads));
     _scheduleSnapshotPersist();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -276,7 +418,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     });
   }
 
-  bool get _showHubSkeleton => _loading || _pendingFirstPaint;
+  /// Skeleton only when we have nothing durable to show yet.
+  bool get _showHubSkeleton =>
+      (_loading || _pendingFirstPaint) && !_paintedFromSnapshot;
 
   /// Reveal FC+TG hub in one paint: sync folder chips, then drop the skeleton.
   void _forceFirstPaintReveal() {
@@ -320,8 +464,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     if (same) {
       setState(() {
         _pendingFirstPaint = false;
+        _coldStartCoalesce = false;
         _snapshotTgRows = const [];
         _paintedFromSnapshot = false;
+        _hubAvatarPrefetchAfter =
+            DateTime.now().add(const Duration(milliseconds: 1200));
       });
       unawaited(_pullMirroredMembershipFromTg());
       ref.read(telegramTdlibServiceProvider).warmUnreadChatsFromHub();
@@ -351,8 +498,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     newController.addListener(_onFilterTabChanged);
     setState(() {
       _pendingFirstPaint = false;
+      _coldStartCoalesce = false;
       _snapshotTgRows = const [];
       _paintedFromSnapshot = false;
+      _hubAvatarPrefetchAfter =
+          DateTime.now().add(const Duration(milliseconds: 1200));
       _chips = next;
       _tabController = newController;
     });
@@ -582,6 +732,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     _hubAvatarPrefetchTimer?.cancel();
     _hubScrollBusyClearTimer?.cancel();
     _snapshotPersistTimer?.cancel();
+    // Do not drop a pending debounce — flush so kill/close keeps the list.
+    unawaited(_persistHubSnapshot());
     _tdlibRevealTimeout?.cancel();
     ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
     _tabController.dispose();
@@ -746,18 +898,25 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     try {
       final raw = await ref.read(familychatRepositoryProvider).chatFolders();
       if (!mounted) return;
+      unawaited(
+        HubFirstPaintSnapshot.persistFolders([
+          for (final e in raw) Map<String, dynamic>.from(e as Map),
+        ]),
+      );
       final folders = raw.map(ChatFolderData.fromJson).toList()
         ..sort((a, b) {
           final c = a.position.compareTo(b.position);
           return c != 0 ? c : a.id.compareTo(b.id);
         });
-      setState(() {
-        _customFolders = folders;
-        _fcFoldersLoaded = true;
-      });
-      if (!_pendingFirstPaint) {
-        _rebuildChips(preferSelected: _selectedChip);
+      // During cold-start hold: store silently — chip bar rebuilds once on reveal.
+      _customFolders = folders;
+      _fcFoldersLoaded = true;
+      if (_pendingFirstPaint || _coldStartCoalesce) {
+        _tryFirstPaintReveal();
+        return;
       }
+      setState(() {});
+      _rebuildChips(preferSelected: _selectedChip);
       for (final f in folders) {
         if (f.hasUnmatchedTgMember(_matchedTgChatIds) &&
             !_fcToTgFolder.containsKey(f.id)) {
@@ -768,7 +927,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     } catch (_) {
       // Hub still works with system folders only.
       if (!mounted) return;
-      setState(() => _fcFoldersLoaded = true);
+      _fcFoldersLoaded = true;
+      if (!(_pendingFirstPaint || _coldStartCoalesce)) {
+        setState(() {});
+      }
       _tryFirstPaintReveal();
     }
   }
@@ -1749,13 +1911,25 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       return;
     }
     final gen = ++_threadsEnrichGen;
+    // Keep snap/TG-overlay tips: SQLite FC tip for matched DMs is often weeks
+    // behind (activity lives on Telegram).
+    final preserved = _mergeIncomingKeepFresherTips(threads);
     final enriched = _localFirst
-        ? await enrichChatThreadsLastMessages(threads)
-        : threads;
+        ? await enrichChatThreadsLastMessages(preserved)
+        : preserved;
     if (!mounted || gen != _threadsEnrichGen) return;
     final sorted = _sortedThreads(enriched);
     final same = _threadsFingerprint(_threads) == _threadsFingerprint(sorted);
     final nextLoading = false;
+    // During frozen snapshot + TG wait: update RAM silently — one paint when
+    // live TG is ready (avoids FC length drip then TG drip then avatars).
+    if (_coldStartCoalesce && _paintedFromSnapshot) {
+      if (!same) _threads = sorted;
+      _loading = nextLoading;
+      unawaited(_seedMatchesFromFcThreads(sorted));
+      _tryFirstPaintReveal();
+      return;
+    }
     if (same && _loading == nextLoading) {
       _tryFirstPaintReveal();
       return;
@@ -1793,28 +1967,34 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   void _scheduleSnapshotPersist() {
     _snapshotPersistTimer?.cancel();
-    _snapshotPersistTimer = Timer(const Duration(milliseconds: 1500), () {
+    _snapshotPersistTimer = Timer(const Duration(milliseconds: 800), () {
       unawaited(_persistHubSnapshot());
     });
   }
 
   Future<void> _persistHubSnapshot() async {
-    if (!mounted) return;
-    if (widget.hasIndividualPremium) {
-      final svc = ref.read(telegramTdlibServiceProvider);
-      if (!svc.hubSurfaceReady) return;
+    // Capture rows sync — dispose may tear down controllers right after.
+    if (_threads.isEmpty && _snapshotTgRows.isEmpty) return;
+    List<Map<String, dynamic>> rows;
+    try {
+      rows = _filteredBy(const HubChip.system(ChatHubSystemFilter.all));
+    } catch (_) {
+      rows = [
+        ..._threads.map((e) => Map<String, dynamic>.from(e)),
+        ..._snapshotTgRows.map((e) => Map<String, dynamic>.from(e)),
+      ];
     }
-    if (_showHubSkeleton) return;
-    final rows = _filteredBy(const HubChip.system(ChatHubSystemFilter.all));
     if (rows.isEmpty) return;
+    final avatarUrl = widget.profileAvatarUrl;
+    final avatarPath = widget.profileAvatarLocalPath;
     try {
       await HubFirstPaintSnapshot.write(
         rows: rows,
-        profileAvatarUrl: widget.profileAvatarUrl,
-        profileAvatarSourcePath: widget.profileAvatarLocalPath.isNotEmpty
-            ? widget.profileAvatarLocalPath
-            : null,
+        profileAvatarUrl: avatarUrl,
+        profileAvatarSourcePath:
+            avatarPath.isNotEmpty ? avatarPath : null,
       );
+      await HubFirstPaintSnapshot.persistChips(_chips);
     } catch (e) {
       debugPrint('[hub] snapshot persist failed: $e');
     }
@@ -1835,6 +2015,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _snapshotPersistTimer?.cancel();
+      unawaited(_persistHubSnapshot());
+      return;
+    }
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshFromLocalStore());
       unawaited(_reloadTdlibMatches());
@@ -1989,16 +2177,30 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       }
     }
     if (tgChatId == 0) return thread;
+
+    final threadId = chatAsInt(thread['id']);
     final svc = ref.read(telegramTdlibServiceProvider);
-    if (svc.phase != TdlibAuthPhase.ready) return thread;
+    // Before TDLib Ready: keep last-session tip so Киса sorts with the rest.
+    if (svc.phase != TdlibAuthPhase.ready) {
+      if (threadId == null) return thread;
+      final snapTip = _matchedFcSnapTips[threadId];
+      if (snapTip == null) return thread;
+      final applied = _applyFresherLastMessage(thread, snapTip);
+      return applied ?? thread;
+    }
     final preview = svc.chatPreviewById(tgChatId);
-    if (preview == null) return thread;
+    if (preview == null) {
+      if (threadId == null) return thread;
+      final snapTip = _matchedFcSnapTips[threadId];
+      if (snapTip == null) return thread;
+      return _applyFresherLastMessage(thread, snapTip) ?? thread;
+    }
 
     final fcUnread = chatAsInt(thread['unread_count']) ?? 0;
     final tgUnread = preview.unreadCount;
     final muted = svc.isChatMutedIfKnown(tgChatId);
     var changed = false;
-    final next = Map<String, dynamic>.from(thread);
+    var next = Map<String, dynamic>.from(thread);
 
     if (tgUnread > fcUnread) {
       next['unread_count'] = tgUnread;
@@ -2015,13 +2217,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     }
 
     if (preview.lastMessageDate > 0) {
-      final last = thread['last_message'];
-      var fcMs = 0;
-      if (last is Map) {
-        final raw = last['created_at']?.toString() ?? '';
-        final parsed = DateTime.tryParse(raw);
-        if (parsed != null) fcMs = parsed.millisecondsSinceEpoch;
-      }
+      final fcMs = _lastMessageCreatedMs(thread['last_message']);
       final tgMs = preview.lastMessageDate * 1000;
       if (tgMs > fcMs + 500) {
         next['last_message'] = {
@@ -2033,20 +2229,32 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           if (preview.lastMessageOutgoing) 'is_mine': true,
         };
         changed = true;
+        if (threadId != null) {
+          _matchedFcSnapTips[threadId] =
+              Map<String, dynamic>.from(next['last_message'] as Map);
+          unawaited(_persistOneMatchedFcTip(next));
+        }
       }
     }
 
     // FC avatar wins; if FC has none, fall back to TG chat photo.
+    // Only swap path when the new file is already on disk — otherwise tiles
+    // flash empty/minithumb → sharp mid cold-start.
     if (!_hasFcPeerAvatar(thread)) {
       final path = preview.photoLocalPath?.trim() ?? '';
-      if (path.isNotEmpty && next['tdlib_photo_path']?.toString() != path) {
+      final prevPath = next['tdlib_photo_path']?.toString() ?? '';
+      if (path.isNotEmpty &&
+          path != prevPath &&
+          File(path).existsSync()) {
         next['tdlib_photo_path'] = path;
         changed = true;
       }
       final bytes = preview.photoMinithumbnailBytes;
       if (bytes != null &&
           bytes.isNotEmpty &&
-          next['tdlib_photo_bytes'] != bytes) {
+          next['tdlib_photo_bytes'] != bytes &&
+          (next['tdlib_photo_path'] == null ||
+              next['tdlib_photo_path'].toString().isEmpty)) {
         next['tdlib_photo_bytes'] = bytes;
         changed = true;
       }
@@ -2064,6 +2272,140 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     }
 
     return changed ? next : thread;
+  }
+
+  bool _isLinkedFcDm(Map<String, dynamic> thread) {
+    final kind = thread['kind']?.toString() ?? '';
+    if (kind != 'dm' && kind != 'friend_dm') return false;
+    final tg = thread['telegram'];
+    if (tg is Map && tg['linked'] == true) {
+      final id = (tg['tg_chat_id'] as num?)?.toInt() ??
+          int.tryParse('${tg['tg_chat_id'] ?? ''}') ??
+          0;
+      if (id != 0) return true;
+    }
+    return chatAsInt(thread['tdlib_chat_id']) != null;
+  }
+
+  int _lastMessageCreatedMs(Object? last) {
+    if (last is! Map) return 0;
+    final raw = last['created_at']?.toString() ?? '';
+    final parsed = DateTime.tryParse(raw);
+    return parsed?.millisecondsSinceEpoch ?? 0;
+  }
+
+  /// Returns updated thread when [candidate] tip is fresher; else null.
+  Map<String, dynamic>? _applyFresherLastMessage(
+    Map<String, dynamic> thread,
+    Map<String, dynamic> candidate,
+  ) {
+    final candMs = _lastMessageCreatedMs(candidate);
+    if (candMs <= 0) return null;
+    final curMs = _lastMessageCreatedMs(thread['last_message']);
+    final candBody = candidate['body']?.toString().trim() ?? '';
+    final curLast = thread['last_message'];
+    final curBody =
+        curLast is Map ? curLast['body']?.toString().trim() ?? '' : '';
+    // Prefer newer date; also fill empty local body from snap even if dates
+    // are close (attachment-only FC tip vs TG text preview).
+    final newer = candMs > curMs + 500;
+    final fillEmpty = curBody.isEmpty && candBody.isNotEmpty && candMs >= curMs;
+    if (!newer && !fillEmpty) return null;
+    return {
+      ...thread,
+      'last_message': Map<String, dynamic>.from(candidate),
+    };
+  }
+
+  void _rememberMatchedFcTip(int threadId, Map<String, dynamic> thread) {
+    if (!_isLinkedFcDm(thread)) return;
+    final last = thread['last_message'];
+    if (last is! Map) return;
+    final body = last['body']?.toString().trim() ?? '';
+    final ms = _lastMessageCreatedMs(last);
+    if (body.isEmpty && ms <= 0) return;
+    final prev = _matchedFcSnapTips[threadId];
+    if (prev != null && _lastMessageCreatedMs(prev) > ms) return;
+    _matchedFcSnapTips[threadId] = Map<String, dynamic>.from(last);
+  }
+
+  List<Map<String, dynamic>> _mergeIncomingKeepFresherTips(
+    List<Map<String, dynamic>> incoming,
+  ) {
+    final prevById = <int, Map<String, dynamic>>{
+      for (final t in _threads)
+        if (chatAsInt(t['id']) != null) chatAsInt(t['id'])!: t,
+    };
+    final out = <Map<String, dynamic>>[];
+    for (final raw in incoming) {
+      var row = Map<String, dynamic>.from(raw);
+      final id = chatAsInt(row['id']);
+      if (id != null) {
+        final prev = prevById[id];
+        if (prev != null) {
+          final prevLast = prev['last_message'];
+          if (prevLast is Map) {
+            final applied = _applyFresherLastMessage(
+              row,
+              Map<String, dynamic>.from(prevLast),
+            );
+            if (applied != null) row = applied;
+          }
+        }
+        final snapTip = _matchedFcSnapTips[id];
+        if (snapTip != null) {
+          final applied = _applyFresherLastMessage(row, snapTip);
+          if (applied != null) {
+            row = applied;
+            _rememberMatchedFcTip(id, row);
+          }
+        } else {
+          _rememberMatchedFcTip(id, row);
+        }
+      }
+      out.add(row);
+    }
+    return out;
+  }
+
+  Future<void> _persistMatchedFcTipsToSqlite(
+    List<Map<String, dynamic>> threads,
+  ) async {
+    if (!_localFirst) return;
+    try {
+      for (final t in threads) {
+        if (!_isLinkedFcDm(t)) continue;
+        final id = chatAsInt(t['id']);
+        if (id == null) continue;
+        final tip = _matchedFcSnapTips[id] ?? t['last_message'];
+        if (tip is! Map) continue;
+        final body = tip['body']?.toString().trim() ?? '';
+        if (body.isEmpty) continue;
+        final cur = t['last_message'];
+        final curBody =
+            cur is Map ? cur['body']?.toString().trim() ?? '' : '';
+        final curMs = _lastMessageCreatedMs(cur);
+        final tipMs = _lastMessageCreatedMs(tip);
+        if (curBody == body && (tipMs - curMs).abs() < 1000) {
+          // Still write if SQLite may have older tip without body.
+        }
+        await ChatLocalStore.instance.upsertThread({
+          ...t,
+          'last_message': Map<String, dynamic>.from(tip),
+        });
+      }
+    } catch (e) {
+      debugPrint('[hub] persist matched FC tips failed: $e');
+    }
+  }
+
+  Future<void> _persistOneMatchedFcTip(Map<String, dynamic> thread) async {
+    if (!_localFirst || !_isLinkedFcDm(thread)) return;
+    try {
+      await ChatLocalStore.instance.upsertThread(
+        Map<String, dynamic>.from(thread),
+      );
+    } catch (_) {}
   }
 
   bool _hasFcPeerAvatar(Map<String, dynamic> thread) {
@@ -2378,11 +2720,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       return;
     }
 
-    // Matched FC↔TG DM: hub overlays TG last_message / unread onto the FC row.
-    // Opening FC then shows an older transcript without the preview tip (Киса).
-    // When TG is ahead, open the TG chat that actually owns that message.
+    // Matched FC↔TG DM: always open TG when Ready — FC transcript is the
+    // secretary bridge archive; live chat (and hub tip after enrich) is TG.
+    // Do not gate on tgAhead: enrich write-back equalizes timestamps and used
+    // to fall through to FC-only history (Киса: «пропали сообщения ТГ»).
     final matchedTg = _matchedTgOpenTarget(thread);
     if (matchedTg != null) {
+      final fcThreadId = (thread['id'] as num?)?.toInt();
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => TelegramConversationScreen(
@@ -2390,6 +2734,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
             title: thread['title']?.toString() ?? 'Telegram',
             tgUserId: matchedTg.tgUserId,
             fcUserId: _dmPeerUserId(thread),
+            fcThreadId: (fcThreadId != null && fcThreadId > 0)
+                ? fcThreadId
+                : null,
             peerAvatarUrl: _dmAvatarUrl(thread) ?? '',
           ),
         ),
@@ -2403,11 +2750,17 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     if (thread['kind']?.toString() == 'saved') {
       final tgChatId = _savedMessagesTgChatId(thread);
       if (tgChatId != null) {
+        final svc = ref.read(telegramTdlibServiceProvider);
+        final fcThreadId = (thread['id'] as num?)?.toInt();
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => TelegramConversationScreen(
               chatId: tgChatId,
               title: thread['title']?.toString() ?? 'Избранное',
+              tgUserId: svc.myUserId,
+              fcThreadId: (fcThreadId != null && fcThreadId > 0)
+                  ? fcThreadId
+                  : null,
             ),
           ),
         );
@@ -2449,7 +2802,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     await refresh();
   }
 
-  /// When FC DM hub preview/unread is driven by TG, open that TG chat instead.
+  /// Matched FC↔TG DM → open the TG chat (live transcript), not FC archive.
   ({int chatId, int? tgUserId})? _matchedTgOpenTarget(
     Map<String, dynamic> thread,
   ) {
@@ -2465,42 +2818,31 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         break;
       }
     }
-    if (match == null) return null;
+    var tgChatId = match?.tgChatId ?? 0;
+    var tgUserId = match?.tgUserId;
+    // Server-linked FC DM even when MatchStore is still empty.
+    if (tgChatId == 0) {
+      final tg = thread['telegram'];
+      if (tg is Map && tg['linked'] == true) {
+        tgChatId = (tg['tg_chat_id'] as num?)?.toInt() ??
+            int.tryParse('${tg['tg_chat_id'] ?? ''}') ??
+            0;
+      }
+    }
+    if (tgChatId == 0) return null;
     final svc = ref.read(telegramTdlibServiceProvider);
     if (svc.phase != TdlibAuthPhase.ready) return null;
-    final preview = svc.chatPreviewById(match.tgChatId);
-    if (preview == null) return null;
-
-    final last = thread['last_message'];
-    var fcMs = 0;
-    if (last is Map) {
-      // Prefer raw FC timestamp — enrichment may already have swapped body.
-      final raw = last['created_at']?.toString() ?? '';
-      final parsed = DateTime.tryParse(raw);
-      if (parsed != null) fcMs = parsed.millisecondsSinceEpoch;
+    // Prefer a known chat row, but linked tg_chat_id is enough to open.
+    final preview = svc.chatPreviewById(tgChatId);
+    if (preview == null && match == null) return null;
+    if (tgUserId == null &&
+        preview != null &&
+        !preview.isGroup &&
+        !preview.isChannel &&
+        preview.userId > 0) {
+      tgUserId = preview.userId;
     }
-    // Re-read FC thread for an un-enriched timestamp when possible.
-    Map<String, dynamic>? rawFc;
-    for (final t in _threads) {
-      if (t['id'] == thread['id']) {
-        rawFc = t;
-        break;
-      }
-    }
-    if (rawFc != null) {
-      final rawLast = rawFc['last_message'];
-      if (rawLast is Map) {
-        final parsed =
-            DateTime.tryParse(rawLast['created_at']?.toString() ?? '');
-        if (parsed != null) fcMs = parsed.millisecondsSinceEpoch;
-      }
-    }
-
-    final tgMs = preview.lastMessageDate * 1000;
-    final tgUnread = preview.unreadCount;
-    final tgAhead = tgMs > fcMs + 500 || tgUnread > 0;
-    if (!tgAhead) return null;
-    return (chatId: match.tgChatId, tgUserId: match.tgUserId);
+    return (chatId: tgChatId, tgUserId: tgUserId);
   }
 
   int? _savedMessagesTgChatId(Map<String, dynamic> thread) {
@@ -2532,6 +2874,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       await _createFolderFlow();
     } else if (action == 'rename') {
       await _renameSelectedFolder();
+    } else if (action == 'proxy') {
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const TelegramProxySettingsScreen(),
+        ),
+      );
     }
   }
 
@@ -2553,6 +2902,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           label: 'Создать папку',
         ),
       ),
+      if (_tdlibReady)
+        const PopupMenuItem(
+          value: 'proxy',
+          child: _HubOverflowMenuRow(
+            icon: LucideIcons.shield,
+            label: 'Прокси',
+          ),
+        ),
       if (canManageFolder) ...[
         const PopupMenuDivider(),
         const PopupMenuItem(
@@ -2720,6 +3077,17 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   void _scheduleHubAvatarPrefetch(List<Map<String, dynamic>> rows) {
     if (!widget.hasIndividualPremium || !_tdlibReady) return;
+    final after = _hubAvatarPrefetchAfter;
+    if (after != null && DateTime.now().isBefore(after)) {
+      final wait = after.difference(DateTime.now()) +
+          const Duration(milliseconds: 50);
+      _hubAvatarPrefetchTimer?.cancel();
+      _hubAvatarPrefetchTimer = Timer(wait, () {
+        if (!mounted) return;
+        _scheduleHubAvatarPrefetch(rows);
+      });
+      return;
+    }
     final tdlib = ref.read(telegramTdlibServiceProvider);
     // Never fight a fling — avatar getChat/download mid-ballistic is the
     // classic hub "stutter then catch up" feel. Retry once scroll settles.

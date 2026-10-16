@@ -148,16 +148,20 @@ abstract final class FamilyAppBar {
     String? profileAvatarUrl,
     String? profileAvatarLocalPath,
     VoidCallback? onProfileTap,
+    bool forceMaterialTransparency = false,
   }) {
     final hasProfile = onProfileTap != null;
-    final titleWidget = FamilyAppBarTitle(
-      child: Text(
-        title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: titleStyle,
-      ),
-    );
+    final hasTitle = title.trim().isNotEmpty;
+    final Widget? titleWidget = hasTitle
+        ? FamilyAppBarTitle(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: titleStyle,
+            ),
+          )
+        : FamilyAppBarTitle(child: const SizedBox.shrink());
 
     return AppBar(
       leading: hasProfile
@@ -170,10 +174,11 @@ abstract final class FamilyAppBar {
           : leading,
       automaticallyImplyLeading: hasProfile ? false : automaticallyImplyLeading,
       leadingWidth: hasProfile ? 54 : null,
-      titleSpacing: hasProfile ? 0 : null,
+      titleSpacing: hasProfile || !hasTitle ? 0 : null,
       backgroundColor: backgroundColor,
       foregroundColor: foregroundColor,
       surfaceTintColor: Colors.transparent,
+      forceMaterialTransparency: forceMaterialTransparency,
       elevation: 0,
       scrolledUnderElevation: 0,
       iconTheme: iconTheme,

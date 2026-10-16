@@ -82,4 +82,6 @@ dependencies {
     // so FirebaseMessagingService is not leaked onto the app compile classpath.
     implementation(platform("com.google.firebase:firebase-bom:33.16.0"))
     implementation("com.google.firebase:firebase-messaging")
+    // Square crop for TDLib video notes (same lib as video_compress).
+    implementation("com.otaliastudios:transcoder:0.10.5")
 }

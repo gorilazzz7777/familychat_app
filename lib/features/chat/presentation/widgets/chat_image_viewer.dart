@@ -10,6 +10,7 @@ import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/widgets/family_app_bar.dart';
+import '../../../../core/widgets/family_public_image.dart';
 import '../../../../core/widgets/zoom_aware_page_view.dart';
 import '../../../../core/widgets/gallery_video_player.dart';
 import '../../../../core/cache/familychat_media_cache.dart';
@@ -21,6 +22,7 @@ import '../../../../core/providers/app_providers.dart';
 import '../../../familychat/data/familychat_repository.dart';
 import '../../../profile/presentation/face_tagging_sheet.dart';
 import '../../../profile/presentation/widgets/photo_people_on_photo_bar.dart';
+import '../../../gallery/presentation/widgets/fullscreen_zoom_photo.dart';
 import '../../../gallery/presentation/widgets/gallery_carousel_thumbnail_strip.dart';
 import '../../../gallery/presentation/widgets/gallery_fullscreen_viewer_core.dart';
 import '../../data/chat_realtime_utils.dart';
@@ -153,7 +155,12 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     int? fallbackMessageId,
   }) {
     final copy = Map<String, dynamic>.from(att);
-    MediaLocalIndex.hydrateAttachment(copy);
+    // Public profile / CDN opens have no attachment id — hydrate-by-filename
+    // used to attach an unrelated chat file and blank the viewer.
+    final hasId = chatAsInt(copy['id']) != null || widget.attachmentId != null;
+    if (hasId || copy['skip_age_defer'] == true) {
+      MediaLocalIndex.hydrateAttachment(copy);
+    }
     return _ChatViewerPhoto(
       imageUrl: imageUrl,
       threadId: widget.threadId,
@@ -467,7 +474,11 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     widget.onGoToMessage?.call();
   }
 
-  Widget _imageBody(_ChatViewerPhoto photo) {
+  Widget _imageBody(
+    _ChatViewerPhoto photo, {
+    BoxFit fit = BoxFit.contain,
+    ValueChanged<Size>? onResolvedSize,
+  }) {
     final attachment = photo.attachment ??
         {
           if (photo.attachmentId != null) 'id': photo.attachmentId,
@@ -479,9 +490,20 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
     if (!kIsWeb) {
       final local = galleryLocalDevicePath(attachment);
       if (local.isNotEmpty) {
+        if (onResolvedSize != null) {
+          final provider = FileImage(File(local));
+          provider.resolve(const ImageConfiguration()).addListener(
+            ImageStreamListener((info, _) {
+              onResolvedSize(Size(
+                info.image.width.toDouble(),
+                info.image.height.toDouble(),
+              ));
+            }),
+          );
+        }
         return Image.file(
           File(local),
-          fit: BoxFit.contain,
+          fit: fit,
           width: double.infinity,
           height: double.infinity,
           gaplessPlayback: true,
@@ -491,13 +513,18 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
               return ChatNetworkImage(
                 threadId: photo.threadId!,
                 attachment: attachment,
-                fit: BoxFit.contain,
+                fit: fit,
                 width: double.infinity,
                 height: double.infinity,
                 showTransferOverlay: false,
+                onResolvedSize: onResolvedSize,
               );
             }
-            return const SizedBox.shrink();
+            return _publicNetworkImage(
+              photo,
+              fit: fit,
+              onResolvedSize: onResolvedSize,
+            );
           },
         );
       }
@@ -507,26 +534,76 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
       return ChatNetworkImage(
         threadId: photo.threadId!,
         attachment: attachment,
-        fit: BoxFit.contain,
+        fit: fit,
         width: double.infinity,
         height: double.infinity,
         showTransferOverlay: false,
+        onResolvedSize: onResolvedSize,
+      );
+    }
+
+    return _publicNetworkImage(
+      photo,
+      fit: fit,
+      onResolvedSize: onResolvedSize,
+    );
+  }
+
+  /// Public CDN / profile URLs (no FC thread attachment API).
+  Widget _publicNetworkImage(
+    _ChatViewerPhoto photo, {
+    required BoxFit fit,
+    ValueChanged<Size>? onResolvedSize,
+  }) {
+    final url = photo.imageUrl.trim();
+    final local = galleryLocalDevicePath(photo.attachment ?? const {});
+    if (url.isEmpty && local.isEmpty) return const SizedBox.shrink();
+
+    if (photo.httpHeaders == null || photo.httpHeaders!.isEmpty) {
+      return FamilyPublicImage(
+        url: url,
+        localPath: local.isEmpty ? null : local,
+        fit: fit,
+        width: double.infinity,
+        height: double.infinity,
+        placeholder: const Center(
+          child: CircularProgressIndicator(color: Colors.white54),
+        ),
+        error: const Center(
+          child: Icon(LucideIcons.image_off, color: Colors.white54, size: 48),
+        ),
       );
     }
 
     return CachedNetworkImage(
-      imageUrl: photo.imageUrl,
+      imageUrl: url,
       httpHeaders: photo.httpHeaders,
       cacheManager: FamilyChatMediaCache.fullscreen,
       useOldImageOnUrlChange: true,
-      fit: BoxFit.contain,
+      fit: fit,
       width: double.infinity,
       height: double.infinity,
+      placeholder: (_, __) => const Center(
+        child: CircularProgressIndicator(color: Colors.white54),
+      ),
+      errorWidget: (_, __, ___) => const Center(
+        child: Icon(LucideIcons.image_off, color: Colors.white54, size: 48),
+      ),
       imageBuilder: (context, imageProvider) {
         unawaited(FamilyChatMediaCache.trimIfNeeded());
+        if (onResolvedSize != null) {
+          imageProvider.resolve(const ImageConfiguration()).addListener(
+            ImageStreamListener((info, _) {
+              onResolvedSize(Size(
+                info.image.width.toDouble(),
+                info.image.height.toDouble(),
+              ));
+            }),
+          );
+        }
         return Image(
           image: imageProvider,
-          fit: BoxFit.contain,
+          fit: fit,
           width: double.infinity,
           height: double.infinity,
           gaplessPlayback: true,
@@ -549,62 +626,63 @@ class _ChatImageViewerScreenState extends ConsumerState<_ChatImageViewerScreen> 
         photo.threadId != null &&
         _looksLikeFamilyChatAttachment(photo);
     final showHighlight = isCurrent && _highlightBoxes.isNotEmpty;
+    final att = photo.attachment ?? const <String, dynamic>{};
     return LayoutBuilder(
       builder: (context, constraints) {
-        final media = SizedBox(
+        if (photo.isVideo) {
+          return Center(
+            child: SizedBox(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+              child: _mediaBody(
+                photo,
+                autoplay: autoplay,
+                isCurrent: isCurrent,
+              ),
+            ),
+          );
+        }
+        return SizedBox(
           width: constraints.maxWidth,
           height: constraints.maxHeight,
-          child: _mediaBody(
-            photo,
-            autoplay: autoplay,
-            isCurrent: isCurrent,
-          ),
-        );
-        if (photo.isVideo) {
-          return Center(child: media);
-        }
-        return Center(
-          child: SizedBox(
-            width: constraints.maxWidth,
-            height: constraints.maxHeight,
-            child: Stack(
-              fit: StackFit.expand,
-              clipBehavior: Clip.none,
-              children: [
-                ScaleReportingInteractiveViewer(
-                  minScale: 0.85,
-                  maxScale: 5,
-                  constrained: false,
-                  clipBehavior: Clip.none,
-                  onScaleChanged: (scale) =>
-                      _zoomPageKey.currentState?.reportScale(scale),
-                  child: media,
+          child: Stack(
+            fit: StackFit.expand,
+            clipBehavior: Clip.hardEdge,
+            children: [
+              FullscreenZoomAttachmentPhoto(
+                attachment: att,
+                onScaleChanged: (scale) =>
+                    _zoomPageKey.currentState?.reportScale(scale),
+                imageBuilder: (fit, onResolvedSize) => _imageBody(
+                  photo,
+                  fit: fit,
+                  onResolvedSize: onResolvedSize,
                 ),
-                if (showHighlight)
-                  PhotoFaceHighlightOverlay(boxes: _highlightBoxes),
-                if (showPeopleOverlay)
-                  PhotoPeopleOnPhotoOverlay(
-                    key: ValueKey<int>(attachmentId),
-                    attachmentId: attachmentId,
-                    threadId: photo.threadId,
-                    selectedSubjectKey: _highlightSubjectKey,
-                    selectedUserId: _highlightUserId,
-                    onHighlightChanged: (highlight) {
-                      setState(() {
-                        if (highlight == null) {
-                          _highlightUserId = null;
-                          _highlightSubjectKey = null;
-                          _highlightBoxes = const [];
-                        } else {
-                          _highlightUserId = highlight.userId;
-                          _highlightSubjectKey = highlight.subjectKey;
-                          _highlightBoxes = highlight.boxes;
-                        }
-                      });
-                    },
-                  ),
-              ],
-            ),
+              ),
+              if (showHighlight)
+                PhotoFaceHighlightOverlay(boxes: _highlightBoxes),
+              if (showPeopleOverlay)
+                PhotoPeopleOnPhotoOverlay(
+                  key: ValueKey<int>(attachmentId),
+                  attachmentId: attachmentId,
+                  threadId: photo.threadId,
+                  selectedSubjectKey: _highlightSubjectKey,
+                  selectedUserId: _highlightUserId,
+                  onHighlightChanged: (highlight) {
+                    setState(() {
+                      if (highlight == null) {
+                        _highlightUserId = null;
+                        _highlightSubjectKey = null;
+                        _highlightBoxes = const [];
+                      } else {
+                        _highlightUserId = highlight.userId;
+                        _highlightSubjectKey = highlight.subjectKey;
+                        _highlightBoxes = highlight.boxes;
+                      }
+                    });
+                  },
+                ),
+            ],
           ),
         );
       },

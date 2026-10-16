@@ -37,9 +37,15 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
 
 5. **FakeTLS: `slotLimit=1`** until A/B+mtg prove parallel is safe.
 
-6. **FakeTLS: no neighbor prefetch / bare `ensure` / `album:prefetch` on the wire**
-   - radius 0; `ensureFileLocal(ensure|avatar|album:prefetch|…)` → disk only.
+6. **FakeTLS: neighbor radius 1 only; bare `ensure` / `album:prefetch` stay disk-only**
+   - `viewportMediaRadiusProxy = 1` (±1 light media after focus claims slot).
+   - Do **not** restore full ±4 under FakeTLS without new A/B (was DF storm).
+   - `ensureFileLocal(ensure|avatar|album:prefetch|…)` → disk only on wire.
    - Yield under proxy → hard `cancelDownloadFile`.
+   - **Unread tip warm** (hub, Ready): serial oldest-unread *light* media
+     (`unread-tip:`, prio 8, ≤5 chats) — photo / video thumb only, soft `m`
+     OK; no video body, no focus_hold. Yields to open chat / tap / hub-avatar.
+     Markers: `warm-unread-tip start|done|pass-done`.
 
 7. **Pause / resume = soft same-hop (official tgnet + levlam)**
    - Pause: freeze kick ladder; arm `_softResumeGuardUntil` (~5m).
@@ -81,6 +87,55 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
      **soft-restart-first** (not quiet-only / not WiFi reopen). Markers:
      `app-pause-suspend late-None (Ready-drop in bg)`,
      `app-resume-recover soft-restart-first`.
+   - **R52 (SessionLog 12:49–13:51 lock thrash):** pause while
+     soft-restart / faketls-quiet `!Ready` must **not** fire
+     `networkTypeNone` (aborted dial → 62m WaitingForNetwork). Skip None
+     + arm late-None when quiet ends still bg+!Ready. Late-None after
+     Ready-drop defer **~2s** (cancel if Ready recovers). Markers:
+     `skip None (soft-handshake)`, `late-None defer`,
+     `late-None cancel (Ready recovered)`,
+     `soft-handshake late-None arm/cancel`.
+   - **R55 (SessionLog 21:42:38 repeat pause):** a later pause while
+     late-None already applied must **not** clear `_softPausedReadyProxy`
+     or re-fire `networkTypeNone`. That wipe sent unlock down
+     official-reopen WiFi (0 RELAY) instead of R40 soft-restart-first.
+     Marker: `app-pause-suspend skip repeat`.
+   - **R53 (SessionLog 19:40 fg Ready blip):** soft-restart → Ready@~0.4s
+     clears soft-resume → Ready→Connecting@+5s in foreground → kick waited
+     35s. After soft-restart Ready arm **settle ~15s**; fg Ready-drop →
+     soft-restart early (cap 2), then leave kick ladder. Stable Ready
+     clears settle. Markers: `soft-restart-settle arm/clear`,
+     `soft-restart-settle Ready-drop → soft-restart`,
+     `recover-dead-client why=ready-drop-in-settle:N`.
+   - **R54/R54b (SessionLog 19:45–19:57 zombie media):** UI Ready/proxyOn
+     while CDN 0B; soft-restart then focus `net-downloadFile` on Connecting
+     (incl. **cold boot**) burned origin/give-up before mtproto-up.
+     **Any** FakeTLS `!Ready` → hold wire (disk OK) — not only after
+     soft-restart. FakeTLS !Ready stalls = drop+requeue only. Zombie
+     restart preserves soft-pause for R53. **R57 (mtg-wifi 13 Oct
+     08:58 / 12:00 / 13:06 / 19:08):** a non-video Ready+FakeTLS download
+     that is still 0B is domain-fronting (socket ~26s, 0 bytes) and
+     TDLib opens another every ~3s while it stays in flight. A sibling
+     `done source=net` does not make the next socket RELAY (19:08: 26KB
+     RELAY dc=203 in 1.4s, the next 7KB was DF). Origin is another DF
+     socket and restarts the storm. Cancel on the watchdog tick (~4s,
+     video keeps R19 35s), quiet **22s**, retry CDN once, no origin.
+     A second 0B gives up (`stall-df-exhausted`) without origin. A net
+     `done` resets the streak. Markers: `stall-recover-gap`,
+     `media-wire-hold arm 22s why=df-storm`,
+     `media-wire-hold clear (df-storm)`, `stall-df-exhausted`.
+     **R59 (13 Oct 21:44, patched libtdjson):** stock TDLib opens 2
+     download sessions per DC. The first FakeTLS socket delivers
+     (Ostashko 17KB in 607ms after Home). The second session's
+     ClientHello is written locally and never arrives at mtg
+     (`i/o timeout`), then the good session is closed on a 7s read
+     timeout and the next photo stays 0B. `download_session_count`
+     and `download_small_session_count` are **1** in the vendored
+     `libtdjson.so` (commit a17f87c + that one change). After Home,
+     album tails loaded `source=net` (7KB–135KB, 0 stalls). Do not
+     replace this .so with an unpatched fetch.
+     Markers: `media-wire-hold arm/clear`, `pump-hold-until-ready`,
+     `start-hold-until-ready`, `stall_drop_zombie` while Connecting.
    - **R41 (r40_check mtg):** long unlock +4.4s / 1 RELAY; short unlock
      collapse@4s → soft× every 5s = DF thrash (+86s; soft×1 6 DF / 0 RELAY).
      Soft-pause quiet/collapse **35s** (Ready clears quiet early → ≤5s when
@@ -150,6 +205,123 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
      Ready+proxy. Markers: `boot-hold-until-proxy`,
      `bearer-recover soft-only (background)`,
      `skip-none-bounce (ready+proxy)`.
+   - **R60 (13 Oct 10:26–10:36 MSK):** a wifi/mobile link event must not
+     write `networkTypeNone` when `checkConnectivity()` flickers offline.
+     Keep the stream kind. A second unlock during an in-flight FakeTLS
+     quiet must not soft-restart again (10:33 tore the dial that had just
+     started).      Markers: `network-type keep`,
+     `app-resume-recover skip soft-restart (quiet)`.
+   - **R61 (13 Oct 10:37–11:51):** background Ready clears the soft-pause
+     flag, then TDLib drops to Connecting and `app-pause freeze-kick`
+     leaves it there. No link event for 74m. The later mobile→wifi
+     `setNetworkType` reached Ready in 269ms. While paused, Connecting
+     for 90s (past the 84s self-heal the same hour), and this is not
+     late-None / WaitingForNetwork / quiet: one `setNetworkType` of the
+     current wifi/mobile. No enableProxy, no soft-restart, no None.
+     Cap 3. Marker: `bg-stuck-reassert`.
+   - **R62 (14 Oct 08:39Z, mtg-wifi):** do not soft-restart in the
+     late-None callback. Phone `178.177.48.241` foreground boot was RELAY
+     (19KB, reset by peer at the Ready drop). The background
+     `late-none-bg-once` restart set WiFi and stayed Connecting 35s;
+     mtg-wifi got no new stream. The quiet-end freeze is a timer, and
+     the isolate freezes ~40s after Home, so that dial can be left up
+     (R40 zombie). Leave late-None (WaitingForNetwork) until the
+     foreground open, which already soft-restarts to RELAY in <1.5s.
+     Do not make `client-start` ignore an offline read via
+     `_lastNonOfflineKind`.
+   - **R63 (14 Oct 09:01 / 09:05 + 10:10):** after Home, TDLib drops Ready
+     and a new FakeTLS dial from background does **not** reach mtg-wifi
+     (no Stream started). Checked: soft-restart (R62), same-client
+     `setNetworkType` while still Connecting (09:01), and again after
+     late-None while WFN (09:05) — all zero new streams. The 10:10 Ready
+     in 345ms was a **real** mobile→wifi link event (`bearer-bg`), already
+     handled; same-wifi reassert is not that. Do not invent another
+     background dial. Leave late-None until foreground open (soft-restart
+     RELAY <1.5s). Next heal needs a different class (keep the live
+     socket, or a real bearer/FGS wake) — not another setNetworkType /
+     soft-restart while paused.
+   - **R64 (14 Oct 09:17):** wifi→mobile while Ready must use the same
+     full `_recoverAfterBearerChange` as mobile→wifi. Only
+     `setNetworkType(Mobile)` tore Ready→Connecting; ~50s then soft-
+     restart thrash, no `mtproto-up`, proxy stayed `use=true`. Markers:
+     `bearer-recover start why=link:…mobile` (fg) or
+     `bearer-recover soft-only (background)` — not bare
+     `setNetworkType … why=link:…mobile` while previously Ready on wifi.
+   - **R65 (14 Oct 09:22):** after R64, mobile→wifi did call
+     `bearer-recover start` + `enableProxy`, then
+     `skip-none-bounce (ready+proxy)` because `_connectionState` was
+     still Ready until TDLib delivered Ready→Connecting. Stuck ~30s →
+     soft-restart. On `link:…wifi` flips, do **not** trust stale Ready
+     to skip None→current reopen. Marker: `bearer-recover:…:down/up`
+     after a wifi link flip — not `skip-none-bounce (ready+proxy)`.
+   - **R66 (14 Oct 09:27):** wifi→mobile after R64 still
+     `skip-none-bounce (mobile)` then Ready→Connecting ~50s →
+     soft-restart. Same reopen as R65 for `link:…mobile`. Keep
+     skip-none-bounce only for non-link mobile recovers. Marker:
+     `bearer-recover:…:down/up` after wifi→mobile — not
+     `skip-none-bounce (mobile)` for `why=link:…mobile`.
+   - **R67 (14 Oct 09:31 mtg-wifi):** R66 reopen on wifi→mobile still
+     dialed preferred `ip2-443-cf`. Cellular IP `31.173.86.15` TCP to
+     :443 but ClientHello timed out; Wi‑Fi IP `178.177.48.241` was fine.
+     Config already says `:8443` (mtg) for mobile, `:443` (mtg-wifi) for
+     home Wi‑Fi. On `link:…mobile` / `link:…wifi` (and soft-restart
+     `ensure` while on that radio) switch hop by port before enableProxy.
+     Do not write preferred prefs. Markers: `bearer-endpoint … → ip-8443-cf`
+     on wifi→mobile; `→ ip2-443-cf` on mobile→wifi.
+   - **R68 (14 Oct 09:45 + mtg):** R67 switched hop but order was
+     `Mobile` (Ready on :443) → `enableProxy` 8443 → Ready→Connecting →
+     `None→Mobile` — aborted the new ClientHello. mtg `:8443` from
+     cellular `31.173.86.155` = DF / hello-timeout, **0 RELAY**; same-tick
+     resume `bg=0` armed longBg + `app-resume-official`. Tried hold→
+     proxy→up; still 0 RELAY. Cancel resume-recover; skip R13 while
+     bearer owns dial (~12s). Superseded by **R69** for hop path.
+   - **R69 (14 Oct official A/B + DrKLO):** same `:8443` + cellular IP —
+     official TG = RELAY dc=2; FC R68 hold→enableProxy mid-session =
+     DF / hello-timeout. Official wifi↔mobile only
+     `setNetworkAvailable` / `setNetworkType` (same proxy). FakeTLS link
+     flips: **same hop → setNetworkType only**; **hop change →
+     soft-restart** (clean first dial, boot R32) — never mid-session
+     `enableProxy`. Markers: `bearer-recover same-hop setNetworkType only`,
+     `bearer-recover hop-change → soft-restart`,
+     `recover-dead-client why=bearer-hop:…`.
+   - **R70 (14 Oct r69_post mobile):** voice `.oga` was `complete-defer`
+     (image/video-only path list) → stall-retry / give-up while file on
+     disk; ≤64KB voice treated as thumb (`stall-give-up-small`); purge
+     dropped `voice:` with `chat=null`; double ensure from bubble+player
+     flooded slot=1; remap unknown-role preferred photo/webp over voice.
+     Fixes (wifi budgets unchanged): `_isPaintReadyMediaPath` accepts
+     `.oga/.ogg/.opus/.mp3/.m4a/.aac`; voice excluded from smallThumb /
+     DF-4s small path; purge keeps `voice:`; clear give-ups on
+     `mtproto-up` + tap preempt; remap prefers `voiceFileId`; player
+     sole auto-ensure + retry on `mediaReadyEpoch`; mobile
+     ConnectingToProxy kick budget **55s** (wifi **40s**). Markers:
+     `done … path=….oga` (not `complete-defer … .oga`),
+     `media-give-up clear … why=mtproto-up`,
+     `purge-non-focus` without dropping same-chat `voice:`.
+   - **R71 (14 Oct 20:21 + mtg-wifi):** after soft-restart Ready, sibling
+     photos RELAY (dc=203) then the next `downloadFile` ~300ms later was
+     `proxy.domain-fronting` (focus-tail 89KB → R57 quiet →
+     `stall-df-exhausted`). Tap during DF hold hit `disk-miss-requeue`.
+     Fixes (no plane kick): post-restart **defer album tails** until one
+     net `done` after restart; **~3s cool** after each net done for 25s
+     post-restart; on `df-exhausted` **always** `_clearFocusMediaClaim`;
+     `preemptForUserTap` **releases Ready DF/cool hold** (keep R54
+     !Ready hold). Markers: `focus-album-queue defer-tails (post-restart)`,
+     `media-wire-hold arm 3s why=post-restart-cool:…`,
+     `media-wire-hold clear (user-tap)`,
+     `focus-hold clear why=stall-df-exhausted:…`.
+   - **R72 (16 Oct last27h SessionLog):** while WFN/Connecting, do **not**
+     spam `openMessageContent defer` / parallel `wait-media-conn` (official
+     pauses media RPCs until resumeNetwork). One pending OMC + shared Ready
+     waiter; flush on Ready. late-None: sync in-flight guard + skip if
+     already WFN (deferred∩soft-handshake raced None ×2). Pause while
+     already WFN = no-op (keep soft-pause/suspended). Unlock soft-restart-first
+     skips if `_recoveringClient` or soft-restart age &lt;8s still !Ready.
+     Research: `_fc_diag/proxy_parity/49_R72_WFN_COALESCE_RESUME.md`.
+     Markers: `openMessageContent flush-pending`, `wait-media-conn … shared`,
+     `wait-media-conn join`, `late-None skip already-WFN|in-flight`,
+     `app-pause-suspend skip already-WFN`,
+     `app-resume-recover skip soft-restart (recovering|cooldown)`.
    - **R33 (SessionLog 16:53 short lock):** official `resumeNetwork` = online
      + setNetworkType only — **not** enableProxy (proxy still enabled after
      pause None). R30 unsuspend enableProxy aborted FakeTLS → stuck ~1m45s.
@@ -167,21 +339,27 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
      suspend None (R26) and post-ladder socket-reopen (R16).
    - Ready-path failover still only on better ping (R10).
 
-7b. **Exclusive slot wedge (LOCKED R22 + R42 + R43 + R44 + R48 + R49)** — SessionLog 16:32–16:38,
-    r41_check 20:13/20:22, r42_check Shariy 20:30
-   - **R48 (active-screen priority):** hub is the active screen when
-     `_openChatId == null` — visible `hub-avatar` **may** use FakeTLS wire
-     (slotLimit=1, 0B budget ~4s, queue cap ~8). Do **not** restore
-     `hub-avatar skip: proxy exclusive`. Open chat must
-     `_purgeAvatarDownloads` + `_purgeNonFocusDownloads` before media.
-     App pause clears unfinished queue/inflight (`app-pause clear-unfinished`)
-     and bumps `mediaReadyEpoch` so hub re-prefetches; keep disk cache.
-   - **R49 (tap:video Ready+0B):** await `preemptForUserTap` before
-     `ensureFileLocal` (no unawaited race). `openMessageContent`/`viewMessages`
-     on tap:video must **force** (bypass 8s focus debounce). Keep download
-     waiters alive across stall-retry/lastchance — only complete on give-up.
-     Markers: `openMessageContent ok` before first tap `net-downloadFile`,
-     no waiter-null mid-ladder.
+7b. **Exclusive slot wedge (LOCKED R22 + R42 + R43 + R44 + R48 + R49 + R50)** — SessionLog 16:32–16:38,
+ r41_check 20:13/20:22, r42_check Shariy 20:30
+ - **R48 (active-screen priority):** hub is the active screen when
+ `_openChatId == null` — visible `hub-avatar` **may** use FakeTLS wire
+ (slotLimit=1, 0B budget ~4s, queue cap ~8). Do **not** restore
+ `hub-avatar skip: proxy exclusive`. Open chat must
+ `_purgeAvatarDownloads` + `_purgeNonFocusDownloads` before media.
+ App pause clears unfinished queue/inflight (`app-pause clear-unfinished`)
+ and bumps `mediaReadyEpoch` so hub re-prefetches; keep disk cache.
+ - **R49 (tap:video Ready+0B):** await `preemptForUserTap` before
+ `ensureFileLocal` (no unawaited race). `openMessageContent`/`viewMessages`
+ on tap:video must **force** (bypass 8s focus debounce). Keep download
+ waiters alive across stall-retry/lastchance — only complete on give-up.
+ Markers: `openMessageContent ok` before first tap `net-downloadFile`,
+ no waiter-null mid-ladder.
+ - **R50 (Ostashko 10:41):** focus must **not** steal FakeTLS slot from
+ `tap:video` / `stall-retry:tap:` / `stall-lastchance` / `auto:video`.
+ `_yieldSlotsToFocus` never cancels those; `_applyExclusiveFocusQueue`
+ logs `focus-defer tap-hold` and skips enqueue/yield while they hold
+ the wire. Marker: no `yield-slots-to-focus soft=<tapVideoId>` after
+ preempt; may see `focus-defer tap-hold`.
    - Full `tap:video` can succeed under Ready+FakeTLS; later thumbs/photos
      0B / idle mid-file + `album:prefetch`×N + `focus_hold` wedged 1/1.
    - **`preemptForUserTap`:** drop `album:prefetch` / `stall-*` / focus from
@@ -192,9 +370,11 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
    - Small files (≤64KB, not video body): Ready 0B budget **~12s**; **no**
      lastchance — marker `stall-give-up-small`.
    - Large `tap:video` Ready 0B stays **35s** (R19).
-   - **R42:** on chat switch clear focus hold + purge foreign **before**
+   - **R42 / R42b:** on chat switch clear focus hold + purge foreign **before**
      `focus.contains`; pump gates on `inflight.length` (no FakeTLS 2×);
-     `tap:photo` Ready+0B **~12s** + skip lastchance; give-up clears hold.
+     non-video `focus:`/`tap:photo` Ready+0B **~12s** (not focus 35s —
+     R42b SessionLog 20:25: `focus:` 98–185KB waited 35s, purge@27s, never
+     R51; Ready+proxy+send OK) + skip lastchance; give-up clears hold.
      Markers: `focus-hold clear why=open-chat:…`, `stall-give-up-small`.
      Do **not** soft-restart / late-None / quiet changes for media stalls.
    - **R43 (Shariy screen blur):** after focus disk/net complete, clear hold
@@ -235,6 +415,18 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
      `remap-seed-disk` / `remap-disk-hit` / `ensure-hit-remap` so tap with
      stale attachment id still hits disk. Markers: `restore-seed-cache`,
      `remap-disk-hit`, `ensure-hit-remap`, `probe-hit-durable`.
+   - **R51 / R51b–f (Ready+0B zombie — SessionLog 11:34 / 21:16 / 21:23):**
+     Ready+FakeTLS+0B + fresh Pong alone is **not** enough (R51b: first
+     CDN 0B → origin). After **CDN+origin both 0B** + fresh Pong while
+     Ready: **evenIfReady hop** (R10) — **not** soft-restart (R51d).
+     **R51e:** probe sync must **not** re-enable same hop while Ready.
+     **R51f** `focus-tail`/`focus-upgrade` share CDN→origin.
+     **R51g (21:39):** do **not** hop-no-ping while Ready — enableProxy on
+     the other hop tore Ready after live `done`s; blur stayed. Probe-miss
+     while Ready → stay + size-fallback. Markers:
+     `proxy sync skip re-enable (Ready+same hop)`,
+     `proxy-failover skip probe-miss Ready`,
+     `stall-recover-zombie-hop`, `stall_zombie_hop`.
 
 8. **Ready + media 0B ladder (LOCKED R8 + R10 + R17)**
    - First `downloadFile` under proxy: **CDN `offset=0`** — including
@@ -248,15 +440,17 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
    - After give-up / avatar streak ≥5: `evenIfReady` probe better hop only.
    - VPS O1 (`07_VPS_O1.md`): do not “fix” mtg flags without dial evidence.
 
-9. **VPN / geo vs debug AppBar (LOCKED R18)**
-   - AppBar pref = **user intent only** (allow FakeTLS vs forced direct).
-   - Geo must **never** write AppBar pref (soak: VPN geo-off sticky-OFF →
-     all later rechecks `skip (debug switch OFF)` — FakeTLS never returned).
-   - AppBar ON → follow geo (leave-RU / VPN → disable; return-RU → enable).
-   - AppBar OFF → forced direct; geo recheck skips with `user AppBar OFF`.
+9. **VPN / geo vs hub «Прокси» mode (LOCKED R18)**
+   - Pref `tdlib_mtproto_proxy_mode` = **user intent only**
+     (`auto` / `on` / `off`). Geo must **never** write it (soak: VPN geo-off
+     sticky-OFF on old AppBar bool → forever skip — FakeTLS never returned).
+   - `auto` (default) → follow geo (leave-RU / VPN → disable; return-RU →
+     enable).
+   - `on` → always FakeTLS (even under VPN); geo recheck still forces want=true.
+   - `off` → forced direct; geo recheck skips with `user alwaysOff`.
    - Serialize ensure/disable via `_enqueueProxyMutate` (no geo-off∩ensure race).
-   - Markers: `proxy geo recheck … → use=true/false` without pref flip;
-     after VPN off in RU: `→ use=true` (not perpetual skip).
+   - Markers: `proxy geo recheck … → use=true/false` + `mode=auto|on|off`
+     without pref flip; after VPN off in RU (auto): `→ use=true`.
 
 10. **Ready+0B video budget (LOCKED R19)**
     - `_stallZeroBytesVideoProxyReady` = **35s** (was 75s).
@@ -309,11 +503,14 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
 - `enableProxy` on every pause-suspend unsuspend (R33 — not official
   resumeNetwork; aborts FakeTLS reopen)
 - Soft-nudge-only after hop-try debounce (need socket reopen last resort)
-- Writing geo result into debug AppBar pref / skipping geo forever after VPN
-- Force-ON FakeTLS in debug ignoring non-RU geo (breaks VPN auto-off)
+- Writing geo result into hub proxy mode pref / skipping geo forever after VPN
+- Force-ON FakeTLS while mode=`auto` ignoring non-RU geo (breaks VPN auto-off;
+  `alwaysOn` is explicit user choice)
 - Restoring 75s never-progressed video Ready 0B (R19 gap — ~2m UX)
 - Restoring 45s progress-idle under Ready+FakeTLS / lastchance on ≤64KB
   thumbs / wire `album:prefetch` under FakeTLS (R22 — slot wedge)
+- Leaving non-video `focus:` Ready+0B on 35s budget under FakeTLS (R42b —
+  >64KB photos wedge slot after lock; use thumb 12s)
 - Zeroing long-bg restartCount on short resume while still Connecting
   (R23 — hop-try never reached)
 - Soft-nudge-only after reopen×2 mid-ladder short resume (R23)
@@ -329,16 +526,120 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
 - Unawaited `preemptForUserTap` racing `ensureFileLocal` / skipping force
   `openMessageContent` on tap:video (R49 — Ready+0B video body)
 - Completing download waiters before stall-lastchance requeue (R49)
+- Focus thumb `yield-slots-to-focus` canceling `stall-lastchance` /
+  `stall-retry:tap:video` (R50 — Ostashko video forever 0B while photos OK)
+- Soft-restart on Ready+0B + Pong alone without origin try (R51b)
+- Soft-restart on Ready+zombie after CDN+origin (R51d — tears MTProto
+  Ready/send; use evenIfReady hop instead)
+- `disableProxy`+`enableProxy` / soft-nudge on Ready+same-hop during
+  media zombie probe (R51e SessionLog 21:16 — Ready→Connecting ~500ms)
+- Hop-no-ping / enableProxy while Ready on media probe-miss (R51g —
+  SessionLog 21:39 tore Ready after live downloads; use size-fallback)
+- `focus-tail`/`focus-upgrade` give-up without CDN→origin (R51f)
+- Gating zombie heal on recent net `done` after CDN+origin 0B (R51c)
+- Soft-restart on every Ready+0B without Pong-fail evidence (R42/R51)
+- `cancelDownloadFile` first on Ready+zombie (R51 — can drop Ready;
+  hop without cancel while Ready)
+- Pause-suspend `networkTypeNone` mid soft-restart / faketls-quiet
+  (R52 — aborts FakeTLS dial; 62m WFN)
+- Clearing `_softPausedReadyProxy` on a repeat pause after late-None
+  (R55 — unlock official-reopen WiFi, 0 RELAY, stuck «ожидание»)
+- Instant late-None on every Ready→Connecting blip without ~2s defer
+  (R52 — kills plane that recovers Ready)
+- Waiting full kick 35s after soft-restart Ready blip drops in fg
+  (R53 — settle early soft-restart; cap 2)
+- Wire `downloadFile` / origin ladder while FakeTLS Connecting (boot or
+  soft-restart) (R54b — hold until Ready; drop+requeue only on 0B)
+- Caching a TDLib temp path with no image extension (`mtproto <id>`) as a
+  finished file (SessionLog 21:58 — queue of focus-tail never pumped)
+- Skipping the post-restart CDN gap because a sibling already
+  `done source=net` (SessionLog 22:35 — next socket still DF, origin
+  another DF, 19KB give-up)
+- Writing `networkTypeNone` on a wifi/mobile link event because a
+  follow-up `checkConnectivity()` read offline (R60 — 13 Oct 10:36)
+- Soft-restart on resume while that hop's FakeTLS quiet is still
+  running (R60 — 13 Oct 10:33, the new restart aborted the live dial)
+- Running the foreground kick ladder (soft-restart / enableProxy) while
+  paused to heal a background Connecting (R61 — freeze-kick stays; the
+  heal is one `setNetworkType` after 90s, marker `bg-stuck-reassert`)
+- Background soft-restart after late-None (R62 — 14 Oct 08:39Z the new
+  ClientHello never reached mtg-wifi; the 35s quiet-end freeze is a
+  timer and does not run once the isolate freezes)
+- Background dial after Ready drop: soft-restart, Connecting reassert,
+  or WFN same-wifi setNetworkType (R63 — 09:01/09:05 mtg no Stream;
+  10:10 was real mobile→wifi only)
+- Plain `setNetworkType` on wifi→mobile while Ready (R64 — 14 Oct 09:17
+  hang; both wifi↔mobile flips need `_recoverAfterBearerChange`)
+- `skip-none-bounce (ready+proxy)` on a real `link:…wifi` flip after
+  setNetworkType (R65 — 14 Oct 09:22 stale Ready; reopen sockets)
+- `skip-none-bounce (mobile)` on a real `link:…mobile` flip after
+  setNetworkType (R66 — 14 Oct 09:27; reopen both wifi↔mobile link flips)
+- Keeping wifi preferred `:443` after wifi→mobile (R67 — cellular
+  ClientHello timeout on mtg-wifi; switch to `:8443` for mobile)
+- FakeTLS wifi↔mobile: `enableProxy` then `None→current` (R68 —
+  14 Oct 09:45 aborted 8443 dial)
+- FakeTLS wifi↔mobile: mid-session `enableProxy` / hold→proxy→up
+  (R69 — official A/B 0 RELAY; same hop → setNetworkType only;
+  hop change → soft-restart)
+- R13 escalate / `app-resume-official` on bg≈0 mid bearer-recover
+  (R68 — poisons quiet dial into soft-restart@50s)
+- Restoring 2 download sessions per DC (R59 — the second FakeTLS
+  hello never reaches mtg; keep `download_session_count` = 1)
+- Origin (`offset=1`) on a non-video Ready+FakeTLS 0B (R57 — mtg
+  13 Oct: origin is another domain-fronting socket and TDLib opens a
+  new one every ~3s for ~26s; quiet 22s then one CDN retry)
+- A 30s hold of the first file socket after soft-restart Ready
+  (checked 13 Oct 20:33: hold ran, first `downloadFile` at +30s was
+  still 0B and domain-fronting). Do not add that delay.
+- Rejecting `.oga` / `.ogg` voice paths as unready (`complete-defer`)
+  while treating ≤64KB voice as `stall-give-up-small` (R70 — mobile
+  FakeTLS slot storm; wifi looked fine because complete often raced)
+- Purging same-chat `voice:` when `chatId=null` / double-ensure from
+  bubble `_attachments` + player (R70)
+- Remap unknown-role preferring photo/webp over `voiceFileId` (R70)
+- Leaving `_mediaGiveUpFileIds` after WFN→Ready so failed voice never
+  retries (R70 — clear on mtproto-up / tap preempt)
+- Kicking ConnectingToProxy on cellular before ~55s (R70 — wifi 40s OK)
+- Soft-restart / hop / origin on Ready+DF photo (R71 — mtg domain-fronting;
+  keep R57 quiet + CDN retry; UX = clear focus + tap pierces hold)
+- Leaving focus claim after `stall-df-exhausted` on focus-tail (R71 —
+  focus_hold_block / tap stuck)
+- Keeping Ready DF 22s hold across `preemptForUserTap` (R71 —
+  SessionLog 20:22:27 disk-miss)
+- Queueing album focus-tails immediately after soft-restart before any
+  post-restart net `done` (R71 — next socket DF)
+- Logging `openMessageContent defer` every viewport tick while WFN /
+  starting a new `wait-media-conn` poll per caller (R72 — coalesce + shared)
+- Dual late-None `setNetworkType(None)` from deferred + soft-handshake
+  timers without an in-flight guard (R72)
+- Pause `networkTypeNone` again when already WaitingForNetwork (R72 —
+  official pauseNetwork no-op)
+- Soft-restart-first on unlock while previous soft-restart still
+  recovering / &lt;8s cool-down !Ready (R72 — official resumeNetwork once)
 
 ## After changes here
 
 Cold start: `boot proxy-before-params` then params then online — first
 Ready already `proxyOn=true` (R31/R32), no Ready-direct→enableProxy drop.
 Short lock while Ready+FakeTLS → `skip None` (R34). If Ready→Connecting in
-bg → late-None (R40). Unlock still Ready → `skip setNetworkType` (R36).
+bg → late-None only (R40/R63 — no bg dial). Unlock still Ready →
+`skip setNetworkType` (R36).
 Unlock !Ready → soft-restart-first (R40), quiet/collapse **35s** (R41 —
 Ready clears early); skip hop (R39); preserve ladder (R37).
+wifi↔mobile FakeTLS: hop by port (R67); same hop → setNetworkType only,
+hop change → soft-restart (R69 — match official; no mid-session
+enableProxy). No resume official-reopen on that dial (R68).
 Soft kicks skip setNetworkType/enableProxy while Connecting (R29/R28).
 Tap video: `offset=0` (R17); wedged slot → `preempt-tap` (R22).
 After soft-restart: history merge must refresh file ids (R47); tap must
 not keep `File not found` on preserved ids.
+Voice under FakeTLS: `.oga` completes (`done … .oga`); give-ups clear on
+`mtproto-up`; purge keeps `voice:`; no bubble+player double ensure (R70).
+Mobile ConnectingToProxy kick ≥55s (wifi 40s).
+Post soft-restart FakeTLS media (R71): album head only until first net
+`done`; cool ~3s between net sockets for 25s; `df-exhausted` clears focus;
+tap clears Ready DF/cool hold (`media-wire-hold clear (user-tap)`).
+WFN/Connecting (R72): at most one pending `openMessageContent` + one shared
+`wait-media-conn`; Ready → `flush-pending` + complete waiters. late-None /
+pause already-WFN = skip None; unlock soft-restart-first respects
+recovering/cooldown.

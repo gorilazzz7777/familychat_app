@@ -24,12 +24,13 @@ class ZoomAwarePageView extends StatefulWidget {
 
 class ZoomAwarePageViewState extends State<ZoomAwarePageView> {
   int _pointers = 0;
+  /// Scale relative to the photo's home (cover) pose: 1.0 = rest.
   double _scale = 1.0;
 
   bool get _lockScroll => _pointers >= 2 || _scale > 1.05;
 
   void reportScale(double scale) {
-    final next = scale.clamp(0.2, 8.0);
+    final next = scale.clamp(0.15, 12.0);
     if ((next - _scale).abs() < 0.01) return;
     setState(() => _scale = next);
   }

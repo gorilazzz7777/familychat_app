@@ -29,7 +29,11 @@ class FamilyChatNotifications {
 
   static bool _initialized = false;
 
+  /// FC chat pushes: short window (bg handler + fg onMessage race).
   static const _pushDedupeWindowMs = 30000;
+  /// TG TDLib local banners: longer window — same message_id must not re-raise
+  /// after processPush + reconnect (zombie / duplicate-on-open).
+  static const _tdlibPushDedupeWindowMs = 24 * 60 * 60 * 1000;
   static const _handledInlineReplyPrefix = 'inline_reply_handled_';
   static const _handledMarkReadPrefix = 'inline_mark_read_handled_';
   static final Set<String> _inlineReplyInFlight = {};
@@ -767,6 +771,32 @@ class FamilyChatNotifications {
     }
   }
 
+  static Future<bool> _markTdlibPushShown(Map<String, dynamic> data) async {
+    final chatId = int.tryParse(data['chat_id']?.toString() ?? '') ?? 0;
+    final messageId = int.tryParse(data['message_id']?.toString() ?? '') ?? 0;
+    final notifId = int.tryParse(data['notification_id']?.toString() ?? '') ?? 0;
+    if (chatId == 0 && messageId == 0 && notifId == 0) return true;
+    final key = messageId > 0
+        ? 'tdlib_push_dedupe_m_${chatId}_$messageId'
+        : 'tdlib_push_dedupe_n_${chatId}_$notifId';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final seenAt = prefs.getInt(key);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (seenAt != null && now - seenAt < _tdlibPushDedupeWindowMs) {
+        debugPrint(
+          '[FamilyChatNotifications] skip duplicate tdlib push key=$key',
+        );
+        return false;
+      }
+      await prefs.setInt(key, now);
+      return true;
+    } catch (e) {
+      debugPrint('[FamilyChatNotifications] tdlib dedupe failed: $e');
+      return true;
+    }
+  }
+
   @pragma('vm:entry-point')
   static Future<void> showForegroundPush({
     required String title,
@@ -787,6 +817,9 @@ class FamilyChatNotifications {
     final isChat = type == 'familychat_chat' ||
         (data['deeplink']?.toString() == 'chat' && threadId != null);
     if (isChat && !await _markChatPushShown(data)) {
+      return;
+    }
+    if (type == kTdlibPushType && !await _markTdlibPushShown(data)) {
       return;
     }
 

@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Match Flutter AppTheme.splashBackground / Material3 light surface. -->
+    <color name="splash_background">#FFF7F9FF</color>
 </resources>

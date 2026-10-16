@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
+import 'app/boot_prime.dart';
 import 'app/bootstrap_screen.dart';
 import 'core/diagnostics/app_session_diagnostics.dart';
 import 'core/diagnostics/session_log.dart';
@@ -26,6 +27,7 @@ import 'core/settings/screen_timeout_guard.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/appearance_prefs.dart';
 import 'core/theme/theme_seed_controller.dart';
+import 'features/chat/data/hub_first_paint_snapshot.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,18 +41,27 @@ Future<void> main() async {
   imageCache.maximumSizeBytes = 48 << 20; // 48 MB
   // Не блокируем первый кадр: даты и Firebase догружаются параллельно.
   unawaited(initializeDateFormatting('ru', null));
+  // Cold-start: never block runApp on Play/RuStore probe (was up to 3s).
   if (!kIsWeb) {
-    try {
-      await InstallStore.resolve().timeout(const Duration(seconds: 3));
-    } catch (_) {
-      AppClient.setInstallStore(InstallStore.unknown);
-    }
+    AppClient.setInstallStore(InstallStore.unknown);
+    unawaited(() async {
+      try {
+        await InstallStore.resolve().timeout(const Duration(seconds: 3));
+      } catch (_) {
+        // keep unknown
+      }
+    }());
+    // Hub warm races in background; only block briefly on session status so
+    // returning users can paint Shell on Flutter frame 0 (skip «Загрузка…»).
+    unawaited(HubFirstPaintSnapshot.warm());
+    await BootPrime.warm(const Duration(milliseconds: 120));
   }
   if (kIsWeb) {
     usePathUrlStrategy();
   } else {
     MediaUploadForeground.initCommunicationPort();
-    MediaUploadForeground.ensureInitialized();
+    // Defer FGS init off the critical path to first frame.
+    unawaited(Future<void>.microtask(MediaUploadForeground.ensureInitialized));
     unawaited(() async {
       try {
         await PushRegistrationService.ensureFirebaseInitialized();

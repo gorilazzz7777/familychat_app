@@ -7,11 +7,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/widgets/family_tab_bar.dart';
+import '../../chat/presentation/widgets/chat_link_item_actions.dart';
+import '../../chat/presentation/widgets/chat_link_preview_tile.dart';
+import '../../members/presentation/member_profile_screen.dart';
 import '../../profile/presentation/widgets/chat_avatar.dart';
 import '../tdlib_local_file.dart';
 import '../telegram_link_navigation.dart';
+import '../telegram_match_store.dart';
 import '../telegram_tdlib_providers.dart';
 import '../telegram_tdlib_service.dart';
+import 'telegram_sheet_media_thumb.dart';
+import 'telegram_user_info_sheet.dart';
 
 /// Шторка профиля канала/группы TG — как в официальном клиенте
 /// (аватар, подписчики, Звук/Ссылка/Покинуть, описание, Медиа/Ссылки).
@@ -20,15 +26,18 @@ class TelegramChatInfoSheet extends ConsumerStatefulWidget {
     super.key,
     required this.chatId,
     required this.profile,
+    this.onGoToMessage,
   });
 
   final int chatId;
   final TdlibChatProfile profile;
+  final Future<void> Function(int messageId)? onGoToMessage;
 
   static Future<void> show(
     BuildContext context, {
     required int chatId,
     required TdlibChatProfile profile,
+    Future<void> Function(int messageId)? onGoToMessage,
   }) {
     return showModalBottomSheet<void>(
       context: context,
@@ -38,6 +47,7 @@ class TelegramChatInfoSheet extends ConsumerStatefulWidget {
       builder: (_) => TelegramChatInfoSheet(
         chatId: chatId,
         profile: profile,
+        onGoToMessage: onGoToMessage,
       ),
     );
   }
@@ -77,15 +87,74 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
     _tabs.addListener(() {
       if (!_tabs.indexIsChanging && mounted) setState(() {});
     });
-    _muted =
-        ref.read(telegramTdlibServiceProvider).isChatMuted(widget.chatId);
+    final svc = ref.read(telegramTdlibServiceProvider);
+    _muted = svc.isChatMuted(widget.chatId);
+    svc.addListener(_onTdlibChanged);
     unawaited(_loadTabs());
   }
 
   @override
   void dispose() {
+    ref.read(telegramTdlibServiceProvider).removeListener(_onTdlibChanged);
     _tabs.dispose();
     super.dispose();
+  }
+
+  void _onTdlibChanged() {
+    if (!mounted || !_showMembers || _members.isEmpty) return;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    var changed = false;
+    final next = <TdlibChatMember>[];
+    for (final m in _members) {
+      final path = svc.userAvatarLocalPath(m.userId);
+      if (path != null && path.isNotEmpty && path != m.avatarLocalPath) {
+        changed = true;
+        next.add(
+          TdlibChatMember(
+            userId: m.userId,
+            displayName: m.displayName,
+            avatarLocalPath: path,
+            avatarMinithumbnailBytes: m.avatarMinithumbnailBytes,
+            isCreator: m.isCreator,
+            isAdmin: m.isAdmin,
+          ),
+        );
+      } else {
+        next.add(m);
+      }
+    }
+    if (changed) setState(() => _members = next);
+  }
+
+  Future<void> _openMemberProfile(TdlibChatMember member) async {
+    final match = await TelegramMatchStore.instance.get(member.userId);
+    final fcId = match?.fcUserId ?? 0;
+    if (fcId > 0) {
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => MemberProfileScreen(userId: fcId),
+        ),
+      );
+      return;
+    }
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final profile = await svc.loadUserProfile(member.userId);
+    if (!mounted || profile == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось открыть профиль')),
+        );
+      }
+      return;
+    }
+    final dmChatId =
+        svc.privateChatIdForUser(member.userId) ?? widget.chatId;
+    await TelegramUserInfoSheet.show(
+      context,
+      chatId: dmChatId,
+      profile: profile,
+    );
   }
 
   Future<void> _loadTabs() async {
@@ -551,11 +620,31 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
             delegate: SliverChildBuilderDelegate(
               (context, i) {
                 final item = _links[i];
-                return ListTile(
-                  leading: const Icon(LucideIcons.link),
-                  title: Text(item.url, maxLines: 2),
-                  onTap: () => unawaited(
-                    TelegramLinkNavigation.openOrLaunch(item.url),
+                final url = item.url;
+                final messageId = item.messageId;
+                final goTo = widget.onGoToMessage;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: ChatLinkPreviewTile(
+                    url: url,
+                    onTap: () {
+                      unawaited(
+                        showChatLinkItemActions(
+                          context,
+                          onOpen: () => TelegramLinkNavigation.openOrLaunch(
+                            url,
+                            currentChatId: widget.chatId,
+                          ),
+                          onGoToMessage: messageId > 0 && goTo != null
+                              ? () => goToChatInfoMessage(
+                                    context,
+                                    messageId: messageId,
+                                    onGoToMessage: goTo,
+                                  )
+                              : null,
+                        ),
+                      );
+                    },
                   ),
                 );
               },
@@ -594,50 +683,11 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
             crossAxisSpacing: 4,
           ),
           delegate: SliverChildBuilderDelegate(
-            (context, i) {
-              final m = _media[i];
-              final svc = ref.read(telegramTdlibServiceProvider);
-              final path = m.photoLocalPath ??
-                  (m.photoRemoteId != null
-                      ? svc.cachedFilePath(m.photoRemoteId!)
-                      : null) ??
-                  m.videoThumbLocalPath ??
-                  (m.videoThumbFileId != null
-                      ? svc.cachedFilePath(m.videoThumbFileId!)
-                      : null);
-              if (path == null || path.isEmpty) {
-                final fileId = m.photoRemoteId ?? m.videoThumbFileId;
-                if (fileId != null) {
-                  unawaited(svc.ensureFileLocal(fileId));
-                }
-                return ColoredBox(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  child: Center(
-                    child: Icon(
-                      m.isVideo ? LucideIcons.video : LucideIcons.image,
-                    ),
-                  ),
-                );
-              }
-              return ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    tdlibLocalFileImage(path, fit: BoxFit.cover),
-                    if (m.isVideo)
-                      const Align(
-                        alignment: Alignment.center,
-                        child: Icon(
-                          LucideIcons.play,
-                          color: Colors.white,
-                          size: 28,
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            },
+            (context, i) => TelegramSheetMediaThumb(
+              message: _media[i],
+              gallery: _media,
+              onGoToMessage: widget.onGoToMessage,
+            ),
             childCount: _media.length,
           ),
         ),
@@ -695,6 +745,7 @@ class _TelegramChatInfoSheetState extends ConsumerState<TelegramChatInfoSheet>
               ),
               title: Text(member.displayName),
               subtitle: role == null ? null : Text(role),
+              onTap: () => unawaited(_openMemberProfile(member)),
               onLongPress: canRemove
                   ? () => unawaited(_onMemberLongPress(member))
                   : null,

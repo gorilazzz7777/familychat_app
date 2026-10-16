@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
 /// Быстрые реакции в ленте меню (как в Telegram).
+/// TDLib rejects U+FE0F on emoji reactions (`❤️` → use `❤`).
 const kChatQuickReactionEmojis = [
   '👍',
-  '❤️',
+  '❤',
   '😂',
   '😮',
   '😢',

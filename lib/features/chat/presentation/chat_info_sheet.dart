@@ -6,8 +6,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
-
 import '../../../core/cache/familychat_media_cache.dart';
 import '../../../core/presence/user_presence.dart';
 import '../../../core/providers/app_providers.dart';
@@ -22,6 +20,7 @@ import '../../../core/widgets/family_tab_bar.dart';
 import 'chat_thread_avatars.dart';
 import 'chat_call_screen.dart';
 import 'widgets/chat_image_viewer.dart';
+import 'widgets/chat_link_item_actions.dart';
 import 'widgets/chat_link_preview_tile.dart';
 import 'widgets/chat_network_image.dart';
 import '../../../core/local_db/chat_local_store.dart';
@@ -947,13 +946,22 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 onTap: () => _openGalleryItem(item),
                 onLongPress: () {
                   final messageId = _messageIdOf(item);
-                  if (messageId != null) {
-                    _showItemActions(
-                      title: 'Открыть фото',
-                      onOpen: () => _openGalleryItem(item),
-                      messageId: messageId,
-                    );
-                  }
+                  if (messageId == null) return;
+                  final goTo = widget.onGoToMessage;
+                  unawaited(
+                    showChatLinkItemActions(
+                      context,
+                      openTitle: 'Открыть фото',
+                      onOpen: () async => _openGalleryItem(item),
+                      onGoToMessage: goTo != null
+                          ? () => goToChatInfoMessage(
+                                context,
+                                messageId: messageId,
+                                onGoToMessage: goTo,
+                              )
+                          : null,
+                    ),
+                  );
                 },
                 child: GalleryMediaThumbnail(
                   threadId: widget.threadId,
@@ -992,16 +1000,22 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
                 padding: const EdgeInsets.only(bottom: 8),
                 child: ChatLinkPreviewTile(
                   url: url,
-                  onTap: () => _showItemActions(
-                    title: 'Открыть ссылку',
-                    onOpen: () => launchUrl(
-                      Uri.parse(
-                        url.startsWith('http') ? url : 'https://$url',
+                  onTap: () {
+                    final goTo = widget.onGoToMessage;
+                    unawaited(
+                      showChatLinkItemActions(
+                        context,
+                        onOpen: () => launchChatInfoLink(url),
+                        onGoToMessage: messageId != null && goTo != null
+                            ? () => goToChatInfoMessage(
+                                  context,
+                                  messageId: messageId,
+                                  onGoToMessage: goTo,
+                                )
+                            : null,
                       ),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    messageId: messageId,
-                  ),
+                    );
+                  },
                 ),
               );
             },
@@ -1131,47 +1145,6 @@ class _ChatInfoSheetState extends ConsumerState<ChatInfoSheet>
     final id = item['message_id'];
     if (id is int) return id;
     return int.tryParse(id?.toString() ?? '');
-  }
-
-  Future<void> _goToMessage(int messageId) async {
-    final goTo = widget.onGoToMessage;
-    Navigator.of(context).pop();
-    await Future<void>.delayed(const Duration(milliseconds: 220));
-    await goTo?.call(messageId);
-  }
-
-  Future<void> _showItemActions({
-    required String title,
-    required VoidCallback? onOpen,
-    int? messageId,
-  }) async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (onOpen != null)
-              ListTile(
-                leading: const Icon(LucideIcons.external_link),
-                title: Text(title),
-                onTap: () => Navigator.pop(ctx, 'open'),
-              ),
-            if (messageId != null && widget.onGoToMessage != null)
-              ListTile(
-                leading: const Icon(LucideIcons.reply),
-                title: const Text('Перейти к сообщению'),
-                onTap: () => Navigator.pop(ctx, 'goto'),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted) return;
-    if (action == 'open') onOpen?.call();
-    if (action == 'goto' && messageId != null) {
-      await _goToMessage(messageId);
-    }
   }
 
   void _openGalleryItem(Map<String, dynamic> item) {

@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import 'services_access.dart';
 
@@ -6,8 +7,12 @@ import 'services_access.dart';
 ///
 /// Must hit the register host **directly** (not via familychat-app.ru), because
 /// the :443 stream mux makes Django see 127.0.0.1 instead of the phone IP.
+///
+/// Serialized: [fc-svc-proxy-allow] restarts tinyproxy; overlapping calls race.
 class ServicesProxyRegistrar {
   ServicesProxyRegistrar();
+
+  static Future<void> _tail = Future<void>.value();
 
   final Dio _dio = Dio(
     BaseOptions(
@@ -17,7 +22,21 @@ class ServicesProxyRegistrar {
     ),
   );
 
-  Future<void> register(ServicesRegisterConfig config) async {
+  Future<void> register(
+    ServicesRegisterConfig config, {
+    String why = '',
+  }) {
+    final prev = _tail;
+    late final Future<void> curr;
+    curr = prev.catchError((_) {}).then((_) => _registerOnce(config, why: why));
+    _tail = curr;
+    return curr;
+  }
+
+  Future<void> _registerOnce(
+    ServicesRegisterConfig config, {
+    required String why,
+  }) async {
     if (config.url.isEmpty || config.token.isEmpty) {
       throw StateError('register_not_configured');
     }
@@ -29,5 +48,8 @@ class ServicesProxyRegistrar {
     if (res.statusCode != 200 || data['status']?.toString() != 'ready') {
       throw StateError(data['error']?.toString() ?? 'register_failed');
     }
+    debugPrint(
+      '[services_proxy] register ok why=$why ip=${data['ip'] ?? '?'}',
+    );
   }
 }

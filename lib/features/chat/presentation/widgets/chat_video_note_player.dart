@@ -15,6 +15,7 @@ import '../../../../core/media/local_device_file.dart';
 import '../../../../core/media/media_local_index.dart';
 import '../../../../core/network/chat_network_link.dart';
 import '../../../../core/providers/app_providers.dart';
+import '../../../../core/settings/app_screen_keep_on.dart';
 import '../../../../core/settings/app_settings_controller.dart';
 import '../../../../core/widgets/family_public_image.dart';
 import '../../../telegram_tdlib/telegram_tdlib_providers.dart';
@@ -64,6 +65,8 @@ class ChatVideoNotePlayer extends ConsumerStatefulWidget {
 
 class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     with WidgetsBindingObserver {
+  static int _keepOnSeq = 0;
+
   VideoPlayerController? _controller;
   Object? _error;
   bool _expanded = false;
@@ -72,6 +75,8 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
   bool _collapsing = false;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
+  late final String _keepOnId = 'video_note_${++_keepOnSeq}';
+  bool _keepOnHeld = false;
 
   Uint8List? _thumbBytes;
   String? _thumbPath;
@@ -206,9 +211,30 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     if (c == null || !c.value.isInitialized || !_expanded) return;
     if (state == AppLifecycleState.resumed) {
       if (!c.value.isPlaying) unawaited(c.play());
+      _syncKeepOn();
     } else {
       c.pause();
+      _releaseKeepOn();
     }
+  }
+
+  void _syncKeepOn() {
+    final playing = _expanded &&
+        _controller?.value.isInitialized == true &&
+        (_controller?.value.isPlaying ?? false);
+    if (playing) {
+      if (_keepOnHeld) return;
+      _keepOnHeld = true;
+      unawaited(AppScreenKeepOn.acquire(_keepOnId));
+    } else {
+      _releaseKeepOn();
+    }
+  }
+
+  void _releaseKeepOn() {
+    if (!_keepOnHeld) return;
+    _keepOnHeld = false;
+    unawaited(AppScreenKeepOn.release(_keepOnId));
   }
 
   @override
@@ -239,6 +265,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
     _controller?.removeListener(_onTick);
     _controller?.dispose();
     _controller = null;
+    _releaseKeepOn();
   }
 
   Future<void> _loadIdleThumb() async {
@@ -359,6 +386,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
       await controller.setVolume(1);
       controller.addListener(_onTick);
       await controller.play();
+      _syncKeepOn();
       if (mounted) {
         setState(() {
           _ready = true;
@@ -388,6 +416,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
       _position = pos;
       if (dur > Duration.zero) _duration = dur;
     });
+    _syncKeepOn();
     if (_collapsing) return;
     if (dur <= Duration.zero) return;
     final atEnd = pos >= dur - const Duration(milliseconds: 200);
@@ -433,6 +462,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
 
     if (c.value.isPlaying) {
       await c.pause();
+      _syncKeepOn();
       if (mounted) setState(() {});
       return;
     }
@@ -443,6 +473,7 @@ class _ChatVideoNotePlayerState extends ConsumerState<ChatVideoNotePlayer>
       await c.seekTo(Duration.zero);
     }
     await c.play();
+    _syncKeepOn();
     if (mounted) setState(() {});
   }
 

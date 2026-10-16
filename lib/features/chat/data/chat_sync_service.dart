@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/media/media_incoming_sync.dart';
-import '../../../core/notifications/familychat_foreground_bridge.dart';
 import '../../familychat/data/familychat_repository.dart';
 import 'active_chat_context.dart';
 import 'chat_bootstrap_coordinator.dart';
@@ -17,6 +16,7 @@ import 'chat_realtime_utils.dart';
 import 'chat_send_trace.dart';
 import 'chat_unread_providers.dart';
 import 'familychat_realtime.dart';
+import 'hub_first_paint_snapshot.dart';
 
 /// Fills local SQLite from HTTP + WebSocket. UI must not call the network for display.
 class ChatSyncService {
@@ -167,10 +167,12 @@ class ChatSyncService {
         lastMap['read_status']?.toString(),
         'read',
       );
-      await ChatLocalStore.instance.upsertThread({
+      final next = {
         ...thread,
         'last_message': lastMap,
-      });
+      };
+      await ChatLocalStore.instance.upsertThread(next);
+      unawaited(HubFirstPaintSnapshot.upsertFullRow(next));
       _notifyUnreadChanged();
       break;
     }
@@ -220,13 +222,14 @@ class ChatSyncService {
       }
       thread['last_message'] = owned;
       var unread = chatAsInt(thread['unread_count']) ?? 0;
-      final viewing =
-          FamilyChatForegroundBridge.isActivelyViewingThread(threadId);
-      if (!viewing && !isMine && !chatMessageIsPending(owned)) {
+      // Always bump for inbound — UI tip-mark clears when the user is actually
+      // on the live tail. Skipping while "viewing" hid badges for history scroll.
+      if (!isMine && !chatMessageIsPending(owned)) {
         unread += 1;
       }
       thread['unread_count'] = unread;
       await ChatLocalStore.instance.upsertThread(thread);
+      unawaited(HubFirstPaintSnapshot.upsertFullRow(thread));
       _notifyUnreadChanged();
     } else {
       unawaited(syncHub(force: true));
@@ -385,18 +388,32 @@ class ChatSyncService {
           ),
         );
       }
-      final enriched = await enrichChatThreadsLastMessages(threads);
+      var enriched = await enrichChatThreadsLastMessages(threads);
+      // Fill empty last_message bodies from SQLite tip before UI sees the list.
+      enriched = await HubFirstPaintSnapshot.hydrateFcThreadsLastMessages(
+        enriched,
+      );
       await ChatLocalStore.instance.replaceThreads(enriched);
       await ChatLocalStore.instance.replaceMembers(members);
+      HubFirstPaintSnapshot.replaceWarmedFcThreads(enriched);
       _notifyUnreadChanged();
       // Secretary soft-kill: do not refresh Business Bot telegram-chats cache.
 
       if (prefetchMessages) {
+        // Top hub rows (by server order / activity) + any unread — so opening
+        // a recent chat already has a full UI window in SQLite, not tip-only.
+        final prefetchIds = <int>{};
+        for (final thread in enriched.take(20)) {
+          final id = chatAsInt(thread['id']);
+          if (id != null) prefetchIds.add(id);
+        }
         for (final thread in enriched) {
           final id = chatAsInt(thread['id']);
           if (id == null) continue;
           final unread = chatAsInt(thread['unread_count']) ?? 0;
-          if (unread <= 0) continue;
+          if (unread > 0) prefetchIds.add(id);
+        }
+        for (final id in prefetchIds) {
           unawaited(syncThread(id));
         }
       }
@@ -453,10 +470,9 @@ class ChatSyncService {
     );
 
     int mergedUnread() {
-      if (threadId != null &&
-          FamilyChatForegroundBridge.isActivelyViewingThread(threadId)) {
-        return 0;
-      }
+      // Do not zero unread just because the thread screen is open — the user
+      // may be scrolled into history. Only an explicit local_read_through_id
+      // (or server count) proves catch-up.
       // Local mark-read must win over a stale hub snapshot with the same tip.
       if (readThrough != null &&
           serverLastId != null &&
@@ -494,6 +510,37 @@ class ChatSyncService {
         'unread_count': unread,
         if (readThrough != null) 'local_read_through_id': readThrough,
       };
+    }
+    // Server tip with empty body must not wipe a local preview (Киса jumped
+    // out of the hub list until enrich refilled last_message).
+    final serverBody = serverLastMap?['body']?.toString().trim() ?? '';
+    final localBody = localLastMap?['body']?.toString().trim() ?? '';
+    if (localLastMap != null && localBody.isNotEmpty && serverBody.isEmpty) {
+      return {
+        ...server,
+        'last_message': localLastMap,
+        'unread_count': unread,
+        if (readThrough != null) 'local_read_through_id': readThrough,
+      };
+    }
+    // Matched FC+TG: hub tip may be TG-overlay (newer than FC server tip).
+    if (localLastMap != null) {
+      final localParsed =
+          DateTime.tryParse(localLastMap['created_at']?.toString() ?? '');
+      final serverParsed =
+          DateTime.tryParse(serverLastMap?['created_at']?.toString() ?? '');
+      final localMs = localParsed?.millisecondsSinceEpoch;
+      final serverMs = serverParsed?.millisecondsSinceEpoch;
+      if (localMs != null &&
+          (serverMs == null || localMs > serverMs + 500) &&
+          (localBody.isNotEmpty || serverBody.isEmpty)) {
+        return {
+          ...server,
+          'last_message': localLastMap,
+          'unread_count': unread,
+          if (readThrough != null) 'local_read_through_id': readThrough,
+        };
+      }
     }
     return {
       ...server,
@@ -601,19 +648,20 @@ class ChatSyncService {
         ...thread,
         'last_message': richer,
       };
-      if (clearUnread ||
-          FamilyChatForegroundBridge.isActivelyViewingThread(threadId)) {
+      if (clearUnread) {
         next['unread_count'] = 0;
         next['local_read_through_id'] = newestId;
       } else {
         // Push wake syncs the tip without a hub snapshot — count inbound
         // messages past the read frontier so the badge appears right away.
+        // Never clear just because the conversation screen is open.
         final fromFrontier = _unreadPastReadFrontier(thread, messages);
         if (fromFrontier > (chatAsInt(thread['unread_count']) ?? 0)) {
           next['unread_count'] = fromFrontier;
         }
       }
       await ChatLocalStore.instance.upsertThread(next);
+      unawaited(HubFirstPaintSnapshot.upsertFullRow(next));
       _notifyUnreadChanged();
       return;
     }
@@ -641,9 +689,9 @@ class ChatSyncService {
           break;
         }
       }
-      await ChatLocalStore.instance.upsertThread(
-        await _mergeHubThread(match, local),
-      );
+      final merged = await _mergeHubThread(match, local);
+      await ChatLocalStore.instance.upsertThread(merged);
+      unawaited(HubFirstPaintSnapshot.upsertFullRow(merged));
       _notifyUnreadChanged();
     } catch (e, st) {
       debugPrint('[ChatSyncService] hub row refresh failed: $e\n$st');
@@ -670,12 +718,12 @@ class ChatSyncService {
     if (_syncingThreads.contains(threadId)) return;
     _syncingThreads.add(threadId);
     try {
-      final markRead =
-          FamilyChatForegroundBridge.isActivelyViewingThread(threadId);
+      // Fetch must never mark-read — that wiped unread while the user had the
+      // thread open but was reading history / not at the tip.
       final page = await repo.threadMessages(
         threadId,
         limit: limit,
-        markRead: markRead,
+        markRead: false,
       );
       final blocked =
           await ChatOfflineOutbox.pendingRemovalMessageIds(threadId: threadId);
@@ -695,7 +743,7 @@ class ChatSyncService {
       await _patchHubLastMessageFromSynced(
         threadId,
         messages,
-        clearUnread: markRead,
+        clearUnread: false,
       );
       if (page.pinnedMessages.isNotEmpty) {
         final pins = blocked.isEmpty

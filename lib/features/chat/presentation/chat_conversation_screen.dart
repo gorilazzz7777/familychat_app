@@ -93,6 +93,7 @@ import '../../telegram_tdlib/telegram_tdlib_providers.dart';
 import '../../telegram_tdlib/telegram_tdlib_service.dart';
 import '../../telegram_tdlib/telegram_group_bridge.dart';
 import '../../telegram_tdlib/tdlib_config.dart';
+import '../../telegram_tdlib/presentation/telegram_user_info_sheet.dart';
 
 class _PendingFileDraft {
   const _PendingFileDraft({
@@ -573,9 +574,29 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     if (_localFirst) {
       await _bindLocalMessages();
       unawaited(_applyOfflineSyncResults());
-      if (_awaitingFirstThreadSync) {
+      // Sparse SQLite (often tip-only from hub/realtime): await a full page
+      // before leaving the loading state so the user doesn't see 1→25 drip.
+      final localCount =
+          await ChatLocalStore.instance.countMessages(widget.threadId);
+      final sparse = _messages.isEmpty ||
+          (_messages.length < _uiMessageWindow &&
+              localCount < _uiMessageWindow);
+      if (_awaitingFirstThreadSync || sparse) {
         await ChatSyncService.instance.syncThread(widget.threadId);
-        if (mounted && _loading) {
+        if (!mounted) return;
+        final tail = await ChatLocalStore.instance.readMessagesTail(
+          widget.threadId,
+          limit: _uiMessageWindow,
+        );
+        if (!mounted) return;
+        if (tail.isNotEmpty) {
+          final applied = await _buildMessagesFromSqliteRows(tail);
+          if (!mounted) return;
+          setState(() {
+            _messages = applied;
+            _loading = false;
+          });
+        } else if (_loading) {
           setState(() => _loading = false);
         }
         _awaitingFirstThreadSync = false;
@@ -592,8 +613,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       if (targetId != null) {
         await _ensureMessageLoaded(targetId);
         await _scrollToMessage(targetId);
+        // Deep-link into history — do not tip-mark.
       } else if (_messages.isNotEmpty) {
         _scrollToBottom(jump: true, settle: true);
+        // Open lands on tip (same as Telegram) — catch up read here.
+        // Sync must not mark-read just because the screen is open.
+        unawaited(_markLatestRead());
       }
       return;
     }
@@ -940,12 +965,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _bindLocalMessages() async {
     // Instant paint from SQLite tail, then keep watching.
-    final initial = await ChatLocalStore.instance.readMessagesTail(
+    var initial = await ChatLocalStore.instance.readMessagesTail(
       widget.threadId,
       limit: _uiMessageWindow,
     );
+    // Fallback: legacy JSON cache → seed SQLite (migration miss / older installs).
+    if (initial.isEmpty) {
+      try {
+        final cached =
+            await FamilyChatLocalCache.readThreadMessages(widget.threadId);
+        if (cached != null && cached.isNotEmpty) {
+          await ChatLocalStore.instance.upsertMessages(
+            widget.threadId,
+            cached,
+          );
+          initial = await ChatLocalStore.instance.readMessagesTail(
+            widget.threadId,
+            limit: _uiMessageWindow,
+          );
+        }
+      } catch (_) {}
+    }
     if (!mounted) return;
-    if (initial.isNotEmpty) {
+    final totalCount =
+        await ChatLocalStore.instance.countMessages(widget.threadId);
+    if (!mounted) return;
+    // Tip-only / thin cache: keep loading until sync fills a UI window.
+    final thin = initial.isNotEmpty &&
+        initial.length < _uiMessageWindow &&
+        totalCount < _uiMessageWindow;
+    if (initial.isNotEmpty && !thin) {
       final applied = await _buildMessagesFromSqliteRows(initial);
       if (!mounted) return;
       final pins = await ChatLocalMutations.readPinnedMessagesLocal(
@@ -960,7 +1009,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       });
       unawaited(_refreshHasMoreOlder());
     } else {
-      // Keep skeleton until first sync — avoid empty flash then pop-in.
+      // Keep skeleton until first sync — avoid empty/tip flash then pop-in.
       _awaitingFirstThreadSync = true;
     }
 
@@ -1701,7 +1750,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         next.any((m) => chatAsInt(m['id']) == restoreId)) {
       _restoreMessageInView(restoreId, alignment: 0.45);
     }
-    if (newNewest != null &&
+    // Only catch up read when the user is on the live tip — tip advance while
+    // browsing history used to wipe the whole unread pack.
+    if (followTail &&
+        newNewest != null &&
         (oldNewest == null || newNewest > oldNewest)) {
       unawaited(_markLatestRead(messageId: newNewest));
     }
@@ -2215,6 +2267,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
 
   Future<void> _scrollToLiveTail() async {
     await _restoreLiveTailWindow(jumpScroll: true);
+    // Explicit FAB catch-up — user chose the tip.
+    unawaited(_markLatestRead(force: true));
   }
 
   /// Reload the newest [_uiMessageWindow] messages and drop history from UI.
@@ -2602,7 +2656,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(_markLatestRead());
+      // Resume must not tip-mark while the user is scrolled into history.
+      if (_followLiveTail) {
+        unawaited(_markLatestRead());
+      }
       if (_localFirst) {
         unawaited(_refreshFromLocalStore());
         if (!ChatSyncService.instance.resumeCatchUpFresh) {
@@ -2919,7 +2976,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         // ChatSyncService upserts SQLite; watchMessages applies reconcile.
         // Never clearPendingForThread — that wiped unrelated in-flight shares.
         _maybeScheduleVoiceTranscriptPoll(map);
-        unawaited(_markLatestRead(messageId: incomingId));
+        if (_followLiveTail) {
+          unawaited(_markLatestRead(messageId: incomingId));
+        }
         return;
       }
       if (!mounted) return;
@@ -2935,8 +2994,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
         );
       });
       _maybeScheduleVoiceTranscriptPoll(map);
-      _scrollToBottom();
-      unawaited(_markLatestRead(messageId: incomingId));
+      if (_followLiveTail) {
+        _scrollToBottom();
+        unawaited(_markLatestRead(messageId: incomingId));
+      }
       unawaited(_persistMessageCache());
       return;
     }
@@ -3063,8 +3124,17 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     return _pinnedMessages.any((m) => chatAsInt(m['id']) == messageId);
   }
 
-  Future<void> _markLatestRead({int? messageId}) async {
+  /// Mark thread read through [messageId] (default = tip).
+  ///
+  /// Without [force], only runs while following the live tip — otherwise
+  /// opening/resume/sync while scrolled into history wiped the unread pack.
+  /// [force] is for explicit FAB catch-up only.
+  ///
+  /// Does **not** bridge to matched TG tip — that marked TG unread without
+  /// the user opening the TG chat.
+  Future<void> _markLatestRead({int? messageId, bool force = false}) async {
     if (!FamilyChatForegroundBridge.isAppInForeground()) return;
+    if (!force && !_followLiveTail) return;
     final lastId = messageId != null && messageId > 0
         ? messageId
         : chatNewestServerMessageId(_messages);
@@ -3072,13 +3142,6 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     final previous = _lastMarkedReadId;
     if (previous != null && lastId <= previous) return;
     _lastMarkedReadId = lastId;
-
-    // Matched FC↔TG DM: also catch up TDLib tip, otherwise the tip-heuristic
-    // unread overlay comes back after the next getChat / hub refresh.
-    final tgChatId = _tdlibPeerChatId;
-    if (tgChatId != null && tgChatId != 0) {
-      unawaited(TelegramTdlibService.instance.markChatTipRead(tgChatId));
-    }
 
     if (_localFirst) {
       await ChatLocalMutations.markThreadReadLocal(
@@ -3160,12 +3223,11 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     try {
       // Одно окно = размер кэша: меньше расхождений кэш↔API и фоновых «дорисовок».
       final beforeNewestId = chatNewestServerMessageId(_messages);
+      // Never server-mark-read on fetch — only viewport/tip UI paths mark.
       final page = await ref.read(familychatRepositoryProvider).threadMessages(
             widget.threadId,
             limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
-            markRead: FamilyChatForegroundBridge.isActivelyViewingThread(
-              widget.threadId,
-            ),
+            markRead: false,
           );
       if (!mounted || generation != _loadGeneration) return;
 
@@ -3252,13 +3314,17 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           maxImages: 20,
         ),
       );
-      unawaited(_markLatestRead());
-
       // Скролл: при замене устаревшего кэша всегда вниз с settle.
       if ((!silent || cacheBehindApi) && widget.initialMessageId == null) {
         _scrollToBottom(jump: true, settle: true);
+        unawaited(_markLatestRead());
       } else if (silent && messagesChanged && hasNewTail) {
-        _scrollToBottom(jump: true, settle: true);
+        if (_followLiveTail) {
+          _scrollToBottom(jump: true, settle: true);
+          unawaited(_markLatestRead());
+        }
+      } else if (_followLiveTail) {
+        unawaited(_markLatestRead());
       }
 
       if (nextMessages.length < _uiMessageWindow) {
@@ -5560,6 +5626,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     });
   }
 
+  /// Leave the conversation onto the hub chat list (not one-level back).
+  void _exitToChatList() {
+    final nav = Navigator.of(context);
+    if (!nav.canPop()) return;
+    nav.popUntil((route) => route.isFirst);
+  }
+
   void _exitSelection() {
     setState(() {
       _selectionMode = false;
@@ -6388,7 +6461,46 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     }
   }
 
+  /// Prefer TG profile sheet for Saved Messages when TDLib is online.
+  Future<bool> _openSavedMessagesTgInfoIfPossible() async {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.phase != TdlibAuthPhase.ready) return false;
+    final tgChatId = _tdlibPeerChatId ?? svc.savedMessagesChatId;
+    if (tgChatId == null ||
+        tgChatId == 0 ||
+        !svc.isSavedMessagesChat(tgChatId)) {
+      return false;
+    }
+    final myId = svc.myUserId ?? svc.privatePeerUserId(tgChatId) ?? 0;
+    TdlibUserProfile? profile;
+    if (myId > 0) {
+      profile = await svc.loadUserProfile(myId);
+    }
+    if (!mounted) return true;
+    final base = profile;
+    await TelegramUserInfoSheet.show(
+      context,
+      chatId: tgChatId,
+      profile: TdlibUserProfile(
+        userId: base?.userId ?? myId,
+        displayName: _title.trim().isNotEmpty ? _title.trim() : 'Избранное',
+        username: base?.username ?? '',
+        phoneNumber: base?.phoneNumber ?? '',
+        bio: base?.bio ?? '',
+        statusText: 'Только вы',
+        avatarLocalPath:
+            base?.avatarLocalPath ?? svc.peerAvatarPath(tgChatId),
+        avatarFileId: base?.avatarFileId,
+      ),
+      onGoToMessage: (id) => _scrollToMessage(id),
+    );
+    return true;
+  }
+
   Future<void> _openInfo() async {
+    // Saved Messages + TDLib ready → same TG profile sheet as in TG chat.
+    if (_isSaved && await _openSavedMessagesTgInfoIfPossible()) return;
+
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -6786,9 +6898,16 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ref.watch(telegramTdlibServiceProvider);
     }
     return PopScope(
-      canPop: !_selectionMode,
+      // Always intercept: back must land on the chat list, not an
+      // intermediate route (profile / previous chat / push stack).
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _selectionMode) _exitSelection();
+        if (didPop) return;
+        if (_selectionMode) {
+          _exitSelection();
+          return;
+        }
+        _exitToChatList();
       },
       child: Scaffold(
         resizeToAvoidBottomInset: true,
@@ -6817,6 +6936,12 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                 ],
               )
             : FamilyAppBar.buildCustom(
+                automaticallyImplyLeading: false,
+                leading: IconButton(
+                  tooltip: 'Назад',
+                  onPressed: _exitToChatList,
+                  icon: const Icon(LucideIcons.arrow_left),
+                ),
                 title: InkWell(
                   onTap: _openInfo,
                   child: Row(

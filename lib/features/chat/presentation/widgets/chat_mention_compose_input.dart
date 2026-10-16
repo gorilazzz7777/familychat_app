@@ -184,6 +184,10 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
   }
 
   void _collapsePicker() {
+    if (!_pickerOpen) {
+      widget.focusNode.requestFocus();
+      return;
+    }
     setState(() => _pickerOpen = false);
     widget.focusNode.requestFocus();
   }
@@ -271,6 +275,7 @@ class _ChatMentionComposeInputState extends State<ChatMentionComposeInput> {
   }
 
   void _handleSend(ChatSendOptions options) {
+    _collapsePicker();
     _syncMentionedIds();
     widget.onSend(options, _mentionedUserIds.toList());
     _mentionedUserIds.clear();

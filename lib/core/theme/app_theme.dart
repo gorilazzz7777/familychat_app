@@ -8,6 +8,10 @@ class AppTheme {
 
   static const defaultSeedColor = Color(0xFF2E7D32);
 
+  /// Native Android splash + Flutter bootstrap canvas (keep in sync with
+  /// `android/.../values/colors.xml` → `splash_background`).
+  static const splashBackground = Color(0xFFF7F9FF);
+
   static const _minSaturation = 0.42;
   static const _maxSaturation = 0.72;
   static const _minValue = 0.38;

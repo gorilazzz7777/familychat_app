@@ -1,4 +1,7 @@
 # Download TDLib Android jniLibs (libtdjson.so) for FamilyChat.
+# Do not run this over the arm64 library that is already in jniLibs:
+# that build sets download_session_count = 1 (R59). A stock fetch
+# restores 2 sessions and the next photo after Home stays at 0 bytes.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root "android\app\src\main\jniLibs"
