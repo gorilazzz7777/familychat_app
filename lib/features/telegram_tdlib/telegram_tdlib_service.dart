@@ -563,6 +563,30 @@ class TelegramTdlibService extends ChangeNotifier {
   bool _unreadTipWarmRunning = false;
   /// chatId → message id already tip-warmed this session (−1 = no media).
   final Map<int, int> _unreadTipWarmedMsgByChat = {};
+  DateTime? _unreadTipWarmLastAt;
+  Timer? _unreadTipWarmDebounceTimer;
+  static const _unreadTipWarmMinGap = Duration(seconds: 8);
+  /// Boot / mtproto-up must not race hub first paint with getChatHistory×N
+  /// (SessionLog 09:12: warm-history @ +0.2s after Ready → thrash).
+  DateTime? _hubWarmNotBefore;
+  Timer? _hubWarmDeferTimer;
+  bool _hubWarmPassScheduled = false;
+  Future<void> _historyWarmChain = Future<void>.value();
+  static const _hubWarmBootGrace = Duration(seconds: 8);
+  /// After openChat claim: coalesce UI notifies so first paint isn't a
+  /// NOTIFY×N rebuild storm (SessionLog 08:59: FRAME build 400ms+).
+  DateTime? _openChatUiQuietUntil;
+  static const _openChatUiQuiet = Duration(seconds: 2);
+  /// After Ready: suppress hub rebuilds while TDLib dumps chat list
+  /// (SessionLog 09:18 ANR / 09:40 hitch). One flush when quiet ends.
+  DateTime? _hubBootUiQuietUntil;
+  Timer? _hubBootFlushTimer;
+  static const _hubBootUiQuiet = Duration(seconds: 6);
+  /// Drain TDLib updates with event-loop yields during boot quiet so a
+  /// burst of updateNewChat cannot ANR the isolate (SessionLog 09:22).
+  final List<Map<String, dynamic>> _bootUpdateQueue = [];
+  bool _bootUpdateDraining = false;
+  int _bootUpdateHandled = 0;
   int? _myUserId;
   /// Self [chatMember.status] per chat — used for send permissions.
   final Map<int, Map<String, dynamic>> _chatMemberStatus = {};
@@ -609,7 +633,7 @@ class TelegramTdlibService extends ChangeNotifier {
   static const prioHubAvatarRetry = 6;
   static const prioBackground = 4;
   /// Cap how many unread chats get tip-media warm per pass (serial, slot=1).
-  static const warmUnreadTipChatLimit = 5;
+  static const warmUnreadTipChatLimit = 3;
   /// Hang with no new bytes → cancelDownloadFile + requeue / size fallback.
   ///
   /// Official guidance (levlam / td#2585): there are no "stalled" downloads —
@@ -1311,6 +1335,8 @@ class TelegramTdlibService extends ChangeNotifier {
   void _scheduleHubSnapshotRowPersist(int chatId) {
     if (kIsWeb || chatId == 0) return;
     if (isSavedMessagesChat(chatId)) return;
+    // SQLite writes mid boot quiet stack with updateNewChat → ANR.
+    if (_inHubBootUiQuiet) return;
     _hubSnapshotPersistPending.add(chatId);
     _hubSnapshotPersistTimer?.cancel();
     _hubSnapshotPersistTimer = Timer(const Duration(milliseconds: 350), () {
@@ -1817,6 +1843,10 @@ class TelegramTdlibService extends ChangeNotifier {
     // R48: no new hub wire while backgrounded (pause clears unfinished).
     if (!_appInForeground) {
       _mediaLog('hub-avatar skip: background');
+      return;
+    }
+    // Boot-prime already painted faces — don't fight first frames for slot.
+    if (_inHubBootUiQuiet) {
       return;
     }
     if (isUiScrollBusy) {
@@ -2606,14 +2636,95 @@ class TelegramTdlibService extends ChangeNotifier {
       });
       return;
     }
-    final coalesce = !_tdlibReadyForMedia
-        ? const Duration(milliseconds: 200)
-        : const Duration(milliseconds: 48);
+    final now = DateTime.now();
+    final inOpenQuiet = _openChatUiQuietUntil != null &&
+        now.isBefore(_openChatUiQuietUntil!);
+    final inHubBootQuiet = _openChatId == null &&
+        _hubBootUiQuietUntil != null &&
+        now.isBefore(_hubBootUiQuietUntil!);
+    // Hub boot: hold all rebuilds until quiet ends (one flush). Boot-prime
+    // snapshot stays on screen — no jank from loadChats/updateNewChat.
+    if (inHubBootQuiet) {
+      _uiNotifyPending = true;
+      return;
+    }
+    final Duration coalesce;
+    if (inOpenQuiet) {
+      coalesce = const Duration(milliseconds: 240);
+    } else if (!_tdlibReadyForMedia) {
+      coalesce = const Duration(milliseconds: 200);
+    } else {
+      coalesce = const Duration(milliseconds: 48);
+    }
     _uiNotifyPending = true;
     _uiNotifyTimer ??= Timer(coalesce, () {
       _uiNotifyTimer = null;
       _flushPendingUiNotify();
     });
+  }
+
+  void _armOpenChatUiQuiet() {
+    _openChatUiQuietUntil = DateTime.now().add(_openChatUiQuiet);
+  }
+
+  void _armHubBootUiQuiet({required String why}) {
+    // Don't keep extending — first arm wins so quiet actually ends.
+    if (_inHubBootUiQuiet) return;
+    _hubBootUiQuietUntil = DateTime.now().add(_hubBootUiQuiet);
+    _hubBootFlushTimer?.cancel();
+    _hubBootFlushTimer = Timer(_hubBootUiQuiet, () {
+      _hubBootFlushTimer = null;
+      _hubBootUiQuietUntil = null;
+      _mediaLog('hub-boot-ui-quiet end flush');
+      if (_uiNotifyPending) {
+        _flushPendingUiNotify();
+      } else {
+        _notifyUi(immediate: true);
+      }
+    });
+    _mediaLog(
+      'hub-boot-ui-quiet ${_fmtDur(_hubBootUiQuiet)} why=$why',
+    );
+  }
+
+  bool get _inHubBootUiQuiet =>
+      _hubBootUiQuietUntil != null &&
+      DateTime.now().isBefore(_hubBootUiQuietUntil!);
+
+  void _onUpdateMaybeQueued(Map<String, dynamic> update) {
+    if (_inHubBootUiQuiet) {
+      _bootUpdateQueue.add(update);
+      unawaited(_drainBootUpdateQueue());
+      return;
+    }
+    // Flush any leftovers once quiet ends.
+    if (_bootUpdateQueue.isNotEmpty) {
+      _bootUpdateQueue.add(update);
+      unawaited(_drainBootUpdateQueue());
+      return;
+    }
+    _onUpdate(update);
+  }
+
+  Future<void> _drainBootUpdateQueue() async {
+    if (_bootUpdateDraining) return;
+    _bootUpdateDraining = true;
+    try {
+      while (_bootUpdateQueue.isNotEmpty) {
+        final u = _bootUpdateQueue.removeAt(0);
+        _onUpdate(u);
+        _bootUpdateHandled++;
+        // Yield every few updates so frames / timers can run.
+        if (_bootUpdateHandled % 6 == 0) {
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+    } finally {
+      _bootUpdateDraining = false;
+      if (_bootUpdateQueue.isNotEmpty) {
+        unawaited(_drainBootUpdateQueue());
+      }
+    }
   }
 
   /// Hub-row / other-chat noise must not rebuild an open conversation.
@@ -4330,8 +4441,11 @@ class TelegramTdlibService extends ChangeNotifier {
         _completeWaitMediaConn(true);
         _flushPendingOpenMessageContent();
         // Hub watches mediaReadyEpoch to re-run avatar prefetch after Connecting.
-        warmUnreadTipMediaFromHub();
-        notifyListeners();
+        // Do NOT warm history/tip on the Ready edge — hub is still painting.
+        _armHubWarmBootGrace(why: 'mtproto-up');
+        _armHubBootUiQuiet(why: 'mtproto-up');
+        scheduleHubWarmAfterBoot(why: 'mtproto-up');
+        _notifyUi();
       }
     } else {
       _connectingSince = null;
@@ -7743,6 +7857,7 @@ class TelegramTdlibService extends ChangeNotifier {
     String? videoThumbLocalPath,
     String? documentLocalPath,
     String? documentThumbLocalPath,
+    List<TdlibReaction>? reactions,
   }) {
     return TdlibMessage(
       id: m.id,
@@ -7790,7 +7905,7 @@ class TelegramTdlibService extends ChangeNotifier {
       documentThumbLocalPath:
           documentThumbLocalPath ?? m.documentThumbLocalPath,
       documentThumbBytes: m.documentThumbBytes,
-      reactions: m.reactions,
+      reactions: reactions ?? m.reactions,
       replyToMessageId: m.replyToMessageId,
       replyPreviewText: m.replyPreviewText,
       canBeEdited: m.canBeEdited,
@@ -8647,7 +8762,7 @@ class TelegramTdlibService extends ChangeNotifier {
         unawaited(processPushNotificationPayload(payload));
       };
       _client = await TdlibJsonClient.create();
-      _sub = _client!.updates.listen(_onUpdate);
+      _sub = _client!.updates.listen(_onUpdateMaybeQueued);
       _ensureNetworkLinkWatch();
       // R31: do not go online / announce network before proxy is armed.
       // Old path: online+WiFi raced setParameters → Ready on direct, then
@@ -8830,7 +8945,22 @@ class TelegramTdlibService extends ChangeNotifier {
     _mediaGiveUpFileIds.clear();
     _unreadTipWarmRunning = false;
     _unreadTipWarmedMsgByChat.clear();
+    _unreadTipWarmDebounceTimer?.cancel();
+    _unreadTipWarmDebounceTimer = null;
+    _unreadTipWarmLastAt = null;
+    _hubWarmDeferTimer?.cancel();
+    _hubWarmDeferTimer = null;
+    _hubWarmPassScheduled = false;
+    _hubWarmNotBefore = null;
+    _historyWarmChain = Future<void>.value();
     _historyWarmInFlight.clear();
+    _openChatUiQuietUntil = null;
+    _hubBootFlushTimer?.cancel();
+    _hubBootFlushTimer = null;
+    _hubBootUiQuietUntil = null;
+    _bootUpdateQueue.clear();
+    _bootUpdateDraining = false;
+    _bootUpdateHandled = 0;
     _completeWaitMediaConn(false);
     _pendingOpenMessageContent = null;
     _lastOpenMessageContentDeferKey = null;
@@ -9217,22 +9347,68 @@ class TelegramTdlibService extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshChatList() async {
+  /// Background hub hydrate after Ready — must not block auth / first paint.
+  Future<void> _hydrateHubAfterReady() async {
+    try {
+      // Boot-prime owns the first ~2s of frames; loadChats after that.
+      await Future<void>.delayed(const Duration(milliseconds: 1800));
+      await refreshChatList(maxPages: 4, pageLimit: 40);
+      await _awaitInitialFolderInfos();
+      // Need scopes before hub paints badges — otherwise isChatMuted fell
+      // through to stale chat.mute_for and every unread looked gray.
+      await _loadScopeNotificationSettings();
+      _setHubSurfaceReady(true);
+      // FCM / identity after UI is calm.
+      unawaited(Future<void>.delayed(const Duration(seconds: 3), () async {
+        await refreshMatchedTgUserIds();
+        await _enableNotificationApiAndRegisterDevice();
+        await _syncTdlibIdentityAfterReady();
+      }));
+      // Deeper chat list later (archive-depth) — not on the cold path.
+      unawaited(Future<void>.delayed(const Duration(seconds: 10), () {
+        if (!isReady || _openChatId != null) return;
+        unawaited(
+          refreshChatList(
+            maxPages: 8,
+            pageLimit: 50,
+            armBootQuiet: false,
+            scheduleWarm: false,
+          ),
+        );
+      }));
+      _mediaLog('hub-hydrate after-ready done');
+    } catch (e) {
+      _mediaLog('hub-hydrate after-ready fail err=$e');
+      _setHubSurfaceReady(true);
+    }
+  }
+
+  Future<void> refreshChatList({
+    int maxPages = 12,
+    int pageLimit = 50,
+    bool armBootQuiet = true,
+    bool scheduleWarm = true,
+  }) async {
     final c = _client;
     if (c == null || !isReady) return;
-    // TDLib loads the main list in pages; keep going until "Have no more chats".
+    // Cap pages + yield so boot doesn't ANR on a long loadChats storm.
+    if (armBootQuiet) {
+      _armHubBootUiQuiet(why: 'refreshChatList');
+    }
     var timeoutStreak = 0;
-    for (var i = 0; i < 40; i++) {
+    for (var i = 0; i < maxPages; i++) {
       try {
         await c.sendAwait(
           {
             '@type': 'loadChats',
             'chat_list': {'@type': 'chatListMain'},
-            'limit': 100,
+            'limit': pageLimit.clamp(1, 100),
           },
-          timeout: const Duration(seconds: 45),
+          timeout: const Duration(seconds: 20),
         );
         timeoutStreak = 0;
+        // Let the event loop paint between pages.
+        await Future<void>.delayed(const Duration(milliseconds: 80));
       } on TdlibApiException catch (e) {
         if (e.code == 404) break; // Have no more chats to load
         debugPrint('[tdlib] loadChats failed: $e');
@@ -9249,9 +9425,11 @@ class TelegramTdlibService extends ChangeNotifier {
         break;
       }
     }
-    notifyListeners();
-    // Prefetch history for a few unread hub chats so open can jump faster.
-    warmUnreadChatsFromHub();
+    // During hub boot quiet this only marks pending — flush at quiet end.
+    _notifyUi();
+    if (scheduleWarm) {
+      scheduleHubWarmAfterBoot(why: 'refreshChatList');
+    }
   }
 
   /// Synchronously claim UI ownership before async [openChat] work starts.
@@ -9344,7 +9522,7 @@ class TelegramTdlibService extends ChangeNotifier {
       final seeded = _parseMessage(lastMap);
       if (seeded != null) {
         _upsertMessage(seeded);
-        notifyListeners();
+        _notifyUi();
       }
     }
 
@@ -9385,7 +9563,7 @@ class TelegramTdlibService extends ChangeNotifier {
         'msgs=${_messagesByChat[chatId]?.length ?? 0}',
       );
       _touchOpenTranscriptPreserve(chatId);
-      notifyListeners();
+      _notifyUi();
       unawaited(_loadChatHistory(chatId, preferLocal: true, silent: true));
       if (_tdlibReadyForMedia) {
         unawaited(() async {
@@ -9464,6 +9642,7 @@ class TelegramTdlibService extends ChangeNotifier {
     final token = ++_openChatTokenSeq;
     _openChatId = chatId;
     _activeOpenToken = token;
+    _armOpenChatUiQuiet();
     AppSessionDiagnostics.instance.setTgOpenChat(chatId);
     // TDLib: prefer a single opened chat (channel updates + unload rules).
     if (prevId != null && prevId != chatId) {
@@ -9863,6 +10042,10 @@ class TelegramTdlibService extends ChangeNotifier {
     int minCount = 20,
     bool? preferLocal,
     bool silent = false,
+    /// Hub warm must not pull a full channel window (boot lag: 201 local
+    /// msgs for unread=1 while the UI is still painting).
+    int? maxCountCap,
+    int? maxAttemptsCap,
   }) async {
     final c = _client;
     if (c == null) return;
@@ -9871,14 +10054,20 @@ class TelegramTdlibService extends ChangeNotifier {
     // preferLocal=true → only_local (fast). Otherwise remote when Ready.
     final onlyLocal = preferLocal ?? !_tdlibReadyForMedia;
     // Channels need many round-trips while TDLib pulls remote history.
-    final maxAttempts = onlyLocal
+    var maxAttempts = onlyLocal
         ? (isChannel ? 12 : 6)
         : (isChannel ? 40 : 20);
+    if (maxAttemptsCap != null) {
+      maxAttempts = maxAttempts.clamp(1, maxAttemptsCap);
+    }
     final emptyLimit = onlyLocal
         ? (isChannel ? 4 : 2)
         : (isChannel ? 12 : 4);
     // Cap so a busy channel from the last 5 days can't run forever.
-    final maxCount = isChannel ? 200 : 120;
+    var maxCount = isChannel ? 200 : 120;
+    if (maxCountCap != null) {
+      maxCount = maxCount.clamp(1, maxCountCap);
+    }
     // Proxy path often stalls remote channel pages — keep per-call timeout
     // modest and retry instead of one 45s hang with seed=1 on screen.
     final callTimeout = Duration(
@@ -9949,7 +10138,12 @@ class TelegramTdlibService extends ChangeNotifier {
           'chat_id': chatId,
           'from_message_id': fromMessageId,
           'offset': 0,
-          'limit': isChannel ? 100 : 50,
+          // Respect maxCountCap — channel warm used to request 100 and land
+          // 50+ msgs in one page even when capped at 40.
+          'limit': (maxCount - byId.length).clamp(
+            1,
+            isChannel ? 100 : 50,
+          ),
           'only_local': onlyLocal,
         }, timeout: callTimeout);
       } on TdlibApiException catch (e) {
@@ -10081,6 +10275,45 @@ class TelegramTdlibService extends ChangeNotifier {
     });
   }
 
+  void _armHubWarmBootGrace({required String why}) {
+    final until = DateTime.now().add(_hubWarmBootGrace);
+    if (_hubWarmNotBefore == null || until.isAfter(_hubWarmNotBefore!)) {
+      _hubWarmNotBefore = until;
+      _mediaLog(
+        'hub-warm grace ${_fmtDur(_hubWarmBootGrace)} why=$why',
+      );
+    }
+  }
+
+  /// Coalesce boot / loadChats / unread updates into one deferred warm pass
+  /// after hub first paint has settled.
+  void scheduleHubWarmAfterBoot({String why = ''}) {
+    if (!isReady) return;
+    _hubWarmNotBefore ??= DateTime.now().add(_hubWarmBootGrace);
+    final wait = _hubWarmNotBefore!.difference(DateTime.now());
+    if (wait <= Duration.zero) {
+      _runDeferredHubWarm(why: why);
+      return;
+    }
+    if (_hubWarmPassScheduled) return;
+    _hubWarmPassScheduled = true;
+    _hubWarmDeferTimer?.cancel();
+    _hubWarmDeferTimer = Timer(wait, () {
+      _hubWarmDeferTimer = null;
+      _hubWarmPassScheduled = false;
+      _runDeferredHubWarm(why: 'deferred:$why');
+    });
+    _mediaLog('hub-warm defer ${_fmtDur(wait)} why=$why');
+  }
+
+  void _runDeferredHubWarm({String why = ''}) {
+    if (!isReady) return;
+    if (_openChatId != null) return;
+    if (!_appInForeground) return;
+    _mediaLog('hub-warm run why=$why');
+    warmUnreadChatsFromHub(maxChats: 3);
+  }
+
   /// Prefetch local (+ a few older pages) for unread chats while the user is
   /// still on the hub — so open can jump to the unread frontier without a long
   /// empty wait. Skips only the currently open chat (other chats keep warming).
@@ -10088,9 +10321,15 @@ class TelegramTdlibService extends ChangeNotifier {
     if (chatId == 0 || !isReady) return;
     if (_openChatId == chatId) return;
     if (unreadCountFor(chatId) <= 0) return;
+    // Channels: never hub-warm. getChatHistory pages are huge and fight first
+    // paint / FakeTLS slot (SessionLog 09:12 channel 52 msgs @ boot).
+    if (isChannelChat(chatId)) {
+      _mediaLog('warm-history skip channel chat=$chatId');
+      return;
+    }
     if (_historyWarmInFlight.contains(chatId)) return;
     if (isUnreadHistoryWarm(chatId) &&
-        (_messagesByChat[chatId]?.length ?? 0) >= 40) {
+        (_messagesByChat[chatId]?.length ?? 0) >= 24) {
       return;
     }
 
@@ -10100,14 +10339,28 @@ class TelegramTdlibService extends ChangeNotifier {
       'warm-history start chat=$chatId unread=${unreadCountFor(chatId)}',
     );
     try {
-      await _loadChatHistory(chatId, preferLocal: true, silent: true);
+      await _loadChatHistory(
+        chatId,
+        preferLocal: true,
+        silent: true,
+        maxCountCap: 24,
+        maxAttemptsCap: 2,
+      );
       if (_openChatId == chatId) return;
-      if (_tdlibReadyForMedia) {
-        await _loadChatHistory(chatId, preferLocal: false, silent: true);
-      }
-      // Walk older pages until we cover last_read (unread divider target).
+      // Remote walk only when unread stack needs a jump (≥2).
       final unreadTarget = unreadCountFor(chatId);
-      final maxWarmPages = (unreadTarget / 25).ceil().clamp(5, 12);
+      if (unreadTarget >= 2 && _tdlibReadyForMedia) {
+        await _loadChatHistory(
+          chatId,
+          preferLocal: false,
+          silent: true,
+          maxCountCap: 24,
+          maxAttemptsCap: 2,
+        );
+      }
+      final maxWarmPages = unreadTarget <= 1
+          ? 0
+          : (unreadTarget / 25).ceil().clamp(1, 3);
       for (var i = 0; i < maxWarmPages; i++) {
         if (_openChatId == chatId) break;
         final msgs = _messagesByChat[chatId];
@@ -10119,7 +10372,7 @@ class TelegramTdlibService extends ChangeNotifier {
             : msgs.length;
         if (unread > 0 && loadedUnread >= unread) break;
         final added =
-            await loadOlderMessages(chatId, pageSize: 40, silent: true);
+            await loadOlderMessages(chatId, pageSize: 25, silent: true);
         if (added <= 0) break;
       }
       _mediaLog(
@@ -10132,14 +10385,31 @@ class TelegramTdlibService extends ChangeNotifier {
     }
   }
 
+  void _enqueueHistoryWarm(int chatId) {
+    _historyWarmChain = _historyWarmChain
+        .catchError((_) {})
+        .then((_) => warmUnreadChatHistory(chatId));
+  }
+
   /// Warm hub chats that already have unreads (after list load / new msgs).
   /// Prefers stacks with unread ≥ 2 — those need a scroll jump on open.
-  void warmUnreadChatsFromHub({int maxChats = 8}) {
+  void warmUnreadChatsFromHub({int maxChats = 3}) {
     if (!isReady) return;
-    for (final c in _unreadWarmCandidates(maxChats: maxChats)) {
-      unawaited(warmUnreadChatHistory(c.id));
+    if (_hubWarmNotBefore != null &&
+        DateTime.now().isBefore(_hubWarmNotBefore!)) {
+      scheduleHubWarmAfterBoot(why: 'warmUnreadChatsFromHub');
+      return;
     }
-    // After history pages: serial light preview for oldest unread media.
+    // DMs/groups only; serial — parallel getChatHistory fought hub paint.
+    final pool = _unreadWarmCandidates(maxChats: maxChats * 2);
+    var n = 0;
+    for (final c in pool) {
+      if (isChannelChat(c.id)) continue;
+      _enqueueHistoryWarm(c.id);
+      n++;
+      if (n >= maxChats) break;
+    }
+    // Tip media after history chain settles a bit (same grace debounce).
     warmUnreadTipMediaFromHub(
       maxChats: maxChats < warmUnreadTipChatLimit
           ? maxChats
@@ -10156,7 +10426,25 @@ class TelegramTdlibService extends ChangeNotifier {
     if (_openChatId != null) return;
     if (!_appInForeground) return;
     if (!_tdlibReadyForMedia) return;
+    if (_hubWarmNotBefore != null &&
+        DateTime.now().isBefore(_hubWarmNotBefore!)) {
+      scheduleHubWarmAfterBoot(why: 'warm-unread-tip');
+      return;
+    }
     if (_unreadTipWarmRunning) return;
+    final last = _unreadTipWarmLastAt;
+    if (last != null &&
+        DateTime.now().difference(last) < _unreadTipWarmMinGap) {
+      // Coalesce mtproto-up + loadChats + hub listeners into one pass.
+      _unreadTipWarmDebounceTimer?.cancel();
+      final left = _unreadTipWarmMinGap - DateTime.now().difference(last);
+      _unreadTipWarmDebounceTimer = Timer(left, () {
+        _unreadTipWarmDebounceTimer = null;
+        warmUnreadTipMediaFromHub(maxChats: maxChats);
+      });
+      return;
+    }
+    _unreadTipWarmLastAt = DateTime.now();
     unawaited(_runUnreadTipMediaWarm(maxChats: maxChats));
   }
 
@@ -10164,6 +10452,7 @@ class TelegramTdlibService extends ChangeNotifier {
     final candidates = <({int id, int unread})>[];
     for (final id in _chatOrder) {
       if (_openChatId == id) continue;
+      if (isChannelChat(id)) continue;
       final unread = unreadCountFor(id);
       if (unread <= 0) continue;
       candidates.add((id: id, unread: unread));
@@ -13008,44 +13297,178 @@ class TelegramTdlibService extends ChangeNotifier {
     if (c == null) return;
     var normalized = normalizeReactionEmoji(emoji);
     if (normalized.isEmpty) return;
+    // Prefer the exact glyph TDLib lists as available (FE0F / chat-restricted
+    // variants). Fall back to our normalized form when the list is empty.
+    final resolved = add
+        ? (await _matchAvailableReactionEmoji(chatId, messageId, normalized) ??
+            normalized)
+        : normalized;
+    // Paint immediately — updateMessageInteractionInfo / getMessage often
+    // lag or skip forcing a rebuild until reopen.
+    _applyOptimisticReaction(
+      chatId: chatId,
+      messageId: messageId,
+      emoji: resolved,
+      add: add,
+    );
     try {
       await _sendReactionToggle(
         c,
         chatId: chatId,
         messageId: messageId,
-        emoji: normalized,
+        emoji: resolved,
         add: add,
       );
       _mediaLog(
         'reaction ${add ? 'add' : 'remove'} ok '
-        'chat=$chatId msg=$messageId emoji=$normalized',
+        'chat=$chatId msg=$messageId emoji=$resolved',
       );
     } catch (e) {
       _mediaLog(
         'reaction ${add ? 'add' : 'remove'} fail '
-        'chat=$chatId msg=$messageId emoji=$normalized err=$e',
+        'chat=$chatId msg=$messageId emoji=$resolved err=$e',
       );
-      // Restricted chats / FE0F variants: match against TDLib's available list
-      // (levlam td#1928 — open chat keeps this list warm).
+      // Roll back optimistic paint, then maybe retry add with matched glyph.
+      _applyOptimisticReaction(
+        chatId: chatId,
+        messageId: messageId,
+        emoji: resolved,
+        add: !add,
+      );
       if (!add) rethrow;
       final matched = await _matchAvailableReactionEmoji(
         chatId,
         messageId,
         normalized,
       );
-      if (matched == null || matched == normalized) rethrow;
-      await _sendReactionToggle(
-        c,
+      if (matched == null) rethrow;
+      if (matched == resolved) rethrow;
+      _applyOptimisticReaction(
         chatId: chatId,
         messageId: messageId,
         emoji: matched,
         add: true,
       );
-      _mediaLog(
-        'reaction add ok (matched available) '
-        'chat=$chatId msg=$messageId emoji=$matched',
+      try {
+        await _sendReactionToggle(
+          c,
+          chatId: chatId,
+          messageId: messageId,
+          emoji: matched,
+          add: true,
+        );
+        _mediaLog(
+          'reaction add ok (matched available) '
+          'chat=$chatId msg=$messageId emoji=$matched',
+        );
+      } catch (e2) {
+        _applyOptimisticReaction(
+          chatId: chatId,
+          messageId: messageId,
+          emoji: matched,
+          add: false,
+        );
+        rethrow;
+      }
+    }
+  }
+
+  /// Instant bubble update for add/remove (before TDLib push catches up).
+  void _applyOptimisticReaction({
+    required int chatId,
+    required int messageId,
+    required String emoji,
+    required bool add,
+  }) {
+    final list = _messagesByChat[chatId];
+    if (list == null) return;
+    final idx = list.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return;
+    final m = list[idx];
+    final want = normalizeReactionEmoji(emoji);
+    final next = <TdlibReaction>[];
+    var found = false;
+    for (final r in m.reactions) {
+      final e = normalizeReactionEmoji(r.emoji);
+      if (e != want) {
+        next.add(r);
+        continue;
+      }
+      found = true;
+      if (add) {
+        next.add(
+          TdlibReaction(
+            emoji: r.emoji,
+            count: r.chosen ? r.count : r.count + 1,
+            chosen: true,
+          ),
+        );
+      } else if (r.count > 1) {
+        next.add(
+          TdlibReaction(
+            emoji: r.emoji,
+            count: r.count - 1,
+            chosen: false,
+          ),
+        );
+      }
+      // count==1 → drop the chip
+    }
+    if (add && !found) {
+      next.add(TdlibReaction(emoji: want, count: 1, chosen: true));
+    }
+    list[idx] = _copyMessage(m, reactions: next);
+    // Immediate — reaction chips must not wait open-quiet coalesce.
+    _notifyUi(immediate: true);
+  }
+
+  List<TdlibReaction> _reactionsFromInteractionInfo(dynamic interaction) {
+    final out = <TdlibReaction>[];
+    if (interaction is! Map) return out;
+    final ri = interaction['reactions'];
+    final list = ri is Map ? ri['reactions'] : null;
+    if (list is! List) return out;
+    for (final r in list) {
+      if (r is! Map) continue;
+      final type = r['type'];
+      var emoji = '';
+      if (type is Map && type['@type'] == 'reactionTypeEmoji') {
+        emoji = type['emoji']?.toString() ?? '';
+      }
+      if (emoji.isEmpty) continue;
+      out.add(
+        TdlibReaction(
+          emoji: emoji,
+          count: (r['total_count'] as num?)?.toInt() ?? 0,
+          chosen: r['is_chosen'] == true,
+        ),
       );
     }
+    return out;
+  }
+
+  /// Apply reactions from [updateMessageInteractionInfo] without waiting on
+  /// getMessage (keeps local media paths; paints chip immediately).
+  void _applyInteractionInfoReactions(
+    int chatId,
+    int messageId,
+    dynamic interactionInfo,
+  ) {
+    final list = _messagesByChat[chatId];
+    if (list == null) return;
+    final idx = list.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return;
+    final m = list[idx];
+    final next = _reactionsFromInteractionInfo(interactionInfo);
+    final prevFp = Object.hashAll(
+      m.reactions.map((r) => Object.hash(r.emoji, r.count, r.chosen)),
+    );
+    final nextFp = Object.hashAll(
+      next.map((r) => Object.hash(r.emoji, r.count, r.chosen)),
+    );
+    if (prevFp == nextFp) return;
+    list[idx] = _copyMessage(m, reactions: next);
+    _notifyUi(immediate: true);
   }
 
   Future<void> _sendReactionToggle(
@@ -13055,15 +13478,18 @@ class TelegramTdlibService extends ChangeNotifier {
     required String emoji,
     required bool add,
   }) async {
+    // TDLib JSON field is `reaction_type` (not `reaction`) — wrong key →
+    // empty type → 400 "The reaction isn't available for the message".
+    final reactionType = {
+      '@type': 'reactionTypeEmoji',
+      'emoji': emoji,
+    };
     if (add) {
       await c.sendAwait({
         '@type': 'addMessageReaction',
         'chat_id': chatId,
         'message_id': messageId,
-        'reaction': {
-          '@type': 'reactionTypeEmoji',
-          'emoji': emoji,
-        },
+        'reaction_type': reactionType,
         'is_big': false,
         'update_recent_reactions': true,
       });
@@ -13072,15 +13498,13 @@ class TelegramTdlibService extends ChangeNotifier {
         '@type': 'removeMessageReaction',
         'chat_id': chatId,
         'message_id': messageId,
-        'reaction': {
-          '@type': 'reactionTypeEmoji',
-          'emoji': emoji,
-        },
+        'reaction_type': reactionType,
       });
     }
   }
 
   /// Pick an available emoji that matches [want] after FE0F-normalize.
+  /// Returns the **exact** string from TDLib's list (may still omit FE0F).
   Future<String?> _matchAvailableReactionEmoji(
     int chatId,
     int messageId,
@@ -13104,9 +13528,10 @@ class TelegramTdlibService extends ChangeNotifier {
           final type = item['type'] ?? item;
           if (type is! Map) continue;
           if (type['@type']?.toString() != 'reactionTypeEmoji') continue;
-          final e = normalizeReactionEmoji(type['emoji']?.toString() ?? '');
+          final rawEmoji = type['emoji']?.toString() ?? '';
+          final e = normalizeReactionEmoji(rawEmoji);
           if (e.isEmpty) continue;
-          if (e == wantN) return type['emoji']?.toString() ?? e;
+          if (e == wantN) return normalizeReactionEmoji(rawEmoji);
         }
         return null;
       }
@@ -14777,11 +15202,15 @@ class TelegramTdlibService extends ChangeNotifier {
           if (id != null) {
             _applyChatRow(id, Map<String, dynamic>.from(chat));
             _syncChatOrderMembership(id);
-            _reindexFolderMembership(id);
+            // Folder reindex + avatar resolve are heavy; skip mid boot quiet
+            // (boot-prime already has faces; folders catch up after quiet).
+            if (!_inHubBootUiQuiet) {
+              _reindexFolderMembership(id);
+              _resolveChatAvatarFileId(_chats[id]!);
+            }
             final lastOut =
                 (chat['last_read_outbox_message_id'] as num?)?.toInt();
             if (lastOut != null) _lastReadOutboxId[id] = lastOut;
-            _resolveChatAvatarFileId(_chats[id]!);
             _notifyListenersForChat(id, hubOnly: true);
           }
         }
@@ -14878,8 +15307,14 @@ class TelegramTdlibService extends ChangeNotifier {
             }
           }
           if (unreadCountFor(chatId) > 0) {
-            unawaited(warmUnreadChatHistory(chatId));
-            warmUnreadTipMediaFromHub();
+            // Boot grace: don't start getChatHistory mid first-paint.
+            if (_hubWarmNotBefore != null &&
+                DateTime.now().isBefore(_hubWarmNotBefore!)) {
+              scheduleHubWarmAfterBoot(why: 'updateChatReadInbox');
+            } else if (!isChannelChat(chatId)) {
+              _enqueueHistoryWarm(chatId);
+              warmUnreadTipMediaFromHub();
+            }
           }
         } else if (type == 'updateChatReadOutbox') {
           final lastOut =
@@ -15120,8 +15555,13 @@ class TelegramTdlibService extends ChangeNotifier {
             } else if (!msg.isOutgoing && !msg.isService) {
               // Tip heuristic in unreadCountFor covers hub badges; do not
               // permanently bump chat['unread_count'] (revives after getChat).
-              unawaited(warmUnreadChatHistory(msg.chatId));
-              warmUnreadTipMediaFromHub();
+              if (_hubWarmNotBefore != null &&
+                  DateTime.now().isBefore(_hubWarmNotBefore!)) {
+                scheduleHubWarmAfterBoot(why: 'newMessage');
+              } else if (!isChannelChat(msg.chatId)) {
+                _enqueueHistoryWarm(msg.chatId);
+                warmUnreadTipMediaFromHub();
+              }
             }
             if (!msg.isService && _bridgeNewMessageListeners.isNotEmpty) {
               for (final bridgeHook in List.of(_bridgeNewMessageListeners)) {
@@ -15228,11 +15668,22 @@ class TelegramTdlibService extends ChangeNotifier {
         }
         break;
       case 'updateMessageContent':
-      case 'updateMessageInteractionInfo':
         final chatId = (update['chat_id'] as num?)?.toInt();
         final messageId = (update['message_id'] as num?)?.toInt();
         if (chatId == null || messageId == null) return;
         unawaited(_reloadMessage(chatId, messageId));
+        break;
+      case 'updateMessageInteractionInfo':
+        final chatId = (update['chat_id'] as num?)?.toInt();
+        final messageId = (update['message_id'] as num?)?.toInt();
+        if (chatId == null || messageId == null) return;
+        // Payload already has fresh reactions — apply in-place (don't wait
+        // for getMessage; reopen-only paint was the user-visible bug).
+        _applyInteractionInfoReactions(
+          chatId,
+          messageId,
+          update['interaction_info'],
+        );
         break;
       case 'updateConnectionState':
         final state = update['state'];
@@ -15430,20 +15881,19 @@ class TelegramTdlibService extends ChangeNotifier {
         _setAuthPhase(TdlibAuthPhase.ready);
         errorMessage = null;
         _didWipeForEncryption = false;
-        // Keep hub skeleton until main list (+ folders) finish loading.
-        _hubSurfaceReady = false;
-        notifyListeners();
+        // Boot-prime / cached order already paints the hub — do NOT flip
+        // hubSurfaceReady=false (skeleton) then await loadChats (ANR 09:22).
+        if (_chatOrder.isNotEmpty) {
+          _setHubSurfaceReady(true);
+        } else {
+          _hubSurfaceReady = false;
+          notifyListeners();
+        }
         unawaited(_setTdlibOnline(true));
         _ensureNetworkLinkWatch();
-        await refreshChatList();
-        await _awaitInitialFolderInfos();
-        // Need scopes before hub paints badges — otherwise isChatMuted fell
-        // through to stale chat.mute_for and every unread looked gray.
-        await _loadScopeNotificationSettings();
-        _setHubSurfaceReady(true);
-        unawaited(refreshMatchedTgUserIds());
-        unawaited(_enableNotificationApiAndRegisterDevice());
-        unawaited(_syncTdlibIdentityAfterReady());
+        _armHubBootUiQuiet(why: 'auth-ready');
+        // loadChats off the auth critical path — yield-friendly background.
+        unawaited(_hydrateHubAfterReady());
         break;
       case 'authorizationStateLoggingOut':
         _setAuthPhase(TdlibAuthPhase.loggingOut);

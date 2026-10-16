@@ -1096,22 +1096,31 @@ class _TelegramConversationScreenState
   int _timelineLen = -1;
   int _timelineFirstId = 0;
   int _timelineLastId = 0;
+  int _timelineContentFp = 0;
   List<_TgTimelineRow>? _cachedTimeline;
   List<_TgTimelineRow>? _cachedReversedTimeline;
 
   /// Reuse album grouping across rebuilds when the message window is unchanged.
+  /// Must also key on [TdlibMessage.uiFingerprint] — otherwise reaction / path
+  /// patches in the service keep stale row.member refs (like chip only after
+  /// reopen).
   List<_TgTimelineRow> _timelineCached(List<TdlibMessage> chronological) {
     final first = chronological.isEmpty ? 0 : chronological.first.id;
     final last = chronological.isEmpty ? 0 : chronological.last.id;
+    final contentFp = chronological.isEmpty
+        ? 0
+        : Object.hashAll(chronological.map((m) => m.uiFingerprint));
     if (_cachedTimeline != null &&
         chronological.length == _timelineLen &&
         first == _timelineFirstId &&
-        last == _timelineLastId) {
+        last == _timelineLastId &&
+        contentFp == _timelineContentFp) {
       return _cachedTimeline!;
     }
     _timelineLen = chronological.length;
     _timelineFirstId = first;
     _timelineLastId = last;
+    _timelineContentFp = contentFp;
     _cachedTimeline = _buildTimeline(chronological);
     _cachedReversedTimeline =
         _cachedTimeline!.reversed.toList(growable: false);
@@ -2695,22 +2704,33 @@ class _TelegramConversationScreenState
 
   Future<void> _toggleReaction(TdlibMessage m, String emoji) async {
     final norm = TelegramTdlibService.normalizeReactionEmoji(emoji);
-    final already = m.reactions.any(
+    final chosen = m.reactions.where(
       (r) =>
           TelegramTdlibService.normalizeReactionEmoji(r.emoji) == norm &&
           r.chosen,
     );
+    final already = chosen.isNotEmpty;
+    // Remove with the exact glyph TDLib stored on the message (toggle-off).
+    final sendEmoji = already
+        ? TelegramTdlibService.normalizeReactionEmoji(chosen.first.emoji)
+        : norm;
     try {
       await ref.read(telegramTdlibServiceProvider).toggleReaction(
             chatId: m.chatId,
             messageId: m.id,
-            emoji: norm,
+            emoji: sendEmoji,
             add: !already,
           );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось поставить реакцию')),
+        SnackBar(
+          content: Text(
+            already
+                ? 'Не удалось снять реакцию'
+                : 'Не удалось поставить реакцию',
+          ),
+        ),
       );
     }
   }
