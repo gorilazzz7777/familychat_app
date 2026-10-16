@@ -131,9 +131,12 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
      (`i/o timeout`), then the good session is closed on a 7s read
      timeout and the next photo stays 0B. `download_session_count`
      and `download_small_session_count` are **1** in the vendored
-     `libtdjson.so` (commit a17f87c + that one change). After Home,
-     album tails loaded `source=net` (7KB–135KB, 0 stalls). Do not
-     replace this .so with an unpatched fetch.
+     Android `libtdjson.so` (commit a17f87c + that one change) **and**
+     in iOS `libtdjson-static.xcframework` after
+     `scripts/patch_tdlib_r59_ios.py` (fetch_tdlib_ios.* runs it).
+     Marker: `R59_DOWNLOAD_SESSION_COUNT_1`. After Home, album tails
+     loaded `source=net` (7KB–135KB, 0 stalls). Do not replace .so /
+     xcframework with an unpatched stock fetch.
      Markers: `media-wire-hold arm/clear`, `pump-hold-until-ready`,
      `start-hold-until-ready`, `stall_drop_zombie` while Connecting.
    - **R41 (r40_check mtg):** long unlock +4.4s / 1 RELAY; short unlock
@@ -487,7 +490,11 @@ Do **not** “improve” these without new A/B evidence + explicit user ask.
 - WiFi-only reopen on soft-pause / late-None FakeTLS (R33/R38/R40 — 0 RELAY)
 - Soft-pause quiet-only without soft-restart (R39 — QUIET DF×12 / +46s)
 - Soft-pause collapse@4s / soft× every ~5s (R41 — DF thrash; +86s)
-- Hop-try to alt FakeTLS after soft-pause soft×N (R38/R39 — 0 RELAY)
+- Blind hop-try mid soft-pause soft×1 (R38/R39 — historically 0 RELAY).
+  **Allowed (16 Oct 10:00–10:24):** after one preferred soft-restart still
+  Connecting → **hard-hop + persist + soft-restart** (`hard-hop
+  soft-pause-skip-hop-exhausted`); socket-reopen only after that hop also
+  fails. Sticky preferred restore without persist undoes hop.
 - R13 escalate after our own pause-suspend None (R27 — soft-restart@15s
   tears FakeTLS that official-reopen just started)
 - Soft-nudge `enableProxy` while Connecting after boot quiet (R28 —
@@ -625,7 +632,8 @@ Short lock while Ready+FakeTLS → `skip None` (R34). If Ready→Connecting in
 bg → late-None only (R40/R63 — no bg dial). Unlock still Ready →
 `skip setNetworkType` (R36).
 Unlock !Ready → soft-restart-first (R40), quiet/collapse **35s** (R41 —
-Ready clears early); skip hop (R39); preserve ladder (R37).
+Ready clears early); one preferred soft-restart then hard-hop if still
+stuck (16 Oct thrash); preserve ladder (R37).
 wifi↔mobile FakeTLS: hop by port (R67); same hop → setNetworkType only,
 hop change → soft-restart (R69 — match official; no mid-session
 enableProxy). No resume official-reopen on that dial (R68).

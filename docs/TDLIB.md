@@ -45,6 +45,11 @@ cd ios && pod install && cd ..
 .\scripts\fetch_tdlib_ios.ps1
 ```
 
+Скрипт fetch сам вызывает `scripts/patch_tdlib_r59_ios.py` — без этого
+stock `download_session_count=2` ломает медиа под FakeTLS (R59, как на
+Android `libtdjson.so`). Маркер:
+`ios/tdjson/libtdjson-static.xcframework/R59_DOWNLOAD_SESSION_COUNT_1`.
+
 После этого CocoaPods находит `pod 'tdjson', :path => 'tdjson'`.
 FFI грузит символы через `DynamicLibrary.process()` (static lib).
 

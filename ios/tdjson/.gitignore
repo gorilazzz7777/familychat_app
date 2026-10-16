@@ -1,2 +1,3 @@
-# Prebuilt TDLib (run scripts/fetch_tdlib_ios.ps1).
+# Prebuilt TDLib (run scripts/fetch_tdlib_ios.ps1 → patch_tdlib_r59_ios.py).
 libtdjson-static.xcframework/
+*.pre_r59

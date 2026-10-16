@@ -89,7 +89,13 @@ class _ServicesHubScreenState extends ConsumerState<ServicesHubScreen> {
     try {
       final data =
           await ref.read(familychatRepositoryProvider).fetchServicesAccess();
-      await _registrar.register(data.register, why: 'hub-load');
+      // Catalog must render even if IP-register fails (iOS ATS historically
+      // blocked cleartext :13129; register is retried on open).
+      try {
+        await _registrar.register(data.register, why: 'hub-load');
+      } catch (e) {
+        debugPrint('[services_hub] register fail (show catalog) $e');
+      }
       final dismissed = await _isPromoDismissed(data.promo);
       if (!mounted) return;
       setState(() {

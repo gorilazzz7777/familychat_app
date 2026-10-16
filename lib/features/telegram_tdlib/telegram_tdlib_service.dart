@@ -1059,6 +1059,18 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Ready landed on the 3rd soft-restart (~0.4s); hop-try+preferred-undo
   /// only burned ~35s. Cap was 2 → hop after #2 never got Ready on 8443.
   static const _longBgSoftRestartCap = 3;
+  /// Boot / short-path soft-restart for stuck Connecting used to reset the
+  /// kick ladder (`restartCount=0` every soft×) and forever restore a dead
+  /// preferred hop (SessionLog 10:13–10:16: MegaFon WiFi blacks
+  /// `244.213:443` while `:8443` works). Cap soft× then failover.
+  int _stuckConnectingSoftRestartCount = 0;
+  static const _stuckConnectingSoftRestartCap = 2;
+  /// Soft-pause stage-5 already hard-hopped once this thrash cycle.
+  /// Cleared on Ready. SessionLog 16 Oct 10:00–10:24: skip-hop +
+  /// socket-reopen forever on sticky `:443` (hard-hop count=0) while
+  /// official TG RELAY on both ports — second stage-5 must hop, third
+  /// falls back to socket-reopen.
+  bool _softPauseHardHopTried = false;
   DateTime? _lastLongBgHopTryAt;
   static const _longBackgroundThreshold = Duration(minutes: 2);
   /// True long lock (bg ≥2m), not R13 synthetic escalate. SessionLog 23:36:
@@ -4400,11 +4412,14 @@ class TelegramTdlibService extends ChangeNotifier {
       if (_softResumeGuardUntil != null ||
           _longBackgroundResume ||
           _longBackgroundSoftRestartCount > 0 ||
+          _stuckConnectingSoftRestartCount > 0 ||
           _resumeFromPauseSuspend ||
           _softPausedReadyProxy) {
         _softResumeGuardUntil = null;
         _longBackgroundResume = false;
         _longBackgroundSoftRestartCount = 0;
+        _stuckConnectingSoftRestartCount = 0;
+        _softPauseHardHopTried = false;
         _resumeWasTrueLongBackground = false;
         _resumeFromPauseSuspend = false;
         _softPausedReadyProxy = false;
@@ -4873,6 +4888,23 @@ class TelegramTdlibService extends ChangeNotifier {
               _longBackgroundSoftRestartCount =
                   (_longBackgroundSoftRestartCount + 1)
                       .clamp(1, _longBgSoftRestartCap);
+            } else {
+              // Short-path: soft-restart used to wipe kick ladder + restore
+              // dead preferred forever (MegaFon WiFi vs mtg-wifi :443).
+              _stuckConnectingSoftRestartCount =
+                  (_stuckConnectingSoftRestartCount + 1)
+                      .clamp(1, _stuckConnectingSoftRestartCap + 1);
+              if (_stuckConnectingSoftRestartCount >
+                      _stuckConnectingSoftRestartCap &&
+                  _activeProxyEndpoints.length > 1) {
+                // Hard hop — pingProxy while Connecting times out on every
+                // endpoint (R24), so _failoverProxy stays on dead preferred.
+                await _hardHopDeadPreferred(
+                  why: 'soft×$_stuckConnectingSoftRestartCount'
+                      ':stuck-connecting-faketls-noop',
+                );
+                return;
+              }
             }
             await _recoverDeadClient(
               'stuck-connecting-faketls-noop:${_fmtDur(waited)}',
@@ -4934,34 +4966,45 @@ class TelegramTdlibService extends ChangeNotifier {
         );
         return;
       case 5:
-        // R39 (r38_check mtg): soft-pause hop→8443 = 16 starts / 0 RELAY DF;
-        // preferred soft-restart after that got Ready in ~282ms. Skip hop —
-        // another preferred soft-restart (once), then socket-reopen.
+        // Soft-pause: one preferred soft-restart first (R39 — sometimes
+        // preferred recovers in ~300ms). If still Connecting, hard-hop with
+        // persist + soft-restart (SessionLog 16 Oct 10:00–10:24: skip-hop +
+        // socket-reopen left hard-hop=0 on sticky :443 while official TG
+        // RELAY on both ports). After that hop also fails → socket-reopen.
         if (_resumeFromPauseSuspend && _useMtprotoProxy) {
           final lastSkip = _lastLongBgHopTryAt;
-          if (lastSkip != null &&
+          final withinSkipWindow = lastSkip != null &&
               DateTime.now().difference(lastSkip) <
-                  const Duration(minutes: 5)) {
+                  const Duration(minutes: 5);
+          if (!withinSkipWindow) {
+            _lastLongBgHopTryAt = DateTime.now();
+            _longBackgroundSoftRestartCount = 1;
+            _connectionKickCount = 0;
             _mediaLog(
-              'mtproto-kick soft-pause-skip-hop exhausted → socket-reopen '
+              'mtproto-kick soft-pause-skip-hop soft-restart-preferred '
               'after=${_fmtDur(waited)}',
             );
-            await _longBgSocketReopenLastResort(
-              why: 'soft-pause-skip-hop-exhausted',
+            await _recoverDeadClient(
+              'soft-pause-skip-hop',
+              preserveSoftPauseEscalation: true,
+              preserveLongBgEscalation: _longBackgroundResume,
             );
             return;
           }
-          _lastLongBgHopTryAt = DateTime.now();
-          _longBackgroundSoftRestartCount = 1;
-          _connectionKickCount = 0;
+          if (!_softPauseHardHopTried && _activeProxyEndpoints.length > 1) {
+            _softPauseHardHopTried = true;
+            await _hardHopDeadPreferred(
+              why: 'soft-pause-skip-hop-exhausted:${_fmtDur(waited)}',
+              softRestartAfter: true,
+            );
+            return;
+          }
           _mediaLog(
-            'mtproto-kick soft-pause-skip-hop soft-restart-preferred '
-            'after=${_fmtDur(waited)}',
+            'mtproto-kick soft-pause-skip-hop exhausted → socket-reopen '
+            'after=${_fmtDur(waited)} hardHopTried=$_softPauseHardHopTried',
           );
-          await _recoverDeadClient(
-            'soft-pause-skip-hop',
-            preserveSoftPauseEscalation: true,
-            preserveLongBgEscalation: _longBackgroundResume,
+          await _longBgSocketReopenLastResort(
+            why: 'soft-pause-skip-hop-exhausted',
           );
           return;
         }
@@ -6651,6 +6694,53 @@ class TelegramTdlibService extends ChangeNotifier {
   /// After switch: reset soft-restart count so the **new** hop gets its own
   /// soft→soft→soft-restart cycle (R14 — SessionLog 22:55 hop-try then only
   /// soft-nudge spam forever with restartCount stuck at cap).
+  /// Leave a dead sticky preferred FakeTLS hop. Persist so soft-restart
+  /// restore does not undo the switch (SessionLog 16 Oct: every soft×
+  /// restored `244.213:443` and never hard-hopped under soft-pause).
+  Future<void> _hardHopDeadPreferred({
+    required String why,
+    bool softRestartAfter = false,
+  }) async {
+    if (!_useMtprotoProxy || _client == null || _tearingDown) return;
+    if (_tdlibReadyForMedia) {
+      _mediaLog('hard-hop skip (already Ready) why=$why');
+      return;
+    }
+    final endpoints = _activeProxyEndpoints;
+    if (endpoints.length <= 1) {
+      _mediaLog('hard-hop single-hop skip why=$why');
+      return;
+    }
+    final cur = _proxyEndpointIndex.clamp(0, endpoints.length - 1);
+    final next = (cur + 1) % endpoints.length;
+    _mediaLog(
+      'hard-hop why=$why ${endpoints[cur].label} → ${endpoints[next].label} '
+      '(dead preferred; skip ping; persist'
+      '${softRestartAfter ? '+soft-restart' : ''})',
+    );
+    _proxyEndpointIndex = next;
+    await _persistPreferredProxyEndpoint(next);
+    _stuckConnectingSoftRestartCount = 0;
+    _longBackgroundSoftRestartCount = 0;
+    _connectionKickCount = 0;
+    _lastConnectionKickAt = null;
+    _connectingSince = DateTime.now();
+    _lastLongBgHopTryAt = DateTime.now();
+    if (softRestartAfter) {
+      // Clean first dial on the new hop (boot R32 / bearer R69 analogue).
+      await _recoverDeadClient(
+        'hard-hop:$why',
+        preserveSoftPauseEscalation: _resumeFromPauseSuspend,
+        preserveLongBgEscalation: _longBackgroundResume,
+      );
+      return;
+    }
+    await _ensureProxy();
+    if (!_tdlibReadyForMedia) {
+      _armFakeTlsQuiet(why: 'hard-hop:$why');
+    }
+  }
+
   Future<void> _tryNextHopNoPing({required String why}) async {
     if (!_useMtprotoProxy || _client == null || _tearingDown) return;
     if (_tdlibReadyForMedia) {
@@ -6691,6 +6781,8 @@ class TelegramTdlibService extends ChangeNotifier {
     // Fresh soft-restart budget on the new endpoint.
     _longBackgroundSoftRestartCount = 0;
     _mediaLog('longbg-hop-try reset restartCount for new hop');
+    // Persist — otherwise soft-restart preferred-restore undoes the hop.
+    await _persistPreferredProxyEndpoint(nextIdx);
     await _syncAllProxyEndpointRows(enableIndex: nextIdx);
     if (_client == null || _tearingDown) return;
     await _softNudgeMtproto(
@@ -16077,9 +16169,10 @@ class TelegramTdlibService extends ChangeNotifier {
       // Prefer the hop that last reached Ready on this device/network.
       // (R24 mid-ladder skip stuck us on dead 8443 — SessionLog 14:41–14:44.)
       await _loadPreferredProxyEndpointIndex();
-      // R67: soft-restart on cellular must not restore wifi preferred :443
-      // (ClientHello timeout). Override after preferred load.
-      _preferEndpointForCurrentBearer(why: 'ensure');
+      // R67 port flip remains on real wifi↔mobile (bearer-recover only).
+      // Do NOT remap here: SessionLog 10:20 restored sticky `:8443` then
+      // `bearer-endpoint … why=ensure` forced dead mtg-wifi `:443` while
+      // MegaFon WiFi blackholes `244.213:443` and `:8443` works.
     }
     if (_proxyEndpointIndex < 0 || _proxyEndpointIndex >= endpoints.length) {
       _proxyEndpointIndex = 0;

@@ -1,39 +1,72 @@
 import 'package:flutter/foundation.dart';
 
+import '../network/api_origin.dart';
+
 abstract final class Env {
-  // Phone ISP path (e.g. 109.252.x) often TCP-timeouts 159.194.200.164:443
-  // while :4443 works. VPS: stream 443→4443 for clean nets; app uses :4443.
-  static const String _origin = 'https://familychat-app.ru:4443';
-
-  static const String apiBaseUrl = String.fromEnvironment(
+  /// Optional full override (`…/api/v1/`). When set, [ApiOrigin] locks to it.
+  static const String compileApiBaseUrl = String.fromEnvironment(
     'FAMILYCHAT_API_BASE_URL',
-    defaultValue: '$_origin/api/v1/',
+    defaultValue: '',
   );
 
-  static const String webAppBaseUrl = String.fromEnvironment(
+  static const String _compileWebApp = String.fromEnvironment(
     'FAMILYCHAT_WEB_APP_URL',
-    defaultValue: '$_origin/app',
+    defaultValue: '',
   );
 
-  static const String inviteBaseUrl = String.fromEnvironment(
+  static const String _compileInvite = String.fromEnvironment(
     'FAMILYCHAT_INVITE_BASE_URL',
-    defaultValue: _origin,
+    defaultValue: '',
   );
 
-  static const String legalPrivacyUrl = String.fromEnvironment(
+  static const String _compileLegalPrivacy = String.fromEnvironment(
     'FAMILYCHAT_LEGAL_PRIVACY_URL',
-    defaultValue: '$_origin/legal/familychat/privacy-policy/',
+    defaultValue: '',
   );
 
-  static const String legalAgreementUrl = String.fromEnvironment(
+  static const String _compileLegalAgreement = String.fromEnvironment(
     'FAMILYCHAT_LEGAL_AGREEMENT_URL',
-    defaultValue: '$_origin/legal/familychat/user-agreement/',
+    defaultValue: '',
   );
 
-  static const String legalChildSafetyUrl = String.fromEnvironment(
+  static const String _compileLegalChildSafety = String.fromEnvironment(
     'FAMILYCHAT_LEGAL_CHILD_SAFETY_URL',
-    defaultValue: '$_origin/legal/familychat/child-safety-standards/',
+    defaultValue: '',
   );
+
+  /// Live origin after MegaFon port race (`:443` ↔ `:4443`).
+  static String get origin => ApiOrigin.current;
+
+  static String get apiBaseUrl {
+    if (compileApiBaseUrl.isNotEmpty) {
+      return compileApiBaseUrl.endsWith('/')
+          ? compileApiBaseUrl
+          : '$compileApiBaseUrl/';
+    }
+    return '${ApiOrigin.current}/api/v1/';
+  }
+
+  static String get webAppBaseUrl {
+    if (_compileWebApp.isNotEmpty) return _compileWebApp;
+    return '${ApiOrigin.current}/app';
+  }
+
+  static String get inviteBaseUrl {
+    if (_compileInvite.isNotEmpty) return _compileInvite;
+    return ApiOrigin.current;
+  }
+
+  static String get legalPrivacyUrl => _compileLegalPrivacy.isNotEmpty
+      ? _compileLegalPrivacy
+      : '${ApiOrigin.current}/legal/familychat/privacy-policy/';
+
+  static String get legalAgreementUrl => _compileLegalAgreement.isNotEmpty
+      ? _compileLegalAgreement
+      : '${ApiOrigin.current}/legal/familychat/user-agreement/';
+
+  static String get legalChildSafetyUrl => _compileLegalChildSafety.isNotEmpty
+      ? _compileLegalChildSafety
+      : '${ApiOrigin.current}/legal/familychat/child-safety-standards/';
 
   static const String rustoreAppUrl = String.fromEnvironment(
     'FAMILYCHAT_RUSTORE_APP_URL',

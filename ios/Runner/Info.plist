@@ -126,6 +126,23 @@
 	<string>Нужен Bluetooth для установления WebRTC-соединения при звонках.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Нужен доступ к локальной сети для видеозвонков.</string>
+	<!-- Services: IP-register (:13129) and HTTP CONNECT proxy (:13128) are
+	     cleartext to the VPS IP. Android has the same exception in
+	     network_security_config.xml. Without this, hub load fails on iOS
+	     before the catalog can render. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>159.194.200.164</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+		</dict>
+	</dict>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INSendMessageIntent</string>

@@ -6,6 +6,8 @@ import AVFAudio
 import BackgroundTasks
 import flutter_callkit_incoming
 import Intents
+import Network
+import WebKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate, CallkitIncomingAppDelegate {
@@ -242,6 +244,19 @@ import Intents
       }
     }
 
+    // Services WebView: iOS 17+ HTTP CONNECT via WKWebsiteDataStore.proxyConfigurations
+    // (Android uses ProxyController / WebView PROXY_OVERRIDE).
+    let servicesProxyRegistrar = engineBridge.pluginRegistry.registrar(
+      forPlugin: "FamilyChatServicesWebViewProxy"
+    )!
+    let servicesProxyChannel = FlutterMethodChannel(
+      name: "com.familychat/services_webview_proxy",
+      binaryMessenger: servicesProxyRegistrar.messenger()
+    )
+    servicesProxyChannel.setMethodCallHandler { call, result in
+      ServicesWebViewProxy.handle(call, result: result)
+    }
+
     let outboxRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "FamilyChatOutboxBackground")!
     let outboxChannel = FlutterMethodChannel(
       name: "com.familychat/outbox_background",
@@ -459,5 +474,79 @@ private final class VoiceProximityStreamHandler: NSObject, FlutterStreamHandler 
   func onCancel(withArguments arguments: Any?) -> FlutterError? {
     appDelegate?.setVoiceProximityEventSink(nil)
     return nil
+  }
+}
+
+/// Bridges Dart Services WebView → WKWebsiteDataStore HTTP CONNECT proxy (iOS 17+).
+/// Mirrors flutter_inappwebview 6.2 ProxyController iOS path without upgrading the plugin.
+private enum ServicesWebViewProxy {
+  static func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "isSupported":
+      if #available(iOS 17.0, *) {
+        result(true)
+      } else {
+        result(false)
+      }
+    case "setProxy":
+      guard #available(iOS 17.0, *) else {
+        result(
+          FlutterError(
+            code: "unsupported",
+            message: "iOS 17+ required for Services WebView proxy",
+            details: nil
+          )
+        )
+        return
+      }
+      guard let args = call.arguments as? [String: Any] else {
+        result(FlutterError(code: "bad_args", message: "map required", details: nil))
+        return
+      }
+      let host = (args["host"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard !host.isEmpty else {
+        result(FlutterError(code: "bad_args", message: "host required", details: nil))
+        return
+      }
+      let portValue: Int
+      if let p = args["port"] as? Int {
+        portValue = p
+      } else if let p = args["port"] as? NSNumber {
+        portValue = p.intValue
+      } else if let s = args["port"] as? String, let p = Int(s) {
+        portValue = p
+      } else {
+        result(FlutterError(code: "bad_args", message: "port required", details: nil))
+        return
+      }
+      guard portValue > 0, portValue <= 65535, let nwPort = NWEndpoint.Port(rawValue: UInt16(portValue)) else {
+        result(FlutterError(code: "bad_args", message: "invalid port", details: nil))
+        return
+      }
+      DispatchQueue.main.async {
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: nwPort)
+        var config = ProxyConfiguration(httpCONNECTProxy: endpoint)
+        // Do not fall back to direct — blocked sites would "succeed" as empty/fail in RU.
+        config.allowFailover = false
+        let configs = [config]
+        WKWebsiteDataStore.default().proxyConfigurations = configs
+        WKWebsiteDataStore.nonPersistent().proxyConfigurations = configs
+        NSLog("FamilyChatServices: setProxy %@:%d", host, portValue)
+        result(nil)
+      }
+    case "clearProxy":
+      guard #available(iOS 17.0, *) else {
+        result(nil)
+        return
+      }
+      DispatchQueue.main.async {
+        WKWebsiteDataStore.default().proxyConfigurations = []
+        WKWebsiteDataStore.nonPersistent().proxyConfigurations = []
+        NSLog("FamilyChatServices: clearProxy")
+        result(nil)
+      }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
   }
 }

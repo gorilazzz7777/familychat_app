@@ -1,5 +1,8 @@
 # Download TDLib iOS static xcframework (libtdjson.a) for FamilyChat.
 # App Store rejects custom dylibs — use static + DynamicLibrary.process() in Dart FFI.
+#
+# Stock up9cloud build has download_session_count=2 (FakeTLS DF after Home).
+# Always re-apply R59 (session_count=1) via patch_tdlib_r59_ios.py after fetch.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root "ios\tdjson"
@@ -24,5 +27,7 @@ if (Test-Path $targetXc) { Remove-Item $targetXc -Recurse -Force }
 Copy-Item -Path $xc.FullName -Destination $targetXc -Recurse -Force
 
 Write-Host "Installed to $targetXc"
+Write-Host "Applying R59 download_session_count=1 patch ..."
+python (Join-Path $PSScriptRoot "patch_tdlib_r59_ios.py")
 Get-ChildItem -Recurse $dest -Filter "libtdjson.a" | ForEach-Object { $_.FullName }
 Write-Host "Next (on macOS): cd ios; pod install"

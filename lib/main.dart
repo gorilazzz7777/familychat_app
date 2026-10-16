@@ -16,6 +16,7 @@ import 'core/call/callkit_incoming_service.dart';
 import 'core/client/app_client.dart';
 import 'core/client/install_store.dart';
 import 'core/media/media_upload_foreground.dart';
+import 'core/network/api_origin.dart';
 import 'core/notifications/familychat_notifications.dart';
 import 'core/push/push_message_handler.dart';
 import 'core/push/push_navigation.dart';
@@ -34,6 +35,8 @@ Future<void> main() async {
   // Debug diagnostic store (48h JSONL) — adb pull from app_flutter/fc_diag.
   unawaited(SessionLog.instance.ensureStarted());
   AppSessionDiagnostics.instance.start();
+  // MegaFon periodically blocks :443 or :4443 — race sticky origin ASAP.
+  unawaited(ApiOrigin.ensureReady());
   // Cap decoded-image RAM — hub avatars + chat media otherwise grow until
   // Android suggests clearing the app cache / reports "many errors".
   final imageCache = PaintingBinding.instance.imageCache;

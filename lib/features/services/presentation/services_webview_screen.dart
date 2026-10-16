@@ -11,10 +11,16 @@ import '../../../core/network/chat_network_link.dart';
 import '../../../core/providers/app_providers.dart';
 import '../../../core/widgets/family_app_bar.dart';
 import '../data/services_access.dart';
+import '../data/services_ios_webview_proxy.dart';
 import '../data/services_proxy_registrar.dart';
 
-/// In-app browser for a Services entry. Uses Android WebView proxy override
-/// (not a system VPN). Cookies / DOM storage persist in the app WebView store.
+/// In-app browser for a Services entry.
+///
+/// Proxy (not a system VPN):
+/// - Android: WebView [ProxyController] / PROXY_OVERRIDE
+/// - iOS 17+: [WKWebsiteDataStore.proxyConfigurations] via native channel
+///
+/// Cookies / DOM storage persist in the app WebView store.
 class ServicesWebViewScreen extends ConsumerStatefulWidget {
   const ServicesWebViewScreen({
     super.key,
@@ -230,6 +236,8 @@ class _ServicesWebViewScreenState
     unawaited(_netSub?.cancel() ?? Future<void>.value());
     if (Platform.isAndroid) {
       ProxyController.instance().clearProxyOverride().catchError((_) {});
+    } else if (Platform.isIOS) {
+      unawaited(ServicesIosWebViewProxy.clearProxy());
     }
     super.dispose();
   }
@@ -263,29 +271,44 @@ class _ServicesWebViewScreenState
   }
 
   Future<void> _prepareProxy() async {
-    if (!Platform.isAndroid) {
-      setState(() {
-        _error = 'Пока только Android';
-        _proxyReady = false;
-      });
-      return;
-    }
     try {
-      final supported = await WebViewFeature.isFeatureSupported(
-        WebViewFeature.PROXY_OVERRIDE,
-      );
-      if (!supported) {
+      if (Platform.isAndroid) {
+        final supported = await WebViewFeature.isFeatureSupported(
+          WebViewFeature.PROXY_OVERRIDE,
+        );
+        if (!supported) {
+          setState(() {
+            _error = 'Прокси WebView недоступен на этом устройстве';
+          });
+          return;
+        }
+        await ProxyController.instance().setProxyOverride(
+          settings: ProxySettings(
+            proxyRules: [ProxyRule(url: widget.proxy.proxyUrl)],
+            bypassRules: const ['<-loopback>'],
+          ),
+        );
+      } else if (Platform.isIOS) {
+        final supported = await ServicesIosWebViewProxy.isSupported();
+        if (!supported) {
+          setState(() {
+            _error =
+                'Для сервисов через прокси нужен iOS 17 или новее.';
+            _proxyReady = false;
+          });
+          return;
+        }
+        // Fresh allowlist before WKWebView first dial (same as Android open).
+        await _reregister(why: 'ios-prepare-proxy');
+        await ServicesIosWebViewProxy.setProxy(widget.proxy);
+      } else {
         setState(() {
-          _error = 'Прокси WebView недоступен на этом устройстве';
+          _error = 'Сервисы через прокси на этой платформе недоступны';
+          _proxyReady = false;
         });
         return;
       }
-      await ProxyController.instance().setProxyOverride(
-        settings: ProxySettings(
-          proxyRules: [ProxyRule(url: widget.proxy.proxyUrl)],
-          bypassRules: const ['<-loopback>'],
-        ),
-      );
+
       final defaultUa = await InAppWebViewController.getDefaultUserAgent();
       final tiktok = _isTikTokUrl(widget.url);
       final browserUa = tiktok
@@ -293,7 +316,9 @@ class _ServicesWebViewScreenState
           : _browserLikeUserAgent(defaultUa);
       debugPrint(
         '[services_webview] ua default=$defaultUa → '
-        '${tiktok ? 'desktop' : 'browser'}=$browserUa',
+        '${tiktok ? 'desktop' : 'browser'}=$browserUa '
+        'proxy=${widget.proxy.proxyUrl} platform='
+        '${Platform.isIOS ? 'ios' : (Platform.isAndroid ? 'android' : 'other')}',
       );
       if (!mounted) return;
       setState(() {
@@ -304,6 +329,7 @@ class _ServicesWebViewScreenState
         _proxyReady = true;
       });
     } catch (e) {
+      debugPrint('[services_webview] prepareProxy fail $e');
       if (!mounted) return;
       setState(() => _error = 'Не удалось настроить доступ');
     }
@@ -416,14 +442,24 @@ class _ServicesWebViewScreenState
     });
     final ok = await _reregister(why: 'webview-retry');
     if (!mounted) return;
-    setState(() => _retrying = false);
     if (!ok) {
       setState(() {
+        _retrying = false;
         _error =
             'Не удалось обновить доступ к прокси. Проверьте сеть (Wi‑Fi / мобильная) и попробуйте снова.';
       });
       return;
     }
+    // Re-apply iOS CONNECT proxy after allowlist refresh (IP may have changed).
+    if (Platform.isIOS && _proxyReady) {
+      try {
+        await ServicesIosWebViewProxy.setProxy(widget.proxy);
+      } catch (e) {
+        debugPrint('[services_webview] ios re-setProxy fail $e');
+      }
+    }
+    if (!mounted) return;
+    setState(() => _retrying = false);
     final c = _controller;
     if (c != null) {
       await c.reload();
