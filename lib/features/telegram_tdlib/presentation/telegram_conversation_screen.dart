@@ -1812,8 +1812,9 @@ class _TelegramConversationScreenState
 
   void _armOpenRevealTimeout() {
     _openRevealTimeout?.cancel();
-    // Deep unread: prefer spinner + keep pinning over painting the wrong
-    // place. Soft-reveal only after a long wait, still reasserting.
+    // Soft-reveal after 9s so iOS FakeTLS Connecting / thin tip never leave
+    // the spinner forever (SessionLog 19 Oct: unread≥2 refused reveal → >1min).
+    // Deep unread: keep mark-read + force-view blocked until frontier spans.
     _openRevealTimeout = Timer(const Duration(milliseconds: 9000), () {
       if (!mounted || _contentReady) return;
       _initialScrollDone = true;
@@ -1833,8 +1834,10 @@ class _TelegramConversationScreenState
           return;
         }
         unawaited(_reassertUnreadScroll());
-        // Keep hidden for deep stacks — timeout alone must not flash tip.
-        if (_openUnreadCount >= 2) return;
+        if (_openUnreadCount >= 2) {
+          _suppressMarkRead = true;
+          svc.setBlockUnreadForceView(true);
+        }
       }
       _revealChatContent();
     });
@@ -2041,10 +2044,16 @@ class _TelegramConversationScreenState
     }
 
     // Unreads exist but frontier not in RAM yet — NEVER jump to tip (that
-    // left Осташко parked on newest posts with the 61 FAB). Keep hidden and
-    // retry as history pages in. Do not reveal / lift mark-read suppress.
+    // left Осташко parked on newest posts with the 61 FAB). Keep mark-read
+    // suppressed; soft-reveal tip so iOS Connecting does not spin forever
+    // (9s timeout + reassert still try to pin the separator).
     if (firstUnread == null || msgs.isEmpty) {
       _initialScrollDone = true;
+      if (msgs.isNotEmpty && !_contentReady) {
+        _suppressMarkRead = true;
+        svc.setBlockUnreadForceView(true);
+        _revealChatContent();
+      }
       _scheduleReassertUnreadScroll();
       return;
     }
@@ -2195,8 +2204,13 @@ class _TelegramConversationScreenState
         }
       }
     } else {
-      // Stay suppressed — tip viewport must not wipe unreads. Reassert when
-      // more history arrives / user scrolls. Keep list hidden until then.
+      // Stay mark-read suppressed — tip viewport must not wipe unreads.
+      // Soft-reveal anyway so Connecting / thin history is not a blank spinner.
+      if (!_contentReady && msgs.isNotEmpty) {
+        _suppressMarkRead = true;
+        svc.setBlockUnreadForceView(true);
+        _revealChatContent();
+      }
       _scheduleReassertUnreadScroll();
     }
     if (mounted) _updateScrollToBottomVisibility();
@@ -2255,13 +2269,19 @@ class _TelegramConversationScreenState
 
       final anchor = _unreadAnchorMessageId;
       if (anchor == null) {
-        // Still no frontier in RAM — keep suppress + hidden; retry.
-        // Open reveal timeout stays the soft escape for unread < 2 only.
+        // Still no frontier in RAM — keep mark-read suppressed; soft-reveal
+        // if paint is still blocked (timeout / tip already shown).
         if (_openUnreadCount >= 2) {
           TgJankLog.log(
             'open-reassert defer unread=$_openUnreadCount '
-            'spanned=$spanned historyReady=$historyReady',
+            'spanned=$spanned historyReady=$historyReady '
+            'ready=$_contentReady',
           );
+          if (!_contentReady) {
+            _suppressMarkRead = true;
+            svc.setBlockUnreadForceView(true);
+            _revealChatContent();
+          }
           if (!historyReady) {
             _scheduleReassertUnreadScroll();
           }
@@ -2736,9 +2756,11 @@ class _TelegramConversationScreenState
     // Hide+jump only when the tip is wrong: deep link, or unread ≥ 2.
     // unread 0/1 → reverse list already sits on the tip (the only unread).
     final needsPositionGate = deepLink || unread >= 2;
-    // Thin SQLite tip — wait for openChat/ensureTip before early reveal.
-    final tipThin = _messagesForUi(svc).length < 16;
-    if (!needsPositionGate && !tipThin) {
+    // Local tip / RAM — paint immediately. Waiting for openChat (getChat under
+    // FakeTLS Connecting / WFN) left tipThin chats on the spinner every reopen.
+    final uiCount = _messagesForUi(svc).length;
+    final hasLocalTip = uiCount > 0 || tip.isNotEmpty;
+    if (!needsPositionGate && hasLocalTip) {
       // Warm tip photos first so reveal doesn't flash empty→JPEG.
       await _precacheRecentMedia();
       if (!mounted) return;
@@ -2757,8 +2779,9 @@ class _TelegramConversationScreenState
           _scheduleMarkVisibleRead();
         });
       }
-    } else if (!needsPositionGate && tipThin) {
+    } else if (!needsPositionGate && !hasLocalTip) {
       _armDelayedOpenLoader();
+      _armOpenRevealTimeout();
     } else {
       _armDelayedOpenLoader();
       _armOpenRevealTimeout();
@@ -2798,13 +2821,18 @@ class _TelegramConversationScreenState
       });
     }
 
-    // Warm RAM already covers the frontier — position from cache, don't wait
-    // on syncChatTail / sparse fill (those caused the 1s spinner anyway).
-    if (needsPositionGate && warm && !deepLink) {
+    // Local tip / warm RAM — position without awaiting openChat (getChat can
+    // sit under FakeTLS Connecting / WFN and left every reopen on the spinner).
+    if (needsPositionGate && (warm || hasLocalTip) && !deepLink) {
       unawaited(svc.openChat(widget.chatId));
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted) return;
       await _positionInitialScroll(svc);
+      // Remote deepen while paint settles — do not block reveal on it.
+      if (!warm) {
+        unawaited(svc.syncChatTail(widget.chatId));
+        unawaited(_fillHistoryIfSparse());
+      }
       await finishOpenSideEffects();
       return;
     }
