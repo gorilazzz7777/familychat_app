@@ -4731,7 +4731,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                               ? const NeverScrollableScrollPhysics()
                               : const PageScrollPhysics(),
                           children: _chips.map((chip) {
-                            return ColoredBox(
+                            // Material (not ColoredBox): ListTile paints ink
+                            // on the nearest Material; an opaque ColoredBox
+                            // between tile and Scaffold floods debug with
+                            // "ListTile background color or ink splashes may
+                            // be invisible" on every hub rebuild.
+                            return Material(
                               color: theme.scaffoldBackgroundColor,
                               child: _buildFilterPage(chip),
                             );

@@ -1180,6 +1180,11 @@ class TelegramTdlibService extends ChangeNotifier {
   /// `244.213:443` while `:8443` works). Cap soft× then failover.
   int _stuckConnectingSoftRestartCount = 0;
   static const _stuckConnectingSoftRestartCap = 2;
+  /// iOS only (19 Oct iPhone SessionLog): sticky `ip2-443-cf` stayed
+  /// Connecting across soft×N while Android Ready on the same hop. Hop after
+  /// the first noop soft-restart, with softRestartAfter (R69 clean dial).
+  /// Android keeps [_stuckConnectingSoftRestartCap] — do not tighten there.
+  static const _iosStuckConnectingSoftRestartCap = 1;
   /// Soft-pause stage-5 already hard-hopped once this thrash cycle.
   /// Cleared on Ready. SessionLog 16 Oct 10:00–10:24: skip-hop +
   /// socket-reopen forever on sticky `:443` (hard-hop count=0) while
@@ -5715,17 +5720,22 @@ class TelegramTdlibService extends ChangeNotifier {
             } else {
               // Short-path: soft-restart used to wipe kick ladder + restore
               // dead preferred forever (MegaFon WiFi vs mtg-wifi :443).
+              final hopCap = (!kIsWeb && Platform.isIOS)
+                  ? _iosStuckConnectingSoftRestartCap
+                  : _stuckConnectingSoftRestartCap;
               _stuckConnectingSoftRestartCount =
                   (_stuckConnectingSoftRestartCount + 1)
-                      .clamp(1, _stuckConnectingSoftRestartCap + 1);
-              if (_stuckConnectingSoftRestartCount >
-                      _stuckConnectingSoftRestartCap &&
+                      .clamp(1, hopCap + 1);
+              if (_stuckConnectingSoftRestartCount > hopCap &&
                   _activeProxyEndpoints.length > 1) {
                 // Hard hop — pingProxy while Connecting times out on every
                 // endpoint (R24), so _failoverProxy stays on dead preferred.
+                // iOS: softRestartAfter — mid-session enableProxy alone left
+                // Connecting (R69); Android path unchanged (no softRestart).
                 await _hardHopDeadPreferred(
                   why: 'soft×$_stuckConnectingSoftRestartCount'
                       ':stuck-connecting-faketls-noop',
+                  softRestartAfter: !kIsWeb && Platform.isIOS,
                 );
                 return;
               }
