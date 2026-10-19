@@ -299,8 +299,14 @@ class _ServicesWebViewScreenState
           return;
         }
         // Fresh allowlist before WKWebView first dial (same as Android open).
-        await _reregister(why: 'ios-prepare-proxy');
-        await ServicesIosWebViewProxy.setProxy(widget.proxy);
+        // Bound: a hung register used to leave the WebView on eternal spinner.
+        final registered = await _reregister(why: 'ios-prepare-proxy')
+            .timeout(const Duration(seconds: 18), onTimeout: () => false);
+        if (!registered) {
+          debugPrint('[services_webview] ios-prepare-proxy register miss');
+        }
+        await ServicesIosWebViewProxy.setProxy(widget.proxy)
+            .timeout(const Duration(seconds: 8));
       } else {
         setState(() {
           _error = 'Сервисы через прокси на этой платформе недоступны';

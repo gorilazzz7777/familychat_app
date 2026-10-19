@@ -30,6 +30,7 @@ import '../../data/chat_location_utils.dart';
 import '../../data/chat_media_auto_download.dart';
 import '../../data/chat_voice_utils.dart';
 import 'chat_animated_media_scope.dart';
+import 'chat_inline_video_autoplay.dart';
 import 'chat_bubble_clipper.dart';
 import 'chat_image_album.dart';
 import 'chat_link_preview_card.dart';
@@ -89,9 +90,12 @@ class ChatMessageBubble extends StatelessWidget {
     this.location,
     this.messageMetadata = const {},
     this.canToggleVoiceTranscript = false,
+    this.voiceTranscriptBusy = false,
+    this.onRequestVoiceTranscript,
     this.onOpenUrl,
     this.showLinkPreview = true,
     this.showTelegramBadge = true,
+    this.messageId,
   });
 
   final int threadId;
@@ -99,6 +103,8 @@ class ChatMessageBubble extends StatelessWidget {
   final String body;
   final List<Map<String, dynamic>> attachments;
   final DateTime? createdAt;
+  /// Stable id for inline video autoplay (TG message id / FC message id).
+  final int? messageId;
   final String? readStatus;
   final Map<String, dynamic>? replyTo;
   final Map<String, dynamic>? forward;
@@ -133,6 +139,8 @@ class ChatMessageBubble extends StatelessWidget {
   final ChatLocationPoint? location;
   final Map<String, dynamic> messageMetadata;
   final bool canToggleVoiceTranscript;
+  final bool voiceTranscriptBusy;
+  final VoidCallback? onRequestVoiceTranscript;
   /// Return true if the URL was handled in-app (e.g. t.me → TDLib jump).
   final Future<bool> Function(String url)? onOpenUrl;
   /// When false, skip OG card (open/scroll settle) — host links still work.
@@ -885,6 +893,13 @@ class ChatMessageBubble extends StatelessWidget {
       final isCircle = _attachmentIsVideoNote(a);
       // Single-video message: inline play in bubble (not gallery).
       final att = Map<String, dynamic>.from(a)..['prefer_inline_play'] = true;
+      if (messageId != null && messageId! > 0) {
+        att['message_id'] = messageId;
+      }
+      // Eligible for center-focus muted loop (not GIF / video-note).
+      if (!isCircle && !_isAnimatedMediaMessage) {
+        att['inline_autoplay'] = true;
+      }
       if (isCircle) {
         out.add(
           ChatVideoNotePlayer(
@@ -976,30 +991,30 @@ class ChatMessageBubble extends StatelessWidget {
       addGap();
       if (isVoiceAttachment(a, messageMetadata: messageMetadata)) {
         out.add(
-          ConstrainedBox(
-            constraints: const BoxConstraints(minWidth: 180),
-            child: ChatVoiceMessagePlayer(
-              threadId: threadId,
-              attachment: a,
-              isMine: isMine,
-              durationMs: voiceDurationMsForAttachment(
-                a,
-                messageMetadata: messageMetadata,
-              ),
-              transcript: () {
-                final voice = messageMetadata['voice'];
-                if (voice is! Map) return null;
-                final text = voice['transcript']?.toString().trim();
-                if (text == null || text.isEmpty) return null;
-                return text;
-              }(),
-              canToggleTranscript: canToggleVoiceTranscript,
-              textColor: textColor,
-              metaColor: metaColor,
+          ChatVoiceMessagePlayer(
+            threadId: threadId,
+            attachment: a,
+            isMine: isMine,
+            maxWidth: maxWidth,
+            durationMs: voiceDurationMsForAttachment(
+              a,
               messageMetadata: messageMetadata,
-              uploadMessageId: pendingMessageId,
-              onCancelUpload: onCancelUpload,
             ),
+            transcript: () {
+              final voice = messageMetadata['voice'];
+              if (voice is! Map) return null;
+              final text = voice['transcript']?.toString().trim();
+              if (text == null || text.isEmpty) return null;
+              return text;
+            }(),
+            canToggleTranscript: canToggleVoiceTranscript,
+            transcriptBusy: voiceTranscriptBusy,
+            onRequestTranscript: onRequestVoiceTranscript,
+            textColor: textColor,
+            metaColor: metaColor,
+            messageMetadata: messageMetadata,
+            uploadMessageId: pendingMessageId,
+            onCancelUpload: onCancelUpload,
           ),
         );
       } else if (a['kind'] == 'video' || isVideoAttachment(a)) {
@@ -1350,7 +1365,26 @@ class _ChatVideoAttachmentPreviewState
   late double _aspect;
   bool _playing = false;
   bool _waitingForDownload = false;
+  /// False until [GalleryVideoPlayer] reports real playback (not just stream URL).
+  bool _playbackStarted = false;
+  /// Center-focus muted loop (not user tap).
+  bool _autoplayMode = false;
+  /// User explicitly started playback — keep until they leave / end.
+  bool _userInitiatedPlay = false;
   String? _generatedThumbPath;
+  bool _ownsTdlibStream = false;
+  ChatInlineVideoAutoplayController? _autoplayCtrl;
+  String? _lastSeenAutoplayActiveKey;
+
+  String get _autoplayKey {
+    final msg = widget.attachment['message_id'];
+    final file = widget.attachment['id'] ?? widget.attachment['tdlib_file_id'];
+    return '${widget.threadId}:$msg:$file';
+  }
+
+  bool get _autoplayEligible =>
+      widget.attachment['inline_autoplay'] == true &&
+      !widget.circular;
 
   String get _videoPath {
     final v = widget.attachment['video_local_path']?.toString().trim() ?? '';
@@ -1446,6 +1480,94 @@ class _ChatVideoAttachmentPreviewState
   }
 
   @override
+  void dispose() {
+    _autoplayCtrl?.unregister(_autoplayKey);
+    _autoplayCtrl = null;
+    _releaseTdlibStream();
+    super.dispose();
+  }
+
+  void _releaseTdlibStream() {
+    if (!_ownsTdlibStream) return;
+    _ownsTdlibStream = false;
+    final id = int.tryParse(widget.attachment['id']?.toString() ?? '') ??
+        int.tryParse(widget.attachment['tdlib_file_id']?.toString() ?? '');
+    if (id == null || id <= 0) return;
+    try {
+      ref.read(telegramTdlibServiceProvider).endVideoStream(id);
+    } catch (_) {}
+  }
+
+  void _stopInlinePlayback({required bool update}) {
+    _playing = false;
+    _playbackStarted = false;
+    _waitingForDownload = false;
+    _autoplayMode = false;
+    _userInitiatedPlay = false;
+    _releaseTdlibStream();
+    if (update && mounted) setState(() {});
+  }
+
+  void _syncAutoplayWinner(String? activeKey) {
+    if (!_autoplayEligible) return;
+    final want = activeKey != null && activeKey == _autoplayKey;
+    if (want) {
+      if (_playing || _waitingForDownload) return;
+      _autoplayMode = true;
+      _userInitiatedPlay = false;
+      _beginInlinePlayback(fromAutoplay: true);
+      return;
+    }
+    // Lost center focus — unload unless the user started this play.
+    if (!_userInitiatedPlay && (_playing || _waitingForDownload || _autoplayMode)) {
+      _stopInlinePlayback(update: true);
+    }
+  }
+
+  void _beginInlinePlayback({required bool fromAutoplay}) {
+    final path = _videoPath;
+    final streamUrl = _streamableVideoUrl;
+    if (path.isNotEmpty || streamUrl.isNotEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _playbackStarted = false;
+        _playing = true;
+        _waitingForDownload = false;
+        _autoplayMode = fromAutoplay;
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _playbackStarted = false;
+      _waitingForDownload = true;
+      _autoplayMode = fromAutoplay;
+    });
+    if (fromAutoplay) _ownsTdlibStream = true;
+    widget.onRequestDownload?.call();
+  }
+
+  void _reportAutoplayVisibility(double fraction) {
+    if (!_autoplayEligible) return;
+    final ctrl = ChatInlineVideoAutoplayScope.maybeOf(context);
+    _autoplayCtrl = ctrl;
+    if (ctrl == null) return;
+    var dist = double.infinity;
+    final box = context.findRenderObject() as RenderBox?;
+    if (box != null && box.hasSize && box.attached) {
+      final center = box.localToGlobal(box.size.center(Offset.zero));
+      final h = MediaQuery.sizeOf(context).height;
+      // Match TG soft-media focus line (~42% from top).
+      dist = (center.dy - h * 0.42).abs();
+    }
+    ctrl.report(
+      _autoplayKey,
+      visibleFraction: fraction,
+      distanceToCenter: dist,
+    );
+  }
+
+  @override
   void didUpdateWidget(covariant _ChatVideoAttachmentPreview oldWidget) {
     super.didUpdateWidget(oldWidget);
     final oldPath =
@@ -1483,7 +1605,15 @@ class _ChatVideoAttachmentPreviewState
       if (_waitingForDownload &&
           (_videoPath.isNotEmpty || _streamableVideoUrl.isNotEmpty)) {
         _waitingForDownload = false;
+        _playbackStarted = false;
         _playing = true;
+        if (_autoplayMode) _ownsTdlibStream = true;
+      } else if (_playing &&
+          (oldPath != newPath ||
+              oldWidget.attachment['video_stream_url'] !=
+                  widget.attachment['video_stream_url'])) {
+        // New source while already "playing" → keep spinner until first frame.
+        _playbackStarted = false;
       }
     }
     // Download finished / progressive stream ready → start muted inline play.
@@ -1491,7 +1621,11 @@ class _ChatVideoAttachmentPreviewState
         (newPath.isNotEmpty || _streamableVideoUrl.isNotEmpty)) {
       _waitingForDownload = false;
       if (!_playing && mounted) {
-        setState(() => _playing = true);
+        setState(() {
+          _playbackStarted = false;
+          _playing = true;
+          if (_autoplayMode) _ownsTdlibStream = true;
+        });
       }
     }
   }
@@ -1591,29 +1725,29 @@ class _ChatVideoAttachmentPreviewState
       // Play/pause handled by GalleryVideoPlayer overlay; bubble tap ignored.
       return;
     }
-    final path = _videoPath;
-    if (path.isNotEmpty) {
-      await _ensureThumb();
-      if (!mounted) return;
-      setState(() => _playing = true);
-      return;
-    }
-    // FamilyChat may stream a real HTTPS mp4. TDLib videos only have a local
-    // path after download — never treat the FC content-proxy URL as streamable
-    // (that left _playing=true with an empty player and no download).
-    final streamUrl = _streamableVideoUrl;
-    if (streamUrl.isNotEmpty) {
-      if (!mounted) return;
-      setState(() => _playing = true);
-      return;
-    }
+    await _ensureThumb();
     if (!mounted) return;
-    setState(() => _waitingForDownload = true);
-    widget.onRequestDownload?.call();
+    _userInitiatedPlay = true;
+    _autoplayMode = false;
+    _ownsTdlibStream = true;
+    _beginInlinePlayback(fromAutoplay: false);
   }
 
   @override
   Widget build(BuildContext context) {
+    // Rebuild when center-focus winner changes.
+    final autoplayCtrl = ChatInlineVideoAutoplayScope.maybeOf(context);
+    _autoplayCtrl = autoplayCtrl;
+    final activeKey = autoplayCtrl?.activeKey;
+    if (_autoplayEligible && activeKey != _lastSeenAutoplayActiveKey) {
+      _lastSeenAutoplayActiveKey = activeKey;
+      // Defer — may run during build when InheritedNotifier notifies.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _syncAutoplayWinner(autoplayCtrl?.activeKey);
+      });
+    }
+
     final previewAtt = _previewAttachment();
     final maxWidth = widget.maxWidth;
     final circular = widget.circular;
@@ -1631,10 +1765,12 @@ class _ChatVideoAttachmentPreviewState
     final videoPath = _videoPath;
     final streamUrl = _streamableVideoUrl;
     final canPlay = videoPath.isNotEmpty || streamUrl.isNotEmpty;
-    // Once local file or progressive stream URL is ready, drop the overlay —
-    // background TDLib range fill must not keep the blocking loader.
-    final showSpinner = !canPlay &&
-        (_downloading || _waitingForDownload);
+    // Keep spinner through stream-proxy setup AND until ExoPlayer actually
+    // starts (initialize alone used to clear the overlay too early).
+    final awaitingPlayback = _playing && canPlay && !_playbackStarted;
+    final showSpinner = awaitingPlayback ||
+        (!canPlay && (_downloading || _waitingForDownload));
+    final loopInline = _autoplayMode && !_userInitiatedPlay;
 
     final background = ChatNetworkImage(
       threadId: widget.threadId,
@@ -1667,16 +1803,19 @@ class _ChatVideoAttachmentPreviewState
           if (_playing && canPlay)
             GalleryVideoPlayer(
               key: ValueKey(
-                'bubble-video:${videoPath.isNotEmpty ? videoPath : streamUrl}',
+                'bubble-video:${loopInline ? 'auto' : 'user'}:'
+                '${videoPath.isNotEmpty ? videoPath : streamUrl}',
               ),
               url: streamUrl,
               localPath: videoPath.isNotEmpty ? videoPath : null,
               fit: BoxFit.cover,
               autoplay: true,
-              looping: false,
+              looping: loopInline,
               muted: true,
               showControls: false,
-              showScrubber: true,
+              showScrubber: !loopInline,
+              // Inline (bubble) only — elapsed/total top-left, not fullscreen.
+              showMuteClock: true,
               placeholder: const SizedBox.shrink(),
               onResolvedSize: (resolved) {
                 if (resolved.height <= 0) return;
@@ -1685,12 +1824,27 @@ class _ChatVideoAttachmentPreviewState
                 }
                 _applyAspect(resolved.width / resolved.height);
               },
+              onPlaybackStarted: () {
+                if (!mounted || _playbackStarted) return;
+                setState(() {
+                  _playbackStarted = true;
+                  _waitingForDownload = false;
+                });
+              },
+              onError: (_) {
+                if (!mounted) return;
+                _stopInlinePlayback(update: true);
+              },
               onEnded: () {
                 if (!mounted) return;
-                setState(() => _playing = false);
+                if (loopInline) return;
+                _stopInlinePlayback(update: true);
               },
             ),
-          if (_playing && canPlay && widget.onOpenFullscreen != null)
+          if (_playing &&
+              canPlay &&
+              _playbackStarted &&
+              widget.onOpenFullscreen != null)
             Positioned(
               top: 6,
               right: 6,
@@ -1760,7 +1914,7 @@ class _ChatVideoAttachmentPreviewState
       ),
     );
 
-    return GestureDetector(
+    final clipped = GestureDetector(
       onTap: _playing ? null : () => unawaited(_onTap()),
       behavior: HitTestBehavior.opaque,
       child: circular
@@ -1769,6 +1923,14 @@ class _ChatVideoAttachmentPreviewState
               borderRadius: widget.borderRadius ?? BorderRadius.circular(10),
               child: content,
             ),
+    );
+
+    if (!_autoplayEligible) return clipped;
+    return VisibilityDetector(
+      key: ValueKey('inline-video-vis:$_autoplayKey'),
+      onVisibilityChanged: (info) =>
+          _reportAutoplayVisibility(info.visibleFraction),
+      child: clipped,
     );
   }
 }

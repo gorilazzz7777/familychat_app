@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -87,12 +88,18 @@ class _ServicesHubScreenState extends ConsumerState<ServicesHubScreen> {
       _error = null;
     });
     try {
-      final data =
-          await ref.read(familychatRepositoryProvider).fetchServicesAccess();
+      // Hard ceiling: on some iPhones URLSession ignored Dio receiveTimeout
+      // and the hub spun forever. Android Cronet is fine — leave it alone.
+      final data = await ref
+          .read(familychatRepositoryProvider)
+          .fetchServicesAccess()
+          .timeout(const Duration(seconds: 20));
       // Catalog must render even if IP-register fails (iOS ATS historically
       // blocked cleartext :13129; register is retried on open).
       try {
-        await _registrar.register(data.register, why: 'hub-load');
+        await _registrar
+            .register(data.register, why: 'hub-load')
+            .timeout(const Duration(seconds: 15));
       } catch (e) {
         debugPrint('[services_hub] register fail (show catalog) $e');
       }
@@ -104,6 +111,10 @@ class _ServicesHubScreenState extends ConsumerState<ServicesHubScreen> {
         _loading = false;
       });
     } catch (e) {
+      debugPrint(
+        '[services_hub] load fail '
+        'ios=${!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS} $e',
+      );
       if (!mounted) return;
       setState(() {
         _loading = false;

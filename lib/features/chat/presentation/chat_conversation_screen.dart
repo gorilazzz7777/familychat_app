@@ -68,6 +68,7 @@ import 'chat_info_sheet.dart';
 import 'chat_call_screen.dart';
 import 'record_video_circle_screen.dart';
 import 'widgets/chat_animated_media_scope.dart';
+import 'widgets/chat_inline_video_autoplay.dart';
 import 'widgets/chat_attach_sheet/chat_attach_models.dart';
 import 'widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import 'widgets/chat_compose_input.dart';
@@ -211,6 +212,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   final _inputFocus = FocusNode();
   final _scrollController = ScrollController();
   final _animatedMediaController = ChatAnimatedMediaController();
+  final _inlineVideoAutoplay = ChatInlineVideoAutoplayController();
   final _messageKeys = <int, GlobalKey>{};
   List<Map<String, dynamic>> _messages = [];
   bool _loading = true;
@@ -2421,6 +2423,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       final pixels = _scrollController.position.pixels;
       if ((pixels - _lastScrollPixels).abs() > 0.5) {
         _animatedMediaController.noteUserScroll();
+        _inlineVideoAutoplay.noteScroll();
       }
     }
     _updateScrollToBottomVisibility();
@@ -2645,6 +2648,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     _controller.dispose();
     _scrollController.dispose();
     _animatedMediaController.dispose();
+    _inlineVideoAutoplay.dispose();
     super.dispose();
   }
 
@@ -7153,8 +7157,10 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                             return ChatAnimatedMediaScope(
                                               controller:
                                                   _animatedMediaController,
-                                              child: NotificationListener<
-                                                  ScrollNotification>(
+                                              child: ChatInlineVideoAutoplayScope(
+                                                controller: _inlineVideoAutoplay,
+                                                child: NotificationListener<
+                                                    ScrollNotification>(
                                                 onNotification: (n) {
                                                   if (n.depth != 0) {
                                                     return false;
@@ -7164,9 +7170,13 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                                       n is UserScrollNotification) {
                                                     _animatedMediaController
                                                         .noteUserScroll();
+                                                    _inlineVideoAutoplay
+                                                        .noteScroll();
                                                   } else if (n
                                                       is ScrollEndNotification) {
                                                     _animatedMediaController
+                                                        .noteScrollEnd();
+                                                    _inlineVideoAutoplay
                                                         .noteScrollEnd();
                                                   }
                                                   return false;
@@ -7281,6 +7291,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                                 } else {
                                   messageChild = ChatMessageBubble(
                                     threadId: widget.threadId,
+                                    messageId: msgId,
                                     isMine: isMine,
                                     body: m['body']?.toString() ?? '',
                                     attachments: atts,
@@ -7492,6 +7503,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
                               ),
                             ],
                           ),
+                                                ),
                                               ),
                                             );
                                           },

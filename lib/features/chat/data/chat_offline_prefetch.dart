@@ -10,6 +10,7 @@ import '../../../core/media/media_incoming_sync.dart';
 import '../../../core/network/chat_network_link.dart';
 import '../../../core/settings/app_settings_storage.dart';
 import '../../familychat/data/familychat_repository.dart';
+import '../../telegram_tdlib/telegram_tdlib_service.dart';
 import 'chat_media_auto_download.dart';
 import 'chat_media_display_policy.dart';
 import 'chat_realtime_utils.dart';
@@ -45,14 +46,20 @@ abstract final class ChatOfflinePrefetch {
     FamilyChatRepository repo,
     Iterable<int> threadIds,
   ) async {
-    final ids = threadIds.toSet();
+    final ids = threadIds.toSet().take(2).toList();
     if (ids.isEmpty) return;
     try {
       for (final threadId in ids) {
+        if (TelegramTdlibService.instance.isUiInteractionBusy ||
+            TelegramTdlibService.instance.openChatId != null) {
+          debugPrint('[ChatOfflinePrefetch] skip ui-busy thread=$threadId');
+          break;
+        }
         try {
+          // Tip window only — full history is syncHistoriesInBackground.
           final page = await repo.threadMessages(
             threadId,
-            limit: FamilyChatLocalCache.maxCachedMessagesPerThread,
+            limit: 20,
           );
           await ChatLocalStore.instance.upsertMessages(
             threadId,
@@ -61,6 +68,7 @@ abstract final class ChatOfflinePrefetch {
           unawaited(MediaIncomingSync.ensureMessages(page.messages));
           await prefetchThreadMedia(repo, threadId, page.messages);
         } catch (_) {}
+        await Future<void>.delayed(const Duration(milliseconds: 350));
       }
     } catch (_) {}
   }

@@ -150,14 +150,14 @@ abstract final class HubFirstPaintSnapshot {
   }
 
   static Future<HubFirstPaintData?> _warmBody() async {
+    HubFirstPaintData? data;
     try {
       await ChatLocalStore.instance.ensureOpen();
-      final threads = await ChatLocalStore.instance.readThreads();
-      if (threads.isNotEmpty) {
-        // Fill empty hub last_message from SQLite tip so sort/previews match
-        // live enrich (avoids Киса jumping into the list seconds later).
-        _warmedFcThreads = await hydrateFcThreadsLastMessages(threads);
-      }
+      // Snapshot FIRST (TG synthetics for frame-0). FC thread hydrate can
+      // exceed warmWithBudget(120ms) and left hub painted FC-only while
+      // `_hydrateFromSnapshot` bailed on `_paintedFromSnapshot`.
+      data = await read();
+      _warmed = data;
       final foldersRaw = await ChatLocalStore.instance.metaGet(_foldersMetaKey);
       if (foldersRaw != null && foldersRaw.isNotEmpty) {
         final decoded = jsonDecode(foldersRaw);
@@ -178,10 +178,16 @@ abstract final class HubFirstPaintSnapshot {
           ];
         }
       }
+      final threads = await ChatLocalStore.instance.readThreads();
+      if (threads.isNotEmpty) {
+        // Fill empty hub last_message from SQLite tip so sort/previews match
+        // live enrich (avoids Киса jumping into the list seconds later).
+        _warmedFcThreads = await hydrateFcThreadsLastMessages(threads);
+      }
     } catch (e) {
       debugPrint('[hub-snapshot] warm FC threads failed: $e');
     }
-    final data = await read();
+    data ??= await read();
     _warmed = data;
     _warming = null;
     return data;
@@ -215,6 +221,42 @@ abstract final class HubFirstPaintSnapshot {
 
   /// Snapshot for synchronous apply in [State.initState] (does not clear).
   static HubFirstPaintData? get warmed => _warmed;
+
+  /// TG synthetic row stored in Archive (same hub snapshot / SQLite meta).
+  static bool isArchivedTgRow(Map<String, dynamic> row) {
+    if (row['tdlib_archived'] == true) return true;
+    final kind = row['kind']?.toString() ?? '';
+    return kind == 'tdlib_archive_chat';
+  }
+
+  /// TG hub synthetics from a snapshot payload (main list vs Archive).
+  static ({List<Map<String, dynamic>> main, List<Map<String, dynamic>> archive})
+      splitTgRows(Iterable<Map<String, dynamic>> rows) {
+    final main = <Map<String, dynamic>>[];
+    final archive = <Map<String, dynamic>>[];
+    for (final row in rows) {
+      final kind = row['kind']?.toString() ?? '';
+      if (kind == 'tdlib_archive') continue;
+      if (kind != 'tdlib_dm' &&
+          kind != 'tdlib_chat' &&
+          kind != 'tdlib_archive_chat') {
+        continue;
+      }
+      final copy = Map<String, dynamic>.from(row);
+      if (isArchivedTgRow(copy)) {
+        // Normalize kind so restore/upsert match main TG synthetics.
+        if (copy['kind']?.toString() == 'tdlib_archive_chat') {
+          copy['kind'] = 'tdlib_chat';
+        }
+        copy['tdlib_archived'] = true;
+        archive.add(copy);
+      } else {
+        copy['tdlib_archived'] = false;
+        main.add(copy);
+      }
+    }
+    return (main: main, archive: archive);
+  }
 
   /// Consume warmed data once (optional).
   static HubFirstPaintData? takeWarmed() {
@@ -333,8 +375,12 @@ abstract final class HubFirstPaintSnapshot {
     if (kIsWeb) return;
     final top = rows.take(maxRows).toList(growable: false);
     final encoded = <Map<String, dynamic>>[];
-    for (final row in top) {
-      encoded.add(await _encodeRow(row));
+    for (var i = 0; i < top.length; i++) {
+      encoded.add(await _encodeRow(top[i]));
+      // Let open-chat / frames breathe during large cold-boot snapshot writes.
+      if (i > 0 && i % 24 == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
     }
 
     String? profilePath = await profileAvatarPath();
@@ -387,46 +433,75 @@ abstract final class HubFirstPaintSnapshot {
   /// Keeps cold-start unread/last_message in sync when the hub screen is not
   /// mounted (new message + read inbox), including muted chats.
   static Future<void> upsertFullRow(Map<String, dynamic> row) async {
-    if (kIsWeb) return;
-    if (row.isEmpty) return;
-    final incoming = Map<String, dynamic>.from(row);
-    final kind = incoming['kind']?.toString() ?? '';
-    final isTg = kind == 'tdlib_dm' || kind == 'tdlib_chat';
-    final threadId = isTg ? null : chatAsInt(incoming['id']);
-    final tdlibChatId = chatAsInt(incoming['tdlib_chat_id']) ??
-        _linkedTgChatId(incoming);
+    if (kIsWeb || row.isEmpty) return;
+    await upsertFullRows([row]);
+  }
+
+  /// Merge many hub rows with a single read + write.
+  ///
+  /// Boot used to fire [upsertFullRow]×N in parallel — each call re-read and
+  /// re-wrote the full snapshot (incl. avatar encode). Opening a chat right
+  /// after `hub-snapshot flush soon n=154` froze the UI isolate ~20s.
+  static Future<void> upsertFullRows(List<Map<String, dynamic>> rows) async {
+    if (kIsWeb || rows.isEmpty) return;
+    final incomingList = <Map<String, dynamic>>[
+      for (final r in rows)
+        if (r.isNotEmpty) Map<String, dynamic>.from(r),
+    ];
+    if (incomingList.isEmpty) return;
 
     final current = await read();
-    final prevRows = current?.rows ?? const <Map<String, dynamic>>[];
-    final next = <Map<String, dynamic>>[];
-    var replaced = false;
-    for (final existing in prevRows) {
-      final match = _rowMatchesFull(
-        existing,
-        threadId: threadId,
-        tdlibChatId: tdlibChatId,
-      );
-      if (!match) {
-        next.add(existing);
+    final next = <Map<String, dynamic>>[
+      for (final e in current?.rows ?? const <Map<String, dynamic>>[])
+        Map<String, dynamic>.from(e),
+    ];
+
+    for (final incoming in incomingList) {
+      final kind = incoming['kind']?.toString() ?? '';
+      if (kind == 'tdlib_archive') {
+        // Folder chrome row — replace any previous archive folder entry.
+        var replacedFolder = false;
+        for (var i = 0; i < next.length; i++) {
+          if (next[i]['kind']?.toString() == 'tdlib_archive') {
+            next[i] = Map<String, dynamic>.from(incoming);
+            replacedFolder = true;
+            break;
+          }
+        }
+        if (!replacedFolder) next.add(Map<String, dynamic>.from(incoming));
         continue;
       }
-      replaced = true;
-      next.add(_mergeFullHubRow(existing, incoming));
+      final isTg = kind == 'tdlib_dm' ||
+          kind == 'tdlib_chat' ||
+          kind == 'tdlib_archive_chat';
+      final threadId = isTg ? null : chatAsInt(incoming['id']);
+      final tdlibChatId = chatAsInt(incoming['tdlib_chat_id']) ??
+          _linkedTgChatId(incoming);
+      var replaced = false;
+      for (var i = 0; i < next.length; i++) {
+        final match = _rowMatchesFull(
+          next[i],
+          threadId: threadId,
+          tdlibChatId: tdlibChatId,
+        );
+        if (!match) continue;
+        next[i] = _mergeFullHubRow(next[i], incoming);
+        replaced = true;
+        break;
+      }
+      if (!replaced) next.add(incoming);
+      // FC cold paint prefers SQLite warm list — keep RAM mirror in sync.
+      if (!isTg && threadId != null) {
+        _upsertWarmedFcThread(incoming);
+      }
     }
-    if (!replaced) {
-      next.add(incoming);
-    }
+
     next.sort(_compareHubActivityDesc);
     await write(
       rows: next.take(maxRows).toList(),
       profileAvatarUrl: current?.profileAvatarUrl,
       profileAvatarSourcePath: current?.profileAvatarPath,
     );
-
-    // FC cold paint prefers SQLite warm list — keep RAM mirror in sync.
-    if (!isTg && threadId != null) {
-      _upsertWarmedFcThread(incoming);
-    }
   }
 
   /// After a full hub HTTP sync — keep in-RAM FC warm list aligned with SQLite.
@@ -469,6 +544,11 @@ abstract final class HubFirstPaintSnapshot {
     return chatAsInt(tg['tg_chat_id']) ?? chatAsInt(tg['chat_id']);
   }
 
+  static bool _isTgSyntheticKind(String kind) =>
+      kind == 'tdlib_dm' ||
+      kind == 'tdlib_chat' ||
+      kind == 'tdlib_archive_chat';
+
   static bool _rowMatchesFull(
     Map<String, dynamic> row, {
     int? threadId,
@@ -476,7 +556,7 @@ abstract final class HubFirstPaintSnapshot {
   }) {
     if (threadId != null) {
       final kind = row['kind']?.toString() ?? '';
-      if (kind != 'tdlib_dm' && kind != 'tdlib_chat') {
+      if (!_isTgSyntheticKind(kind)) {
         return chatAsInt(row['id']) == threadId;
       }
     }
@@ -495,10 +575,8 @@ abstract final class HubFirstPaintSnapshot {
   ) {
     final existingKind = existing['kind']?.toString() ?? '';
     final incomingKind = incoming['kind']?.toString() ?? '';
-    final existingIsFc =
-        existingKind != 'tdlib_dm' && existingKind != 'tdlib_chat';
-    final incomingIsTg =
-        incomingKind == 'tdlib_dm' || incomingKind == 'tdlib_chat';
+    final existingIsFc = !_isTgSyntheticKind(existingKind);
+    final incomingIsTg = _isTgSyntheticKind(incomingKind);
 
     // FC row owned by local-first: merge TG tip into FC shell when linked.
     if (existingIsFc && incomingIsTg) {
@@ -539,11 +617,18 @@ abstract final class HubFirstPaintSnapshot {
       return out;
     }
 
-    if (incomingIsTg &&
-        (existingKind == 'tdlib_dm' || existingKind == 'tdlib_chat')) {
+    if (incomingIsTg && _isTgSyntheticKind(existingKind)) {
       final out = Map<String, dynamic>.from(incoming);
       out['id'] = existing['id'];
-      out['kind'] = existingKind;
+      // Keep dm/chat kind; archive membership is the flag.
+      out['kind'] = existingKind == 'tdlib_archive_chat'
+          ? 'tdlib_chat'
+          : existingKind;
+      if (incoming.containsKey('tdlib_archived')) {
+        out['tdlib_archived'] = incoming['tdlib_archived'] == true;
+      } else if (existing.containsKey('tdlib_archived')) {
+        out['tdlib_archived'] = existing['tdlib_archived'] == true;
+      }
       for (final key in [
         'peer_user_id',
         'peer_avatar_url',
@@ -558,7 +643,12 @@ abstract final class HubFirstPaintSnapshot {
     }
 
     // Same-side full replace (FC←FC or TG←TG insert path).
-    return Map<String, dynamic>.from(incoming);
+    final out = Map<String, dynamic>.from(incoming);
+    if (incomingIsTg && out['kind']?.toString() == 'tdlib_archive_chat') {
+      out['kind'] = 'tdlib_chat';
+      out['tdlib_archived'] = true;
+    }
+    return out;
   }
 
   static int _compareHubActivityDesc(
@@ -601,7 +691,7 @@ abstract final class HubFirstPaintSnapshot {
     for (final row in current.rows) {
       final copy = Map<String, dynamic>.from(row);
       final kind = copy['kind']?.toString() ?? '';
-      final isTg = kind == 'tdlib_dm' || kind == 'tdlib_chat';
+      final isTg = _isTgSyntheticKind(kind);
       var match = false;
       if (threadId != null && !isTg) {
         final id = chatAsInt(copy['id']);

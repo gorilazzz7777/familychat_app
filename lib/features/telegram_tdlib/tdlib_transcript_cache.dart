@@ -39,22 +39,10 @@ abstract final class TdlibTranscriptCache {
     }
   }
 
+  /// Deprecated: TG history lives in SQLite `tg_message_rows`. Migrate via read.
   static Future<void> write(int chatId, List<TdlibMessage> messages) async {
-    if (kIsWeb || !ChatLocalStore.isSupported) return;
-    if (messages.isEmpty) return;
-    try {
-      await ChatLocalStore.instance.ensureOpen();
-      final tail = messages.length <= maxMessagesPerChat
-          ? messages
-          : messages.sublist(messages.length - maxMessagesPerChat);
-      final encoded = jsonEncode([
-        for (final m in tail) messageToCacheJson(m),
-      ]);
-      await ChatLocalStore.instance.metaSet(_chatKey(chatId), encoded);
-      await _touchIndex(chatId);
-    } catch (e) {
-      debugPrint('[tg-transcript-cache] write $chatId failed: $e');
-    }
+    // No-op — do not keep writing meta transcript blobs.
+    return;
   }
 
   static Future<void> _touchIndex(int chatId) async {

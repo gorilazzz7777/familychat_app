@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/media/media_incoming_sync.dart';
 import '../../familychat/data/familychat_repository.dart';
+import '../../telegram_tdlib/telegram_tdlib_service.dart';
 import 'active_chat_context.dart';
 import 'chat_bootstrap_coordinator.dart';
 import 'chat_local_mutations.dart';
@@ -37,6 +38,14 @@ class ChatSyncService {
   final Map<int, Future<void>> _threadQueues = <int, Future<void>>{};
   DateTime? _resumeCatchUpAt;
 
+  /// TG conversation open — pause deferred FC message prefetch (main-thread jank).
+  bool get _tgConversationOpen =>
+      TelegramTdlibService.instance.openChatId != null;
+
+  /// Hub / conversation scroll or IME — pause background SQLite fills.
+  bool get _uiInteractionBusy =>
+      TelegramTdlibService.instance.isUiInteractionBusy;
+
   /// Window where hub/conversation resume skips duplicate HTTP catch-up.
   static const resumeCatchUpWindow = Duration(seconds: 8);
 
@@ -67,10 +76,31 @@ class ChatSyncService {
     _historyTimer = Timer.periodic(const Duration(minutes: 12), (_) {
       unawaited(syncHistoriesInBackground());
     });
+    // Cold start: hub list only. Message windows + history used to fan out
+    // syncThread×N with TDLib hydrate (SessionLog 20:33 → sticky first 10s).
     unawaited(() async {
-      await syncHub(prefetchMessages: true);
-      unawaited(syncHistoriesInBackground());
+      await syncHub(prefetchMessages: false);
+      _scheduleDeferredMessagePrefetch();
     }());
+  }
+
+  Timer? _deferredMessagePrefetchTimer;
+
+  /// After first paint / TDLib plane settle — serial tip windows, then history.
+  void _scheduleDeferredMessagePrefetch() {
+    _deferredMessagePrefetchTimer?.cancel();
+    _deferredMessagePrefetchTimer = Timer(const Duration(seconds: 18), () async {
+      _deferredMessagePrefetchTimer = null;
+      await _prefetchHubMessageWindows(maxThreads: 2);
+      // Full history backfill even later — not on the cold path.
+      await Future<void>.delayed(const Duration(seconds: 12));
+      if (_uiInteractionBusy || _tgConversationOpen) {
+        debugPrint('[ChatSyncService] history-bg defer ui-busy');
+        _deferredHubPrefetch = true;
+        return;
+      }
+      unawaited(syncHistoriesInBackground());
+    });
   }
 
   void setCurrentUserId(int? userId) {
@@ -80,6 +110,8 @@ class ChatSyncService {
   Future<void> stop() async {
     _historyTimer?.cancel();
     _historyTimer = null;
+    _deferredMessagePrefetchTimer?.cancel();
+    _deferredMessagePrefetchTimer = null;
     if (_listening) {
       FamilyChatRealtime.instance.removeListener(_onRealtime);
       _listening = false;
@@ -347,7 +379,12 @@ class ChatSyncService {
       debugPrint('[ChatSyncService] syncHub skipped: repo not attached yet');
       return;
     }
-    if (!force && ActiveChatContext.instance.openThreadId != null) {
+    if (!force &&
+        (ActiveChatContext.instance.openThreadId != null ||
+            _tgConversationOpen)) {
+      if (_tgConversationOpen) {
+        debugPrint('[ChatSyncService] deferred prefetch skip tg-open');
+      }
       _deferHubSync(prefetchMessages: prefetchMessages);
       return;
     }
@@ -400,27 +437,65 @@ class ChatSyncService {
       // Secretary soft-kill: do not refresh Business Bot telegram-chats cache.
 
       if (prefetchMessages) {
-        // Top hub rows (by server order / activity) + any unread — so opening
-        // a recent chat already has a full UI window in SQLite, not tip-only.
-        final prefetchIds = <int>{};
-        for (final thread in enriched.take(20)) {
-          final id = chatAsInt(thread['id']);
-          if (id != null) prefetchIds.add(id);
-        }
-        for (final thread in enriched) {
-          final id = chatAsInt(thread['id']);
-          if (id == null) continue;
-          final unread = chatAsInt(thread['unread_count']) ?? 0;
-          if (unread > 0) prefetchIds.add(id);
-        }
-        for (final id in prefetchIds) {
-          unawaited(syncThread(id));
-        }
+        // Cap + serialize — parallel syncThread×N was the cold-start hitch.
+        unawaited(_prefetchHubMessageWindows(
+          threads: enriched,
+          maxThreads: 2,
+        ));
       }
     } catch (e, st) {
       debugPrint('[ChatSyncService] syncHub failed: $e\n$st');
     } finally {
       _syncingHub = false;
+    }
+  }
+
+  /// Serial SQLite tip windows for a few hub threads (not a boot fan-out).
+  Future<void> _prefetchHubMessageWindows({
+    List<Map<String, dynamic>>? threads,
+    int maxThreads = 2,
+  }) async {
+    if (!isSupported || _repo == null) return;
+    final list = threads ?? await ChatLocalStore.instance.readThreads();
+    if (list.isEmpty) return;
+    final prefetchIds = <int>[];
+    final seen = <int>{};
+    void add(int? id) {
+      if (id == null || id == 0 || !seen.add(id)) return;
+      prefetchIds.add(id);
+    }
+    // Unread first (open jump), then top rows by hub order.
+    for (final thread in list) {
+      final unread = chatAsInt(thread['unread_count']) ?? 0;
+      if (unread > 0) add(chatAsInt(thread['id']));
+      if (prefetchIds.length >= maxThreads) break;
+    }
+    for (final thread in list) {
+      if (prefetchIds.length >= maxThreads) break;
+      add(chatAsInt(thread['id']));
+    }
+    for (final id in prefetchIds) {
+      if (ActiveChatContext.instance.openThreadId != null ||
+          _tgConversationOpen) {
+        if (_tgConversationOpen) {
+          debugPrint('[ChatSyncService] deferred prefetch skip tg-open');
+        }
+        _deferredHubPrefetch = true;
+        break;
+      }
+      // Idle-gate: hub scroll / IME must not share the main isolate with sync.
+      if (_uiInteractionBusy) {
+        debugPrint('[ChatSyncService] deferred prefetch skip ui-busy');
+        _deferredHubPrefetch = true;
+        break;
+      }
+      try {
+        // Tip-sized window — matches SQLite-first open; was 40→80 storm.
+        await syncThread(id, limit: 20);
+      } catch (e) {
+        debugPrint('[ChatSyncService] deferred prefetch thread=$id: $e');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 350));
     }
   }
 
@@ -844,9 +919,20 @@ class ChatSyncService {
   Future<void> syncHistoriesInBackground({int? prioritizeThreadId}) async {
     if (!isSupported || _repo == null) return;
     if (_historySyncing) return;
+    if (_tgConversationOpen) {
+      debugPrint('[ChatSyncService] deferred prefetch skip tg-open');
+      return;
+    }
+    if (_uiInteractionBusy && prioritizeThreadId == null) {
+      debugPrint('[ChatSyncService] history-bg skip ui-busy');
+      _deferredHubPrefetch = true;
+      return;
+    }
     _historySyncing = true;
     try {
-      if (ActiveChatContext.instance.openThreadId == null) {
+      if (ActiveChatContext.instance.openThreadId == null &&
+          !_tgConversationOpen &&
+          !_uiInteractionBusy) {
         await syncHub(force: false);
       }
       final threads = await ChatLocalStore.instance.readThreads();
@@ -857,21 +943,29 @@ class ChatSyncService {
               chatAsInt(thread['id']) != prioritizeThreadId)
             chatAsInt(thread['id'])!,
       ];
-      // Cap work per wake: prioritized thread fully, then a few others.
-      const maxOtherThreads = 3;
+      // Cap work per wake: prioritized thread, then at most one other.
+      const maxOtherThreads = 1;
       var othersDone = 0;
       for (final id in ids) {
         if (_repo == null) return;
+        if (_tgConversationOpen) {
+          debugPrint('[ChatSyncService] deferred prefetch skip tg-open');
+          break;
+        }
+        if (_uiInteractionBusy && id != prioritizeThreadId) {
+          debugPrint('[ChatSyncService] history-bg pause ui-busy');
+          _deferredHubPrefetch = true;
+          break;
+        }
         final isPriority = id == prioritizeThreadId;
         if (!isPriority && othersDone >= maxOtherThreads) break;
-        await syncThread(id, limit: 80);
+        await syncThread(id, limit: isPriority ? 40 : 20);
         await syncThreadHistory(
           id,
-          maxPages: isPriority ? 6 : 2,
+          maxPages: isPriority ? 4 : 1,
         );
         if (!isPriority) othersDone += 1;
-        // Yield so UI/WS stay responsive.
-        await Future<void>.delayed(const Duration(milliseconds: 80));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
       }
     } catch (e, st) {
       debugPrint('[ChatSyncService] syncHistoriesInBackground failed: $e\n$st');

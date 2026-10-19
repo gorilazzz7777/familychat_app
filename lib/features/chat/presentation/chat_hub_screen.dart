@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
@@ -24,6 +23,8 @@ import '../data/chat_realtime_utils.dart';
 import '../data/familychat_realtime.dart';
 import '../data/chat_sync_service.dart';
 import '../data/hub_first_paint_snapshot.dart';
+import '../data/hub_folder_mute.dart';
+import '../data/hub_folder_mute_store.dart';
 import '../../../core/local_db/chat_local_store.dart';
 import '../../../core/share/share_direct_target_service.dart';
 import '../data/chat_local_mutations.dart';
@@ -40,6 +41,7 @@ import '../../telegram_tdlib/telegram_saved_bridge.dart';
 import '../../telegram_tdlib/telegram_match_store.dart';
 import '../../telegram_tdlib/telegram_tdlib_providers.dart';
 import '../../telegram_tdlib/telegram_tdlib_service.dart';
+import 'telegram_archive_screen.dart';
 import 'telegram_chats_pane.dart';
 import 'widgets/chat_message_read_status_icon.dart';
 
@@ -93,6 +95,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   Map<int, int> _fcToTgFolder = {};
   Map<int, Set<String>> _tgFolderExtras = {};
   int _lastTgFoldersEpoch = -1;
+  /// Live `getChatFolders` applied at least once this session (may be empty).
+  bool _tgFoldersLiveOnce = false;
+  Timer? _folderMuteReconcileTimer;
+  int _folderMuteUiEpoch = 0;
   List<Map<String, dynamic>> _threads = [];
   final Map<int, Map<String, dynamic>> _memberByUserId = {};
   Map<int, TelegramMatch> _tdlibMatches = {};
@@ -114,6 +120,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   List<String> _pinnedOrder = [];
   String _searchQuery = '';
   final _searchController = TextEditingController();
+  /// Global TG search (debounced) while the hub search field is open.
+  Timer? _tgSearchDebounce;
+  int _tgSearchSeq = 0;
+  bool _tgSearchLoading = false;
+  List<TdlibGlobalSearchHit> _tgSearchHits = const [];
   StreamSubscription<List<Map<String, dynamic>>>? _threadsSub;
   StreamSubscription<List<Map<String, dynamic>>>? _membersSub;
   int _threadsEnrichGen = 0;
@@ -126,6 +137,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   double _hubListScrollPixels = 0;
   /// TG synthetics from last-session snapshot until live TDLib hub is ready.
   List<Map<String, dynamic>> _snapshotTgRows = const [];
+  /// Archived TG synthetics from the same hub SQLite snapshot (cold Archive).
+  List<Map<String, dynamic>> _snapshotArchiveRows = const [];
   /// First frame came from [HubFirstPaintSnapshot] (skip skeleton / gates).
   bool _paintedFromSnapshot = false;
   /// Hold sharp-avatar prefetch so cold-start path swaps don't flash tiles.
@@ -142,8 +155,191 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       if (!_searchVisible) {
         _searchQuery = '';
         _searchController.clear();
+        _clearTgGlobalSearch();
       }
     });
+  }
+
+  void _clearTgGlobalSearch() {
+    _tgSearchDebounce?.cancel();
+    _tgSearchDebounce = null;
+    _tgSearchSeq++;
+    _tgSearchLoading = false;
+    _tgSearchHits = const [];
+  }
+
+  void _onHubSearchChanged(String value) {
+    setState(() => _searchQuery = value);
+    _scheduleTgGlobalSearch(value);
+  }
+
+  void _scheduleTgGlobalSearch(String value) {
+    _tgSearchDebounce?.cancel();
+    if (!widget.hasIndividualPremium || !_tdlibReady) {
+      if (_tgSearchHits.isNotEmpty || _tgSearchLoading) {
+        setState(() {
+          _tgSearchHits = const [];
+          _tgSearchLoading = false;
+        });
+      }
+      return;
+    }
+    final raw = value.trim();
+    final hasAt = raw.startsWith('@');
+    final token = raw.replaceFirst(RegExp(r'^@+'), '').trim();
+    final tooShort = hasAt ? token.isEmpty : token.length < 2;
+    if (tooShort) {
+      if (_tgSearchHits.isNotEmpty || _tgSearchLoading) {
+        setState(() {
+          _tgSearchHits = const [];
+          _tgSearchLoading = false;
+        });
+      }
+      return;
+    }
+    final seq = ++_tgSearchSeq;
+    setState(() => _tgSearchLoading = true);
+    _tgSearchDebounce = Timer(const Duration(milliseconds: 350), () {
+      unawaited(_runTgGlobalSearch(raw, seq));
+    });
+  }
+
+  Future<void> _runTgGlobalSearch(String query, int seq) async {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    List<TdlibGlobalSearchHit> hits = const [];
+    try {
+      hits = await svc.searchTelegramGlobal(query);
+    } catch (e) {
+      debugPrint('[hub] tg global search failed: $e');
+    }
+    if (!mounted || seq != _tgSearchSeq) return;
+    setState(() {
+      _tgSearchHits = hits;
+      _tgSearchLoading = false;
+    });
+    _scheduleTgSearchAvatarPrefetch(hits);
+  }
+
+  /// Sharp avatars for global TG search rows (same hub-avatar budget as list).
+  void _scheduleTgSearchAvatarPrefetch(List<TdlibGlobalSearchHit> hits) {
+    if (hits.isEmpty) return;
+    if (!widget.hasIndividualPremium || !_tdlibReady) return;
+    final ids = <int>[
+      for (final h in hits)
+        if (h.chatId != 0) h.chatId,
+    ];
+    if (ids.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final tdlib = ref.read(telegramTdlibServiceProvider);
+      if (tdlib.isUiScrollBusy) {
+        _hubAvatarPrefetchTimer?.cancel();
+        _hubAvatarPrefetchTimer = Timer(const Duration(milliseconds: 420), () {
+          if (!mounted) return;
+          _scheduleTgSearchAvatarPrefetch(hits);
+        });
+        return;
+      }
+      tdlib.prefetchVisibleHubAvatars(ids);
+    });
+  }
+
+  Set<int> _tdlibChatIdsInRows(Iterable<Map<String, dynamic>> rows) {
+    final out = <int>{};
+    for (final t in rows) {
+      final top = (t['tdlib_chat_id'] as num?)?.toInt();
+      if (top != null && top != 0) out.add(top);
+      final tg = t['telegram'];
+      if (tg is Map && tg['linked'] == true) {
+        final id = (tg['tg_chat_id'] as num?)?.toInt() ??
+            int.tryParse('${tg['tg_chat_id'] ?? ''}');
+        if (id != null && id != 0) out.add(id);
+      }
+    }
+    return out;
+  }
+
+  List<TdlibGlobalSearchHit> _tgHitsNotInLocal(
+    List<Map<String, dynamic>> localRows,
+  ) {
+    final known = _tdlibChatIdsInRows(localRows);
+    return [
+      for (final h in _tgSearchHits)
+        if (!known.contains(h.chatId)) h,
+    ];
+  }
+
+  Future<void> _openTgGlobalHit(TdlibGlobalSearchHit hit) async {
+    await _openThread({
+      'id': -hit.chatId.abs(),
+      'kind': 'tdlib_chat',
+      'title': hit.title,
+      'tdlib_chat_id': hit.chatId,
+      if (hit.userId > 0 && !hit.isGroup && !hit.isChannel)
+        'tdlib_user_id': hit.userId,
+      'tdlib_photo_path': hit.photoLocalPath,
+      'tdlib_photo_bytes': hit.photoMinithumbnailBytes,
+      'tdlib_photo_file_id': hit.photoFileId,
+      'unread_count': 0,
+      'last_message': {
+        'body': hit.subtitle,
+      },
+    });
+  }
+
+  Widget _tgGlobalSearchHeader(ThemeData theme, ColorScheme scheme) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Text(
+        'Telegram',
+        style: theme.textTheme.titleSmall?.copyWith(
+          color: scheme.primary,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _tgGlobalSearchTile(
+    TdlibGlobalSearchHit hit, {
+    required ThemeData theme,
+    required ColorScheme scheme,
+  }) {
+    // Live path: search hit is a snapshot; hub-avatar download updates cache.
+    final live = ref.read(telegramTdlibServiceProvider).chatPreviewById(hit.chatId);
+    final path = (live?.photoLocalPath?.trim().isNotEmpty == true)
+        ? live!.photoLocalPath
+        : hit.photoLocalPath;
+    final mini = (live?.photoMinithumbnailBytes != null &&
+            live!.photoMinithumbnailBytes!.isNotEmpty)
+        ? live.photoMinithumbnailBytes
+        : hit.photoMinithumbnailBytes;
+    return ListTile(
+      leading: ChatAvatar(
+        key: ValueKey<String>('tg-search-av-${hit.chatId}-${path ?? ''}'),
+        name: hit.title,
+        localFilePath: path,
+        memoryBytes: mini,
+        radius: 24,
+      ),
+      title: Text(
+        hit.title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      subtitle: Text(
+        hit.subtitle,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+      onTap: () => unawaited(_openTgGlobalHit(hit)),
+    );
   }
 
   /// Обновить список чатов (например при возврате на вкладку).
@@ -193,20 +389,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         notify: false,
       );
     } else {
-      // Premium hubs wait for TG surface so FC rows/folders don't flash alone —
-      // unless hydrate fills a frozen snapshot shortly.
-      _pendingFirstPaint = widget.hasIndividualPremium;
-      if (_pendingFirstPaint) {
-        _tdlibRevealTimeout = Timer(const Duration(seconds: 12), () {
-          if (!mounted || !_pendingFirstPaint) return;
-          debugPrint('[hub] first-paint timeout — revealing anyway');
-          _forceFirstPaintReveal();
-        });
-      } else {
-        _fcFoldersLoaded = true;
-        _tdlibMatchesLoaded = true;
-        _mirrorStateLoaded = true;
-      }
+      // No warm snapshot: show FC ASAP; TG rows arrive via incremental hydrate.
+      _pendingFirstPaint = false;
+      _fcFoldersLoaded = true;
+      _tdlibMatchesLoaded = true;
+      _mirrorStateLoaded = true;
     }
     // Still async-hydrate in case warm missed (bootstrap race).
     unawaited(_hydrateFromSnapshot());
@@ -225,6 +412,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       });
     });
     WidgetsBinding.instance.addObserver(this);
+    unawaited(HubFolderMuteStore.ensureLoaded().then((_) {
+      if (!mounted) return;
+      setState(() => _folderMuteUiEpoch++);
+      _armFolderMuteReconcileTimer();
+      unawaited(_reconcileAllFolderMutes());
+    }));
     final baseChips = _systemChipsFor(
       hasIndividualPremium: widget.hasIndividualPremium,
       // Phase may already be ready from a previous session.
@@ -262,6 +455,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }) {
     final fc = <Map<String, dynamic>>[];
     final tg = <Map<String, dynamic>>[];
+    final archive = <Map<String, dynamic>>[];
     if (fcThreads != null && fcThreads.isNotEmpty) {
       for (final row in fcThreads) {
         fc.add(Map<String, dynamic>.from(row));
@@ -269,22 +463,27 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     }
     if (snapshot != null) {
       final snapFcById = <int, Map<String, dynamic>>{};
+      if (widget.hasIndividualPremium) {
+        final split = HubFirstPaintSnapshot.splitTgRows(snapshot.rows);
+        tg.addAll(split.main);
+        archive.addAll(split.archive);
+      }
       for (final row in snapshot.rows) {
         final kind = row['kind']?.toString() ?? '';
-        if (kind == 'tdlib_dm' || kind == 'tdlib_chat') {
-          if (widget.hasIndividualPremium) {
-            tg.add(Map<String, dynamic>.from(row));
-          }
-        } else {
-          final id = chatAsInt(row['id']);
-          if (id != null) snapFcById[id] = row;
-          if (fc.isEmpty) {
-            // SQLite miss — fall back to snapshot FC rows.
-            final copy = Map<String, dynamic>.from(row);
-            fc.add(copy);
-            final sid = chatAsInt(copy['id']);
-            if (sid != null) _rememberMatchedFcTip(sid, copy);
-          }
+        if (kind == 'tdlib_dm' ||
+            kind == 'tdlib_chat' ||
+            kind == 'tdlib_archive_chat' ||
+            kind == 'tdlib_archive') {
+          continue;
+        }
+        final id = chatAsInt(row['id']);
+        if (id != null) snapFcById[id] = row;
+        if (fc.isEmpty) {
+          // SQLite miss — fall back to snapshot FC rows.
+          final copy = Map<String, dynamic>.from(row);
+          fc.add(copy);
+          final sid = chatAsInt(copy['id']);
+          if (sid != null) _rememberMatchedFcTip(sid, copy);
         }
       }
       // Overlay snapshot last_message onto SQLite FC when snap tip is fresher
@@ -313,36 +512,26 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         }
       }
     }
-    if (fc.isEmpty && tg.isEmpty) return;
-    final tdlibReadyNow = widget.hasIndividualPremium &&
-        ref.read(telegramTdlibServiceProvider).hubSurfaceReady;
-    // Keep gate for premium until live TG replaces frozen overlay — but still
-    // paint the snapshot (skeleton only when we have nothing to show).
-    final holdForTg = widget.hasIndividualPremium && !tdlibReadyNow;
-    if (holdForTg && _tdlibRevealTimeout == null) {
-      _tdlibRevealTimeout = Timer(const Duration(seconds: 12), () {
-        if (!mounted || !_pendingFirstPaint) return;
-        debugPrint('[hub] first-paint timeout — revealing anyway');
-        _forceFirstPaintReveal();
-      });
-    } else if (!holdForTg) {
-      _tdlibRevealTimeout?.cancel();
-      _tdlibRevealTimeout = null;
-    }
+    if (fc.isEmpty && tg.isEmpty && archive.isEmpty) return;
+    // TG-style: never hold the whole hub for hydrate — paint snapshot now;
+    // live rows replace incrementally as loadChats pages land.
+    _tdlibRevealTimeout?.cancel();
+    _tdlibRevealTimeout = null;
     void apply() {
       if (fc.isNotEmpty) {
         _threads = _sortedThreads(fc);
       }
       _snapshotTgRows = tg;
+      _snapshotArchiveRows = archive;
       _paintedFromSnapshot = true;
       _loading = false;
-      _pendingFirstPaint = holdForTg;
-      _coldStartCoalesce = holdForTg;
+      _pendingFirstPaint = false;
+      _coldStartCoalesce = false;
       _fcFoldersLoaded = true;
       _tdlibMatchesLoaded = true;
       _mirrorStateLoaded = true;
       _hubAvatarPrefetchAfter =
-          DateTime.now().add(const Duration(milliseconds: 1800));
+          DateTime.now().add(const Duration(milliseconds: 1200));
     }
 
     if (notify && mounted) {
@@ -354,37 +543,77 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       unawaited(_seedMatchesFromFcThreads(fc));
       unawaited(_persistMatchedFcTipsToSqlite(fc));
     }
-    if (!holdForTg) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _lastHubAvatarPrefetchKey = null;
-        _debounceHubAvatarPrefetch(_filteredBy(_selectedChip));
-      });
-    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _lastHubAvatarPrefetchKey = null;
+      _debounceHubAvatarPrefetch(_filteredBy(_selectedChip));
+    });
+  }
+
+  List<Map<String, dynamic>> _tgRowsFromSnapshot(HubFirstPaintData? data) {
+    if (data == null || data.rows.isEmpty) return const [];
+    return HubFirstPaintSnapshot.splitTgRows(data.rows).main;
+  }
+
+  List<Map<String, dynamic>> _archiveRowsFromSnapshot(HubFirstPaintData? data) {
+    if (data == null || data.rows.isEmpty) return const [];
+    return HubFirstPaintSnapshot.splitTgRows(data.rows).archive;
   }
 
   /// Cold start: paint last-session hub (FC+TG) without waiting for TDLib.
+  ///
+  /// Frame-0 may paint FC-only when [warmWithBudget] returns before the
+  /// hub snapshot is loaded — still merge TG when warm finishes.
   Future<void> _hydrateFromSnapshot() async {
-    if (_paintedFromSnapshot) return;
     await HubFirstPaintSnapshot.warm();
-    if (!mounted || _paintedFromSnapshot) return;
+    if (!mounted) return;
     final fc = HubFirstPaintSnapshot.warmedFcThreads;
-    final data = HubFirstPaintSnapshot.warmed ?? await HubFirstPaintSnapshot.read();
-    if (!mounted || _paintedFromSnapshot) return;
+    final data =
+        HubFirstPaintSnapshot.warmed ?? await HubFirstPaintSnapshot.read();
+    if (!mounted) return;
+    if (_paintedFromSnapshot) {
+      // FC already on screen; fill missing TG overlay from durable snapshot.
+      if (!widget.hasIndividualPremium) return;
+      if (_liveTgListReady()) return;
+      final tg = _tgRowsFromSnapshot(data);
+      final archive = _archiveRowsFromSnapshot(data);
+      if (_snapshotTgRows.isNotEmpty && _snapshotArchiveRows.isNotEmpty) {
+        return;
+      }
+      if (tg.isEmpty && archive.isEmpty) return;
+      setState(() {
+        if (_snapshotTgRows.isEmpty && tg.isNotEmpty) {
+          _snapshotTgRows = tg;
+        }
+        if (_snapshotArchiveRows.isEmpty && archive.isNotEmpty) {
+          _snapshotArchiveRows = archive;
+        }
+        _pendingFirstPaint = false;
+        _coldStartCoalesce = false;
+      });
+      return;
+    }
     if ((fc == null || fc.isEmpty) && (data == null || data.rows.isEmpty)) {
       return;
     }
     _applyColdStartPaint(fcThreads: fc, snapshot: data, notify: true);
   }
 
-  /// Drop frozen TG overlay once live hub surface is ready (same-frame swap).
+  /// Live TG rows may merge into the hub (TG incremental after first page).
+  ///
+  /// Empty chatOrder after soft-restart keeps the snapshot until the first
+  /// loadChats page promotes [TelegramTdlibService.hubSurfaceReady].
+  bool _liveTgListReady([TelegramTdlibService? tdlib]) {
+    if (!widget.hasIndividualPremium) return true;
+    final TelegramTdlibService svc =
+        tdlib ?? ref.read(telegramTdlibServiceProvider);
+    return svc.hubSurfaceReady || svc.hubHasLiveChats;
+  }
+
+  /// Drop frozen TG overlay once live hub list is actually populated.
   void _releaseSnapshotOverlayIfReady([TelegramTdlibService? tdlib]) {
     if (!_paintedFromSnapshot || !mounted) return;
-    if (widget.hasIndividualPremium) {
-      final TelegramTdlibService svc =
-          tdlib ?? ref.read(telegramTdlibServiceProvider);
-      if (!svc.hubSurfaceReady) return;
-    }
+    if (!_liveTgListReady(tdlib)) return;
     // One-shot: mark not painted so we don't re-enter while hydrating.
     _paintedFromSnapshot = false;
     unawaited(_releaseSnapshotOverlayBody());
@@ -403,7 +632,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     } catch (_) {}
     if (!mounted) return;
     setState(() {
-      _snapshotTgRows = const [];
+      // Keep [_snapshotTgRows] as soft-restart fallback — merge only uses
+      // them while live TG list is empty / not ready.
       _pendingFirstPaint = false;
       _coldStartCoalesce = false;
       _hubAvatarPrefetchAfter =
@@ -415,6 +645,32 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       if (!mounted) return;
       _lastHubAvatarPrefetchKey = null;
       _debounceHubAvatarPrefetch(_filteredBy(_selectedChip));
+    });
+  }
+
+  /// Soft-restart / missed warm: re-read last-session TG rows so the hub
+  /// does not sit on FC-only while loadChats runs.
+  Future<void> _restoreSnapshotTgFallbackIfNeeded([
+    TelegramTdlibService? tdlib,
+  ]) async {
+    if (!widget.hasIndividualPremium || !mounted) return;
+    if (_liveTgListReady(tdlib)) return;
+    if (_snapshotTgRows.isNotEmpty) return;
+    final data =
+        HubFirstPaintSnapshot.warmed ?? await HubFirstPaintSnapshot.read();
+    if (!mounted || data == null || data.rows.isEmpty) return;
+    if (_liveTgListReady(tdlib)) return;
+    final tg = _tgRowsFromSnapshot(data);
+    final archive = _archiveRowsFromSnapshot(data);
+    if ((tg.isEmpty && archive.isEmpty) || !mounted) return;
+    if (_liveTgListReady(tdlib)) return;
+    setState(() {
+      if (_snapshotTgRows.isEmpty && tg.isNotEmpty) {
+        _snapshotTgRows = tg;
+      }
+      if (_snapshotArchiveRows.isEmpty && archive.isNotEmpty) {
+        _snapshotArchiveRows = archive;
+      }
     });
   }
 
@@ -438,16 +694,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       return;
     }
 
-    if (widget.hasIndividualPremium) {
-      final TelegramTdlibService svc =
-          tdlib ?? ref.read(telegramTdlibServiceProvider);
-      // Initial phase is [TdlibAuthPhase.unavailable] with hubSurfaceReady=false
-      // until ensureStarted finishes. Requiring hubSurfaceReady alone covers
-      // starting/ready-hydration AND the pre-start gap (old gate revealed FC
-      // while phase was still unavailable, then TG flashed in).
-      if (!svc.hubSurfaceReady) return;
+    // Snapshot already painted — reveal chrome without waiting full hydrate.
+    // Live merge still gated by [_liveTgListReady] in [_hubMergedThreads].
+    if (_paintedFromSnapshot || _liveTgListReady(tdlib)) {
+      _applyFirstPaintReveal();
     }
-    _applyFirstPaintReveal();
   }
 
   void _applyFirstPaintReveal() {
@@ -456,6 +707,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     _tdlibRevealTimeout = null;
     final svc = ref.read(telegramTdlibServiceProvider);
     _lastTgFoldersEpoch = svc.chatFoldersEpoch;
+    if (svc.phase == TdlibAuthPhase.ready &&
+        svc.manualChatFolders.isNotEmpty) {
+      _tgFoldersLiveOnce = true;
+    }
     final next = _composeChips(orderKeys: _chips.map((c) => c.key).toList());
     final selected = _selectedChip;
     final same = next.length == _chips.length &&
@@ -465,13 +720,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       setState(() {
         _pendingFirstPaint = false;
         _coldStartCoalesce = false;
-        _snapshotTgRows = const [];
+        // Keep snapshot TG rows for soft-restart fallback (see merge).
         _paintedFromSnapshot = false;
         _hubAvatarPrefetchAfter =
             DateTime.now().add(const Duration(milliseconds: 1200));
       });
       unawaited(_pullMirroredMembershipFromTg());
-      ref.read(telegramTdlibServiceProvider).warmUnreadChatsFromHub();
+      // Hub history warm stays off (warmHubChatLimit=0) — FakeTLS slot.
       // First paint: force avatar prefetch (key gate may have armed with
       // need=0 before TG rows existed).
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -499,7 +754,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     setState(() {
       _pendingFirstPaint = false;
       _coldStartCoalesce = false;
-      _snapshotTgRows = const [];
+      // Keep snapshot TG rows for soft-restart fallback (see merge).
       _paintedFromSnapshot = false;
       _hubAvatarPrefetchAfter =
           DateTime.now().add(const Duration(milliseconds: 1200));
@@ -508,7 +763,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     });
     oldController.dispose();
     unawaited(_pullMirroredMembershipFromTg());
-    ref.read(telegramTdlibServiceProvider).warmUnreadChatsFromHub();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _lastHubAvatarPrefetchKey = null;
@@ -680,9 +934,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       setState(() => _applyMembers(members));
     }
 
+    // List/members only — message windows are deferred in ChatSyncService
+    // (parallel syncThread during TDLib hydrate froze the first ~10s).
     unawaited(() async {
       await ChatSyncService.instance.syncHub(
-        prefetchMessages: true,
+        prefetchMessages: false,
         force: true,
       );
       if (!mounted) return;
@@ -732,6 +988,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     _hubAvatarPrefetchTimer?.cancel();
     _hubScrollBusyClearTimer?.cancel();
     _snapshotPersistTimer?.cancel();
+    _folderMuteReconcileTimer?.cancel();
+    _tgSearchDebounce?.cancel();
     // Do not drop a pending debounce — flush so kill/close keeps the list.
     unawaited(_persistHubSnapshot());
     _tdlibRevealTimeout?.cancel();
@@ -760,24 +1018,55 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     return const HubChip.system(ChatHubSystemFilter.all);
   }
 
+  /// TG folder chips from last session (RAM warm or current bar).
+  List<HubChip> _cachedTelegramFolderChips() {
+    if (!widget.hasIndividualPremium) return const [];
+    final fromBar = [
+      for (final c in _chips)
+        if (c.tgFolderId != null) c,
+    ];
+    if (fromBar.isNotEmpty) return fromBar;
+    return [
+      for (final c in HubFirstPaintSnapshot.chipsFromWarm())
+        if (c.tgFolderId != null) c,
+    ];
+  }
+
   List<HubChip> _composeChips({List<String>? orderKeys}) {
+    final cachedTg = _cachedTelegramFolderChips();
+    // Last session had TG folders — do not flash the lone «Telegram» chip
+    // while TDLib is still starting (reveal used to strip warm folders).
+    final telegramConnected = _tdlibReady ||
+        widget.telegramConnected ||
+        cachedTg.isNotEmpty;
     final system = _systemChipsFor(
       hasIndividualPremium: widget.hasIndividualPremium,
-      telegramConnected: _tdlibReady || widget.telegramConnected,
+      telegramConnected: telegramConnected,
     );
     final mirroredTgIds = _fcToTgFolder.values.toSet();
-    final tgFolders = _tdlibReady && widget.hasIndividualPremium
+    final liveFolders = _tdlibReady && widget.hasIndividualPremium
         ? ref.read(telegramTdlibServiceProvider).manualChatFolders
         : const <TdlibChatFolderInfo>[];
     final custom = [
       for (final f in _customFolders)
         HubChip.custom(id: f.id, name: f.name),
     ];
-    final telegram = [
-      for (final f in tgFolders)
+    final telegram = <HubChip>[
+      for (final f in liveFolders)
         if (!mirroredTgIds.contains(f.id))
           HubChip.telegram(id: f.id, name: f.title),
     ];
+    // Keep SQLite-warmed TG chips until the first live folder list arrives
+    // (Ready alone is not enough — folders hydrate a tick later).
+    if (telegram.isEmpty &&
+        cachedTg.isNotEmpty &&
+        !_tgFoldersLiveOnce) {
+      for (final c in cachedTg) {
+        final id = c.tgFolderId;
+        if (id == null || mirroredTgIds.contains(id)) continue;
+        telegram.add(c);
+      }
+    }
     final allUser = [...custom, ...telegram];
     if (orderKeys == null || orderKeys.isEmpty) {
       return [...system, ...allUser];
@@ -1038,6 +1327,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         _searchVisible = false;
         _searchQuery = '';
         _searchController.clear();
+        _clearTgGlobalSearch();
       }
     });
   }
@@ -1065,6 +1355,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       Offset.zero & overlay.size,
     );
     final canDelete = chip.isCustom || chip.isTelegramFolder;
+    final canMute = chip.isCustom || chip.isTelegramFolder;
+    final muteActive = canMute && HubFolderMuteStore.isActive(chip.key);
     final scheme = Theme.of(context).colorScheme;
     final action = await showMenu<String>(
       context: context,
@@ -1080,6 +1372,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
             label: 'Изменить порядок',
           ),
         ),
+        if (canMute)
+          PopupMenuItem(
+            value: 'notifications',
+            child: _HubOverflowMenuRow(
+              icon: muteActive ? LucideIcons.bell_off : LucideIcons.bell,
+              label: 'Уведомления',
+            ),
+          ),
         if (canDelete)
           PopupMenuItem(
             value: 'delete',
@@ -1103,9 +1403,255 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     if (!mounted || action == null) return;
     if (action == 'reorder') {
       _enterFolderReorderMode();
+    } else if (action == 'notifications') {
+      await _showFolderNotificationsFlow(chip);
     } else if (action == 'delete') {
       await _deleteFolderChip(chip);
     }
+  }
+
+  void _armFolderMuteReconcileTimer() {
+    _folderMuteReconcileTimer?.cancel();
+    _folderMuteReconcileTimer = Timer.periodic(
+      const Duration(minutes: 1),
+      (_) {
+        if (!mounted) return;
+        unawaited(_reconcileAllFolderMutes());
+      },
+    );
+  }
+
+  Future<void> _reconcileAllFolderMutes() async {
+    await HubFolderMute.reconcileAll(
+      repo: ref.read(familychatRepositoryProvider),
+      tdlib: ref.read(telegramTdlibServiceProvider),
+      fcFolders: _customFolders,
+      tgFolderExtras: _tgFolderExtras,
+    );
+    if (mounted) setState(() => _folderMuteUiEpoch++);
+  }
+
+  Future<void> _showFolderNotificationsFlow(HubChip chip) async {
+    if (!chip.isCustom && !chip.isTelegramFolder) return;
+    final active = HubFolderMuteStore.isActive(chip.key);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(
+                active ? LucideIcons.bell_off : LucideIcons.bell,
+              ),
+              title: Text(
+                active
+                    ? 'Уведомления папки выключены'
+                    : 'Уведомления папки включены',
+              ),
+              subtitle: Text(
+                active
+                    ? 'Можно снова включить или изменить срок'
+                    : 'Можно выключить для всех чатов в папке',
+              ),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(LucideIcons.bell),
+              title: const Text('Включить'),
+              onTap: () => Navigator.pop(ctx, 'enable'),
+            ),
+            ListTile(
+              leading: const Icon(LucideIcons.bell_off),
+              title: const Text('Выключить'),
+              onTap: () => Navigator.pop(ctx, 'disable'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'enable') {
+      await HubFolderMute.clearFolder(
+        folderKey: chip.key,
+        repo: ref.read(familychatRepositoryProvider),
+        tdlib: ref.read(telegramTdlibServiceProvider),
+        fcFolders: _customFolders,
+        tgFolderExtras: _tgFolderExtras,
+      );
+      if (!mounted) return;
+      setState(() => _folderMuteUiEpoch++);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Уведомления папки включены')),
+      );
+      return;
+    }
+    await _showFolderMuteDurationSheet(chip);
+  }
+
+  Future<void> _showFolderMuteDurationSheet(HubChip chip) async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(title: Text('Выключить уведомления')),
+            const Divider(height: 1),
+            for (final e in const [
+              ('1h', 'На час'),
+              ('2h', 'На 2 часа'),
+              ('6h', 'На 6 часов'),
+              ('24h', 'На 24 часа'),
+              ('quiet', 'По расписанию'),
+              ('forever', 'Навсегда'),
+            ])
+              ListTile(
+                title: Text(e.$2),
+                onTap: () => Navigator.pop(ctx, e.$1),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || picked == null) return;
+    if (picked == 'quiet') {
+      await _editFolderQuietHours(chip);
+      return;
+    }
+    final until = HubFolderMuteState.mutedUntilForMode(picked);
+    final state = HubFolderMuteState(mode: picked, mutedUntilMs: until);
+    await HubFolderMute.applyFolderState(
+      folderKey: chip.key,
+      state: state,
+      repo: ref.read(familychatRepositoryProvider),
+      tdlib: ref.read(telegramTdlibServiceProvider),
+      fcFolders: _customFolders,
+      tgFolderExtras: _tgFolderExtras,
+    );
+    if (!mounted) return;
+    setState(() => _folderMuteUiEpoch++);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Уведомления папки выключены')),
+    );
+  }
+
+  Future<void> _editFolderQuietHours(HubChip chip) async {
+    final prev = HubFolderMuteStore.get(chip.key);
+    var start = _parseFolderHm(
+      prev?.quietStart,
+      const TimeOfDay(hour: 22, minute: 0),
+    );
+    var end = _parseFolderHm(
+      prev?.quietEnd,
+      const TimeOfDay(hour: 8, minute: 0),
+    );
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            Future<void> pickStart() async {
+              final picked = await showTimePicker(
+                context: ctx,
+                initialTime: start,
+                helpText: 'С какого времени не беспокоить',
+              );
+              if (picked != null) setLocal(() => start = picked);
+            }
+
+            Future<void> pickEnd() async {
+              final picked = await showTimePicker(
+                context: ctx,
+                initialTime: end,
+                helpText: 'До какого времени не беспокоить',
+              );
+              if (picked != null) setLocal(() => end = picked);
+            }
+
+            String fmt(TimeOfDay t) =>
+                '${t.hour.toString().padLeft(2, '0')}:'
+                '${t.minute.toString().padLeft(2, '0')}';
+
+            return AlertDialog(
+              title: const Text('По расписанию'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'В выбранном промежутке уведомления папки выключены. '
+                    'Вне промежутка — включены.',
+                  ),
+                  const SizedBox(height: 12),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('С'),
+                    trailing: TextButton(
+                      onPressed: pickStart,
+                      child: Text(fmt(start)),
+                    ),
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('До'),
+                    trailing: TextButton(
+                      onPressed: pickEnd,
+                      child: Text(fmt(end)),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Отмена'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Сохранить'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (saved != true || !mounted) return;
+    String fmt(TimeOfDay t) =>
+        '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+    final state = HubFolderMuteState(
+      mode: 'quiet',
+      quietStart: fmt(start),
+      quietEnd: fmt(end),
+      utcOffsetMinutes: DateTime.now().timeZoneOffset.inMinutes,
+    );
+    await HubFolderMute.applyFolderState(
+      folderKey: chip.key,
+      state: state,
+      repo: ref.read(familychatRepositoryProvider),
+      tdlib: ref.read(telegramTdlibServiceProvider),
+      fcFolders: _customFolders,
+      tgFolderExtras: _tgFolderExtras,
+    );
+    if (!mounted) return;
+    setState(() => _folderMuteUiEpoch++);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Тихие часы папки: с ${fmt(start)} до ${fmt(end)}',
+        ),
+      ),
+    );
+  }
+
+  TimeOfDay _parseFolderHm(String? raw, TimeOfDay fallback) {
+    final parts = (raw ?? '').split(':');
+    if (parts.length < 2) return fallback;
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    if (h == null || m == null) return fallback;
+    return TimeOfDay(hour: h.clamp(0, 23), minute: m.clamp(0, 59));
   }
 
   Future<void> _createFolderFlow() async {
@@ -1216,6 +1762,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       _searchVisible = false;
       _searchQuery = '';
       _searchController.clear();
+      _clearTgGlobalSearch();
     }
     setState(() {
       _selectionMode = true;
@@ -1384,7 +1931,248 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       await _pickFolderAndAddMany(threads);
     } else if (action == 'remove_folder') {
       await _removeSelectedFromFolders(threads);
+    } else if (action == 'archive') {
+      await _archiveSelectedThreads();
     }
+  }
+
+  /// Resolve the Telegram chat id for archive actions (TG row / linked FC).
+  int? _tgChatIdForArchive(Map<String, dynamic> thread) {
+    final kind = thread['kind']?.toString() ?? '';
+    if (kind == 'tdlib_archive') return null;
+    if (_isTdlibHubKind(kind)) {
+      final id = (thread['tdlib_chat_id'] as num?)?.toInt();
+      return (id != null && id != 0) ? id : null;
+    }
+    final matched = _matchedTgOpenTarget(thread);
+    if (matched != null) return matched.chatId;
+    final tg = thread['telegram'];
+    if (tg is Map && tg['linked'] == true) {
+      final id = (tg['tg_chat_id'] as num?)?.toInt() ??
+          int.tryParse('${tg['tg_chat_id'] ?? ''}');
+      if (id != null && id != 0) return id;
+    }
+    final saved = _savedMessagesTgChatId(thread);
+    if (saved != null) return null; // Saved Messages can't be archived
+    return null;
+  }
+
+  bool _isHubRowInTgArchive(Map<String, dynamic> thread) {
+    if (thread['kind']?.toString() == 'tdlib_archive') return false;
+    if (HubFirstPaintSnapshot.isArchivedTgRow(thread)) return true;
+    final id = _tgChatIdForArchive(thread);
+    if (id != null) {
+      for (final r in _snapshotArchiveRows) {
+        final snapId = (r['tdlib_chat_id'] as num?)?.toInt();
+        if (snapId == id) return true;
+      }
+    }
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.phase != TdlibAuthPhase.ready) return false;
+    if (id == null) return false;
+    return svc.isChatArchived(id);
+  }
+
+  Future<void> _archiveSelectedThreads() async {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (!_tdlibReady) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Telegram ещё не подключён')),
+      );
+      return;
+    }
+    final ids = <int>[];
+    for (final t in _selectedThreads) {
+      final id = _tgChatIdForArchive(t);
+      if (id == null || id == 0) continue;
+      if (svc.isSavedMessagesChat(id)) continue;
+      if (!ids.contains(id)) ids.add(id);
+    }
+    if (ids.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Выберите чаты Telegram для архива'),
+        ),
+      );
+      return;
+    }
+    await svc.archiveChats(ids);
+    if (!mounted) return;
+    _syncSnapshotArchiveFromLive();
+    _exitSelection();
+    _scheduleSnapshotPersist();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ids.length == 1 ? 'Чат добавлен в архив' : 'Чаты добавлены в архив',
+        ),
+      ),
+    );
+  }
+
+  /// Keep cold-start Archive RAM in sync with live TDLib Archive list.
+  void _syncSnapshotArchiveFromLive() {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.phase != TdlibAuthPhase.ready) return;
+    final next = <Map<String, dynamic>>[];
+    for (final c in svc.hubArchiveChats) {
+      final row = svc.hubSnapshotRowForChat(c.chatId);
+      if (row != null) next.add(row);
+    }
+    _snapshotArchiveRows = next;
+    // Drop those chats from main snapshot overlay if present.
+    if (_snapshotTgRows.isNotEmpty && next.isNotEmpty) {
+      final archivedIds = {
+        for (final r in next) (r['tdlib_chat_id'] as num?)?.toInt(),
+      }..removeWhere((e) => e == null);
+      _snapshotTgRows = [
+        for (final r in _snapshotTgRows)
+          if (!archivedIds.contains((r['tdlib_chat_id'] as num?)?.toInt()))
+            r,
+      ];
+    }
+  }
+
+  List<Map<String, dynamic>> _archiveRowsForPersist() {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.phase == TdlibAuthPhase.ready && svc.hubArchiveChats.isNotEmpty) {
+      final out = <Map<String, dynamic>>[];
+      for (final c in svc.hubArchiveChats) {
+        final row = svc.hubSnapshotRowForChat(c.chatId);
+        if (row != null) out.add(row);
+      }
+      return out;
+    }
+    return [
+      for (final r in _snapshotArchiveRows)
+        {
+          ...Map<String, dynamic>.from(r),
+          'tdlib_archived': true,
+        },
+    ];
+  }
+
+  Future<void> _openTelegramArchive() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TelegramArchiveScreen(
+          snapshotRows: [
+            for (final r in _snapshotArchiveRows)
+              Map<String, dynamic>.from(r),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    // Live archive may have changed while inside the screen.
+    _scheduleSnapshotPersist();
+    setState(() {});
+  }
+
+  Widget _buildArchiveHubTile(
+    Map<String, dynamic> t, {
+    required ThemeData theme,
+    required ColorScheme scheme,
+  }) {
+    final unread = chatAsInt(t['unread_count']) ?? 0;
+    final preview = _preview(t);
+    return ListTile(
+      key: const ValueKey('tdlib_archive'),
+      leading: CircleAvatar(
+        radius: 24,
+        backgroundColor: scheme.primaryContainer,
+        child: Icon(
+          LucideIcons.archive,
+          color: scheme.onPrimaryContainer,
+          size: 22,
+        ),
+      ),
+      title: Text(
+        t['title']?.toString() ?? 'Архив чатов',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.titleMedium?.copyWith(
+          fontWeight: unread > 0 ? FontWeight.w600 : FontWeight.w500,
+        ),
+      ),
+      subtitle: preview.isEmpty
+          ? null
+          : Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                preview,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+      trailing: unread > 0
+          ? CircleAvatar(
+              radius: 10,
+              backgroundColor: scheme.primary,
+              child: Text(
+                '$unread',
+                style: TextStyle(
+                  color: scheme.onPrimary,
+                  fontSize: 11,
+                ),
+              ),
+            )
+          : null,
+      onTap: () => unawaited(_openTelegramArchive()),
+    );
+  }
+
+  Map<String, dynamic>? _archiveHubRow() {
+    if (!widget.hasIndividualPremium) return null;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final liveReady = _tdlibReady && svc.hasArchivedChats;
+    final snapReady = _snapshotArchiveRows.isNotEmpty;
+    if (!liveReady && !snapReady) return null;
+
+    String subtitle;
+    var unread = 0;
+    if (liveReady) {
+      final archived = svc.hubArchiveChats;
+      unread = svc.archiveUnreadChatCount;
+      if (archived.isNotEmpty) {
+        final tip = archived.first;
+        final body = tip.lastMessageText.trim();
+        subtitle = body.isNotEmpty ? '${tip.title}: $body' : tip.title;
+      } else {
+        final n = svc.archiveChatCount;
+        subtitle = n > 0 ? '$n чатов' : 'Архив';
+      }
+    } else {
+      final tip = _snapshotArchiveRows.first;
+      unread = chatAsInt(tip['unread_count']) ?? 0;
+      // Sum unmuted-ish unread from snapshot archive for cold badge.
+      var sum = 0;
+      for (final r in _snapshotArchiveRows) {
+        sum += chatAsInt(r['unread_count']) ?? 0;
+      }
+      unread = sum;
+      final title = tip['title']?.toString() ?? '';
+      final lm = tip['last_message'];
+      final body = lm is Map ? lm['body']?.toString().trim() ?? '' : '';
+      subtitle = body.isNotEmpty && title.isNotEmpty
+          ? '$title: $body'
+          : (title.isNotEmpty ? title : '${_snapshotArchiveRows.length} чатов');
+    }
+    return {
+      'id': -900001,
+      'kind': 'tdlib_archive',
+      'title': 'Архив чатов',
+      'notifications_enabled': true,
+      'unread_count': unread,
+      'last_message': {
+        'body': subtitle,
+      },
+    };
   }
 
   Future<void> _removeSelectedFromFolders(
@@ -1619,6 +2407,15 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
             tgChatId: ids.tgChatId,
           );
       await _loadCustomFolders();
+      unawaited(
+        HubFolderMute.onMemberAdded(
+          folderKey: 'custom:$folderId',
+          threadId: ids.threadId,
+          tgChatId: ids.tgChatId,
+          repo: ref.read(familychatRepositoryProvider),
+          tdlib: ref.read(telegramTdlibServiceProvider),
+        ),
+      );
       final tgChatId = ids.tgChatId;
       if (tgChatId != null && !_matchedTgChatIds.contains(tgChatId)) {
         await _ensureFcFolderMirroredToTg(folderId);
@@ -1678,6 +2475,14 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               chatId: tgChatId,
               included: true,
             );
+        unawaited(
+          HubFolderMute.onMemberAdded(
+            folderKey: 'tg:$tgFolderId',
+            tgChatId: tgChatId,
+            repo: ref.read(familychatRepositoryProvider),
+            tdlib: ref.read(telegramTdlibServiceProvider),
+          ),
+        );
       } else if (key != null) {
         await ChatHubFolderMirrorStore.addTgExtra(
           tgFolderId: tgFolderId,
@@ -1686,6 +2491,17 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         final extras = Map<int, Set<String>>.from(_tgFolderExtras);
         extras.putIfAbsent(tgFolderId, () => <String>{}).add(key);
         setState(() => _tgFolderExtras = extras);
+        final extraTg = key.startsWith('tg:')
+            ? int.tryParse(key.substring(3))
+            : null;
+        unawaited(
+          HubFolderMute.onMemberAdded(
+            folderKey: 'tg:$tgFolderId',
+            tgChatId: extraTg ?? tgChatId,
+            repo: ref.read(familychatRepositoryProvider),
+            tdlib: ref.read(telegramTdlibServiceProvider),
+          ),
+        );
       } else {
         return;
       }
@@ -1974,14 +2790,24 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   Future<void> _persistHubSnapshot() async {
     // Capture rows sync — dispose may tear down controllers right after.
-    if (_threads.isEmpty && _snapshotTgRows.isEmpty) return;
+    if (_threads.isEmpty &&
+        _snapshotTgRows.isEmpty &&
+        _snapshotArchiveRows.isEmpty) {
+      return;
+    }
     List<Map<String, dynamic>> rows;
     try {
       rows = _filteredBy(const HubChip.system(ChatHubSystemFilter.all));
+      // Archived chats are hidden from All — append for the same SQLite flow.
+      rows = [
+        ...rows,
+        ..._archiveRowsForPersist(),
+      ];
     } catch (_) {
       rows = [
         ..._threads.map((e) => Map<String, dynamic>.from(e)),
         ..._snapshotTgRows.map((e) => Map<String, dynamic>.from(e)),
+        ..._archiveRowsForPersist(),
       ];
     }
     if (rows.isEmpty) return;
@@ -2029,6 +2855,8 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       unawaited(
         ref.read(telegramTdlibServiceProvider).reconcileFamilyIdentities(),
       );
+      unawaited(_reconcileAllFolderMutes());
+      _armFolderMuteReconcileTimer();
       if (_localFirst) {
         final repo = ref.read(familychatRepositoryProvider);
         if (!ChatSyncService.instance.resumeCatchUpFresh) {
@@ -2238,14 +3066,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     }
 
     // FC avatar wins; if FC has none, fall back to TG chat photo.
-    // Only swap path when the new file is already on disk — otherwise tiles
-    // flash empty/minithumb → sharp mid cold-start.
+    // Trust TDLib path cache — never existsSync here (_filteredBy /
+    // unreadOf × every rebuild mid-scroll). ChatAvatar errorBuilder covers
+    // a missing file.
     if (!_hasFcPeerAvatar(thread)) {
       final path = preview.photoLocalPath?.trim() ?? '';
       final prevPath = next['tdlib_photo_path']?.toString() ?? '';
-      if (path.isNotEmpty &&
-          path != prevPath &&
-          File(path).existsSync()) {
+      if (path.isNotEmpty && path != prevPath) {
         next['tdlib_photo_path'] = path;
         changed = true;
       }
@@ -2441,6 +3268,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   List<Map<String, dynamic>> _sortedThreads(List<Map<String, dynamic>> threads) {
     final sorted = List<Map<String, dynamic>>.from(threads);
     sorted.sort((a, b) {
+      // Official TG: Archive folder is always pinned above everything in All.
+      final aArch = a['kind']?.toString() == 'tdlib_archive';
+      final bArch = b['kind']?.toString() == 'tdlib_archive';
+      if (aArch != bArch) return aArch ? -1 : 1;
       final aPin = _pinRank(a);
       final bPin = _pinRank(b);
       final aPinned = aPin >= 0;
@@ -2509,25 +3340,135 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     required bool includeTelegramList,
     int? tgFolderId,
   }) {
-    // Prefer hubSurfaceReady over phase alone — otherwise snapshot TG would
-    // vanish mid-hydration while the live list is still incomplete.
-    final liveTg = widget.hasIndividualPremium &&
-        ref.read(telegramTdlibServiceProvider).hubSurfaceReady;
+    // Live TG as soon as the first loadChats page lands; keep snapshot rows
+    // for chat ids not yet in RAM until hydrate completes (TG progressive).
+    final liveTg = _liveTgListReady();
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final hydrateDone = svc.hubHydrateComplete;
     final linkedTgChatIds = _fcLinkedTgChatIds();
-    final snapshotTg = (!liveTg && _snapshotTgRows.isNotEmpty)
+    var liveDm = liveTg ? _tdlibHubEntries() : const <Map<String, dynamic>>[];
+    var liveList = (liveTg && includeTelegramList)
+        ? _telegramListEntries()
+        : const <Map<String, dynamic>>[];
+    var liveFolder = (liveTg && tgFolderId != null)
+        ? _tdlibFolderEntries(tgFolderId)
+        : const <Map<String, dynamic>>[];
+    // Until hydrate finishes, soft-blend snapshot unread/tip into live rows so
+    // the first loadChats page does not flash badges/previews to 0 / stale.
+    if (liveTg && !hydrateDone && _snapshotTgRows.isNotEmpty) {
+      liveDm = _softBlendLiveWithSnapshot(liveDm);
+      liveList = _softBlendLiveWithSnapshot(liveList);
+      liveFolder = _softBlendLiveWithSnapshot(liveFolder);
+    }
+    final liveTgIds = <int>{
+      ...linkedTgChatIds,
+      ..._matchedTgChatIds,
+      for (final r in liveDm)
+        if ((r['tdlib_chat_id'] as num?) != null)
+          (r['tdlib_chat_id'] as num).toInt(),
+      for (final r in liveList)
+        if ((r['tdlib_chat_id'] as num?) != null)
+          (r['tdlib_chat_id'] as num).toInt(),
+      for (final r in liveFolder)
+        if ((r['tdlib_chat_id'] as num?) != null)
+          (r['tdlib_chat_id'] as num).toInt(),
+    };
+    final keepSnapshotGaps = !hydrateDone || !liveTg;
+    final snapshotTg = (keepSnapshotGaps && _snapshotTgRows.isNotEmpty)
         ? [
             for (final r in _snapshotTgRows)
-              if (!_snapshotTgCoveredByFc(r, linkedTgChatIds)) r,
+              if (!_snapshotTgCoveredByFc(r, linkedTgChatIds) &&
+                  !_snapshotTgCoveredByLive(r, liveTgIds) &&
+                  !_snapshotTgIsArchived(r, svc))
+                r,
           ]
         : const <Map<String, dynamic>>[];
     return [
       ..._threads,
-      if (liveTg) ..._tdlibHubEntries(),
-      if (liveTg && includeTelegramList) ..._telegramListEntries(),
-      // Frozen TG rows until live surface replaces them (no FC-only flash).
+      ...liveDm,
+      ...liveList,
+      // Snapshot fills gaps until pages/folders catch up; soft-restart fallback.
       if (snapshotTg.isNotEmpty) ...snapshotTg,
-      if (liveTg && tgFolderId != null) ..._tdlibFolderEntries(tgFolderId),
+      ...liveFolder,
     ];
+  }
+
+  /// Prefer fresher tip + higher unread from the durable snapshot while the
+  /// first live pages are still catching up (official TG: local DB first).
+  List<Map<String, dynamic>> _softBlendLiveWithSnapshot(
+    List<Map<String, dynamic>> live,
+  ) {
+    if (live.isEmpty || _snapshotTgRows.isEmpty) return live;
+    final snapByTg = <int, Map<String, dynamic>>{};
+    for (final r in _snapshotTgRows) {
+      final id = (r['tdlib_chat_id'] as num?)?.toInt() ??
+          chatAsInt(r['tdlib_chat_id']);
+      if (id != null && id != 0) snapByTg[id] = r;
+    }
+    if (snapByTg.isEmpty) return live;
+    return [
+      for (final row in live) _blendOneLiveRow(row, snapByTg),
+    ];
+  }
+
+  Map<String, dynamic> _blendOneLiveRow(
+    Map<String, dynamic> live,
+    Map<int, Map<String, dynamic>> snapByTg,
+  ) {
+    final tgId = (live['tdlib_chat_id'] as num?)?.toInt() ??
+        chatAsInt(live['tdlib_chat_id']);
+    if (tgId == null) return live;
+    final snap = snapByTg[tgId];
+    if (snap == null) return live;
+    final out = Map<String, dynamic>.from(live);
+    final liveUnread = chatAsInt(live['unread_count']) ?? 0;
+    final snapUnread = chatAsInt(snap['unread_count']) ?? 0;
+    if (snapUnread > liveUnread) {
+      out['unread_count'] = snapUnread;
+    }
+    final snapLm = snap['last_message'];
+    if (snapLm is Map) {
+      final snapMs = _hubRowActivityMs(snap);
+      final liveMs = _hubRowActivityMs(live);
+      if (snapMs > liveMs || live['last_message'] == null) {
+        out['last_message'] = Map<String, dynamic>.from(snapLm);
+      }
+    }
+    final snapTitle = snap['title']?.toString().trim() ?? '';
+    final liveTitle = live['title']?.toString().trim() ?? '';
+    if (snapTitle.isNotEmpty &&
+        (liveTitle.isEmpty || liveTitle == 'Telegram')) {
+      out['title'] = snapTitle;
+    }
+    return out;
+  }
+
+  int _hubRowActivityMs(Map<String, dynamic> row) {
+    final lm = row['last_message'];
+    if (lm is! Map) return 0;
+    final raw = lm['created_at']?.toString();
+    final dt = DateTime.tryParse(raw ?? '');
+    if (dt != null) return dt.millisecondsSinceEpoch;
+    final date = (lm['date'] as num?)?.toInt();
+    if (date != null && date > 0) {
+      return date > 1e12 ? date : date * 1000;
+    }
+    return 0;
+  }
+
+  bool _snapshotTgCoveredByLive(
+    Map<String, dynamic> row,
+    Set<int> liveTgIds,
+  ) {
+    final tgId = (row['tdlib_chat_id'] as num?)?.toInt() ??
+        chatAsInt(row['tdlib_chat_id']);
+    if (tgId != null && liveTgIds.contains(tgId)) return true;
+    final tgUser = (row['tdlib_user_id'] as num?)?.toInt();
+    if (tgUser != null && _tdlibMatches.containsKey(tgUser)) {
+      final chatId = _tdlibMatches[tgUser]?.tgChatId;
+      if (chatId != null && liveTgIds.contains(chatId)) return true;
+    }
+    return false;
   }
 
   /// Snapshot TG private/group already mirrored by an FC linked row.
@@ -2541,6 +3482,28 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     if (tgId != null && _matchedTgChatIds.contains(tgId)) return true;
     final tgUser = (row['tdlib_user_id'] as num?)?.toInt();
     if (tgUser != null && _tdlibMatches.containsKey(tgUser)) return true;
+    return false;
+  }
+
+  bool _snapshotTgIsArchived(
+    Map<String, dynamic> row,
+    TelegramTdlibService svc,
+  ) {
+    // Durable flag from hub SQLite — works before TDLib Ready.
+    if (HubFirstPaintSnapshot.isArchivedTgRow(row)) return true;
+    if (svc.phase != TdlibAuthPhase.ready) return false;
+    final tgId = (row['tdlib_chat_id'] as num?)?.toInt() ??
+        chatAsInt(row['tdlib_chat_id']);
+    if (tgId != null && tgId != 0 && svc.isChatArchived(tgId)) return true;
+    final tgUser = (row['tdlib_user_id'] as num?)?.toInt();
+    if (tgUser != null) {
+      final match = _tdlibMatches[tgUser];
+      if (match != null &&
+          match.tgChatId != 0 &&
+          svc.isChatArchived(match.tgChatId)) {
+        return true;
+      }
+    }
     return false;
   }
 
@@ -2608,6 +3571,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       // One row per person: FC DM (send modes) wins over synthetic tdlib_dm.
       if (_isHiddenTdlibDuplicate(t)) continue;
       if (!_matchesChip(t, chip)) continue;
+      // Archived TG chats live only inside «Архив чатов» (like official TG).
+      // Folder tabs may still show them if the folder includes them.
+      if (chip.system == ChatHubSystemFilter.all && _isHubRowInTgArchive(t)) {
+        continue;
+      }
       final dedupe = ChatFolderMemberKey.forHubRow(t) ??
           '${t['kind']}:${t['id']}';
       if (!seenKeys.add(dedupe)) continue;
@@ -2617,6 +3585,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
         if (!title.contains(q) && !defaultTitle.contains(q)) continue;
       }
       filtered.add(t);
+    }
+    // System Archive row — only on «Все», not while searching.
+    if (chip.system == ChatHubSystemFilter.all && q.isEmpty) {
+      final archive = _archiveHubRow();
+      if (archive != null) filtered.add(archive);
     }
     return _sortedThreads(filtered);
   }
@@ -2670,6 +3643,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       final t = _enrichFcDmWithMatchedTg(raw);
       if (_isHiddenTdlibDuplicate(t)) continue;
       if (!_matchesChip(t, chip)) continue;
+      if (chip.system == ChatHubSystemFilter.all && _isHubRowInTgArchive(t)) {
+        continue;
+      }
       final dedupe = ChatFolderMemberKey.forHubRow(t) ??
           '${t['kind']}:${t['id']}';
       if (!seen.add(dedupe)) continue;
@@ -2966,6 +3942,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   Future<void> _deleteFolderChip(HubChip chip) async {
     if (!chip.isCustom && !chip.isTelegramFolder) return;
+    unawaited(HubFolderMuteStore.clear(chip.key));
     final label = chip.folderName ?? chip.label;
     final ok = await showDialog<bool>(
       context: context,
@@ -3029,7 +4006,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   }
 
   String _emptyLabel(HubChip chip) {
-    if (_searchQuery.trim().isNotEmpty) return 'Чаты не найдены';
+    if (_searchQuery.trim().isNotEmpty) {
+      if (_tgSearchLoading) return 'Поиск в Telegram…';
+      return 'Ничего не найдено';
+    }
     if (chip.isCustom || chip.isTelegramFolder) {
       return 'В папке пока нет чатов';
     }
@@ -3061,13 +4041,16 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
       if (!isTdlibRow && _hasFcPeerAvatar(t)) continue;
       final id = chatAsInt(t['tdlib_chat_id']);
       if (id == null || id == 0) continue;
+      // Already have a local path painted — don't re-enter prefetch every
+      // ScrollEnd (FakeTLS slot=1 + notify per done hitch scroll).
+      final existingPath = t['tdlib_photo_path']?.toString().trim() ?? '';
+      if (existingPath.isNotEmpty) continue;
       final bytes = t['tdlib_photo_bytes'];
       final hasMini = bytes is List && bytes.isNotEmpty;
       final photoFileId = chatAsInt(t['tdlib_photo_file_id']);
       final hasPhotoId = photoFileId != null && photoFileId > 0;
-      // photoFileId is the preferred size (big). Even when a soft `small` path
-      // is already painted, keep asking until big is cached — otherwise high-DPI
-      // hubs stay muddy forever with need=0.
+      // photoFileId is the preferred size (big). Soft minithumb alone still
+      // queues until a path lands — then we skip (above).
       if (!hasMini && !hasPhotoId) continue;
       needSharp.add(id);
       if (needSharp.length >= 16) break;
@@ -3093,7 +4076,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     // classic hub "stutter then catch up" feel. Retry once scroll settles.
     if (tdlib.isUiScrollBusy) {
       _hubAvatarPrefetchTimer?.cancel();
-      _hubAvatarPrefetchTimer = Timer(const Duration(milliseconds: 420), () {
+      _hubAvatarPrefetchTimer = Timer(const Duration(milliseconds: 800), () {
         if (!mounted) return;
         _scheduleHubAvatarPrefetch(rows);
       });
@@ -3106,7 +4089,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   void _debounceHubAvatarPrefetch(List<Map<String, dynamic>> rows) {
     _hubAvatarPrefetchTimer?.cancel();
-    _hubAvatarPrefetchTimer = Timer(const Duration(milliseconds: 280), () {
+    // After scroll-end wait longer so FakeTLS getFile/download can't race
+    // the next fling (SessionLog 20:54 Skipped 1950).
+    _hubAvatarPrefetchTimer = Timer(const Duration(milliseconds: 800), () {
       if (!mounted) return;
       _scheduleHubAvatarPrefetch(rows);
     });
@@ -3121,6 +4106,9 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           telegramConnected: widget.telegramConnected,
           telegramGrace: widget.telegramGrace,
           searchQuery: _searchQuery,
+          globalHits: _tgSearchHits,
+          globalLoading: _tgSearchLoading,
+          onOpenGlobalHit: _openTgGlobalHit,
         ),
       );
     }
@@ -3129,6 +4117,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   Widget _buildThreadList(HubChip chip) {
     final filtered = _filteredBy(chip);
+    final searching = _searchQuery.trim().isNotEmpty;
+    final tgExtra = searching ? _tgHitsNotInLocal(filtered) : const <TdlibGlobalSearchHit>[];
+    final showTgSection = searching &&
+        widget.hasIndividualPremium &&
+        _tdlibReady &&
+        (_tgSearchLoading || tgExtra.isNotEmpty);
     final listPadding = EdgeInsets.only(
       top: _ChatFilterTabBar.overlayExtent,
       bottom: ShellNavBar.contentBottomInset(
@@ -3148,26 +4142,43 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     // - needSig: minithumbs that appear AFTER first paint (chat photo
     //   metadata arrives late) must invalidate the key or they stay muddy
     //   forever with no ScrollEnd.
+    // - tg search hits: global rows are not in [filtered] but still need wire.
     if (identical(chip, _selectedChip) || chip.key == _selectedChip.key) {
       final mediaEpoch = ref
           .read(telegramTdlibServiceProvider)
           .mediaReadyEpoch;
       final needIds = _hubAvatarNeedSharpIds(filtered);
       final needSig = needIds.isEmpty ? '0' : needIds.join(',');
+      final tgSig = tgExtra.isEmpty
+          ? '0'
+          : tgExtra.map((h) => h.chatId).join(',');
       final prefetchKey =
-          '${chip.key}:m$mediaEpoch:need=$needSig:${filtered.length}';
+          '${chip.key}:m$mediaEpoch:need=$needSig:tg=$tgSig:${filtered.length}';
       if (prefetchKey != _lastHubAvatarPrefetchKey) {
         _lastHubAvatarPrefetchKey = prefetchKey;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           _debounceHubAvatarPrefetch(filtered);
+          if (tgExtra.isNotEmpty) {
+            _scheduleTgSearchAvatarPrefetch(tgExtra);
+          }
         });
       }
     }
 
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final localCount = filtered.length;
+    final tgHeaderSlots = showTgSection ? 1 : 0;
+    final tgLoadingSlots =
+        showTgSection && _tgSearchLoading && tgExtra.isEmpty ? 1 : 0;
+    final totalCount =
+        localCount + tgHeaderSlots + tgExtra.length + tgLoadingSlots;
+    final listEmpty = totalCount == 0;
+
     return RefreshIndicator(
       onRefresh: () => refresh(silent: false),
-      child: filtered.isEmpty
+      child: listEmpty
           ? ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: listPadding,
@@ -3200,7 +4211,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                   _debounceHubAvatarPrefetch(filtered);
                   _hubScrollBusyClearTimer?.cancel();
                   _hubScrollBusyClearTimer = Timer(
-                    const Duration(milliseconds: 280),
+                    const Duration(milliseconds: 600),
                     () {
                       if (!mounted) return;
                       ref
@@ -3218,11 +4229,44 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
               // during fling was a source of hitch.
               cacheExtent: 480,
               padding: listPadding,
-              itemCount: filtered.length,
+              itemCount: totalCount,
               itemBuilder: (context, i) {
+                if (i >= localCount) {
+                  var gi = i - localCount;
+                  if (showTgSection) {
+                    if (gi == 0) {
+                      return _tgGlobalSearchHeader(theme, scheme);
+                    }
+                    gi -= 1;
+                  }
+                  if (gi < tgExtra.length) {
+                    return _tgGlobalSearchTile(
+                      tgExtra[gi],
+                      theme: theme,
+                      scheme: scheme,
+                    );
+                  }
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Center(
+                      child: SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  );
+                }
                 final t = filtered[i];
                 final title = t['title']?.toString() ?? 'Чат';
                 final kind = t['kind']?.toString() ?? '';
+                if (kind == 'tdlib_archive') {
+                  return _buildArchiveHubTile(
+                    t,
+                    theme: theme,
+                    scheme: scheme,
+                  );
+                }
                 final unread = chatAsInt(t['unread_count']) ?? 0;
                 final notificationsOn = _threadNotificationsEnabled(t);
                 final last = t['last_message'] as Map<String, dynamic>?;
@@ -3236,8 +4280,6 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                   kind: kind,
                   isBirthdayCelebration: isBirthday,
                 );
-                final theme = Theme.of(context);
-                final scheme = theme.colorScheme;
                 final previewStyle = theme.textTheme.bodyMedium?.copyWith(
                   color: scheme.onSurfaceVariant,
                 );
@@ -3437,16 +4479,41 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     } else if (_paintedFromSnapshot) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
+        // Frame-0 may be FC-only — pull TG from durable snapshot while
+        // waiting for live hydrate (do not wait for release).
+        if (_snapshotTgRows.isEmpty) {
+          unawaited(_restoreSnapshotTgFallbackIfNeeded(tdlib));
+        }
         _releaseSnapshotOverlayIfReady(tdlib);
+      });
+    } else if (!_liveTgListReady(tdlib)) {
+      // Soft-restart cleared live chats — restore snapshot TG if needed.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(_restoreSnapshotTgFallbackIfNeeded(tdlib));
       });
     } else if (tdlib.hubSurfaceReady) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
+        // Keep Archive cold-start rows aligned with live chatListArchive.
+        if (tdlib.hasArchivedChats || tdlib.hubArchiveChats.isNotEmpty) {
+          final before = _snapshotArchiveRows.length;
+          _syncSnapshotArchiveFromLive();
+          if (_snapshotArchiveRows.length != before) {
+            setState(() {});
+          }
+        }
         _scheduleSnapshotPersist();
       });
     }
     final connected = tdlib.phase == TdlibAuthPhase.ready;
-    final shouldShowTelegram = widget.hasIndividualPremium && !connected;
+    // Warm TG folders mean «was linked» — skip the temporary «Telegram» chip
+    // that used to replace the folder bar until Ready.
+    final shouldShowTelegram = widget.hasIndividualPremium &&
+        !connected &&
+        !_chips.any((c) => c.tgFolderId != null) &&
+        !HubFirstPaintSnapshot.chipsFromWarm()
+            .any((c) => c.tgFolderId != null);
     final showingTelegram = _chips.any(
       (c) => c.system == ChatHubSystemFilter.telegram,
     );
@@ -3460,10 +4527,18 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     // appear alone and then jump when TG folders arrive.
     if (!_pendingFirstPaint && foldersEpoch != _lastTgFoldersEpoch) {
       _lastTgFoldersEpoch = foldersEpoch;
+      if (tdlib.phase == TdlibAuthPhase.ready) {
+        _tgFoldersLiveOnce = true;
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _rebuildChips(preferSelected: _selectedChip);
+        // Persist chip bar as soon as live TG folders arrive (not only with
+        // hub rows) so the next cold start has folders before TDLib Ready.
+        unawaited(HubFirstPaintSnapshot.persistChips(_chips));
         unawaited(_pullMirroredMembershipFromTg());
+        // New TG folder members may have appeared — re-apply folder mute flags.
+        unawaited(_reconcileAllFolderMutes());
       });
     }
 
@@ -3565,6 +4640,15 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                           title: Text('Удалить из папки'),
                         ),
                       ),
+                      if (_tdlibReady)
+                        const PopupMenuItem(
+                          value: 'archive',
+                          child: ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(LucideIcons.archive),
+                            title: Text('Добавить в Архив'),
+                          ),
+                        ),
                     ],
                   ),
                 ]
@@ -3613,22 +4697,20 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                   controller: _searchController,
                   autofocus: true,
                   decoration: InputDecoration(
-                    hintText: _telegramFilterSelected
-                        ? 'Поиск чатов Telegram'
-                        : 'Поиск по названию чата',
+                    hintText: 'Поиск чатов',
                     prefixIcon: const Icon(LucideIcons.search),
                     suffixIcon: _searchQuery.isNotEmpty
                         ? IconButton(
                             onPressed: () {
                               _searchController.clear();
-                              setState(() => _searchQuery = '');
+                              _onHubSearchChanged('');
                             },
                             icon: const Icon(LucideIcons.x),
                           )
                         : null,
                     isDense: true,
                   ),
-                  onChanged: (v) => setState(() => _searchQuery = v),
+                  onChanged: _onHubSearchChanged,
                 ),
               ),
             Expanded(
@@ -3643,7 +4725,11 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                       children: [
                         TabBarView(
                           controller: _tabController,
-                          physics: const NeverScrollableScrollPhysics(),
+                          // Horizontal swipe switches folders (Все / Семья / …).
+                          // Keep locked while reordering chips or multi-select.
+                          physics: (_folderReorderMode || _selectionMode)
+                              ? const NeverScrollableScrollPhysics()
+                              : const PageScrollPhysics(),
                           children: _chips.map((chip) {
                             return ColoredBox(
                               color: theme.scaffoldBackgroundColor,
@@ -3660,11 +4746,15 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                             controller: _tabController,
                             labelOf: _chipLabel,
                             unreadOf: _notifiedUnreadForChip,
+                            mutedOf: (chip) =>
+                                (chip.isCustom || chip.isTelegramFolder) &&
+                                HubFolderMuteStore.isActive(chip.key),
                             reorderMode: _folderReorderMode,
                             onReorder: _onReorderTabs,
                             onChipLongPress: _showFolderChipMenu,
                             onDeleteChip: (chip) =>
                                 unawaited(_deleteFolderChip(chip)),
+                            muteUiEpoch: _folderMuteUiEpoch,
                           ),
                         ),
                       ],
@@ -3683,20 +4773,24 @@ class _ChatFilterTabBar extends StatelessWidget {
     required this.controller,
     required this.labelOf,
     required this.unreadOf,
+    required this.mutedOf,
     required this.reorderMode,
     required this.onReorder,
     required this.onChipLongPress,
     required this.onDeleteChip,
+    this.muteUiEpoch = 0,
   });
 
   final List<HubChip> chips;
   final TabController controller;
   final String Function(HubChip chip) labelOf;
   final int Function(HubChip chip) unreadOf;
+  final bool Function(HubChip chip) mutedOf;
   final bool reorderMode;
   final void Function(int oldIndex, int newIndex) onReorder;
   final void Function(BuildContext chipContext, HubChip chip) onChipLongPress;
   final void Function(HubChip chip) onDeleteChip;
+  final int muteUiEpoch;
 
   static const double _pillHeight = 40;
   static const EdgeInsets _outerPadding = EdgeInsets.fromLTRB(14, 8, 14, 8);
@@ -3777,9 +4871,11 @@ class _ChatFilterTabBar extends StatelessWidget {
                     final chip = chips[index];
                     final selected = selectedIndex == index;
                     final unread = unreadOf(chip);
+                    final muted = mutedOf(chip);
                     final showDelete =
                         reorderMode && _canDeleteChip(chip);
                     final pill = Builder(
+                      key: ValueKey('hub-chip:$index:$muteUiEpoch'),
                       builder: (chipContext) {
                         return InkWell(
                           onTap: () {
@@ -3825,6 +4921,16 @@ class _ChatFilterTabBar extends StatelessWidget {
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
+                                  if (!reorderMode && muted) ...[
+                                    Icon(
+                                      LucideIcons.bell_off,
+                                      size: 12,
+                                      color: selected
+                                          ? selectedColor
+                                          : unselectedColor,
+                                    ),
+                                    const SizedBox(width: 4),
+                                  ],
                                   Text(
                                     labelOf(chip),
                                     maxLines: 1,

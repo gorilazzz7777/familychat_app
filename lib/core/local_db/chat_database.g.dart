@@ -1628,6 +1628,670 @@ class MediaLocalIndexRowsCompanion extends UpdateCompanion<MediaLocalIndexRow> {
   }
 }
 
+class $TgChatStateRowsTable extends TgChatStateRows
+    with TableInfo<$TgChatStateRowsTable, TgChatStateRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $TgChatStateRowsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _chatIdMeta = const VerificationMeta('chatId');
+  @override
+  late final GeneratedColumn<int> chatId = GeneratedColumn<int>(
+      'chat_id', aliasedName, false,
+      type: DriftSqlType.int, requiredDuringInsert: false);
+  static const VerificationMeta _titleMeta = const VerificationMeta('title');
+  @override
+  late final GeneratedColumn<String> title = GeneratedColumn<String>(
+      'title', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _chatTypeMeta =
+      const VerificationMeta('chatType');
+  @override
+  late final GeneratedColumn<String> chatType = GeneratedColumn<String>(
+      'chat_type', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant('unknown'));
+  static const VerificationMeta _lastMessageIdMeta =
+      const VerificationMeta('lastMessageId');
+  @override
+  late final GeneratedColumn<int> lastMessageId = GeneratedColumn<int>(
+      'last_message_id', aliasedName, false,
+      type: DriftSqlType.int,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(0));
+  static const VerificationMeta _unreadCountMeta =
+      const VerificationMeta('unreadCount');
+  @override
+  late final GeneratedColumn<int> unreadCount = GeneratedColumn<int>(
+      'unread_count', aliasedName, false,
+      type: DriftSqlType.int,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(0));
+  static const VerificationMeta _historyCompleteOlderMeta =
+      const VerificationMeta('historyCompleteOlder');
+  @override
+  late final GeneratedColumn<bool> historyCompleteOlder = GeneratedColumn<bool>(
+      'history_complete_older', aliasedName, false,
+      type: DriftSqlType.bool,
+      requiredDuringInsert: false,
+      defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'CHECK ("history_complete_older" IN (0, 1))'),
+      defaultValue: const Constant(false));
+  static const VerificationMeta _updatedAtMsMeta =
+      const VerificationMeta('updatedAtMs');
+  @override
+  late final GeneratedColumn<int> updatedAtMs = GeneratedColumn<int>(
+      'updated_at_ms', aliasedName, false,
+      type: DriftSqlType.int,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(0));
+  @override
+  List<GeneratedColumn> get $columns => [
+        chatId,
+        title,
+        chatType,
+        lastMessageId,
+        unreadCount,
+        historyCompleteOlder,
+        updatedAtMs
+      ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'tg_chat_state_rows';
+  @override
+  VerificationContext validateIntegrity(Insertable<TgChatStateRow> instance,
+      {bool isInserting = false}) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('chat_id')) {
+      context.handle(_chatIdMeta,
+          chatId.isAcceptableOrUnknown(data['chat_id']!, _chatIdMeta));
+    }
+    if (data.containsKey('title')) {
+      context.handle(
+          _titleMeta, title.isAcceptableOrUnknown(data['title']!, _titleMeta));
+    }
+    if (data.containsKey('chat_type')) {
+      context.handle(_chatTypeMeta,
+          chatType.isAcceptableOrUnknown(data['chat_type']!, _chatTypeMeta));
+    }
+    if (data.containsKey('last_message_id')) {
+      context.handle(
+          _lastMessageIdMeta,
+          lastMessageId.isAcceptableOrUnknown(
+              data['last_message_id']!, _lastMessageIdMeta));
+    }
+    if (data.containsKey('unread_count')) {
+      context.handle(
+          _unreadCountMeta,
+          unreadCount.isAcceptableOrUnknown(
+              data['unread_count']!, _unreadCountMeta));
+    }
+    if (data.containsKey('history_complete_older')) {
+      context.handle(
+          _historyCompleteOlderMeta,
+          historyCompleteOlder.isAcceptableOrUnknown(
+              data['history_complete_older']!, _historyCompleteOlderMeta));
+    }
+    if (data.containsKey('updated_at_ms')) {
+      context.handle(
+          _updatedAtMsMeta,
+          updatedAtMs.isAcceptableOrUnknown(
+              data['updated_at_ms']!, _updatedAtMsMeta));
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {chatId};
+  @override
+  TgChatStateRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return TgChatStateRow(
+      chatId: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}chat_id'])!,
+      title: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}title'])!,
+      chatType: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}chat_type'])!,
+      lastMessageId: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}last_message_id'])!,
+      unreadCount: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}unread_count'])!,
+      historyCompleteOlder: attachedDatabase.typeMapping.read(
+          DriftSqlType.bool, data['${effectivePrefix}history_complete_older'])!,
+      updatedAtMs: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}updated_at_ms'])!,
+    );
+  }
+
+  @override
+  $TgChatStateRowsTable createAlias(String alias) {
+    return $TgChatStateRowsTable(attachedDatabase, alias);
+  }
+}
+
+class TgChatStateRow extends DataClass implements Insertable<TgChatStateRow> {
+  final int chatId;
+  final String title;
+
+  /// dm | group | channel | secret | unknown
+  final String chatType;
+  final int lastMessageId;
+  final int unreadCount;
+  final bool historyCompleteOlder;
+  final int updatedAtMs;
+  const TgChatStateRow(
+      {required this.chatId,
+      required this.title,
+      required this.chatType,
+      required this.lastMessageId,
+      required this.unreadCount,
+      required this.historyCompleteOlder,
+      required this.updatedAtMs});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['chat_id'] = Variable<int>(chatId);
+    map['title'] = Variable<String>(title);
+    map['chat_type'] = Variable<String>(chatType);
+    map['last_message_id'] = Variable<int>(lastMessageId);
+    map['unread_count'] = Variable<int>(unreadCount);
+    map['history_complete_older'] = Variable<bool>(historyCompleteOlder);
+    map['updated_at_ms'] = Variable<int>(updatedAtMs);
+    return map;
+  }
+
+  TgChatStateRowsCompanion toCompanion(bool nullToAbsent) {
+    return TgChatStateRowsCompanion(
+      chatId: Value(chatId),
+      title: Value(title),
+      chatType: Value(chatType),
+      lastMessageId: Value(lastMessageId),
+      unreadCount: Value(unreadCount),
+      historyCompleteOlder: Value(historyCompleteOlder),
+      updatedAtMs: Value(updatedAtMs),
+    );
+  }
+
+  factory TgChatStateRow.fromJson(Map<String, dynamic> json,
+      {ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return TgChatStateRow(
+      chatId: serializer.fromJson<int>(json['chatId']),
+      title: serializer.fromJson<String>(json['title']),
+      chatType: serializer.fromJson<String>(json['chatType']),
+      lastMessageId: serializer.fromJson<int>(json['lastMessageId']),
+      unreadCount: serializer.fromJson<int>(json['unreadCount']),
+      historyCompleteOlder:
+          serializer.fromJson<bool>(json['historyCompleteOlder']),
+      updatedAtMs: serializer.fromJson<int>(json['updatedAtMs']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'chatId': serializer.toJson<int>(chatId),
+      'title': serializer.toJson<String>(title),
+      'chatType': serializer.toJson<String>(chatType),
+      'lastMessageId': serializer.toJson<int>(lastMessageId),
+      'unreadCount': serializer.toJson<int>(unreadCount),
+      'historyCompleteOlder': serializer.toJson<bool>(historyCompleteOlder),
+      'updatedAtMs': serializer.toJson<int>(updatedAtMs),
+    };
+  }
+
+  TgChatStateRow copyWith(
+          {int? chatId,
+          String? title,
+          String? chatType,
+          int? lastMessageId,
+          int? unreadCount,
+          bool? historyCompleteOlder,
+          int? updatedAtMs}) =>
+      TgChatStateRow(
+        chatId: chatId ?? this.chatId,
+        title: title ?? this.title,
+        chatType: chatType ?? this.chatType,
+        lastMessageId: lastMessageId ?? this.lastMessageId,
+        unreadCount: unreadCount ?? this.unreadCount,
+        historyCompleteOlder: historyCompleteOlder ?? this.historyCompleteOlder,
+        updatedAtMs: updatedAtMs ?? this.updatedAtMs,
+      );
+  TgChatStateRow copyWithCompanion(TgChatStateRowsCompanion data) {
+    return TgChatStateRow(
+      chatId: data.chatId.present ? data.chatId.value : this.chatId,
+      title: data.title.present ? data.title.value : this.title,
+      chatType: data.chatType.present ? data.chatType.value : this.chatType,
+      lastMessageId: data.lastMessageId.present
+          ? data.lastMessageId.value
+          : this.lastMessageId,
+      unreadCount:
+          data.unreadCount.present ? data.unreadCount.value : this.unreadCount,
+      historyCompleteOlder: data.historyCompleteOlder.present
+          ? data.historyCompleteOlder.value
+          : this.historyCompleteOlder,
+      updatedAtMs:
+          data.updatedAtMs.present ? data.updatedAtMs.value : this.updatedAtMs,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('TgChatStateRow(')
+          ..write('chatId: $chatId, ')
+          ..write('title: $title, ')
+          ..write('chatType: $chatType, ')
+          ..write('lastMessageId: $lastMessageId, ')
+          ..write('unreadCount: $unreadCount, ')
+          ..write('historyCompleteOlder: $historyCompleteOlder, ')
+          ..write('updatedAtMs: $updatedAtMs')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(chatId, title, chatType, lastMessageId,
+      unreadCount, historyCompleteOlder, updatedAtMs);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is TgChatStateRow &&
+          other.chatId == this.chatId &&
+          other.title == this.title &&
+          other.chatType == this.chatType &&
+          other.lastMessageId == this.lastMessageId &&
+          other.unreadCount == this.unreadCount &&
+          other.historyCompleteOlder == this.historyCompleteOlder &&
+          other.updatedAtMs == this.updatedAtMs);
+}
+
+class TgChatStateRowsCompanion extends UpdateCompanion<TgChatStateRow> {
+  final Value<int> chatId;
+  final Value<String> title;
+  final Value<String> chatType;
+  final Value<int> lastMessageId;
+  final Value<int> unreadCount;
+  final Value<bool> historyCompleteOlder;
+  final Value<int> updatedAtMs;
+  const TgChatStateRowsCompanion({
+    this.chatId = const Value.absent(),
+    this.title = const Value.absent(),
+    this.chatType = const Value.absent(),
+    this.lastMessageId = const Value.absent(),
+    this.unreadCount = const Value.absent(),
+    this.historyCompleteOlder = const Value.absent(),
+    this.updatedAtMs = const Value.absent(),
+  });
+  TgChatStateRowsCompanion.insert({
+    this.chatId = const Value.absent(),
+    this.title = const Value.absent(),
+    this.chatType = const Value.absent(),
+    this.lastMessageId = const Value.absent(),
+    this.unreadCount = const Value.absent(),
+    this.historyCompleteOlder = const Value.absent(),
+    this.updatedAtMs = const Value.absent(),
+  });
+  static Insertable<TgChatStateRow> custom({
+    Expression<int>? chatId,
+    Expression<String>? title,
+    Expression<String>? chatType,
+    Expression<int>? lastMessageId,
+    Expression<int>? unreadCount,
+    Expression<bool>? historyCompleteOlder,
+    Expression<int>? updatedAtMs,
+  }) {
+    return RawValuesInsertable({
+      if (chatId != null) 'chat_id': chatId,
+      if (title != null) 'title': title,
+      if (chatType != null) 'chat_type': chatType,
+      if (lastMessageId != null) 'last_message_id': lastMessageId,
+      if (unreadCount != null) 'unread_count': unreadCount,
+      if (historyCompleteOlder != null)
+        'history_complete_older': historyCompleteOlder,
+      if (updatedAtMs != null) 'updated_at_ms': updatedAtMs,
+    });
+  }
+
+  TgChatStateRowsCompanion copyWith(
+      {Value<int>? chatId,
+      Value<String>? title,
+      Value<String>? chatType,
+      Value<int>? lastMessageId,
+      Value<int>? unreadCount,
+      Value<bool>? historyCompleteOlder,
+      Value<int>? updatedAtMs}) {
+    return TgChatStateRowsCompanion(
+      chatId: chatId ?? this.chatId,
+      title: title ?? this.title,
+      chatType: chatType ?? this.chatType,
+      lastMessageId: lastMessageId ?? this.lastMessageId,
+      unreadCount: unreadCount ?? this.unreadCount,
+      historyCompleteOlder: historyCompleteOlder ?? this.historyCompleteOlder,
+      updatedAtMs: updatedAtMs ?? this.updatedAtMs,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (chatId.present) {
+      map['chat_id'] = Variable<int>(chatId.value);
+    }
+    if (title.present) {
+      map['title'] = Variable<String>(title.value);
+    }
+    if (chatType.present) {
+      map['chat_type'] = Variable<String>(chatType.value);
+    }
+    if (lastMessageId.present) {
+      map['last_message_id'] = Variable<int>(lastMessageId.value);
+    }
+    if (unreadCount.present) {
+      map['unread_count'] = Variable<int>(unreadCount.value);
+    }
+    if (historyCompleteOlder.present) {
+      map['history_complete_older'] =
+          Variable<bool>(historyCompleteOlder.value);
+    }
+    if (updatedAtMs.present) {
+      map['updated_at_ms'] = Variable<int>(updatedAtMs.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('TgChatStateRowsCompanion(')
+          ..write('chatId: $chatId, ')
+          ..write('title: $title, ')
+          ..write('chatType: $chatType, ')
+          ..write('lastMessageId: $lastMessageId, ')
+          ..write('unreadCount: $unreadCount, ')
+          ..write('historyCompleteOlder: $historyCompleteOlder, ')
+          ..write('updatedAtMs: $updatedAtMs')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $TgMessageRowsTable extends TgMessageRows
+    with TableInfo<$TgMessageRowsTable, TgMessageRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $TgMessageRowsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _chatIdMeta = const VerificationMeta('chatId');
+  @override
+  late final GeneratedColumn<int> chatId = GeneratedColumn<int>(
+      'chat_id', aliasedName, false,
+      type: DriftSqlType.int, requiredDuringInsert: true);
+  static const VerificationMeta _messageIdMeta =
+      const VerificationMeta('messageId');
+  @override
+  late final GeneratedColumn<int> messageId = GeneratedColumn<int>(
+      'message_id', aliasedName, false,
+      type: DriftSqlType.int, requiredDuringInsert: true);
+  static const VerificationMeta _dateMsMeta = const VerificationMeta('dateMs');
+  @override
+  late final GeneratedColumn<int> dateMs = GeneratedColumn<int>(
+      'date_ms', aliasedName, false,
+      type: DriftSqlType.int,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(0));
+  static const VerificationMeta _payloadJsonMeta =
+      const VerificationMeta('payloadJson');
+  @override
+  late final GeneratedColumn<String> payloadJson = GeneratedColumn<String>(
+      'payload_json', aliasedName, false,
+      type: DriftSqlType.string, requiredDuringInsert: true);
+  @override
+  List<GeneratedColumn> get $columns =>
+      [chatId, messageId, dateMs, payloadJson];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'tg_message_rows';
+  @override
+  VerificationContext validateIntegrity(Insertable<TgMessageRow> instance,
+      {bool isInserting = false}) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('chat_id')) {
+      context.handle(_chatIdMeta,
+          chatId.isAcceptableOrUnknown(data['chat_id']!, _chatIdMeta));
+    } else if (isInserting) {
+      context.missing(_chatIdMeta);
+    }
+    if (data.containsKey('message_id')) {
+      context.handle(_messageIdMeta,
+          messageId.isAcceptableOrUnknown(data['message_id']!, _messageIdMeta));
+    } else if (isInserting) {
+      context.missing(_messageIdMeta);
+    }
+    if (data.containsKey('date_ms')) {
+      context.handle(_dateMsMeta,
+          dateMs.isAcceptableOrUnknown(data['date_ms']!, _dateMsMeta));
+    }
+    if (data.containsKey('payload_json')) {
+      context.handle(
+          _payloadJsonMeta,
+          payloadJson.isAcceptableOrUnknown(
+              data['payload_json']!, _payloadJsonMeta));
+    } else if (isInserting) {
+      context.missing(_payloadJsonMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {chatId, messageId};
+  @override
+  TgMessageRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return TgMessageRow(
+      chatId: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}chat_id'])!,
+      messageId: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}message_id'])!,
+      dateMs: attachedDatabase.typeMapping
+          .read(DriftSqlType.int, data['${effectivePrefix}date_ms'])!,
+      payloadJson: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}payload_json'])!,
+    );
+  }
+
+  @override
+  $TgMessageRowsTable createAlias(String alias) {
+    return $TgMessageRowsTable(attachedDatabase, alias);
+  }
+}
+
+class TgMessageRow extends DataClass implements Insertable<TgMessageRow> {
+  final int chatId;
+  final int messageId;
+  final int dateMs;
+  final String payloadJson;
+  const TgMessageRow(
+      {required this.chatId,
+      required this.messageId,
+      required this.dateMs,
+      required this.payloadJson});
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['chat_id'] = Variable<int>(chatId);
+    map['message_id'] = Variable<int>(messageId);
+    map['date_ms'] = Variable<int>(dateMs);
+    map['payload_json'] = Variable<String>(payloadJson);
+    return map;
+  }
+
+  TgMessageRowsCompanion toCompanion(bool nullToAbsent) {
+    return TgMessageRowsCompanion(
+      chatId: Value(chatId),
+      messageId: Value(messageId),
+      dateMs: Value(dateMs),
+      payloadJson: Value(payloadJson),
+    );
+  }
+
+  factory TgMessageRow.fromJson(Map<String, dynamic> json,
+      {ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return TgMessageRow(
+      chatId: serializer.fromJson<int>(json['chatId']),
+      messageId: serializer.fromJson<int>(json['messageId']),
+      dateMs: serializer.fromJson<int>(json['dateMs']),
+      payloadJson: serializer.fromJson<String>(json['payloadJson']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'chatId': serializer.toJson<int>(chatId),
+      'messageId': serializer.toJson<int>(messageId),
+      'dateMs': serializer.toJson<int>(dateMs),
+      'payloadJson': serializer.toJson<String>(payloadJson),
+    };
+  }
+
+  TgMessageRow copyWith(
+          {int? chatId, int? messageId, int? dateMs, String? payloadJson}) =>
+      TgMessageRow(
+        chatId: chatId ?? this.chatId,
+        messageId: messageId ?? this.messageId,
+        dateMs: dateMs ?? this.dateMs,
+        payloadJson: payloadJson ?? this.payloadJson,
+      );
+  TgMessageRow copyWithCompanion(TgMessageRowsCompanion data) {
+    return TgMessageRow(
+      chatId: data.chatId.present ? data.chatId.value : this.chatId,
+      messageId: data.messageId.present ? data.messageId.value : this.messageId,
+      dateMs: data.dateMs.present ? data.dateMs.value : this.dateMs,
+      payloadJson:
+          data.payloadJson.present ? data.payloadJson.value : this.payloadJson,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('TgMessageRow(')
+          ..write('chatId: $chatId, ')
+          ..write('messageId: $messageId, ')
+          ..write('dateMs: $dateMs, ')
+          ..write('payloadJson: $payloadJson')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(chatId, messageId, dateMs, payloadJson);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is TgMessageRow &&
+          other.chatId == this.chatId &&
+          other.messageId == this.messageId &&
+          other.dateMs == this.dateMs &&
+          other.payloadJson == this.payloadJson);
+}
+
+class TgMessageRowsCompanion extends UpdateCompanion<TgMessageRow> {
+  final Value<int> chatId;
+  final Value<int> messageId;
+  final Value<int> dateMs;
+  final Value<String> payloadJson;
+  final Value<int> rowid;
+  const TgMessageRowsCompanion({
+    this.chatId = const Value.absent(),
+    this.messageId = const Value.absent(),
+    this.dateMs = const Value.absent(),
+    this.payloadJson = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  TgMessageRowsCompanion.insert({
+    required int chatId,
+    required int messageId,
+    this.dateMs = const Value.absent(),
+    required String payloadJson,
+    this.rowid = const Value.absent(),
+  })  : chatId = Value(chatId),
+        messageId = Value(messageId),
+        payloadJson = Value(payloadJson);
+  static Insertable<TgMessageRow> custom({
+    Expression<int>? chatId,
+    Expression<int>? messageId,
+    Expression<int>? dateMs,
+    Expression<String>? payloadJson,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (chatId != null) 'chat_id': chatId,
+      if (messageId != null) 'message_id': messageId,
+      if (dateMs != null) 'date_ms': dateMs,
+      if (payloadJson != null) 'payload_json': payloadJson,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  TgMessageRowsCompanion copyWith(
+      {Value<int>? chatId,
+      Value<int>? messageId,
+      Value<int>? dateMs,
+      Value<String>? payloadJson,
+      Value<int>? rowid}) {
+    return TgMessageRowsCompanion(
+      chatId: chatId ?? this.chatId,
+      messageId: messageId ?? this.messageId,
+      dateMs: dateMs ?? this.dateMs,
+      payloadJson: payloadJson ?? this.payloadJson,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (chatId.present) {
+      map['chat_id'] = Variable<int>(chatId.value);
+    }
+    if (messageId.present) {
+      map['message_id'] = Variable<int>(messageId.value);
+    }
+    if (dateMs.present) {
+      map['date_ms'] = Variable<int>(dateMs.value);
+    }
+    if (payloadJson.present) {
+      map['payload_json'] = Variable<String>(payloadJson.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('TgMessageRowsCompanion(')
+          ..write('chatId: $chatId, ')
+          ..write('messageId: $messageId, ')
+          ..write('dateMs: $dateMs, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$ChatDatabase extends GeneratedDatabase {
   _$ChatDatabase(QueryExecutor e) : super(e);
   $ChatDatabaseManager get managers => $ChatDatabaseManager(this);
@@ -1641,6 +2305,9 @@ abstract class _$ChatDatabase extends GeneratedDatabase {
       $ChatOutboxBlobRowsTable(this);
   late final $MediaLocalIndexRowsTable mediaLocalIndexRows =
       $MediaLocalIndexRowsTable(this);
+  late final $TgChatStateRowsTable tgChatStateRows =
+      $TgChatStateRowsTable(this);
+  late final $TgMessageRowsTable tgMessageRows = $TgMessageRowsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -1652,7 +2319,9 @@ abstract class _$ChatDatabase extends GeneratedDatabase {
         chatMetaRows,
         chatOutboxRows,
         chatOutboxBlobRows,
-        mediaLocalIndexRows
+        mediaLocalIndexRows,
+        tgChatStateRows,
+        tgMessageRows
       ];
 }
 
@@ -2661,6 +3330,365 @@ typedef $$MediaLocalIndexRowsTableProcessedTableManager = ProcessedTableManager<
     ),
     MediaLocalIndexRow,
     PrefetchHooks Function()>;
+typedef $$TgChatStateRowsTableCreateCompanionBuilder = TgChatStateRowsCompanion
+    Function({
+  Value<int> chatId,
+  Value<String> title,
+  Value<String> chatType,
+  Value<int> lastMessageId,
+  Value<int> unreadCount,
+  Value<bool> historyCompleteOlder,
+  Value<int> updatedAtMs,
+});
+typedef $$TgChatStateRowsTableUpdateCompanionBuilder = TgChatStateRowsCompanion
+    Function({
+  Value<int> chatId,
+  Value<String> title,
+  Value<String> chatType,
+  Value<int> lastMessageId,
+  Value<int> unreadCount,
+  Value<bool> historyCompleteOlder,
+  Value<int> updatedAtMs,
+});
+
+class $$TgChatStateRowsTableFilterComposer
+    extends Composer<_$ChatDatabase, $TgChatStateRowsTable> {
+  $$TgChatStateRowsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get chatId => $composableBuilder(
+      column: $table.chatId, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get title => $composableBuilder(
+      column: $table.title, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get chatType => $composableBuilder(
+      column: $table.chatType, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get lastMessageId => $composableBuilder(
+      column: $table.lastMessageId, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get unreadCount => $composableBuilder(
+      column: $table.unreadCount, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<bool> get historyCompleteOlder => $composableBuilder(
+      column: $table.historyCompleteOlder,
+      builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get updatedAtMs => $composableBuilder(
+      column: $table.updatedAtMs, builder: (column) => ColumnFilters(column));
+}
+
+class $$TgChatStateRowsTableOrderingComposer
+    extends Composer<_$ChatDatabase, $TgChatStateRowsTable> {
+  $$TgChatStateRowsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get chatId => $composableBuilder(
+      column: $table.chatId, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get title => $composableBuilder(
+      column: $table.title, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get chatType => $composableBuilder(
+      column: $table.chatType, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<int> get lastMessageId => $composableBuilder(
+      column: $table.lastMessageId,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<int> get unreadCount => $composableBuilder(
+      column: $table.unreadCount, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<bool> get historyCompleteOlder => $composableBuilder(
+      column: $table.historyCompleteOlder,
+      builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<int> get updatedAtMs => $composableBuilder(
+      column: $table.updatedAtMs, builder: (column) => ColumnOrderings(column));
+}
+
+class $$TgChatStateRowsTableAnnotationComposer
+    extends Composer<_$ChatDatabase, $TgChatStateRowsTable> {
+  $$TgChatStateRowsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get chatId =>
+      $composableBuilder(column: $table.chatId, builder: (column) => column);
+
+  GeneratedColumn<String> get title =>
+      $composableBuilder(column: $table.title, builder: (column) => column);
+
+  GeneratedColumn<String> get chatType =>
+      $composableBuilder(column: $table.chatType, builder: (column) => column);
+
+  GeneratedColumn<int> get lastMessageId => $composableBuilder(
+      column: $table.lastMessageId, builder: (column) => column);
+
+  GeneratedColumn<int> get unreadCount => $composableBuilder(
+      column: $table.unreadCount, builder: (column) => column);
+
+  GeneratedColumn<bool> get historyCompleteOlder => $composableBuilder(
+      column: $table.historyCompleteOlder, builder: (column) => column);
+
+  GeneratedColumn<int> get updatedAtMs => $composableBuilder(
+      column: $table.updatedAtMs, builder: (column) => column);
+}
+
+class $$TgChatStateRowsTableTableManager extends RootTableManager<
+    _$ChatDatabase,
+    $TgChatStateRowsTable,
+    TgChatStateRow,
+    $$TgChatStateRowsTableFilterComposer,
+    $$TgChatStateRowsTableOrderingComposer,
+    $$TgChatStateRowsTableAnnotationComposer,
+    $$TgChatStateRowsTableCreateCompanionBuilder,
+    $$TgChatStateRowsTableUpdateCompanionBuilder,
+    (
+      TgChatStateRow,
+      BaseReferences<_$ChatDatabase, $TgChatStateRowsTable, TgChatStateRow>
+    ),
+    TgChatStateRow,
+    PrefetchHooks Function()> {
+  $$TgChatStateRowsTableTableManager(
+      _$ChatDatabase db, $TgChatStateRowsTable table)
+      : super(TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$TgChatStateRowsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$TgChatStateRowsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$TgChatStateRowsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback: ({
+            Value<int> chatId = const Value.absent(),
+            Value<String> title = const Value.absent(),
+            Value<String> chatType = const Value.absent(),
+            Value<int> lastMessageId = const Value.absent(),
+            Value<int> unreadCount = const Value.absent(),
+            Value<bool> historyCompleteOlder = const Value.absent(),
+            Value<int> updatedAtMs = const Value.absent(),
+          }) =>
+              TgChatStateRowsCompanion(
+            chatId: chatId,
+            title: title,
+            chatType: chatType,
+            lastMessageId: lastMessageId,
+            unreadCount: unreadCount,
+            historyCompleteOlder: historyCompleteOlder,
+            updatedAtMs: updatedAtMs,
+          ),
+          createCompanionCallback: ({
+            Value<int> chatId = const Value.absent(),
+            Value<String> title = const Value.absent(),
+            Value<String> chatType = const Value.absent(),
+            Value<int> lastMessageId = const Value.absent(),
+            Value<int> unreadCount = const Value.absent(),
+            Value<bool> historyCompleteOlder = const Value.absent(),
+            Value<int> updatedAtMs = const Value.absent(),
+          }) =>
+              TgChatStateRowsCompanion.insert(
+            chatId: chatId,
+            title: title,
+            chatType: chatType,
+            lastMessageId: lastMessageId,
+            unreadCount: unreadCount,
+            historyCompleteOlder: historyCompleteOlder,
+            updatedAtMs: updatedAtMs,
+          ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ));
+}
+
+typedef $$TgChatStateRowsTableProcessedTableManager = ProcessedTableManager<
+    _$ChatDatabase,
+    $TgChatStateRowsTable,
+    TgChatStateRow,
+    $$TgChatStateRowsTableFilterComposer,
+    $$TgChatStateRowsTableOrderingComposer,
+    $$TgChatStateRowsTableAnnotationComposer,
+    $$TgChatStateRowsTableCreateCompanionBuilder,
+    $$TgChatStateRowsTableUpdateCompanionBuilder,
+    (
+      TgChatStateRow,
+      BaseReferences<_$ChatDatabase, $TgChatStateRowsTable, TgChatStateRow>
+    ),
+    TgChatStateRow,
+    PrefetchHooks Function()>;
+typedef $$TgMessageRowsTableCreateCompanionBuilder = TgMessageRowsCompanion
+    Function({
+  required int chatId,
+  required int messageId,
+  Value<int> dateMs,
+  required String payloadJson,
+  Value<int> rowid,
+});
+typedef $$TgMessageRowsTableUpdateCompanionBuilder = TgMessageRowsCompanion
+    Function({
+  Value<int> chatId,
+  Value<int> messageId,
+  Value<int> dateMs,
+  Value<String> payloadJson,
+  Value<int> rowid,
+});
+
+class $$TgMessageRowsTableFilterComposer
+    extends Composer<_$ChatDatabase, $TgMessageRowsTable> {
+  $$TgMessageRowsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get chatId => $composableBuilder(
+      column: $table.chatId, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get messageId => $composableBuilder(
+      column: $table.messageId, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<int> get dateMs => $composableBuilder(
+      column: $table.dateMs, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => ColumnFilters(column));
+}
+
+class $$TgMessageRowsTableOrderingComposer
+    extends Composer<_$ChatDatabase, $TgMessageRowsTable> {
+  $$TgMessageRowsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get chatId => $composableBuilder(
+      column: $table.chatId, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<int> get messageId => $composableBuilder(
+      column: $table.messageId, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<int> get dateMs => $composableBuilder(
+      column: $table.dateMs, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => ColumnOrderings(column));
+}
+
+class $$TgMessageRowsTableAnnotationComposer
+    extends Composer<_$ChatDatabase, $TgMessageRowsTable> {
+  $$TgMessageRowsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get chatId =>
+      $composableBuilder(column: $table.chatId, builder: (column) => column);
+
+  GeneratedColumn<int> get messageId =>
+      $composableBuilder(column: $table.messageId, builder: (column) => column);
+
+  GeneratedColumn<int> get dateMs =>
+      $composableBuilder(column: $table.dateMs, builder: (column) => column);
+
+  GeneratedColumn<String> get payloadJson => $composableBuilder(
+      column: $table.payloadJson, builder: (column) => column);
+}
+
+class $$TgMessageRowsTableTableManager extends RootTableManager<
+    _$ChatDatabase,
+    $TgMessageRowsTable,
+    TgMessageRow,
+    $$TgMessageRowsTableFilterComposer,
+    $$TgMessageRowsTableOrderingComposer,
+    $$TgMessageRowsTableAnnotationComposer,
+    $$TgMessageRowsTableCreateCompanionBuilder,
+    $$TgMessageRowsTableUpdateCompanionBuilder,
+    (
+      TgMessageRow,
+      BaseReferences<_$ChatDatabase, $TgMessageRowsTable, TgMessageRow>
+    ),
+    TgMessageRow,
+    PrefetchHooks Function()> {
+  $$TgMessageRowsTableTableManager(_$ChatDatabase db, $TgMessageRowsTable table)
+      : super(TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$TgMessageRowsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$TgMessageRowsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$TgMessageRowsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback: ({
+            Value<int> chatId = const Value.absent(),
+            Value<int> messageId = const Value.absent(),
+            Value<int> dateMs = const Value.absent(),
+            Value<String> payloadJson = const Value.absent(),
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              TgMessageRowsCompanion(
+            chatId: chatId,
+            messageId: messageId,
+            dateMs: dateMs,
+            payloadJson: payloadJson,
+            rowid: rowid,
+          ),
+          createCompanionCallback: ({
+            required int chatId,
+            required int messageId,
+            Value<int> dateMs = const Value.absent(),
+            required String payloadJson,
+            Value<int> rowid = const Value.absent(),
+          }) =>
+              TgMessageRowsCompanion.insert(
+            chatId: chatId,
+            messageId: messageId,
+            dateMs: dateMs,
+            payloadJson: payloadJson,
+            rowid: rowid,
+          ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ));
+}
+
+typedef $$TgMessageRowsTableProcessedTableManager = ProcessedTableManager<
+    _$ChatDatabase,
+    $TgMessageRowsTable,
+    TgMessageRow,
+    $$TgMessageRowsTableFilterComposer,
+    $$TgMessageRowsTableOrderingComposer,
+    $$TgMessageRowsTableAnnotationComposer,
+    $$TgMessageRowsTableCreateCompanionBuilder,
+    $$TgMessageRowsTableUpdateCompanionBuilder,
+    (
+      TgMessageRow,
+      BaseReferences<_$ChatDatabase, $TgMessageRowsTable, TgMessageRow>
+    ),
+    TgMessageRow,
+    PrefetchHooks Function()>;
 
 class $ChatDatabaseManager {
   final _$ChatDatabase _db;
@@ -2679,4 +3707,8 @@ class $ChatDatabaseManager {
       $$ChatOutboxBlobRowsTableTableManager(_db, _db.chatOutboxBlobRows);
   $$MediaLocalIndexRowsTableTableManager get mediaLocalIndexRows =>
       $$MediaLocalIndexRowsTableTableManager(_db, _db.mediaLocalIndexRows);
+  $$TgChatStateRowsTableTableManager get tgChatStateRows =>
+      $$TgChatStateRowsTableTableManager(_db, _db.tgChatStateRows);
+  $$TgMessageRowsTableTableManager get tgMessageRows =>
+      $$TgMessageRowsTableTableManager(_db, _db.tgMessageRows);
 }

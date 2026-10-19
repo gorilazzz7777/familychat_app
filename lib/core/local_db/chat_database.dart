@@ -18,6 +18,8 @@ part 'chat_database.g.dart';
   ChatOutboxRows,
   ChatOutboxBlobRows,
   MediaLocalIndexRows,
+  TgChatStateRows,
+  TgMessageRows,
 ])
 class ChatDatabase extends _$ChatDatabase {
   ChatDatabase() : super(openChatDatabaseConnection());
@@ -26,7 +28,7 @@ class ChatDatabase extends _$ChatDatabase {
   ChatDatabase.executor(super.e);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   static const metaMigratedFromJson = 'migrated_json_v1';
   static const metaMigratedOutbox = 'migrated_outbox_v1';
@@ -48,6 +50,10 @@ class ChatDatabase extends _$ChatDatabase {
             await m.createTable(chatOutboxBlobRows);
             await m.createTable(mediaLocalIndexRows);
           }
+          if (from < 3) {
+            await m.createTable(tgChatStateRows);
+            await m.createTable(tgMessageRows);
+          }
         },
       );
 
@@ -61,6 +67,199 @@ class ChatDatabase extends _$ChatDatabase {
     await into(chatMetaRows).insertOnConflictUpdate(
       ChatMetaRowsCompanion.insert(key: key, value: value),
     );
+  }
+
+  // --- TG history (SQLite-first transcript) ---
+
+  Future<void> upsertTgMessages(
+    int chatId,
+    List<({int messageId, int dateMs, String payloadJson})> messages,
+  ) async {
+    if (messages.isEmpty) return;
+    await _retryIfLocked(() => transaction(() async {
+          for (final m in messages) {
+            if (m.messageId <= 0) continue;
+            await into(tgMessageRows).insertOnConflictUpdate(
+              TgMessageRowsCompanion.insert(
+                chatId: chatId,
+                messageId: m.messageId,
+                dateMs: Value(m.dateMs),
+                payloadJson: m.payloadJson,
+              ),
+            );
+          }
+          final maxId = messages
+              .map((m) => m.messageId)
+              .fold<int>(0, (a, b) => a > b ? a : b);
+          final existing = await (select(tgChatStateRows)
+                ..where((t) => t.chatId.equals(chatId)))
+              .getSingleOrNull();
+          final prevLast = existing?.lastMessageId ?? 0;
+          final lastId = maxId > prevLast ? maxId : prevLast;
+          await into(tgChatStateRows).insertOnConflictUpdate(
+            TgChatStateRowsCompanion.insert(
+              chatId: Value(chatId),
+              title: Value(existing?.title ?? ''),
+              chatType: Value(existing?.chatType ?? 'unknown'),
+              lastMessageId: Value(lastId),
+              unreadCount: Value(existing?.unreadCount ?? 0),
+              historyCompleteOlder:
+                  Value(existing?.historyCompleteOlder ?? false),
+              updatedAtMs: Value(DateTime.now().millisecondsSinceEpoch),
+            ),
+          );
+        }));
+  }
+
+  Future<void> deleteTgMessages(int chatId, List<int> messageIds) async {
+    if (messageIds.isEmpty) return;
+    await (delete(tgMessageRows)
+          ..where(
+            (t) =>
+                t.chatId.equals(chatId) & t.messageId.isIn(messageIds),
+          ))
+        .go();
+  }
+
+  Future<void> upsertTgChatState({
+    required int chatId,
+    String? title,
+    String? chatType,
+    int? lastMessageId,
+    int? unreadCount,
+    bool? historyCompleteOlder,
+  }) async {
+    final existing = await (select(tgChatStateRows)
+          ..where((t) => t.chatId.equals(chatId)))
+        .getSingleOrNull();
+    await into(tgChatStateRows).insertOnConflictUpdate(
+      TgChatStateRowsCompanion.insert(
+        chatId: Value(chatId),
+        title: Value(title ?? existing?.title ?? ''),
+        chatType: Value(chatType ?? existing?.chatType ?? 'unknown'),
+        lastMessageId:
+            Value(lastMessageId ?? existing?.lastMessageId ?? 0),
+        unreadCount: Value(unreadCount ?? existing?.unreadCount ?? 0),
+        historyCompleteOlder: Value(
+          historyCompleteOlder ?? existing?.historyCompleteOlder ?? false,
+        ),
+        updatedAtMs: Value(DateTime.now().millisecondsSinceEpoch),
+      ),
+    );
+  }
+
+  Future<TgChatStateRow?> readTgChatState(int chatId) {
+    return (select(tgChatStateRows)..where((t) => t.chatId.equals(chatId)))
+        .getSingleOrNull();
+  }
+
+  Future<int> countTgMessages(int chatId) async {
+    final row = await customSelect(
+      'SELECT COUNT(*) AS c FROM tg_message_rows WHERE chat_id = ?',
+      variables: [Variable.withInt(chatId)],
+      readsFrom: {tgMessageRows},
+    ).getSingle();
+    return _asInt(row.data['c']) ?? 0;
+  }
+
+  /// Last [limit] TG messages (oldest → newest).
+  Future<List<TgMessageRow>> readTgMessagesTail(
+    int chatId, {
+    int limit = 20,
+  }) async {
+    final rows = await (select(tgMessageRows)
+          ..where((t) => t.chatId.equals(chatId))
+          ..orderBy([
+            (t) => OrderingTerm.desc(t.dateMs),
+            (t) => OrderingTerm.desc(t.messageId),
+          ])
+          ..limit(limit))
+        .get();
+    return rows.reversed.toList();
+  }
+
+  /// Page older than [beforeMessageId] (oldest → newest).
+  Future<List<TgMessageRow>> readTgMessagesOlder(
+    int chatId, {
+    required int beforeMessageId,
+    int limit = 40,
+  }) async {
+    final rows = await (select(tgMessageRows)
+          ..where(
+            (t) =>
+                t.chatId.equals(chatId) &
+                t.messageId.isSmallerThanValue(beforeMessageId),
+          )
+          ..orderBy([
+            (t) => OrderingTerm.desc(t.dateMs),
+            (t) => OrderingTerm.desc(t.messageId),
+          ])
+          ..limit(limit))
+        .get();
+    return rows.reversed.toList();
+  }
+
+  /// All messages for chat ordered oldest → newest (eviction-capped).
+  Stream<List<TgMessageRow>> watchTgMessages(int chatId) {
+    return (select(tgMessageRows)
+          ..where((t) => t.chatId.equals(chatId))
+          ..orderBy([
+            (t) => OrderingTerm.asc(t.dateMs),
+            (t) => OrderingTerm.asc(t.messageId),
+          ]))
+        .watch();
+  }
+
+  /// Soft-cap: drop oldest rows in [chatId] beyond [keepNewest].
+  Future<int> evictTgMessagesOverCap(int chatId, int keepNewest) async {
+    if (keepNewest <= 0) return 0;
+    final count = await countTgMessages(chatId);
+    if (count <= keepNewest) return 0;
+    final drop = count - keepNewest;
+    final oldest = await (select(tgMessageRows)
+          ..where((t) => t.chatId.equals(chatId))
+          ..orderBy([
+            (t) => OrderingTerm.asc(t.dateMs),
+            (t) => OrderingTerm.asc(t.messageId),
+          ])
+          ..limit(drop))
+        .get();
+    if (oldest.isEmpty) return 0;
+    final ids = oldest.map((r) => r.messageId).toList();
+    await deleteTgMessages(chatId, ids);
+    return ids.length;
+  }
+
+  /// Global soft-cap: drop oldest messages from LRU chats until under [globalCap].
+  Future<int> evictTgMessagesGlobal(int globalCap) async {
+    final totalRow = await customSelect(
+      'SELECT COUNT(*) AS c FROM tg_message_rows',
+      readsFrom: {tgMessageRows},
+    ).getSingle();
+    var total = _asInt(totalRow.data['c']) ?? 0;
+    if (total <= globalCap) return 0;
+    var removed = 0;
+    final chats = await (select(tgChatStateRows)
+          ..orderBy([(t) => OrderingTerm.asc(t.updatedAtMs)]))
+        .get();
+    for (final chat in chats) {
+      if (total <= globalCap) break;
+      final need = total - globalCap;
+      final rows = await (select(tgMessageRows)
+            ..where((t) => t.chatId.equals(chat.chatId))
+            ..orderBy([
+              (t) => OrderingTerm.asc(t.dateMs),
+              (t) => OrderingTerm.asc(t.messageId),
+            ])
+            ..limit(need.clamp(1, 80)))
+          .get();
+      if (rows.isEmpty) continue;
+      final ids = rows.map((r) => r.messageId).toList();
+      await deleteTgMessages(chat.chatId, ids);
+      removed += ids.length;
+      total -= ids.length;
+    }
+    return removed;
   }
 
   // --- Outbox ---

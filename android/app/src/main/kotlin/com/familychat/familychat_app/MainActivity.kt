@@ -1,10 +1,6 @@
 package com.familychat.familychat_app
 
 import android.Manifest
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
@@ -13,11 +9,8 @@ import android.app.NotificationManager
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.provider.MediaStore
@@ -43,16 +36,23 @@ class MainActivity : AudioServiceFragmentActivity() {
         var isAppInForeground: Boolean = false
     }
 
+    /** VoIP calls only — never shared with voice-message screen-off. */
     private var proximityWakeLock: PowerManager.WakeLock? = null
-    private var voiceProximityListener: SensorEventListener? = null
     private var voiceProximityEventSink: EventChannel.EventSink? = null
-    private var voiceProximityNear: Boolean? = null
-    private var voiceProximityMaxRange: Float = 5f
-    private var voiceProximityDist: Float? = null
-    private var voiceVolumeObserver: ContentObserver? = null
+    private var voiceRaiseToListen: VoiceRaiseToListenController? = null
     private val rustoreReviewPlugin = RustoreReviewPlugin()
     private val playReviewPlugin = PlayReviewPlugin()
     private val videoNotePrepPlugin = VideoNotePrepPlugin()
+
+    private fun voiceController(): VoiceRaiseToListenController {
+        val existing = voiceRaiseToListen
+        if (existing != null) return existing
+        val created = VoiceRaiseToListenController(this) { snapshot ->
+            voiceProximityEventSink?.success(snapshot)
+        }
+        voiceRaiseToListen = created
+        return created
+    }
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -173,12 +173,8 @@ class MainActivity : AudioServiceFragmentActivity() {
         ).setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                 voiceProximityEventSink = events
-                if (voiceProximityListener != null) {
-                    events?.success(
-                        voiceAudioSnapshot(reason = "sink_listen").also {
-                            it["near"] = voiceProximityNear ?: false
-                        },
-                    )
+                voiceRaiseToListen?.let {
+                    events?.success(it.snapshot("sink_listen"))
                 }
             }
 
@@ -191,20 +187,26 @@ class MainActivity : AudioServiceFragmentActivity() {
             "com.familychat/voice_proximity",
         ).setMethodCallHandler { call, result ->
             when (call.method) {
-                "start" -> result.success(startVoiceProximity())
+                "start" -> result.success(voiceController().start())
                 "stop" -> {
-                    stopVoiceProximity()
+                    voiceRaiseToListen?.stop()
+                    result.success(null)
+                }
+                "setPlaying" -> {
+                    val playing = call.argument<Boolean>("playing") == true
+                    voiceController().setPlaying(playing)
                     result.success(null)
                 }
                 "setEarpiece" -> {
-                    setVoiceAudioRoute(earpiece = true)
+                    voiceController().setEarpiece(true)
                     result.success(null)
                 }
                 "setSpeaker" -> {
-                    setVoiceAudioRoute(earpiece = false)
+                    voiceController().setEarpiece(false)
                     result.success(null)
                 }
-                "getSnapshot" -> result.success(voiceAudioSnapshot(reason = "getSnapshot"))
+                "getSnapshot" ->
+                    result.success(voiceController().snapshot("getSnapshot"))
                 else -> result.notImplemented()
             }
         }
@@ -482,32 +484,31 @@ class MainActivity : AudioServiceFragmentActivity() {
         super.onResume()
         isAppInForeground = true
         Log.i(VOICE_TAG, "activity onResume")
-        if (voiceProximityListener != null) {
-            voiceProximityEventSink?.success(
-                voiceAudioSnapshot(reason = "activity_onResume").also {
-                    it["near"] = voiceProximityNear ?: false
-                },
-            )
+        voiceRaiseToListen?.let {
+            voiceProximityEventSink?.success(it.snapshot("activity_onResume"))
         }
     }
 
     override fun onPause() {
         isAppInForeground = false
-        Log.i(VOICE_TAG, "activity onPause callProxHeld=${proximityWakeLock?.isHeld == true}")
-        // Do NOT stop voice proximity here — cheek/near blanks screen and
-        // pauses the activity; Dart owns stop when playback ends.
-        disableCallProximity()
-        voiceProximityEventSink?.success(
-            voiceAudioSnapshot(reason = "activity_onPause").also {
-                it["near"] = voiceProximityNear ?: false
-            },
+        Log.i(
+            VOICE_TAG,
+            "activity onPause callProxHeld=${proximityWakeLock?.isHeld == true}",
         )
+        // Do NOT stop voice proximity / voice wake lock here — cheek/near
+        // blanks the screen and pauses the activity; Dart owns stop when
+        // playback ends. Only release *call* proximity.
+        disableCallProximity()
+        voiceRaiseToListen?.let {
+            voiceProximityEventSink?.success(it.snapshot("activity_onPause"))
+        }
         super.onPause()
     }
 
     override fun onDestroy() {
         disableCallProximity()
-        stopVoiceProximity()
+        voiceRaiseToListen?.stop()
+        voiceRaiseToListen = null
         setShowOnLockScreen(false)
         super.onDestroy()
     }
@@ -549,145 +550,4 @@ class MainActivity : AudioServiceFragmentActivity() {
         proximityWakeLock = null
     }
 
-    /** @return true if the device has a proximity sensor. */
-    private fun startVoiceProximity(): Boolean {
-        stopVoiceProximitySensorOnly()
-        val sm = getSystemService(SENSOR_SERVICE) as SensorManager
-        val sensor = sm.getDefaultSensor(Sensor.TYPE_PROXIMITY) ?: return false
-        voiceProximityMaxRange = sensor.maximumRange
-        val maxRange = voiceProximityMaxRange
-        Log.i(VOICE_TAG, "startVoiceProximity sensor=${sensor.name} maxRange=$maxRange")
-        val listener = object : SensorEventListener {
-            override fun onSensorChanged(event: SensorEvent?) {
-                if (event == null || event.values.isEmpty()) return
-                val dist = event.values[0]
-                voiceProximityDist = dist
-                // Near when distance is well below max range (typical: 0 vs ~5cm).
-                val near = dist < maxRange.coerceAtLeast(0.1f) * 0.9f
-                if (voiceProximityNear == near) return
-                voiceProximityNear = near
-                Log.i(VOICE_TAG, "proximity near=$near dist=$dist max=$maxRange")
-                voiceProximityEventSink?.success(
-                    voiceAudioSnapshot(reason = "sensor").also {
-                        it["near"] = near
-                        it["dist"] = dist.toDouble()
-                        it["maxRange"] = maxRange.toDouble()
-                    },
-                )
-            }
-
-            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-        }
-        voiceProximityListener = listener
-        sm.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_UI)
-        registerVoiceVolumeObserver()
-        return true
-    }
-
-    private fun stopVoiceProximity() {
-        Log.i(VOICE_TAG, "stopVoiceProximity")
-        stopVoiceProximitySensorOnly()
-        unregisterVoiceVolumeObserver()
-        voiceProximityNear = null
-        voiceProximityDist = null
-        // Leave the communication pipeline; restore phone-normal audio.
-        val am = getSystemService(AUDIO_SERVICE) as AudioManager
-        @Suppress("DEPRECATION")
-        am.isSpeakerphoneOn = false
-        am.mode = AudioManager.MODE_NORMAL
-    }
-
-    private fun stopVoiceProximitySensorOnly() {
-        val listener = voiceProximityListener ?: return
-        val sm = getSystemService(SENSOR_SERVICE) as SensorManager
-        sm.unregisterListener(listener)
-        voiceProximityListener = null
-    }
-
-    private fun registerVoiceVolumeObserver() {
-        if (voiceVolumeObserver != null) return
-        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) {
-                Log.i(VOICE_TAG, "volume/settings changed selfChange=$selfChange")
-                voiceProximityEventSink?.success(
-                    voiceAudioSnapshot(reason = "volume_change").also {
-                        it["near"] = voiceProximityNear ?: false
-                        voiceProximityDist?.let { d -> it["dist"] = d.toDouble() }
-                        it["maxRange"] = voiceProximityMaxRange.toDouble()
-                    },
-                )
-            }
-        }
-        voiceVolumeObserver = observer
-        try {
-            contentResolver.registerContentObserver(
-                Settings.System.CONTENT_URI,
-                true,
-                observer,
-            )
-        } catch (e: Exception) {
-            Log.w(VOICE_TAG, "volume observer failed: $e")
-        }
-    }
-
-    private fun unregisterVoiceVolumeObserver() {
-        val observer = voiceVolumeObserver ?: return
-        try {
-            contentResolver.unregisterContentObserver(observer)
-        } catch (_: Exception) {
-        }
-        voiceVolumeObserver = null
-    }
-
-    /**
-     * Toggle earpiece ↔ loudspeaker without recreating the audio path.
-     * Keep [MODE_IN_COMMUNICATION] for both — flipping MODE_NORMAL↔IN_COMM
-     * (or AudioTrack usage) mid-play causes ~1–2s mute.
-     */
-    private fun setVoiceAudioRoute(earpiece: Boolean) {
-        val before = voiceAudioSnapshot(reason = "route_before")
-        val am = getSystemService(AUDIO_SERVICE) as AudioManager
-        @Suppress("DEPRECATION")
-        am.mode = AudioManager.MODE_IN_COMMUNICATION
-        am.isSpeakerphoneOn = !earpiece
-        val after = voiceAudioSnapshot(reason = "route_after")
-        Log.i(
-            VOICE_TAG,
-            "setVoiceAudioRoute earpiece=$earpiece before=$before after=$after",
-        )
-    }
-
-    private fun voiceAudioSnapshot(reason: String): HashMap<String, Any?> {
-        val am = getSystemService(AUDIO_SERVICE) as AudioManager
-        @Suppress("DEPRECATION")
-        val mode = am.mode
-        @Suppress("DEPRECATION")
-        val speakerOn = am.isSpeakerphoneOn
-        val modeName = when (mode) {
-            AudioManager.MODE_NORMAL -> "NORMAL"
-            AudioManager.MODE_RINGTONE -> "RINGTONE"
-            AudioManager.MODE_IN_CALL -> "IN_CALL"
-            AudioManager.MODE_IN_COMMUNICATION -> "IN_COMMUNICATION"
-            else -> "mode_$mode"
-        }
-        return hashMapOf(
-            "reason" to reason,
-            "mode" to modeName,
-            "modeInt" to mode,
-            "speakerOn" to speakerOn,
-            "musicVol" to am.getStreamVolume(AudioManager.STREAM_MUSIC),
-            "musicMax" to am.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
-            "voiceVol" to am.getStreamVolume(AudioManager.STREAM_VOICE_CALL),
-            "voiceMax" to am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL),
-            "ringVol" to am.getStreamVolume(AudioManager.STREAM_RING),
-            "wiredHeadset" to am.isWiredHeadsetOn,
-            "btA2dp" to am.isBluetoothA2dpOn,
-            "btSco" to am.isBluetoothScoOn,
-            "callProxHeld" to (proximityWakeLock?.isHeld == true),
-            "fg" to isAppInForeground,
-            "near" to (voiceProximityNear ?: false),
-            "dist" to voiceProximityDist?.toDouble(),
-            "maxRange" to voiceProximityMaxRange.toDouble(),
-        )
-    }
 }

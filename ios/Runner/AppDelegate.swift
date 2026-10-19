@@ -18,6 +18,8 @@ import WebKit
   private var outboxBgTaskId: UIBackgroundTaskIdentifier = .invalid
   private var voiceProximityEventSink: FlutterEventSink?
   private var voiceProximityObserving = false
+  private var voicePlaying = false
+  private var voiceUseFrontSpeaker = false
 
   override func application(
     _ application: UIApplication,
@@ -382,15 +384,36 @@ import WebKit
       object: nil
     )
     voiceProximityObserving = true
-    NSLog("FamilyChatVoice: startVoiceProximity near=%@",
-          UIDevice.current.proximityState ? "1" : "0")
+    NSLog("FamilyChatVoice: startVoiceProximity observing")
     voiceProximityEventSink?(voiceAudioSnapshot(reason: "sensor_start"))
     return true
     #endif
   }
 
+  fileprivate func setVoicePlaying(_ playing: Bool) {
+    voicePlaying = playing
+    NSLog("FamilyChatVoice: setVoicePlaying playing=%@", playing ? "1" : "0")
+    if !playing {
+      voiceUseFrontSpeaker = false
+      UIDevice.current.isProximityMonitoringEnabled = false
+      setVoiceAudioRoute(earpiece: false)
+      voiceProximityEventSink?(voiceAudioSnapshot(reason: "playing_false"))
+      return
+    }
+    #if !targetEnvironment(simulator)
+    UIDevice.current.isProximityMonitoringEnabled = true
+    #endif
+    setVoiceAudioRoute(earpiece: false)
+    evaluateVoiceRaiseToListen(reason: "playing_true")
+  }
+
   fileprivate func stopVoiceProximityMonitoring() {
-    guard voiceProximityObserving else { return }
+    voicePlaying = false
+    voiceUseFrontSpeaker = false
+    guard voiceProximityObserving else {
+      UIDevice.current.isProximityMonitoringEnabled = false
+      return
+    }
     NSLog("FamilyChatVoice: stopVoiceProximity")
     NotificationCenter.default.removeObserver(
       self,
@@ -399,7 +422,6 @@ import WebKit
     )
     voiceProximityObserving = false
     UIDevice.current.isProximityMonitoringEnabled = false
-    // Restore media playback category after voice routing ends.
     let session = AVAudioSession.sharedInstance()
     do {
       try session.overrideOutputAudioPort(.none)
@@ -413,20 +435,74 @@ import WebKit
   @objc private func onProximityChanged(_ notification: Notification) {
     let near = UIDevice.current.proximityState
     NSLog("FamilyChatVoice: proximity near=%@", near ? "1" : "0")
-    voiceProximityEventSink?(voiceAudioSnapshot(reason: "sensor"))
+    evaluateVoiceRaiseToListen(reason: "sensor")
   }
 
-  /// Keep playAndRecord for the whole voice clip; only override the output port.
-  /// Flipping category/mode mid-play restarts the player (~1–2s mute).
+  /// TG listen sense on iOS: while playing + proximity near → earpiece;
+  /// far → speaker. Headset/BT forbids. Screen blank = system proximity.
+  private func evaluateVoiceRaiseToListen(reason: String) {
+    guard voicePlaying else { return }
+    let headset = voiceHeadsetForbidden()
+    let near = UIDevice.current.proximityState
+    let wantFront = near && !headset
+    applyVoiceWantFront(wantFront: wantFront, near: near, headset: headset, reason: reason)
+  }
+
+  private func applyVoiceWantFront(
+    wantFront: Bool,
+    near: Bool,
+    headset: Bool,
+    reason: String
+  ) {
+    if wantFront != voiceUseFrontSpeaker {
+      NSLog(
+        "FamilyChatVoice: raiseToListen front=%@ near=%@ headset=%@ why=%@",
+        wantFront ? "1" : "0",
+        near ? "1" : "0",
+        headset ? "1" : "0",
+        reason
+      )
+      setVoiceAudioRoute(earpiece: wantFront)
+      voiceProximityEventSink?(voiceAudioSnapshot(reason: "route_change"))
+    } else if reason != "sensor" {
+      voiceProximityEventSink?(voiceAudioSnapshot(reason: reason))
+    }
+  }
+
+  private func voiceHeadsetForbidden() -> Bool {
+    let session = AVAudioSession.sharedInstance()
+    for out in session.currentRoute.outputs {
+      switch out.portType {
+      case .headphones, .headsetMic, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE:
+        return true
+      default:
+        continue
+      }
+    }
+    return false
+  }
+
+  /// Speaker = playAndRecord+defaultToSpeaker; earpiece = playAndRecord without.
+  /// Dart restarts the player after a flip (TG startAudioAgain).
   fileprivate func setVoiceAudioRoute(earpiece: Bool) {
     let session = AVAudioSession.sharedInstance()
+    voiceUseFrontSpeaker = earpiece
     do {
-      try session.setCategory(
-        .playAndRecord,
-        mode: .voiceChat,
-        options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
-      )
-      try session.overrideOutputAudioPort(earpiece ? .none : .speaker)
+      if earpiece {
+        try session.setCategory(
+          .playAndRecord,
+          mode: .voiceChat,
+          options: [.allowBluetooth, .allowBluetoothA2DP]
+        )
+        try session.overrideOutputAudioPort(.none)
+      } else {
+        try session.setCategory(
+          .playAndRecord,
+          mode: .default,
+          options: [.allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+        )
+        try session.overrideOutputAudioPort(.speaker)
+      }
       try session.setActive(true)
       NSLog("FamilyChatVoice: setVoiceAudioRoute earpiece=%@", earpiece ? "1" : "0")
     } catch {
@@ -441,10 +517,10 @@ import WebKit
     return [
       "reason": reason,
       "near": UIDevice.current.proximityState,
-      "category": session.category.rawValue,
-      "mode": session.mode.rawValue,
-      "outputs": outputs.joined(separator: ","),
-      "inputs": inputs.joined(separator: ","),
+      "wantFrontSpeaker": voiceUseFrontSpeaker,
+      "playing": voicePlaying,
+      "raised": UIDevice.current.proximityState,
+      "headsetForbidden": voiceHeadsetForbidden(),
       "otherAudio": session.isOtherAudioPlaying,
       "secondaryAudio": session.secondaryAudioShouldBeSilencedHint,
       "proxObs": voiceProximityObserving,

@@ -127,11 +127,13 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Нужен доступ к локальной сети для видеозвонков.</string>
 	<!-- Services: IP-register (:13129) and HTTP CONNECT proxy (:13128) are
-	     cleartext to the VPS IP. Android has the same exception in
-	     network_security_config.xml. Without this, hub load fails on iOS
-	     before the catalog can render. -->
+	     cleartext to the VPS. Android has the same in network_security_config.
+	     iOS 17+: ATS blocks IP connections by default — list every VPS IP
+	     (and loopback for TDLib progressive video http://127.0.0.1). -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
 			<key>159.194.200.164</key>
@@ -140,6 +142,27 @@
 				<true/>
 				<key>NSIncludesSubdomains</key>
 				<false/>
+			</dict>
+			<key>159.194.244.213</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+			<key>127.0.0.1</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
 			</dict>
 		</dict>
 	</dict>

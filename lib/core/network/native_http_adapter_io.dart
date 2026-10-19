@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:flutter/foundation.dart';
@@ -11,8 +13,12 @@ bool get isForcedDartIoHttp => _forceDartIoHttp;
 
 /// Prefer platform HTTP stacks (Cronet / URLSession) for HTTP/2, connection
 /// reuse and TLS session resumption — unless [forceDartIoHttpAdapters] ran.
+///
+/// **iOS:** stay on dart:io. `NativeAdapter` → URLSession has hung indefinitely
+/// on `/familychat/services/access/` (Сервисы spinner forever) while Android
+/// Cronet is fine. Do not change Android path.
 void configureNativeHttpAdapter(Dio dio) {
-  if (_forceDartIoHttp) {
+  if (_forceDartIoHttp || Platform.isIOS) {
     dio.httpClientAdapter = IOHttpClientAdapter();
     return;
   }

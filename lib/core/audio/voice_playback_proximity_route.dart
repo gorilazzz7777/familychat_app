@@ -6,16 +6,12 @@ import 'package:flutter/services.dart';
 
 import '../diagnostics/session_log.dart';
 
-/// Loudspeaker by default; earpiece while the proximity sensor says «near».
+/// Raise-to-listen for voice messages — thin Dart side of Telegram
+/// `MediaController` listen path:
 ///
-/// Do **not** recreate [AudioContext] / AVAudioSession category on each
-/// near↔far flip — that tears down the AudioTrack and causes ~1–2s mute.
-/// Open one routable communication pipeline **before** [play], then only
-/// toggle speakerphone / output port. Skip screen-off wake lock (pauses
-/// Flutter and produces the same mute).
-///
-/// Debug: every step goes to [SessionLog] cat=`voice.prox` / `voice.snap`
-/// (same JSONL as tg/fc diag under `fc_diag/`).
+/// - Native decides `wantFrontSpeaker` (proximity + raise + headset forbid).
+/// - On change: one `setAudioContext` (media vs voiceCommunication) + one
+///   player restart (`startAudioAgain`). No native reassert / debounce races.
 class VoicePlaybackProximityRoute {
   VoicePlaybackProximityRoute._();
 
@@ -27,26 +23,39 @@ class VoicePlaybackProximityRoute {
 
   int _playingCount = 0;
   bool _listening = false;
-  bool _near = false;
   bool _hasSensor = false;
   bool _pipelineReady = false;
+  bool _wantFrontSpeaker = false;
   StreamSubscription<dynamic>? _eventSub;
   Timer? _stopDebounce;
-  Timer? _routeDebounce;
-  Timer? _snapHeartbeat;
   DateTime? _playStartedAt;
   int _routeApplySeq = 0;
-  /// Android often drops MODE_IN_COMMUNICATION → NORMAL mid-play (SessionLog
-  /// 14:01: near@ear then mode=NORMAL while speakerOn=false → quiet/wrong).
-  int _routeDriftStreak = 0;
-  bool _reassertInFlight = false;
+  bool _routeApplying = false;
+
+  /// Active voice bubble registers a restart so we can swap MUSIC↔VOICE_CALL.
+  Future<void> Function({required bool earpiece})? routeRestartHandler;
+  Object? _routeHandlerToken;
+
+  void attachRouteRestart(
+    Object token,
+    Future<void> Function({required bool earpiece}) handler,
+  ) {
+    _routeHandlerToken = token;
+    routeRestartHandler = handler;
+  }
+
+  void detachRouteRestart(Object token) {
+    if (!identical(_routeHandlerToken, token)) return;
+    _routeHandlerToken = null;
+    routeRestartHandler = null;
+  }
 
   void _log(String evt, [Map<String, Object?> fields = const {}]) {
     SessionLog.instance.event('voice.prox', evt, {
       'playingCount': _playingCount,
       'listening': _listening,
       'hasSensor': _hasSensor,
-      'near': _near,
+      'wantFront': _wantFrontSpeaker,
       'pipelineReady': _pipelineReady,
       if (_playStartedAt != null)
         'playAgeMs': DateTime.now().difference(_playStartedAt!).inMilliseconds,
@@ -54,7 +63,7 @@ class VoicePlaybackProximityRoute {
     });
   }
 
-  /// Call once before [AudioPlayer.play] so the track opens on the final usage.
+  /// Call once before [AudioPlayer.play] so the track opens on speaker/media.
   static Future<void> prepareForPlayback() async {
     if (kIsWeb) return;
     await instance._preparePipeline();
@@ -66,7 +75,6 @@ class VoicePlaybackProximityRoute {
   Future<void> _preparePipeline() async {
     if (_pipelineReady && _listening) {
       _log('prepare_skip', {'why': 'already-ready'});
-      await _logNativeSnapshot('prepare_skip');
       return;
     }
     _log('prepare_begin');
@@ -74,107 +82,57 @@ class VoicePlaybackProximityRoute {
       final has = await _methods.invokeMethod<bool>('start') ?? false;
       _hasSensor = has;
       _listening = true;
+      _wantFrontSpeaker = false;
       _log('prepare_sensor', {'hasSensor': has});
-      if (has) {
-        await AudioPlayer.global.setAudioContext(_routableContext);
-        _log('audio_context', {
-          'kind': 'routable',
-          'androidUsage': 'voiceCommunication',
-          'iosCategory': 'playAndRecord',
-        });
-        await _methods.invokeMethod<void>('setSpeaker');
-        _log('native_setSpeaker', {'why': 'prepare'});
-        _eventSub ??= _events.receiveBroadcastStream().listen(
-          _onNativeEvent,
-          onError: (Object e) {
-            _log('stream_error', {'err': '$e'});
-            debugPrint('voice proximity stream error: $e');
-          },
-        );
-      } else {
-        await AudioPlayer.global.setAudioContext(_speakerOnlyContext);
-        _log('audio_context', {
-          'kind': 'speakerOnly',
-          'why': 'no-sensor',
-        });
-      }
+      // Attach native events even if AudioContext setup fails — otherwise
+      // raise-to-listen runs native-only and Dart never restarts the player.
+      _eventSub ??= _events.receiveBroadcastStream().listen(
+        _onNativeEvent,
+        onError: (Object e) {
+          _log('stream_error', {'err': '$e'});
+          debugPrint('voice proximity stream error: $e');
+        },
+      );
+      await AudioPlayer.global.setAudioContext(_speakerContext);
+      _log('audio_context', {'kind': 'speaker', 'why': 'prepare'});
+      await _methods.invokeMethod<void>('setSpeaker');
       _pipelineReady = true;
-      await _logNativeSnapshot('prepare_done');
     } catch (e) {
       _log('prepare_fail', {'err': '$e'});
       debugPrint('voice proximity prepare failed: $e');
-      _listening = false;
-      _hasSensor = false;
       _pipelineReady = false;
       try {
-        await AudioPlayer.global.setAudioContext(_speakerOnlyContext);
-      } catch (_) {}
+        await AudioPlayer.global.setAudioContext(_speakerContextFallback);
+        _pipelineReady = true;
+        _log('audio_context', {
+          'kind': 'speakerFallback',
+          'why': 'prepare_fail',
+        });
+      } catch (e2) {
+        _log('prepare_fallback_fail', {'err': '$e2'});
+      }
     }
   }
 
   void _onNativeEvent(dynamic event) {
-    final parsed = _parseNearEvent(event);
-    final near = parsed.near;
-    _log('sensor_event', {
+    if (event is! Map) return;
+    final reason = event['reason']?.toString() ?? '';
+    final wantFront = event['wantFrontSpeaker'] == true;
+    final near = event['near'] == true;
+    _log('native_event', {
+      'reason': reason,
+      'wantFront': wantFront,
+      'prevWantFront': _wantFrontSpeaker,
       'near': near,
-      'prevNear': _near,
-      'changed': near != _near,
-      if (parsed.raw is Map) 'raw': _stringifyMap(parsed.raw as Map),
-      if (parsed.raw is! Map) 'raw': '$event',
-      if (parsed.dist != null) 'dist': parsed.dist,
-      if (parsed.maxRange != null) 'maxRange': parsed.maxRange,
-      if (parsed.extra.isNotEmpty) ...parsed.extra,
+      'raised': event['raised'] == true,
+      'headsetForbidden': event['headsetForbidden'] == true,
+      'voiceProxHeld': event['voiceProxHeld'] == true,
+      if (event['dist'] != null) 'dist': event['dist'],
     });
-    if (near == _near) return;
-    _near = near;
-    _scheduleRouteApply(why: 'sensor');
-  }
-
-  static String _stringifyMap(Map raw) {
-    try {
-      return raw.entries.map((e) => '${e.key}=${e.value}').join(' ');
-    } catch (_) {
-      return '$raw';
-    }
-  }
-
-  ({
-    bool near,
-    double? dist,
-    double? maxRange,
-    dynamic raw,
-    Map<String, Object?> extra,
-  }) _parseNearEvent(dynamic event) {
-    if (event is Map) {
-      final near = event['near'] == true ||
-          event['near'] == 1 ||
-          event['near'] == 'near';
-      final dist = (event['dist'] as num?)?.toDouble();
-      final maxRange = (event['maxRange'] as num?)?.toDouble();
-      final extra = <String, Object?>{};
-      for (final key in [
-        'mode',
-        'speakerOn',
-        'musicVol',
-        'voiceVol',
-        'ringVol',
-        'wiredHeadset',
-        'btA2dp',
-        'btSco',
-        'reason',
-      ]) {
-        if (event[key] != null) extra[key] = event[key];
-      }
-      return (
-        near: near,
-        dist: dist,
-        maxRange: maxRange,
-        raw: event,
-        extra: extra,
-      );
-    }
-    final near = event == true || event == 1 || event == 'near';
-    return (near: near, dist: null, maxRange: null, raw: event, extra: const {});
+    if (!_listening || _playingCount <= 0) return;
+    if (wantFront == _wantFrontSpeaker) return;
+    _wantFrontSpeaker = wantFront;
+    unawaited(_applyRoute(why: reason.isEmpty ? 'native' : reason));
   }
 
   /// Call when any voice player enters [PlayerState.playing].
@@ -184,11 +142,14 @@ class VoicePlaybackProximityRoute {
     _playingCount++;
     _playStartedAt ??= DateTime.now();
     _log('onPlaying');
-    if (_playingCount == 1 && !_pipelineReady) {
-      await _preparePipeline();
+    if (_playingCount == 1) {
+      if (!_pipelineReady) await _preparePipeline();
+      try {
+        await _methods.invokeMethod<void>('setPlaying', {'playing': true});
+      } catch (e) {
+        _log('setPlaying_fail', {'err': '$e'});
+      }
     }
-    _armSnapHeartbeat();
-    await _logNativeSnapshot('onPlaying');
   }
 
   /// Call when a voice player leaves playing (pause / complete / dispose).
@@ -197,146 +158,67 @@ class VoicePlaybackProximityRoute {
     if (_playingCount > 0) _playingCount--;
     _log('onNotPlaying');
     _stopDebounce?.cancel();
-    // Autoplays the next bubble within a few frames — keep the sensor warm.
     _stopDebounce = Timer(const Duration(milliseconds: 350), () async {
       if (_playingCount == 0) {
         await _stopListening();
       }
     });
-    if (_playingCount == 0) {
-      _snapHeartbeat?.cancel();
-      _snapHeartbeat = null;
-    }
   }
 
-  void _armSnapHeartbeat() {
-    _snapHeartbeat?.cancel();
-    _routeDriftStreak = 0;
-    // Dense while playing — volume keys / cheek taps / route flaps show up.
-    _snapHeartbeat = Timer.periodic(const Duration(milliseconds: 400), (_) {
-      if (_playingCount <= 0) return;
-      unawaited(_heartbeatTick());
-    });
-  }
+  /// Context for the active [AudioPlayer] — global alone is not enough:
+  /// audioplayers keeps the WrappedPlayer's old context until
+  /// `player.setAudioContext` (USAGE_MEDIA stays on loudspeaker).
+  static AudioContext contextFor({required bool earpiece}) =>
+      earpiece ? _earpieceContext : _speakerContext;
 
-  Future<void> _heartbeatTick() async {
-    final snap = await _logNativeSnapshot('heartbeat');
-    if (snap == null || _playingCount <= 0 || !_pipelineReady) return;
-    await _maybeReassertRoute(snap, why: 'heartbeat');
-  }
-
-  /// Keep MODE_IN_COMMUNICATION + speakerphone matching [_near] while playing.
-  Future<void> _maybeReassertRoute(
-    Map snap, {
-    required String why,
-  }) async {
-    if (!_listening || !_hasSensor || _reassertInFlight) return;
-    final modeInt = (snap['modeInt'] as num?)?.toInt() ?? -1;
-    final speakerOn = snap['speakerOn'] == true;
-    final wantSpeaker = !_near;
-    // MODE_IN_COMMUNICATION == 3. Anything else mid-play is drift.
-    final modeOk = modeInt == 3;
-    final speakerOk = speakerOn == wantSpeaker;
-    if (modeOk && speakerOk) {
-      _routeDriftStreak = 0;
-      return;
-    }
-    _routeDriftStreak++;
-    // One bad sample can be a transient flip during setSpeaker — wait ~800ms.
-    if (_routeDriftStreak < 2) {
-      _log('route_drift', {
-        'why': why,
-        'streak': _routeDriftStreak,
-        'modeInt': modeInt,
-        'speakerOn': speakerOn,
-        'wantSpeaker': wantSpeaker,
-        'near': _near,
-      });
-      return;
-    }
-    _routeDriftStreak = 0;
-    _reassertInFlight = true;
-    try {
-      _log('route_reassert', {
-        'why': why,
-        'modeInt': modeInt,
-        'speakerOn': speakerOn,
-        'wantSpeaker': wantSpeaker,
-        'near': _near,
-      });
-      final seq = ++_routeApplySeq;
-      await _applyNativeRouteOnly(why: 'reassert:$why', seq: seq);
-    } finally {
-      _reassertInFlight = false;
-    }
-  }
-
-  void _scheduleRouteApply({required String why}) {
+  Future<void> _applyRoute({required String why}) async {
     final seq = ++_routeApplySeq;
-    _log('route_debounce', {'why': why, 'targetNear': _near, 'seq': seq});
-    _routeDebounce?.cancel();
-    // Proximity sensors often chatter for ~100–200ms when covering.
-    _routeDebounce = Timer(const Duration(milliseconds: 120), () {
-      unawaited(_applyNativeRouteOnly(why: why, seq: seq));
-    });
-  }
-
-  Future<void> _applyNativeRouteOnly({
-    required String why,
-    required int seq,
-  }) async {
-    if (!_listening || !_hasSensor) {
-      _log('route_skip', {'why': 'not-listening', 'seq': seq});
+    if (!_listening || _playingCount <= 0) {
+      _log('route_skip', {'why': 'not-playing', 'seq': seq});
       return;
     }
-    if (seq != _routeApplySeq) {
-      _log('route_skip', {'why': 'stale-seq', 'seq': seq, 'cur': _routeApplySeq});
+    if (_routeApplying) {
+      _log('route_skip', {'why': 'in-flight', 'seq': seq});
       return;
     }
-    final method = _near ? 'setEarpiece' : 'setSpeaker';
-    _log('route_apply_begin', {'method': method, 'why': why, 'seq': seq});
-    await _logNativeSnapshot('route_before');
+    _routeApplying = true;
+    final earpiece = _wantFrontSpeaker;
+    final ctx = contextFor(earpiece: earpiece);
+    _log('route_apply_begin', {'earpiece': earpiece, 'why': why, 'seq': seq});
     try {
-      // Native speakerphone / port toggle only — never setAudioContext here.
-      await _methods.invokeMethod<void>(method);
-      _routeDriftStreak = 0;
-      _log('route_apply_ok', {'method': method, 'why': why, 'seq': seq});
+      // Seed default for future players; existing player is updated in restart.
+      await AudioPlayer.global.setAudioContext(ctx);
+      _log('audio_context', {
+        'kind': earpiece ? 'earpiece' : 'speaker',
+        'why': why,
+        'scope': 'global',
+      });
+      final restart = routeRestartHandler;
+      if (restart != null) {
+        await restart(earpiece: earpiece);
+        _log('route_restart', {'earpiece': earpiece});
+      } else {
+        _log('route_restart_skip', {'why': 'no-handler'});
+      }
+      // audioplayers global setAudioContext applies the *previous* context to
+      // AudioManager (off-by-one). Re-assert TG speakerphone after player
+      // reopen so Samsung does not stay on the loudspeaker.
+      try {
+        await _methods.invokeMethod<void>(
+          earpiece ? 'setEarpiece' : 'setSpeaker',
+        );
+        _log('native_reassert', {'earpiece': earpiece, 'why': 'post-restart'});
+      } catch (e) {
+        _log('native_reassert_fail', {'err': '$e'});
+      }
     } catch (e) {
-      _log('route_apply_fail', {'method': method, 'err': '$e', 'seq': seq});
+      _log('route_apply_fail', {'err': '$e', 'seq': seq});
       debugPrint('voice proximity route failed: $e');
-    }
-    await _logNativeSnapshot('route_after');
-  }
-
-  Future<Map<dynamic, dynamic>?> _logNativeSnapshot(String why) async {
-    try {
-      final snap = await _methods.invokeMethod<dynamic>('getSnapshot');
-      if (snap is Map) {
-        if (SessionLog.enabled) {
-          SessionLog.instance.event('voice.snap', why, {
-            'playingCount': _playingCount,
-            'near': _near,
-            for (final e in snap.entries)
-              if (e.value != null) '${e.key}': e.value,
-          });
-        }
-        return snap;
+    } finally {
+      _routeApplying = false;
+      if (seq != _routeApplySeq && _listening && _playingCount > 0) {
+        unawaited(_applyRoute(why: 'coalesce'));
       }
-      if (SessionLog.enabled) {
-        SessionLog.instance.event('voice.snap', why, {
-          'playingCount': _playingCount,
-          'raw': '$snap',
-        });
-      }
-      return null;
-    } catch (e) {
-      if (SessionLog.enabled) {
-        SessionLog.instance.event('voice.snap', 'fail', {
-          'why': why,
-          'err': '$e',
-        });
-      }
-      return null;
     }
   }
 
@@ -344,13 +226,14 @@ class VoicePlaybackProximityRoute {
     _log('stop_begin');
     _stopDebounce?.cancel();
     _stopDebounce = null;
-    _routeDebounce?.cancel();
-    _routeDebounce = null;
-    _snapHeartbeat?.cancel();
-    _snapHeartbeat = null;
+    routeRestartHandler = null;
+    _routeHandlerToken = null;
     await _eventSub?.cancel();
     _eventSub = null;
     if (_listening) {
+      try {
+        await _methods.invokeMethod<void>('setPlaying', {'playing': false});
+      } catch (_) {}
       try {
         await _methods.invokeMethod<void>('stop');
       } catch (e) {
@@ -358,24 +241,27 @@ class VoicePlaybackProximityRoute {
       }
     }
     _listening = false;
-    _near = false;
     _hasSensor = false;
     _pipelineReady = false;
+    _wantFrontSpeaker = false;
     _playStartedAt = null;
     try {
-      await AudioPlayer.global.setAudioContext(_speakerOnlyContext);
-      _log('audio_context', {'kind': 'speakerOnly', 'why': 'stop'});
+      await AudioPlayer.global.setAudioContext(_speakerContext);
+      _log('audio_context', {'kind': 'speaker', 'why': 'stop'});
     } catch (_) {}
     _log('stop_done');
   }
 
-  /// Communication usage + speaker on — earpiece is a speakerphone toggle only.
-  static final AudioContext _routableContext = AudioContext(
+  /// Loudspeaker / media — TG default for voice tap.
+  ///
+  /// audioplayers asserts: `defaultToSpeaker` only with `playAndRecord`, so
+  /// speaker uses playAndRecord+defaultToSpeaker (not bare `playback`).
+  static final AudioContext _speakerContext = AudioContext(
     android: const AudioContextAndroid(
       isSpeakerphoneOn: true,
       stayAwake: true,
       contentType: AndroidContentType.speech,
-      usageType: AndroidUsageType.voiceCommunication,
+      usageType: AndroidUsageType.media,
       audioFocus: AndroidAudioFocus.gain,
     ),
     iOS: AudioContextIOS(
@@ -388,10 +274,11 @@ class VoicePlaybackProximityRoute {
     ),
   );
 
-  static final AudioContext _speakerOnlyContext = AudioContext(
+  /// Fallback if the preferred speaker context still fails to apply.
+  static final AudioContext _speakerContextFallback = AudioContext(
     android: const AudioContextAndroid(
       isSpeakerphoneOn: true,
-      stayAwake: false,
+      stayAwake: true,
       contentType: AndroidContentType.speech,
       usageType: AndroidUsageType.media,
       audioFocus: AndroidAudioFocus.gain,
@@ -399,6 +286,24 @@ class VoicePlaybackProximityRoute {
     iOS: AudioContextIOS(
       category: AVAudioSessionCategory.playback,
       options: const {},
+    ),
+  );
+
+  /// Earpiece / voice-call stream — TG front speaker path.
+  static final AudioContext _earpieceContext = AudioContext(
+    android: const AudioContextAndroid(
+      isSpeakerphoneOn: false,
+      stayAwake: true,
+      contentType: AndroidContentType.speech,
+      usageType: AndroidUsageType.voiceCommunication,
+      audioFocus: AndroidAudioFocus.gain,
+    ),
+    iOS: AudioContextIOS(
+      category: AVAudioSessionCategory.playAndRecord,
+      options: const {
+        AVAudioSessionOptions.allowBluetooth,
+        AVAudioSessionOptions.allowBluetoothA2DP,
+      },
     ),
   );
 }

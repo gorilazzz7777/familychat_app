@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -37,6 +38,9 @@ class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
     this.durationMs,
     this.transcript,
     this.canToggleTranscript = false,
+    this.transcriptBusy = false,
+    this.onRequestTranscript,
+    this.maxWidth,
     this.textColor,
     this.metaColor,
     this.messageMetadata = const {},
@@ -50,6 +54,13 @@ class ChatVoiceMessagePlayer extends ConsumerStatefulWidget {
   final int? durationMs;
   final String? transcript;
   final bool canToggleTranscript;
+  /// TG SaluteSpeech: request in flight.
+  final bool transcriptBusy;
+  /// TG: tap sticky-note when there is no transcript yet.
+  final VoidCallback? onRequestTranscript;
+  /// Bubble content width — used when transcript is shown under the player
+  /// (Max-style: expand to regular text-message width).
+  final double? maxWidth;
   final Color? textColor;
   final Color? metaColor;
   final Map<String, dynamic> messageMetadata;
@@ -67,9 +78,13 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
   late final ChatVoicePlayerHandle _handle;
   bool _playing = false;
   bool _preparing = false;
+  /// True while rebuilding the track after earpiece↔speaker (TG startAudioAgain).
+  bool _routeRestarting = false;
   Duration _position = Duration.zero;
   Duration _total = Duration.zero;
   double _rate = ChatVoicePlaybackCoordinator.instance.playbackRate;
+  Source? _activeSource;
+  final Object _routeRestartToken = Object();
   StreamSubscription<void>? _completeSub;
   StreamSubscription<PlayerState>? _stateSub;
   StreamSubscription<Duration>? _durationSub;
@@ -131,11 +146,19 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
         'state': state.name,
         'wasPlaying': wasPlaying,
         'nowPlaying': playing,
+        'routeRestarting': _routeRestarting,
       });
       setState(() => _playing = playing);
+      if (_routeRestarting) return;
       if (playing && !wasPlaying) {
+        VoicePlaybackProximityRoute.instance.attachRouteRestart(
+          _routeRestartToken,
+          _restartForAudioRoute,
+        );
         unawaited(VoicePlaybackProximityRoute.instance.onPlaying());
       } else if (!playing && wasPlaying) {
+        VoicePlaybackProximityRoute.instance
+            .detachRouteRestart(_routeRestartToken);
         unawaited(VoicePlaybackProximityRoute.instance.onNotPlaying());
       }
     });
@@ -247,6 +270,7 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     if (id != null && id > 0) {
       ChatVoicePlaybackCoordinator.instance.unregister(id, _handle);
     }
+    VoicePlaybackProximityRoute.instance.detachRouteRestart(_routeRestartToken);
     if (_playing) {
       _voiceLog('dispose_while_playing');
       unawaited(VoicePlaybackProximityRoute.instance.onNotPlaying());
@@ -387,14 +411,18 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
       }
       if (localPath.isNotEmpty && localDeviceFileExists(localPath)) {
         _voiceLog('play_source', {'src': 'file', 'pathTail': _pathTail(localPath)});
-        await _player.play(DeviceFileSource(localPath, mimeType: mime));
+        final src = DeviceFileSource(localPath, mimeType: mime);
+        _activeSource = src;
+        await _player.play(src);
         return;
       }
 
       final localBytes = widget.attachment['local_bytes'];
       if (localBytes is Uint8List && localBytes.isNotEmpty) {
         _voiceLog('play_source', {'src': 'bytes', 'len': localBytes.length});
-        await _player.play(BytesSource(localBytes, mimeType: mime));
+        final src = BytesSource(localBytes, mimeType: mime);
+        _activeSource = src;
+        await _player.play(src);
         return;
       }
 
@@ -417,7 +445,9 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
           return;
         }
         _voiceLog('play_source', {'src': 'download', 'len': bytes.length});
-        await _player.play(BytesSource(bytes, mimeType: mime));
+        final src = BytesSource(bytes, mimeType: mime);
+        _activeSource = src;
+        await _player.play(src);
         return;
       }
 
@@ -429,7 +459,9 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
       );
       if (url.isNotEmpty) {
         _voiceLog('play_source', {'src': 'url'});
-        await _player.play(UrlSource(url, mimeType: mime));
+        final src = UrlSource(url, mimeType: mime);
+        _activeSource = src;
+        await _player.play(src);
       } else {
         _voiceLog('play_abort', {'why': 'no-url'});
       }
@@ -455,9 +487,55 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
   }
 
   /// Scrapbook ставит global AudioContext в sonification/ambient — голос молчит.
-  /// Opens the routable pipeline once before play (no mid-play context swap).
+  /// Opens the speaker/media pipeline before first play (TG default).
   Future<void> _ensureMediaAudioContext() async {
     await VoicePlaybackProximityRoute.prepareForPlayback();
+  }
+
+  /// TG `startAudioAgain`: reopen the same source after MUSIC↔VOICE_CALL flip.
+  ///
+  /// Must call [AudioPlayer.setAudioContext] on **this** player — global alone
+  /// leaves the WrappedPlayer on USAGE_MEDIA / speaker.
+  Future<void> _restartForAudioRoute({required bool earpiece}) async {
+    final src = _activeSource;
+    if (src == null) {
+      _voiceLog('route_restart_skip', {'why': 'no-source', 'earpiece': earpiece});
+      return;
+    }
+    if (!_playing && !_preparing) {
+      _voiceLog('route_restart_skip', {'why': 'not-playing', 'earpiece': earpiece});
+      return;
+    }
+    final pos = _position;
+    final ctx = VoicePlaybackProximityRoute.contextFor(earpiece: earpiece);
+    _voiceLog('route_restart', {
+      'earpiece': earpiece,
+      'posMs': pos.inMilliseconds,
+    });
+    _routeRestarting = true;
+    try {
+      await _player.setAudioContext(ctx);
+      _voiceLog('player_audio_context', {
+        'earpiece': earpiece,
+        'kind': earpiece ? 'earpiece' : 'speaker',
+      });
+      await _player.stop();
+      await _player.setPlaybackRate(_rate);
+      await _player.play(src);
+      if (pos > Duration.zero) {
+        try {
+          await _player.seek(pos);
+        } catch (_) {}
+      }
+      VoicePlaybackProximityRoute.instance.attachRouteRestart(
+        _routeRestartToken,
+        _restartForAudioRoute,
+      );
+    } catch (e) {
+      _voiceLog('route_restart_fail', {'err': '$e', 'earpiece': earpiece});
+    } finally {
+      _routeRestarting = false;
+    }
   }
 
   Widget _buildPlayControl({
@@ -529,7 +607,13 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
     final hasTranscript =
         transcript != null && transcript.isNotEmpty && widget.canToggleTranscript;
     final preferText = ref.watch(voiceMessagePreferTextProvider);
-    final showText = hasTranscript && preferText;
+    // Max: voice stays; transcript opens under the player (not a replace).
+    final showTranscriptBelow = hasTranscript && preferText;
+    final canRequest = !hasTranscript &&
+        widget.onRequestTranscript != null &&
+        !widget.transcriptBusy;
+    final showTranscriptChip =
+        hasTranscript || canRequest || widget.transcriptBusy;
 
     final totalMs = _total.inMilliseconds > 0
         ? _total.inMilliseconds
@@ -541,35 +625,59 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
         ? formatVoiceDuration(_position.inMilliseconds)
         : formatVoiceDuration(totalMs);
 
-    final toggle = hasTranscript
-        ? IconButton(
-            tooltip: showText ? 'Показать голос' : 'Показать текст',
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-            onPressed: () {
-              ref.read(voiceMessagePreferTextProvider.notifier).toggle();
-            },
-            icon: Icon(
-              showText ? LucideIcons.audio_lines : LucideIcons.sticky_note,
-              size: 18,
-              color: metaColor,
-            ),
-          )
-        : null;
+    final chipFg = widget.isMine ? Colors.white : accent;
+    final chipBg = widget.isMine
+        ? Colors.white.withValues(alpha: 0.20)
+        : accent.withValues(alpha: 0.12);
+    // Active →T when transcript is open (Max teal/filled look).
+    final transcriptChipBg = showTranscriptBelow
+        ? (widget.isMine
+            ? Colors.white.withValues(alpha: 0.32)
+            : accent)
+        : chipBg;
+    final transcriptChipFg = showTranscriptBelow
+        ? (widget.isMine ? Colors.white : onAccent)
+        : chipFg;
 
-    if (showText) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Text(
-              transcript,
-              style: TextStyle(color: textColor, height: 1.35),
-            ),
+    Widget speedChip = _MaxVoiceChip(
+      background: chipBg,
+      foreground: chipFg,
+      tooltip: 'Скорость',
+      onTap: _cycleSpeed,
+      child: Text(_maxSpeedLabel(ChatVoicePlaybackCoordinator.instance.playbackRate)),
+    );
+
+    Widget? transcriptChip;
+    if (hasTranscript) {
+      transcriptChip = _MaxVoiceChip(
+        background: transcriptChipBg,
+        foreground: transcriptChipFg,
+        tooltip: showTranscriptBelow ? 'Скрыть текст' : 'Показать текст',
+        onTap: () {
+          ref.read(voiceMessagePreferTextProvider.notifier).toggle();
+        },
+        child: _MaxArrowT(color: transcriptChipFg),
+      );
+    } else if (widget.transcriptBusy) {
+      transcriptChip = _MaxVoiceChip(
+        background: chipBg,
+        foreground: chipFg,
+        child: SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: chipFg,
           ),
-          if (toggle != null) toggle,
-        ],
+        ),
+      );
+    } else if (canRequest) {
+      transcriptChip = _MaxVoiceChip(
+        background: chipBg,
+        foreground: chipFg,
+        tooltip: 'Получить текст',
+        onTap: widget.onRequestTranscript,
+        child: _MaxArrowT(color: chipFg),
       );
     }
 
@@ -606,114 +714,296 @@ class _ChatVoiceMessagePlayerState extends ConsumerState<ChatVoiceMessagePlayer>
       }
     }
 
-    final trackBg = metaColor.withValues(alpha: 0.22);
-    final trackFg = textColor.withValues(alpha: 0.9);
+    final waveInactive = widget.isMine
+        ? Colors.white.withValues(alpha: 0.35)
+        : metaColor.withValues(alpha: 0.45);
+    final waveActive = widget.isMine ? Colors.white : accent;
+    final durationColor = widget.isMine
+        ? Colors.white.withValues(alpha: 0.85)
+        : accent;
+
+    final bubbleMax = widget.maxWidth ?? 280;
+    // Compact voice ≈ Max short bubble; with transcript → full text width.
+    final maxW = showTranscriptBelow ? bubbleMax : math.min(280.0, bubbleMax);
+    final minW = showTranscriptBelow ? math.min(220.0, maxW) : 200.0;
+
+    final player = Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        _buildPlayControl(
+          accent: accent,
+          onAccent: onAccent,
+          downloading: downloading,
+          uploading: uploading,
+          transferProgress: transferProgress,
+          onCancelTransfer: onCancelTransfer,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: 28,
+                      child: _VoiceWaveformBar(
+                        progress: progress,
+                        seed: _attachmentId ?? widget.threadId,
+                        activeColor: waveActive,
+                        inactiveColor: waveInactive,
+                        onSeekFraction: totalMs <= 0
+                            ? null
+                            : (fraction) async {
+                                final ms = (fraction * totalMs).round();
+                                setState(
+                                  () => _position =
+                                      Duration(milliseconds: ms),
+                                );
+                                _voiceLog('ui_seek', {
+                                  'toMs': ms,
+                                  'fromMs': _position.inMilliseconds,
+                                });
+                                await _player
+                                    .seek(Duration(milliseconds: ms));
+                              },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  speedChip,
+                  if (showTranscriptChip && transcriptChip != null) ...[
+                    const SizedBox(width: 4),
+                    transcriptChip,
+                  ],
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                label,
+                style: TextStyle(
+                  color: durationColor,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
 
     return ConstrainedBox(
-      constraints: const BoxConstraints(minWidth: 200, maxWidth: 280),
-      child: Row(
-        children: [
-          _buildPlayControl(
-            accent: accent,
-            onAccent: onAccent,
-            downloading: downloading,
-            uploading: uploading,
-            transferProgress: transferProgress,
-            onCancelTransfer: onCancelTransfer,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
+      constraints: BoxConstraints(minWidth: minW, maxWidth: maxW),
+      child: showTranscriptBelow
+          ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 3,
-                    thumbShape: const RoundSliderThumbShape(
-                      enabledThumbRadius: 5,
-                    ),
-                    overlayShape: const RoundSliderOverlayShape(
-                      overlayRadius: 10,
-                    ),
-                    activeTrackColor: trackFg,
-                    inactiveTrackColor: trackBg,
-                    thumbColor: trackFg,
-                    overlayColor: trackFg.withValues(alpha: 0.12),
-                    padding: EdgeInsets.zero,
-                  ),
-                  child: SizedBox(
-                    height: 22,
-                    child: Slider(
-                      value: progress,
-                      onChanged: totalMs <= 0
-                          ? null
-                          : (v) {
-                              final ms = (v * totalMs).round();
-                              setState(
-                                () => _position = Duration(milliseconds: ms),
-                              );
-                            },
-                      onChangeEnd: totalMs <= 0
-                          ? null
-                          : (v) async {
-                              final ms = (v * totalMs).round();
-                              _voiceLog('ui_seek', {
-                                'toMs': ms,
-                                'fromMs': _position.inMilliseconds,
-                              });
-                              await _player.seek(Duration(milliseconds: ms));
-                            },
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(left: 4, right: 2),
-                  child: Row(
-                    children: [
-                      Text(
-                        label,
-                        style: TextStyle(
-                          color: metaColor,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const Spacer(),
-                      Material(
-                        color: metaColor.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(10),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(10),
-                          onTap: _cycleSpeed,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 3,
-                            ),
-                            child: Text(
-                              ChatVoicePlaybackCoordinator
-                                  .instance.playbackRateLabel,
-                              style: TextStyle(
-                                color: textColor,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      if (toggle != null) ...[
-                        const SizedBox(width: 2),
-                        toggle,
-                      ],
-                    ],
+                player,
+                const SizedBox(height: 8),
+                Text(
+                  transcript!,
+                  style: TextStyle(
+                    color: textColor,
+                    height: 1.35,
+                    fontSize: 15,
                   ),
                 ),
               ],
+            )
+          : player,
+    );
+  }
+
+  static String _maxSpeedLabel(double rate) {
+    if (rate == 1.0) return '1x';
+    if (rate == 1.25) return '1.25x';
+    if (rate == 1.5) return '1.5x';
+    if (rate == 2.0) return '2x';
+    if (rate == 3.0) return '3x';
+    final s = rate.toStringAsFixed(2);
+    return '${s.replaceFirst(RegExp(r'\.?0+$'), '')}x';
+  }
+}
+
+/// Max-style chip: soft tinted rounded square (speed / →T).
+class _MaxVoiceChip extends StatelessWidget {
+  const _MaxVoiceChip({
+    required this.background,
+    required this.foreground,
+    required this.child,
+    this.onTap,
+    this.tooltip,
+  });
+
+  final Color background;
+  final Color foreground;
+  final Widget child;
+  final VoidCallback? onTap;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final chip = Material(
+      color: background,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+            child: Center(
+              child: DefaultTextStyle(
+                style: TextStyle(
+                  color: foreground,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  height: 1,
+                ),
+                child: IconTheme(
+                  data: IconThemeData(color: foreground, size: 15),
+                  child: child,
+                ),
+              ),
             ),
           ),
-        ],
+        ),
       ),
     );
+    final tip = tooltip?.trim() ?? '';
+    if (tip.isEmpty) return chip;
+    return Tooltip(message: tip, child: chip);
+  }
+}
+
+class _MaxArrowT extends StatelessWidget {
+  const _MaxArrowT({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.arrow_forward_rounded, size: 13, color: color),
+        Text(
+          'T',
+          style: TextStyle(
+            color: color,
+            fontSize: 13,
+            fontWeight: FontWeight.w800,
+            height: 1,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _VoiceWaveformBar extends StatelessWidget {
+  const _VoiceWaveformBar({
+    required this.progress,
+    required this.seed,
+    required this.activeColor,
+    required this.inactiveColor,
+    this.onSeekFraction,
+  });
+
+  final double progress;
+  final int seed;
+  final Color activeColor;
+  final Color inactiveColor;
+  final Future<void> Function(double fraction)? onSeekFraction;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: onSeekFraction == null
+              ? null
+              : (details) {
+                  final w = constraints.maxWidth;
+                  if (w <= 0) return;
+                  final f = (details.localPosition.dx / w).clamp(0.0, 1.0);
+                  unawaited(onSeekFraction!(f));
+                },
+          onHorizontalDragUpdate: onSeekFraction == null
+              ? null
+              : (details) {
+                  final w = constraints.maxWidth;
+                  if (w <= 0) return;
+                  final f = (details.localPosition.dx / w).clamp(0.0, 1.0);
+                  unawaited(onSeekFraction!(f));
+                },
+          child: CustomPaint(
+            size: Size(constraints.maxWidth, constraints.maxHeight),
+            painter: _VoiceWaveformPainter(
+              progress: progress,
+              seed: seed,
+              activeColor: activeColor,
+              inactiveColor: inactiveColor,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _VoiceWaveformPainter extends CustomPainter {
+  _VoiceWaveformPainter({
+    required this.progress,
+    required this.seed,
+    required this.activeColor,
+    required this.inactiveColor,
+  });
+
+  final double progress;
+  final int seed;
+  final Color activeColor;
+  final Color inactiveColor;
+
+  static const _barCount = 36;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rnd = math.Random(seed == 0 ? 7 : seed);
+    final heights = List<double>.generate(_barCount, (_) {
+      // Prefer mid-height bars with some peaks — Max-like voice shape.
+      final base = 0.28 + rnd.nextDouble() * 0.55;
+      final peak = rnd.nextDouble() < 0.18 ? 0.2 + rnd.nextDouble() * 0.25 : 0;
+      return (base + peak).clamp(0.22, 1.0);
+    });
+
+    final gap = size.width / (_barCount * 2.2);
+    final barW = math.max(2.0, (size.width - gap * (_barCount + 1)) / _barCount);
+    final paint = Paint()..style = PaintingStyle.fill;
+    final playedUntil = (progress.clamp(0.0, 1.0) * _barCount);
+
+    for (var i = 0; i < _barCount; i++) {
+      final h = heights[i] * size.height;
+      final x = gap + i * (barW + gap);
+      final y = (size.height - h) / 2;
+      paint.color = i + 1 <= playedUntil ? activeColor : inactiveColor;
+      final r = Radius.circular(barW / 2);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(x, y, barW, h), r),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _VoiceWaveformPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.seed != seed ||
+        oldDelegate.activeColor != activeColor ||
+        oldDelegate.inactiveColor != inactiveColor;
   }
 }

@@ -58,8 +58,14 @@ class GalleryVideoPlayer extends StatefulWidget {
     this.showControls = true,
     /// Bottom elapsed/total + seek bar (inline + fullscreen).
     this.showScrubber = false,
+    /// Compact elapsed/total (top-left) + mute for inline chat playback.
+    this.showMuteClock = false,
     this.placeholder,
     this.onResolvedSize,
+    /// Fired once when playback actually starts (playing, not just initialized).
+    this.onPlaybackStarted,
+    /// Fired once when [initialize]/[play] fails.
+    this.onError,
     /// Fired once when playback reaches the end (non-looping only).
     this.onEnded,
   });
@@ -73,8 +79,11 @@ class GalleryVideoPlayer extends StatefulWidget {
   final bool muted;
   final bool showControls;
   final bool showScrubber;
+  final bool showMuteClock;
   final Widget? placeholder;
   final ValueChanged<Size>? onResolvedSize;
+  final VoidCallback? onPlaybackStarted;
+  final ValueChanged<Object>? onError;
   final VoidCallback? onEnded;
 
   @override
@@ -91,6 +100,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
   double _scrubValue = 0;
   late bool _muted;
   bool _endedNotified = false;
+  bool _playbackStartedNotified = false;
   late final String _keepOnId = 'gallery_video_${++_keepOnSeq}';
   bool _keepOnHeld = false;
 
@@ -172,7 +182,9 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     if (controller == null) {
       final url = widget.url.trim();
       if (url.isEmpty) {
-        if (mounted) setState(() => _error = StateError('Пустой URL видео'));
+        final err = StateError('Пустой URL видео');
+        if (mounted) setState(() => _error = err);
+        widget.onError?.call(err);
         return;
       }
       final headers = widget.httpHeaders;
@@ -182,6 +194,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
       );
     }
     _controller = controller;
+    _playbackStartedNotified = false;
     try {
       await controller.initialize();
       if (!mounted) return;
@@ -198,10 +211,12 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
         widget.onResolvedSize?.call(size);
       }
       _syncKeepOn();
+      _maybeNotifyPlaybackStarted();
       if (mounted) setState(() {});
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e);
+      widget.onError?.call(e);
     }
   }
 
@@ -209,7 +224,20 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     if (!mounted) return;
     if (!_scrubbing) setState(() {});
     _syncKeepOn();
+    _maybeNotifyPlaybackStarted();
     _maybeNotifyEnded();
+  }
+
+  void _maybeNotifyPlaybackStarted() {
+    if (_playbackStartedNotified || widget.onPlaybackStarted == null) return;
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    final v = controller.value;
+    if (!v.isPlaying) return;
+    // Progressive/stream: wait until buffering clears or the first frame advances.
+    if (v.isBuffering && v.position <= Duration.zero) return;
+    _playbackStartedNotified = true;
+    widget.onPlaybackStarted!();
   }
 
   void _maybeNotifyEnded() {
@@ -230,6 +258,7 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     _controller?.dispose();
     _controller = null;
     _error = null;
+    _playbackStartedNotified = false;
     _releaseKeepOn();
   }
 
@@ -268,6 +297,63 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
     if (total <= 0) return;
     final ms = (value.clamp(0.0, 1.0) * total).round();
     await controller.seekTo(Duration(milliseconds: ms));
+  }
+
+  Widget _buildMuteClock(VideoPlayerController controller) {
+    final total = controller.value.duration;
+    final position = controller.value.position;
+    final clock = DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.48),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+        child: Text(
+          '${formatGalleryVideoClock(position)} / '
+          '${formatGalleryVideoClock(total)}',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            height: 1.1,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      ),
+    );
+    // Scrubber already has mute — clock-only top-left.
+    if (widget.showScrubber) {
+      return Positioned(left: 6, top: 6, child: clock);
+    }
+    // Autoplay inline: elapsed/total top-left; mute top-right.
+    return Positioned(
+      left: 6,
+      right: 6,
+      top: 6,
+      child: Row(
+        children: [
+          clock,
+          const Spacer(),
+          Material(
+            color: Colors.black.withValues(alpha: 0.48),
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: () => unawaited(_toggleMute()),
+              child: Padding(
+                padding: const EdgeInsets.all(7),
+                child: Icon(
+                  _muted ? LucideIcons.volume_x : LucideIcons.volume_2,
+                  color: Colors.white,
+                  size: 16,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildScrubber(VideoPlayerController controller) {
@@ -316,27 +402,30 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
                       ),
                     ),
                   ],
-                  Text(
-                    formatGalleryVideoClock(position),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      height: 1.1,
+                  // Time lives top-left via [showMuteClock] on inline bubbles.
+                  if (!widget.showMuteClock) ...[
+                    Text(
+                      formatGalleryVideoClock(position),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        height: 1.1,
+                      ),
                     ),
-                  ),
-                  const Text(
-                    ' / ',
-                    style: TextStyle(color: Colors.white70, fontSize: 12),
-                  ),
-                  Text(
-                    formatGalleryVideoClock(total),
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                      height: 1.1,
+                    const Text(
+                      ' / ',
+                      style: TextStyle(color: Colors.white70, fontSize: 12),
                     ),
-                  ),
+                    Text(
+                      formatGalleryVideoClock(total),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        height: 1.1,
+                      ),
+                    ),
+                  ],
                   const Spacer(),
                   if (showTransport)
                     GestureDetector(
@@ -410,7 +499,9 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
       ),
     );
 
-    final showOverlay = widget.showControls || widget.showScrubber;
+    final showOverlay = widget.showControls ||
+        widget.showScrubber ||
+        widget.showMuteClock;
     if (!showOverlay) {
       return video;
     }
@@ -436,6 +527,8 @@ class _GalleryVideoPlayerState extends State<GalleryVideoPlayer>
             child: const SizedBox.expand(),
           ),
         if (widget.showScrubber) _buildScrubber(controller),
+        // Top-left clock even when scrubber is on (user inline play).
+        if (widget.showMuteClock) _buildMuteClock(controller),
       ],
     );
   }

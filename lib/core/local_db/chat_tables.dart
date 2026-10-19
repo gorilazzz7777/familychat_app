@@ -67,3 +67,30 @@ class MediaLocalIndexRows extends Table {
   @override
   Set<Column<Object>> get primaryKey => {key};
 }
+
+/// TG chat meta for SQLite-first history (separate from FC threads).
+class TgChatStateRows extends Table {
+  IntColumn get chatId => integer()();
+  TextColumn get title => text().withDefault(const Constant(''))();
+  /// dm | group | channel | secret | unknown
+  TextColumn get chatType => text().withDefault(const Constant('unknown'))();
+  IntColumn get lastMessageId => integer().withDefault(const Constant(0))();
+  IntColumn get unreadCount => integer().withDefault(const Constant(0))();
+  BoolColumn get historyCompleteOlder =>
+      boolean().withDefault(const Constant(false))();
+  IntColumn get updatedAtMs => integer().withDefault(const Constant(0))();
+
+  @override
+  Set<Column<Object>> get primaryKey => {chatId};
+}
+
+/// TG transcript rows — UI reads these; TDLib writer fills them.
+class TgMessageRows extends Table {
+  IntColumn get chatId => integer()();
+  IntColumn get messageId => integer()();
+  IntColumn get dateMs => integer().withDefault(const Constant(0))();
+  TextColumn get payloadJson => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {chatId, messageId};
+}

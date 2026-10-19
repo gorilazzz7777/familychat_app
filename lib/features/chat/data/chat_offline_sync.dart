@@ -12,6 +12,7 @@ import 'chat_realtime_utils.dart';
 import 'chat_scheduled_send_service.dart';
 import 'chat_ui_connectivity.dart';
 import '../../../core/media/media_upload_foreground.dart';
+import '../../telegram_tdlib/telegram_tdlib_service.dart';
 
 /// Координатор офлайн-кэша чатов и синхронизации очереди.
 class ChatOfflineSync extends ChangeNotifier {
@@ -220,6 +221,12 @@ class ChatOfflineSync extends ChangeNotifier {
     try {
       await ChatOfflinePrefetch.run(repo);
       if (!ChatLocalStore.isSupported) return;
+      // Idle-gate: don't storm SQLite/HTTP while hub list is scrolling.
+      if (TelegramTdlibService.instance.isUiInteractionBusy ||
+          TelegramTdlibService.instance.openChatId != null) {
+        debugPrint('[ChatOfflineSync] prefetch skip ui-busy');
+        return;
+      }
       final threads = await ChatLocalStore.instance.readThreads();
       final unreadIds = <int>[];
       for (final thread in threads) {
@@ -228,6 +235,7 @@ class ChatOfflineSync extends ChangeNotifier {
         if ((chatAsInt(thread['unread_count']) ?? 0) > 0) {
           unreadIds.add(id);
         }
+        if (unreadIds.length >= 2) break;
       }
       if (unreadIds.isNotEmpty) {
         unawaited(ChatOfflinePrefetch.prefetchThreads(repo, unreadIds));

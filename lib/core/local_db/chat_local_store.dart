@@ -350,6 +350,98 @@ class ChatLocalStore {
     return db?.newestServerMessageId(threadId);
   }
 
+  // --- TG history ---
+
+  Future<void> upsertTgMessages(
+    int chatId,
+    List<({int messageId, int dateMs, String payloadJson})> messages,
+  ) {
+    return _enqueueWrite((db) => db.upsertTgMessages(chatId, messages));
+  }
+
+  Future<void> deleteTgMessages(int chatId, List<int> messageIds) {
+    return _enqueueWrite((db) => db.deleteTgMessages(chatId, messageIds));
+  }
+
+  Future<void> upsertTgChatState({
+    required int chatId,
+    String? title,
+    String? chatType,
+    int? lastMessageId,
+    int? unreadCount,
+    bool? historyCompleteOlder,
+  }) {
+    return _enqueueWrite(
+      (db) => db.upsertTgChatState(
+        chatId: chatId,
+        title: title,
+        chatType: chatType,
+        lastMessageId: lastMessageId,
+        unreadCount: unreadCount,
+        historyCompleteOlder: historyCompleteOlder,
+      ),
+    );
+  }
+
+  Future<TgChatStateRow?> readTgChatState(int chatId) async {
+    final db = await ensureOpen();
+    return db?.readTgChatState(chatId);
+  }
+
+  Future<int> countTgMessages(int chatId) async {
+    final db = await ensureOpen();
+    if (db == null) return 0;
+    return db.countTgMessages(chatId);
+  }
+
+  Future<List<TgMessageRow>> readTgMessagesTail(
+    int chatId, {
+    int limit = 20,
+  }) async {
+    final db = await ensureOpen();
+    if (db == null) return const [];
+    return db.readTgMessagesTail(chatId, limit: limit);
+  }
+
+  Future<List<TgMessageRow>> readTgMessagesOlder(
+    int chatId, {
+    required int beforeMessageId,
+    int limit = 40,
+  }) async {
+    final db = await ensureOpen();
+    if (db == null) return const [];
+    return db.readTgMessagesOlder(
+      chatId,
+      beforeMessageId: beforeMessageId,
+      limit: limit,
+    );
+  }
+
+  Stream<List<TgMessageRow>> watchTgMessages(int chatId) async* {
+    final db = await ensureOpen();
+    if (db == null) {
+      yield const [];
+      return;
+    }
+    yield* db.watchTgMessages(chatId);
+  }
+
+  Future<int> evictTgChatOverCap(int chatId, int keepNewest) async {
+    var removed = 0;
+    await _enqueueWrite((db) async {
+      removed = await db.evictTgMessagesOverCap(chatId, keepNewest);
+    });
+    return removed;
+  }
+
+  Future<int> evictTgMessagesGlobal(int globalCap) async {
+    var removed = 0;
+    await _enqueueWrite((db) async {
+      removed = await db.evictTgMessagesGlobal(globalCap);
+    });
+    return removed;
+  }
+
   Future<void> close() async {
     final db = _db;
     _db = null;

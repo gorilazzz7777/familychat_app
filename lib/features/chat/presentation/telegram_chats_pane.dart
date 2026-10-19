@@ -22,6 +22,9 @@ class TelegramChatsPane extends ConsumerStatefulWidget {
     this.telegramConnected = false,
     this.telegramGrace = false,
     this.searchQuery = '',
+    this.globalHits = const [],
+    this.globalLoading = false,
+    this.onOpenGlobalHit,
   });
 
   final bool hasIndividualPremium;
@@ -29,6 +32,10 @@ class TelegramChatsPane extends ConsumerStatefulWidget {
   final bool telegramConnected;
   final bool telegramGrace;
   final String searchQuery;
+  /// Global TG results from hub search (not already in [hubChats] filter).
+  final List<TdlibGlobalSearchHit> globalHits;
+  final bool globalLoading;
+  final Future<void> Function(TdlibGlobalSearchHit hit)? onOpenGlobalHit;
 
   @override
   ConsumerState<TelegramChatsPane> createState() => _TelegramChatsPaneState();
@@ -66,15 +73,25 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
   void _onListScroll() {
     ref.read(telegramTdlibServiceProvider).setUiScrollBusy(true);
     _scrollBusyClearTimer?.cancel();
-    _scrollBusyClearTimer = Timer(const Duration(milliseconds: 420), () {
+    _scrollBusyClearTimer = Timer(const Duration(milliseconds: 600), () {
       if (!mounted) return;
       ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
     });
+    // Do NOT prefetch mid-drag — 120ms race started hub-avatar getFile
+    // during fling (SessionLog 20:54 Skipped 1950). Prefetch on ScrollEnd.
     _avatarPrefetchTimer?.cancel();
-    _avatarPrefetchTimer = Timer(const Duration(milliseconds: 120), () {
-      if (!mounted) return;
-      _scheduleVisibleAvatarPrefetch();
-    });
+  }
+
+  @override
+  void didUpdateWidget(covariant TelegramChatsPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.globalHits != widget.globalHits ||
+        oldWidget.searchQuery != widget.searchQuery) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scheduleVisibleAvatarPrefetch();
+      });
+    }
   }
 
   void _scheduleVisibleAvatarPrefetch([List<TdlibChatPreview>? chats]) {
@@ -92,7 +109,6 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                   c.lastMessageText.toLowerCase().contains(q);
             })
             .toList();
-    if (list.isEmpty) return;
     if (svc.isUiScrollBusy) return;
 
     // Prefer soft minithumb rows (visible blur). Also enqueue chats that
@@ -101,7 +117,9 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
     const rowExtent = 72.0;
     var first = 0;
     if (_listScroll.hasClients) {
-      first = (_listScroll.offset / rowExtent).floor().clamp(0, list.length - 1);
+      first = (_listScroll.offset / rowExtent)
+          .floor()
+          .clamp(0, list.isEmpty ? 0 : list.length - 1);
     }
     for (final c in list.skip(first).take(24)) {
       final path = c.photoLocalPath?.trim() ?? '';
@@ -113,6 +131,30 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
       if (!hasMini && !hasPhotoId) continue;
       needSharp.add(c.chatId);
       if (needSharp.length >= 12) break;
+    }
+    // Global search hits are not in hubChats filter — still need hub-avatar.
+    if (widget.searchQuery.trim().isNotEmpty) {
+      final known = {for (final c in list) c.chatId};
+      for (final h in widget.globalHits) {
+        if (needSharp.length >= 16) break;
+        if (h.chatId == 0 || known.contains(h.chatId)) continue;
+        final live = svc.chatPreviewById(h.chatId);
+        final path = live?.photoLocalPath?.trim() ??
+            h.photoLocalPath?.trim() ??
+            '';
+        if (path.isNotEmpty) continue;
+        final hasMini = (live?.photoMinithumbnailBytes?.isNotEmpty == true) ||
+            (h.photoMinithumbnailBytes?.isNotEmpty == true);
+        final hasPhotoId =
+            (live?.photoFileId != null && live!.photoFileId! > 0) ||
+            (h.photoFileId != null && h.photoFileId! > 0);
+        if (!hasMini && !hasPhotoId) {
+          // Still queue — prefetch will refresh photo id via getChat.
+          needSharp.add(h.chatId);
+          continue;
+        }
+        needSharp.add(h.chatId);
+      }
     }
     if (needSharp.isEmpty) return;
     if (!svc.readyForMedia) return;
@@ -216,6 +258,19 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
               c.lastMessageText.toLowerCase().contains(q);
         })
         .toList();
+    final knownIds = {for (final c in chats) c.chatId};
+    final globalExtra = [
+      for (final h in widget.globalHits)
+        if (!knownIds.contains(h.chatId)) h,
+    ];
+    final searching = q.isNotEmpty;
+    final showGlobal = searching &&
+        (widget.globalLoading || globalExtra.isNotEmpty);
+    final headerSlots = showGlobal ? 1 : 0;
+    final loadingSlots =
+        showGlobal && widget.globalLoading && globalExtra.isEmpty ? 1 : 0;
+    final totalCount =
+        chats.length + headerSlots + globalExtra.length + loadingSlots;
 
     final previewStyle = theme.textTheme.bodyMedium?.copyWith(
       color: scheme.onSurfaceVariant,
@@ -239,7 +294,7 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
         await svc.refreshChatList();
         await _reloadMatches();
       },
-      child: chats.isEmpty
+      child: totalCount == 0
           ? ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
@@ -247,7 +302,9 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                 Center(
                   child: Text(
                     q.isNotEmpty
-                        ? 'Чаты не найдены'
+                        ? (widget.globalLoading
+                            ? 'Поиск в Telegram…'
+                            : 'Ничего не найдено')
                         : 'Нет чатов Telegram',
                   ),
                 ),
@@ -260,10 +317,17 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
                       .read(telegramTdlibServiceProvider)
                       .setUiScrollBusy(true);
                 } else if (n is ScrollEndNotification) {
-                  _scheduleVisibleAvatarPrefetch(chats);
+                  _avatarPrefetchTimer?.cancel();
+                  _avatarPrefetchTimer = Timer(
+                    const Duration(milliseconds: 800),
+                    () {
+                      if (!mounted) return;
+                      _scheduleVisibleAvatarPrefetch(chats);
+                    },
+                  );
                   _scrollBusyClearTimer?.cancel();
                   _scrollBusyClearTimer = Timer(
-                    const Duration(milliseconds: 280),
+                    const Duration(milliseconds: 600),
                     () {
                       if (!mounted) return;
                       ref
@@ -277,8 +341,91 @@ class _TelegramChatsPaneState extends ConsumerState<TelegramChatsPane> {
               child: ListView.builder(
               controller: _listScroll,
               cacheExtent: 480,
-              itemCount: chats.length,
+              itemCount: totalCount,
               itemBuilder: (context, i) {
+                if (i >= chats.length) {
+                  var gi = i - chats.length;
+                  if (showGlobal) {
+                    if (gi == 0) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        child: Text(
+                          'Telegram',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            color: scheme.primary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      );
+                    }
+                    gi -= 1;
+                  }
+                  if (gi < globalExtra.length) {
+                    final hit = globalExtra[gi];
+                    final live = svc.chatPreviewById(hit.chatId);
+                    final path =
+                        (live?.photoLocalPath?.trim().isNotEmpty == true)
+                            ? live!.photoLocalPath
+                            : hit.photoLocalPath;
+                    final mini = (live?.photoMinithumbnailBytes != null &&
+                            live!.photoMinithumbnailBytes!.isNotEmpty)
+                        ? live.photoMinithumbnailBytes
+                        : hit.photoMinithumbnailBytes;
+                    return ListTile(
+                      leading: ChatAvatar(
+                        key: ValueKey<String>(
+                          'tg-pane-search-av-${hit.chatId}-${path ?? ''}',
+                        ),
+                        name: hit.title,
+                        localFilePath: path,
+                        memoryBytes: mini,
+                        radius: 24,
+                      ),
+                      title: Text(
+                        hit.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      subtitle: Text(
+                        hit.subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: previewStyle,
+                      ),
+                      onTap: () {
+                        final open = widget.onOpenGlobalHit;
+                        if (open != null) {
+                          unawaited(open(hit));
+                        } else {
+                          Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => TelegramConversationScreen(
+                                chatId: hit.chatId,
+                                title: hit.title,
+                                tgUserId: (hit.isGroup || hit.isChannel)
+                                    ? null
+                                    : hit.userId,
+                              ),
+                            ),
+                          );
+                        }
+                      },
+                    );
+                  }
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Center(
+                      child: SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  );
+                }
                 final c = chats[i];
                 final unread = c.unreadCount;
                 final muted = svc.isChatMuted(c.chatId);

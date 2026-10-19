@@ -152,7 +152,9 @@ class LinkPreviewService {
   final Map<String, _CacheEntry> _cache = {};
   final Map<String, Future<ChatLinkPreview?>> _inFlight = {};
   int _active = 0;
-  static const _maxConcurrent = 3;
+  // Was 3 — channel tip rows fired parallel Dio+750KB regex on the UI
+  // isolate and froze FRAME ~4.5s (Шарий 20:37). Serialize client parses.
+  static const _maxConcurrent = 1;
 
   void bindBackend(LinkPreviewBackendFetcher? fetcher) {
     backendFetcher = fetcher;
@@ -342,7 +344,9 @@ class LinkPreviewService {
         _cache[url] = _CacheEntry(null, DateTime.now());
         return null;
       }
-      final snippet = html.length > 750000 ? html.substring(0, 750000) : html;
+      // Cap + yield so regex work cannot pin the UI isolate for seconds.
+      final snippet = html.length > 120000 ? html.substring(0, 120000) : html;
+      await Future<void>.delayed(Duration.zero);
       final title = _firstNonEmpty([
         _meta(snippet, 'og:title'),
         _meta(snippet, 'twitter:title'),
@@ -353,6 +357,7 @@ class LinkPreviewService {
         _meta(snippet, 'twitter:description'),
         _meta(snippet, 'description', name: true),
       ]);
+      await Future<void>.delayed(Duration.zero);
       final siteName = _firstNonEmpty([_meta(snippet, 'og:site_name')]);
       final imageRaw = _firstContentImage([
         ..._metaAll(snippet, 'og:image'),
@@ -362,6 +367,7 @@ class LinkPreviewService {
         ..._metaAll(snippet, 'twitter:image:src'),
         _jsonLdImage(snippet),
       ]);
+      await Future<void>.delayed(Duration.zero);
       final imageUrl = _absolutize(pageUri, imageRaw);
       final preview = ChatLinkPreview(
         url: url,

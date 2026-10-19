@@ -9,6 +9,7 @@ void _configureChatSqlite(CommonDatabase database) {
 }
 
 /// Kept for FCM background isolate / explicit native opens.
+/// [shareAcrossIsolates] → Drift background isolate (off UI thread).
 QueryExecutor openChatDatabaseConnection() {
   return driftDatabase(
     name: 'familychat_chat',

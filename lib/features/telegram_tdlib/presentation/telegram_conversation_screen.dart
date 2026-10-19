@@ -18,13 +18,17 @@ import '../../chat/data/chat_location_utils.dart';
 import '../../chat/data/chat_send_options.dart';
 import '../../chat/data/chat_ui_connectivity.dart';
 import '../../chat/data/chat_voice_playback_coordinator.dart';
+import '../../chat/data/chat_voice_transcription_prefs.dart';
 import '../../chat/data/chat_voice_utils.dart';
+import '../../chat/data/hub_first_paint_snapshot.dart';
 import '../../chat/data/link_preview_service.dart';
+import '../../chat/data/chat_realtime_utils.dart';
 import '../tdlib_io.dart';
 import '../../../core/media/gallery_media_utils.dart';
 import '../../chat/presentation/chat_call_screen.dart';
 import '../../chat/presentation/record_video_circle_screen.dart';
 import '../../chat/presentation/widgets/chat_animated_media_scope.dart';
+import '../../chat/presentation/widgets/chat_inline_video_autoplay.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_models.dart';
 import '../../chat/presentation/widgets/chat_attach_sheet/chat_attach_sheet.dart';
 import '../../chat/presentation/widgets/chat_compose_input.dart';
@@ -44,6 +48,9 @@ import '../telegram_match_store.dart';
 import '../telegram_tdlib_providers.dart';
 import '../telegram_tdlib_service.dart';
 import '../telegram_link_navigation.dart';
+import '../tdlib_smartspeech.dart';
+import '../tdlib_transcript_cache.dart';
+import '../tg_history_store.dart';
 import '../tg_jank_log.dart';
 import 'telegram_chat_info_sheet.dart';
 import 'telegram_live_stream_bar.dart';
@@ -84,6 +91,7 @@ class _TelegramConversationScreenState
   final _inputFocus = FocusNode();
   final _scroll = ScrollController();
   final _animatedMediaController = ChatAnimatedMediaController();
+  final _inlineVideoAutoplay = ChatInlineVideoAutoplayController();
   final _tts = FlutterTts();
   bool _sending = false;
   bool _loadingOlder = false;
@@ -119,6 +127,9 @@ class _TelegramConversationScreenState
   bool _caughtUpMarked = false;
   /// Ignore tip mark-read while we jump to the unread frontier.
   bool _suppressMarkRead = true;
+  /// Multi-unread open: block tip mark-read / nearTip until the user scrolls
+  /// away from the tip (open pin often sits at px≈80 inside the "near tip" band).
+  bool _userReleasedUnreadGate = false;
   bool _suppressViewportPrefetch = true;
   bool _showScrollToBottom = false;
   double _lastScrollPixels = 0;
@@ -131,11 +142,15 @@ class _TelegramConversationScreenState
   void Function()? _viewportMediaRescanListener;
   Timer? _markVisibleReadTimer;
   Timer? _scrollBusyClearTimer;
+  Timer? _imeBusyClearTimer;
   Timer? _reassertUnreadScrollTimer;
   Timer? _openRevealTimeout;
   Timer? _stickyDayThrottle;
   String? _stickyDayLabel;
   bool _showStickyDay = false;
+  /// Hold UI notifies while compose has focus / IME animates — tap-input
+  /// raced enable-link-previews (Valya Davey ~10s).
+  bool _imeUiBusy = false;
   /// Highest message id we already sent to viewMessages this session.
   int _maxMarkedReadId = 0;
   /// Token from [TelegramTdlibService.openChat] — stale dispose must not close
@@ -148,7 +163,19 @@ class _TelegramConversationScreenState
   final Map<int, GlobalKey> _messageKeys = {};
   final GlobalKey _unreadSeparatorKey = GlobalKey();
   /// Inflated during unread open so ensureVisible can mount the frontier row.
-  double _listCacheExtent = 1200;
+  // Start modest — tip paint ≈20 from SQLite. Grow after first user scroll.
+  double _listCacheExtent = 720;
+
+  /// SQLite transcript (oldest→newest). UI window = last [_windowLimit].
+  List<TdlibMessage> _dbMessages = const [];
+  StreamSubscription<List<TdlibMessage>>? _dbWatchSub;
+  Timer? _dbWatchApplyTimer;
+  List<TdlibMessage>? _dbWatchPending;
+  int _windowLimit = TgHistoryStore.tipPaintCap;
+  /// Unread reassert after the list is already on screen. Tip-seed paints
+  /// ~20 rows, then history floods to 200 and the 280ms reassert toggled
+  /// cacheExtent 1200↔3600 forever (Осташко 22:03 BUILD every ~280ms).
+  int _unreadReassertAfterReveal = 0;
 
   static const _stickyDayAwayPx = 40.0;
   static const _scrollToBottomAwayPx = 280.0;
@@ -170,6 +197,7 @@ class _TelegramConversationScreenState
     _fcDmThreadId = widget.fcThreadId;
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_onScroll);
+    _inputFocus.addListener(_onInputFocusChanged);
     TgJankLog.resetForChat(widget.chatId);
     WidgetsBinding.instance.addTimingsCallback(_onFrameTimings);
     // Stay deferred until reveal+settle — timed boot defer expires mid-open
@@ -179,6 +207,36 @@ class _TelegramConversationScreenState
       unawaited(_openAndWatch());
     });
     unawaited(_resolveFcPeerForCalls());
+  }
+
+  void _onInputFocusChanged() {
+    if (!mounted) return;
+    if (_inputFocus.hasFocus) {
+      _imeBusyClearTimer?.cancel();
+      _imeBusyClearTimer = null;
+      if (!_imeUiBusy) {
+        _imeUiBusy = true;
+        TgJankLog.log('ime-focus');
+      }
+      // IME busy has no 720ms TTL — scroll-busy expired mid-keyboard (Valya).
+      ref.read(telegramTdlibServiceProvider).setUiImeBusy(true);
+      return;
+    }
+    TgJankLog.log('ime-blur');
+    _imeBusyClearTimer?.cancel();
+    _imeBusyClearTimer = Timer(const Duration(milliseconds: 420), () {
+      if (!mounted || _inputFocus.hasFocus) return;
+      _imeUiBusy = false;
+      ref.read(telegramTdlibServiceProvider).setUiImeBusy(false);
+      // Previews may have been deferred while typing.
+      if (!_linkPreviewsEnabled) _enableLinkPreviews();
+    });
+  }
+
+  bool get _blocksLinkPreviews {
+    if (_imeUiBusy || _inputFocus.hasFocus) return true;
+    if (!mounted) return true;
+    return MediaQuery.viewInsetsOf(context).bottom > 0;
   }
 
   Future<void> _resolveFcPeerForCalls() async {
@@ -211,6 +269,150 @@ class _TelegramConversationScreenState
       return false;
     }
     return true;
+  }
+
+  /// Primary timeline source: SQLite window (+ thin RAM overlay for send).
+  List<TdlibMessage> _messagesForUi(TelegramTdlibService svc) {
+    final ram = svc.messagesFor(widget.chatId);
+    final ramById = {for (final m in ram) m.id: m};
+    final List<TdlibMessage> base;
+    if (_dbMessages.isNotEmpty) {
+      final start =
+          (_dbMessages.length - _windowLimit).clamp(0, _dbMessages.length);
+      base = _dbMessages.sublist(start);
+    } else if (ram.isNotEmpty) {
+      final start = (ram.length - _windowLimit).clamp(0, ram.length);
+      base = ram.sublist(start);
+    } else {
+      return const [];
+    }
+    final out = <TdlibMessage>[];
+    final seen = <int>{};
+    for (final m in base) {
+      seen.add(m.id);
+      out.add(ramById[m.id] ?? m);
+    }
+    for (final m in ram) {
+      if (seen.contains(m.id)) continue;
+      final optimistic = m.sendingState != null;
+      final newerTip = base.isNotEmpty && m.id > base.last.id;
+      if (optimistic || newerTip) {
+        out.add(m);
+        seen.add(m.id);
+      }
+    }
+    out.sort((a, b) => a.id.compareTo(b.id));
+    return out;
+  }
+
+  void _bindDbWatch() {
+    _dbWatchSub?.cancel();
+    _dbWatchApplyTimer?.cancel();
+    _dbWatchPending = null;
+    debugPrint('[tg-db] watch chat=${widget.chatId}');
+    _dbWatchSub = TgHistoryStore.instance.watchChat(widget.chatId).listen(
+      (msgs) {
+        if (!mounted) return;
+        // Coalesce Drift upsert storms (ready-catchup / ensureTip) — each
+        // emission used to setState and freeze open (Шарий BUILD×500).
+        // Also hold during service open-quiet — watch bypassed quiet and
+        // stacked with the pierce-flush NOTIFY storm.
+        _dbWatchPending = msgs;
+        final quiet =
+            ref.read(telegramTdlibServiceProvider).isOpenChatUiQuiet;
+        final delay = quiet
+            ? const Duration(milliseconds: 480)
+            : const Duration(milliseconds: 220);
+        _dbWatchApplyTimer?.cancel();
+        _dbWatchApplyTimer = Timer(delay, () {
+          _dbWatchApplyTimer = null;
+          final pending = _dbWatchPending;
+          _dbWatchPending = null;
+          if (!mounted || pending == null) return;
+          if (ref.read(telegramTdlibServiceProvider).isOpenChatUiQuiet) {
+            // Still quiet — re-arm; do not paint mid-open.
+            _dbWatchPending = pending;
+            _dbWatchApplyTimer = Timer(const Duration(milliseconds: 300), () {
+              _dbWatchApplyTimer = null;
+              final p = _dbWatchPending;
+              _dbWatchPending = null;
+              if (!mounted || p == null) return;
+              if (_dbTipFingerprint(p) == _dbTipFingerprint(_dbMessages)) {
+                return;
+              }
+              setState(() => _dbMessages = p);
+            });
+            return;
+          }
+          if (_dbTipFingerprint(pending) == _dbTipFingerprint(_dbMessages)) {
+            return;
+          }
+          setState(() => _dbMessages = pending);
+        });
+      },
+      onError: (Object e) {
+        debugPrint('[tg-db] watch error chat=${widget.chatId}: $e');
+      },
+    );
+  }
+
+  /// Tip id + length — enough to skip no-op watch rebuilds.
+  String _dbTipFingerprint(List<TdlibMessage> msgs) {
+    if (msgs.isEmpty) return '0';
+    return '${msgs.length}:${msgs.first.id}:${msgs.last.id}';
+  }
+
+  Future<int> _ensureOlderFromDb(TelegramTdlibService svc) async {
+    // Grow UI window from rows already in SQLite before hitting TDLib.
+    if (_dbMessages.length > _windowLimit) {
+      if (mounted) {
+        setState(() {
+          _windowLimit = (_windowLimit + TgHistoryStore.olderPageSize)
+              .clamp(TgHistoryStore.tipPaintCap, 500);
+        });
+      }
+      debugPrint(
+        '[tg-db] older window chat=${widget.chatId} '
+        'limit=$_windowLimit db=${_dbMessages.length}',
+      );
+      return TgHistoryStore.olderPageSize;
+    }
+    final ram = svc.messagesFor(widget.chatId);
+    final before = _dbMessages.isNotEmpty
+        ? _dbMessages.first.id
+        : (ram.isNotEmpty ? ram.first.id : 0);
+    if (before <= 0) {
+      await TgHistoryStore.instance.ensureTip(
+        widget.chatId,
+        chatType: TgHistoryStore.chatTypeLabel(
+          isChannel: svc.isChannelChat(widget.chatId),
+          isPrivate: svc.isPrivateChat(widget.chatId),
+          isGroup: svc.isGroupChat(widget.chatId),
+        ),
+        title: svc.peerTitle(widget.chatId),
+        loadTip: () => svc.loadTipHistoryForDb(
+          widget.chatId,
+          maxCount: TgHistoryStore.tipPaintCap,
+        ),
+      );
+      return await TgHistoryStore.instance.count(widget.chatId);
+    }
+    final added = await TgHistoryStore.instance.ensureOlder(
+      widget.chatId,
+      beforeMessageId: before,
+      loadOlder: () => svc.loadOlderMessagesForDb(
+        widget.chatId,
+        beforeMessageId: before,
+        pageSize: TgHistoryStore.olderPageSize,
+      ),
+    );
+    if (mounted) {
+      setState(() {
+        _windowLimit = (_windowLimit + TgHistoryStore.olderPageSize)
+            .clamp(TgHistoryStore.tipPaintCap, 500);
+      });
+    }
+    return added;
   }
 
   Future<void> _startFcCall({bool isVideo = false}) async {
@@ -265,7 +467,7 @@ class _TelegramConversationScreenState
   Future<void> _precacheRecentMedia() async {
     if (!mounted) return;
     final svc = ref.read(telegramTdlibServiceProvider);
-    final msgs = svc.messagesFor(widget.chatId);
+    final msgs = _messagesForUi(svc);
     if (msgs.isEmpty) return;
     final tip = msgs.length > 10 ? msgs.sublist(msgs.length - 10) : msgs;
     final futures = <Future<void>>[];
@@ -323,6 +525,7 @@ class _TelegramConversationScreenState
     }
     _lastUserScrollAt = DateTime.now();
     _animatedMediaController.noteUserScroll();
+    _inlineVideoAutoplay.noteScroll();
     final pos = _scroll.position;
     final activity = pos.activity;
     final actName = activity is BallisticScrollActivity
@@ -344,8 +547,9 @@ class _TelegramConversationScreenState
     ref.read(telegramTdlibServiceProvider).setUiScrollBusy(true);
     _scrollBusyClearTimer?.cancel();
     _scrollBusyClearTimer = Timer(const Duration(milliseconds: 650), () {
-      if (!mounted || _isUserActivelyScrolling) return;
+      if (!mounted || _isUserActivelyScrolling || _imeUiBusy) return;
       ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
+      _inlineVideoAutoplay.noteScrollEnd();
       TgJankLog.log('scroll-busy cleared');
     });
     // User took over before we finished the unread jump — allow progressive
@@ -358,6 +562,11 @@ class _TelegramConversationScreenState
         _openUnreadCount > 0 &&
         _unreadFrontierReady) {
       _suppressMarkRead = false;
+      // Multi-unread: force viewMessages stays blocked until the gate —
+      // a tip-side pin + tiny scroll used to wipe 80 unreads (Осташко).
+      if (_openUnreadCount < 2 || _userReleasedUnreadGate) {
+        ref.read(telegramTdlibServiceProvider).setBlockUnreadForceView(false);
+      }
       _revealChatContent();
     } else if (_initialScrollDone &&
         _suppressMarkRead &&
@@ -366,6 +575,7 @@ class _TelegramConversationScreenState
         _openUnreadCount < 2) {
       _unreadFrontierReady = true;
       _suppressMarkRead = false;
+      ref.read(telegramTdlibServiceProvider).setBlockUnreadForceView(false);
       _revealChatContent();
     }
     _updateScrollToBottomVisibility();
@@ -374,15 +584,20 @@ class _TelegramConversationScreenState
     _scheduleMarkVisibleRead();
     if (_loadingOlder) return;
     // reverse: true → maxScrollExtent is older history.
-    if (_scroll.position.pixels < _scroll.position.maxScrollExtent - 200) {
-      return;
-    }
+    // Prefetch when past ~55% so tip=20 window grows before the edge.
+    final maxExt = _scroll.position.maxScrollExtent;
+    final px = _scroll.position.pixels;
+    final nearOlder = maxExt <= 0 ||
+        px >= maxExt - 400 ||
+        (maxExt > 800 && px >= maxExt * 0.55);
+    if (!nearOlder) return;
     unawaited(_loadOlder());
   }
 
   DateTime? _dayOfTopmostVisibleMessage() {
     if (!_scroll.hasClients) return null;
-    final msgs = ref.read(telegramTdlibServiceProvider).messagesFor(widget.chatId);
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final msgs = _messagesForUi(svc);
     if (msgs.isEmpty) return null;
     final scrollCtx = _scroll.position.context.notificationContext;
     final viewport = scrollCtx?.findRenderObject() as RenderBox?;
@@ -446,7 +661,11 @@ class _TelegramConversationScreenState
 
   void _scheduleStickyDayUpdate() {
     if (_stickyDayThrottle?.isActive ?? false) return;
-    _stickyDayThrottle = Timer(const Duration(milliseconds: 48), () {
+    // Ballistic: avoid O(n) GlobalKey walks every 48ms (Valya scroll hitch).
+    final delay = _isUserActivelyScrolling
+        ? const Duration(milliseconds: 160)
+        : const Duration(milliseconds: 48);
+    _stickyDayThrottle = Timer(delay, () {
       if (!mounted) return;
       _updateStickyDayHeader();
     });
@@ -462,7 +681,7 @@ class _TelegramConversationScreenState
         : _viewportPrefetchDebounce;
     _viewportPrefetchTimer = Timer(delay, () {
       if (!mounted || _suppressViewportPrefetch) return;
-      if (_isUserActivelyScrolling) {
+      if (_isUserActivelyScrolling || _imeUiBusy) {
         _scheduleViewportPrefetch();
         return;
       }
@@ -506,7 +725,7 @@ class _TelegramConversationScreenState
       final focusId = _pickVisibleSoftMediaMessageId(svc);
       if (focusId == null) return;
       // Already downloading this focus — just keep watching.
-      final msgs = svc.messagesFor(widget.chatId);
+      final msgs = _messagesForUi(svc);
       TdlibMessage? m;
       for (final x in msgs) {
         if (x.id == focusId) {
@@ -545,7 +764,7 @@ class _TelegramConversationScreenState
   void _prefetchAroundViewport() {
     if (!_scroll.hasClients) return;
     final svc = ref.read(telegramTdlibServiceProvider);
-    final msgs = svc.messagesFor(widget.chatId);
+    final msgs = _messagesForUi(svc);
     if (msgs.isEmpty) return;
 
     final layoutId = _pickVisibleSoftMediaMessageId(svc);
@@ -608,7 +827,7 @@ class _TelegramConversationScreenState
     final listBottom = listTop + listH;
     final centerY = listTop + listH * 0.42;
 
-    final msgs = svc.messagesFor(widget.chatId);
+    final msgs = _messagesForUi(svc);
     if (msgs.isEmpty) return null;
     final byId = <int, TdlibMessage>{for (final m in msgs) m.id: m};
 
@@ -652,7 +871,7 @@ class _TelegramConversationScreenState
 
   /// Fallback when GlobalKeys are not mounted yet (open settle / sparse build).
   int? _estimateSoftMediaNearScroll(TelegramTdlibService svc) {
-    final msgs = svc.messagesFor(widget.chatId);
+    final msgs = _messagesForUi(svc);
     if (msgs.isEmpty || !_scroll.hasClients) return null;
     final timeline = _buildTimeline(msgs);
     if (timeline.isEmpty) return null;
@@ -703,14 +922,19 @@ class _TelegramConversationScreenState
 
     final svc = ref.read(telegramTdlibServiceProvider);
     final nearTip = pixels <= _scrollToBottomAwayPx;
-    svc.setOpenChatNearTip(nearTip);
+    _syncOpenNearTip(svc, nearTip, pixels: pixels);
     final unread = svc.unreadCountFor(widget.chatId);
     // FAB badge = live unread. Line sticky is independent (may outlive unread).
     final hasLiveUnread = unread > 0;
 
     // At tip: no unread FAB — user already sees fresh; do not arm/move line.
+    // Still schedule progressive mark — hiding the FAB must not leave the
+    // hub badge stuck (НСИС SessionLog 10:36 unread stayed 6 after tip).
     if (nearTip) {
       _hideScrollToBottomButton();
+      if (!_suppressMarkRead && _unreadFrontierReady) {
+        _scheduleMarkVisibleRead();
+      }
       return;
     }
 
@@ -759,11 +983,28 @@ class _TelegramConversationScreenState
   }
 
   /// Called from build when the transcript grows — must not setState sync.
+  void _syncOpenNearTip(
+    TelegramTdlibService svc,
+    bool nearTip, {
+    required double pixels,
+  }) {
+    if (_openUnreadCount >= 2 && !_userReleasedUnreadGate) {
+      if (_isUserActivelyScrolling && pixels > _scrollToBottomAwayPx) {
+        _userReleasedUnreadGate = true;
+        svc.setBlockUnreadForceView(false);
+      } else {
+        svc.setOpenChatNearTip(false);
+        return;
+      }
+    }
+    svc.setOpenChatNearTip(nearTip);
+  }
+
   void _maybeArmLiveUnreadFromBuild(TelegramTdlibService svc) {
     if (!_contentReady || !_scroll.hasClients) return;
     final pixels = _scroll.position.pixels;
     final nearTip = pixels <= _scrollToBottomAwayPx;
-    svc.setOpenChatNearTip(nearTip);
+    _syncOpenNearTip(svc, nearTip, pixels: pixels);
     // Tip: fresh messages stay in view — no new sticky, no FAB.
     if (nearTip) return;
     final unread = svc.unreadCountFor(widget.chatId);
@@ -861,12 +1102,22 @@ class _TelegramConversationScreenState
     // Otherwise a tip-side viewport marks the whole gap as read while the
     // sticky divider still paints at the old anchor.
     if (_openUnreadCount > 0 && !_unreadFrontierReady) return;
+    // SessionLog 13:41 «ТП НСИС» unread=6: gate required scroll-away
+    // (pixels>280) before any markVisible — user read toward tip, FAB hid
+    // (nearTip) but viewMessages never ran → hub badge stuck at 6.
+    // Progressive layout mark is safe once the frontier is pinned; the
+    // tip-force wipe is blocked separately via [_blockUnreadForceView].
     final svc = ref.read(telegramTdlibServiceProvider);
-    final msgs = svc.messagesFor(widget.chatId);
+    final msgs = _messagesForUi(svc);
     if (msgs.isEmpty) return;
 
     final lastRead = svc.lastReadInboxMessageId(widget.chatId);
     final floor = _maxMarkedReadId > lastRead ? _maxMarkedReadId : lastRead;
+    // Caught-up chats: skip O(n) GlobalKey hit-tests every scroll tick.
+    if (svc.unreadCountFor(widget.chatId) <= 0 &&
+        msgs.last.id <= floor) {
+      return;
+    }
 
     // Layout hit-test only — avgExtent≈220 over-marked tall media rows and
     // wiped the unread pack while the sticky divider was still on screen.
@@ -931,9 +1182,14 @@ class _TelegramConversationScreenState
       if (ok) return true;
       // Few short unreads: bar on screen but reverse list already at tip
       // (offset 0) — cannot pull higher. Don't leave opacity 0 forever.
+      // Never accept tip-park for multi-unread opens — that marked the tip
+      // read and wiped the pack while the divider sat on the newest post.
       final onScreen = bottom > 8 && topLeft.dy < viewH - 8;
       final stuckAtNewest = _scroll.position.pixels <= 2.0;
-      if (requireSeparatorAtTop && onScreen && stuckAtNewest) {
+      if (requireSeparatorAtTop &&
+          onScreen &&
+          stuckAtNewest &&
+          _openUnreadCount < 2) {
         TgJankLog.log(
           'open-sep-at-tip dy=${topLeft.dy.toStringAsFixed(0)} '
           'viewH=${viewH.toStringAsFixed(0)}',
@@ -959,7 +1215,7 @@ class _TelegramConversationScreenState
     final anchorId = _unreadAnchorMessageId;
     if (anchorId == null) return false;
     final svc = ref.read(telegramTdlibServiceProvider);
-    final timeline = _buildTimeline(svc.messagesFor(widget.chatId));
+    final timeline = _buildTimeline(_messagesForUi(svc));
     final keyId = _visibleKeyMessageId(anchorId, timeline);
     final ctx = _keyForMessage(keyId).currentContext;
     if (ctx == null || !ctx.mounted) return false;
@@ -976,11 +1232,28 @@ class _TelegramConversationScreenState
   Future<void> _markCaughtUp() async {
     if (_suppressMarkRead) return;
     if (_caughtUpMarked) return;
-    _caughtUpMarked = true;
     final svc = ref.read(telegramTdlibServiceProvider);
-    final msgs = svc.messagesFor(widget.chatId);
+    final msgs = _messagesForUi(svc);
     if (msgs.isEmpty) return;
     final tipId = msgs.last.id;
+    final liveUnread = svc.unreadCountFor(widget.chatId);
+    // Cold-boot open used to snapshot unread=0 before getChats, then call
+    // this after openChat while live unread was still 19 → tip viewMessages
+    // wiped the pack (Осташко 08:26 SessionLog).
+    if (liveUnread > 0) {
+      TgJankLog.log(
+        'mark-caught-up skip liveUnread=$liveUnread tip=$tipId',
+      );
+      return;
+    }
+    // Already caught up (unread=0 + tip read): skip viewMessages + notify —
+    // that rebuild was hitching every chat open even without unreads.
+    if (tipId <= svc.lastReadInboxMessageId(widget.chatId)) {
+      _caughtUpMarked = true;
+      _maxMarkedReadId = tipId;
+      return;
+    }
+    _caughtUpMarked = true;
     _maxMarkedReadId = tipId;
     await svc.markMessagesRead(widget.chatId, [tipId]);
   }
@@ -998,60 +1271,115 @@ class _TelegramConversationScreenState
     return da == db;
   }
 
-  Future<void> _ensureUnreadHistoryLoaded(TelegramTdlibService svc) async {
+  /// True when RAM reaches the open read floor (or has the full unread pack).
+  /// Tip-only pages with unread ≥ 2 are NOT spanned — jumping there marks the
+  /// whole pack read after reveal.
+  bool _unreadFrontierSpanned(TelegramTdlibService svc) {
+    final unread = _openUnreadCount > 0
+        ? _openUnreadCount
+        : svc.unreadCountFor(widget.chatId);
+    if (unread <= 0) return true;
+    // Single unread lives at the tip — reverse list is already correct.
+    if (unread < 2) return true;
+    final lastRead =
+        _openLastReadInboxId ?? svc.lastReadInboxMessageId(widget.chatId);
+    final msgs = _messagesForUi(svc);
+    if (msgs.isEmpty) return false;
+    if (lastRead > 0 && msgs.first.id <= lastRead) return true;
+    final loadedUnread = lastRead > 0
+        ? msgs.where((m) => !m.isOutgoing && m.id > lastRead).length
+        : msgs.where((m) => !m.isOutgoing).length;
+    if (loadedUnread >= unread) return true;
+    // Do NOT treat "enough inbound rows" as spanned while oldest is still
+    // newer than last_read — that mid-pack pin wiped Осташко unreads.
+    return false;
+  }
+
+  /// Load older pages until the unread frontier is in RAM.
+  ///
+  /// Returns `true` when it is safe to resolve first-unread (spanned, or
+  /// history exhausted / budget spent with at least one message). Returns
+  /// `false` only when still empty / not mounted mid-load.
+  Future<bool> _ensureUnreadHistoryLoaded(TelegramTdlibService svc) async {
     final lastRead =
         _openLastReadInboxId ?? svc.lastReadInboxMessageId(widget.chatId);
     final unread = _openUnreadCount > 0
         ? _openUnreadCount
         : svc.unreadCountFor(widget.chatId);
-    if (unread <= 0) return;
+    if (unread <= 0) return true;
 
-    // Scale pages with unread depth — Осташко (~60+) needs more than a tip page.
-    final maxPages = (unread / 20).ceil().clamp(6, 16);
-    const pageSize = 50;
+    // Scale pages with unread depth — keep small packs light (9 unread must
+    // not walk 6×50 + openChat 200; SessionLog 20:41 freeze).
+    // Deep channels (96+): need enough pages to reach last_read — Осташко
+    // pinned mid-pack after only ~4 pages (SessionLog 20:07).
+    final maxPages = unread <= 15
+        ? 3
+        : unread <= 40
+            ? 6
+            : (unread / 20).ceil().clamp(6, 16);
     // Hard ceiling only after the read frontier is in RAM.
-    final hardCap = (unread + 80).clamp(120, 400);
+    final hardCap = (unread + 80).clamp(80, 320);
     for (var i = 0; i < maxPages; i++) {
-      if (!mounted) return;
-      final msgs = svc.messagesFor(widget.chatId);
+      if (!mounted) return false;
+      final msgs = _messagesForUi(svc);
       if (msgs.isEmpty) {
-        final added = await svc.loadOlderMessages(
-          widget.chatId,
-          pageSize: pageSize,
-        );
-        if (added <= 0) return;
+        final added = await _ensureOlderFromDb(svc);
+        if (added <= 0) return false;
         continue;
       }
       // Reached the read frontier (or older) — divider target is in RAM.
-      if (lastRead > 0 && msgs.first.id <= lastRead) return;
+      if (lastRead > 0 && msgs.first.id <= lastRead) return true;
       // Continuous history from tip: enough unreads means firstUnread is known.
       final loadedUnread = lastRead > 0
           ? msgs.where((m) => m.id > lastRead).length
           : msgs.length;
-      if (loadedUnread >= unread && lastRead > 0) return;
+      if (loadedUnread >= unread && lastRead > 0) return true;
       // Never soft-cap while last_read is still older than everything loaded.
-      if (msgs.length >= hardCap && loadedUnread >= unread) return;
+      if (msgs.length >= hardCap && loadedUnread >= unread) return true;
 
-      final added = await svc.loadOlderMessages(
-        widget.chatId,
-        pageSize: pageSize,
-      );
-      if (added <= 0) return;
+      final added = await _ensureOlderFromDb(svc);
+      if (added <= 0) {
+        // No more pages — best-effort pin to oldest loaded unread.
+        return true;
+      }
     }
+    return _messagesForUi(svc).isNotEmpty;
   }
 
-  int? _resolveFirstUnreadId(TelegramTdlibService svc) {
-    final lastRead =
-        _openLastReadInboxId ?? svc.lastReadInboxMessageId(widget.chatId);
+  /// Oldest message with id > open last_read — only when frontier is spanned
+  /// (or [allowBestEffort] after history exhausted). Tip-only RAM must not
+  /// pretend the newest pack head is the sticky first-unread.
+  int? _resolveFirstUnreadId(
+    TelegramTdlibService svc, {
+    bool allowBestEffort = false,
+  }) {
     final unread = _openUnreadCount > 0
         ? _openUnreadCount
         : svc.unreadCountFor(widget.chatId);
     if (unread <= 0) return null;
-    final msgs = svc.messagesFor(widget.chatId);
-    for (final m in msgs) {
-      if (m.id > lastRead) return m.id;
+    final spanned = _unreadFrontierSpanned(svc);
+    if (unread >= 2 && !allowBestEffort && !spanned) {
+      return null;
     }
-    return _unreadAnchorMessageId ?? svc.firstUnreadMessageId(widget.chatId);
+    // Prefer service when spanned (or stale-high last_read tip-count).
+    final fromSvc = svc.firstUnreadMessageId(widget.chatId);
+    if (fromSvc != null) return fromSvc;
+    // Best-effort after history exhausted: oldest loaded unread — never tip.
+    // Tip-only packs (oldest still above last_read) must stay null: pinning
+    // the tip-pack head then revealing wiped 80+ unreads (Осташко 22:25).
+    final lastRead =
+        _openLastReadInboxId ?? svc.lastReadInboxMessageId(widget.chatId);
+    final msgs = _messagesForUi(svc);
+    if (unread >= 2 &&
+        lastRead > 0 &&
+        msgs.isNotEmpty &&
+        msgs.first.id > lastRead) {
+      return null;
+    }
+    for (final m in msgs) {
+      if (!m.isOutgoing && m.id > lastRead) return m.id;
+    }
+    return null;
   }
 
   GlobalKey _keyForMessage(int messageId) =>
@@ -1431,12 +1759,20 @@ class _TelegramConversationScreenState
       _contentReady = true;
       _showOpenLoader = false;
     });
-    // Link-preview cards + Dio after first flings have a chance.
-    Timer(const Duration(milliseconds: 2800), () {
-      if (!mounted || _isUserActivelyScrolling) {
-        // Try again shortly after fling ends.
-        Timer(const Duration(milliseconds: 800), () {
-          if (!mounted || _isUserActivelyScrolling) return;
+    // Link-preview cards + Dio after open settle. Channels: much later —
+    // enable@6.5s rebuilt tip rows and froze FRAME total≈4.5s (Шарий 20:37).
+    final svc = ref.read(telegramTdlibServiceProvider);
+    final delay = svc.isChannelChat(widget.chatId)
+        ? const Duration(seconds: 22)
+        : const Duration(seconds: 12);
+    Timer(delay, () {
+      if (!mounted || _isUserActivelyScrolling || _blocksLinkPreviews) {
+        Timer(const Duration(seconds: 3), () {
+          if (!mounted ||
+              _isUserActivelyScrolling ||
+              _blocksLinkPreviews) {
+            return;
+          }
           _enableLinkPreviews();
         });
         return;
@@ -1447,10 +1783,23 @@ class _TelegramConversationScreenState
 
   void _enableLinkPreviews() {
     if (!mounted || _linkPreviewsEnabled) return;
+    if (_isUserActivelyScrolling || _blocksLinkPreviews) {
+      Timer(const Duration(milliseconds: 600), () {
+        if (!mounted) return;
+        _enableLinkPreviews();
+      });
+      return;
+    }
     TgJankLog.log('enable link previews');
     LinkPreviewService.instance.linkPreviewGateOpen = true;
-    LinkPreviewService.instance.deferNetworkFetches = false;
+    // Open Dio after this frame — one setState only (second rebuild was
+    // stacking on the quiet-pierce NOTIFY storm).
+    LinkPreviewService.instance.deferNetworkFetches = true;
     setState(() => _linkPreviewsEnabled = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      LinkPreviewService.instance.deferNetworkFetches = false;
+    });
   }
 
   void _armDelayedOpenLoader() {
@@ -1473,8 +1822,11 @@ class _TelegramConversationScreenState
         'anchor=$_unreadAnchorMessageId unread=$_openUnreadCount',
       );
       if (!_unreadFrontierReady) {
+        final svc = ref.read(telegramTdlibServiceProvider);
         // Short unread tail already on screen (cannot pin the bar to the top).
-        if (_isUnreadAnchorInViewport(requireSeparatorAtTop: true)) {
+        // Deep stacks: still require spanned floor before mark-read.
+        if (_isUnreadAnchorInViewport(requireSeparatorAtTop: true) &&
+            (_openUnreadCount < 2 || _unreadFrontierSpanned(svc))) {
           _unreadFrontierReady = true;
           _suppressMarkRead = false;
           _revealChatContent();
@@ -1498,7 +1850,7 @@ class _TelegramConversationScreenState
     if (_isUserActivelyScrolling && !_programmaticOpenScroll) return false;
     // Rough jump so the builder mounts the target row.
     final svc = ref.read(telegramTdlibServiceProvider);
-    final msgs = svc.messagesFor(widget.chatId);
+    final msgs = _messagesForUi(svc);
     final timeline = _buildTimeline(msgs);
     final rowIndex =
         timeline.indexWhere((r) => r.containsMessageId(messageId));
@@ -1507,9 +1859,11 @@ class _TelegramConversationScreenState
 
     final wasProgrammatic = _programmaticOpenScroll;
     _programmaticOpenScroll = true;
-    // Wide cache so the frontier row mounts even when the first estimate is off.
-    if (_listCacheExtent < 6000) {
-      setState(() => _listCacheExtent = 8000);
+    // Wide enough to mount the frontier — avoid 8000px rebuild storms on open.
+    // Do not expand again after reveal: shrinking back to 1200 then expanding
+    // rebuilt 130+ rows every reassert (Осташко hang).
+    if (!_contentReady && _listCacheExtent < 3200) {
+      setState(() => _listCacheExtent = 3600);
       await WidgetsBinding.instance.endOfFrame;
     }
     try {
@@ -1651,20 +2005,26 @@ class _TelegramConversationScreenState
     _suppressMarkRead = true;
     _unreadFrontierReady = false;
     _programmaticOpenScroll = true;
-    if (_listCacheExtent < 6000) {
-      setState(() => _listCacheExtent = 8000);
+    // Modest cache — 8000px forced ~125 channel rows (build 250ms+) on open.
+    if (_listCacheExtent < 2800) {
+      setState(() => _listCacheExtent = 2800);
       await WidgetsBinding.instance.endOfFrame;
     }
 
     try {
-    await _ensureUnreadHistoryLoaded(svc);
+    final historyReady = await _ensureUnreadHistoryLoaded(svc);
     if (!mounted) return;
 
     final unread = _openUnreadCount > 0
         ? _openUnreadCount
         : svc.unreadCountFor(widget.chatId);
-    final firstUnread = _resolveFirstUnreadId(svc);
-    final msgs = svc.messagesFor(widget.chatId);
+    final spanned = _unreadFrontierSpanned(svc);
+    // After load budget / exhausted pages, accept oldest loaded unread.
+    final firstUnread = _resolveFirstUnreadId(
+      svc,
+      allowBestEffort: historyReady && !spanned,
+    );
+    final msgs = _messagesForUi(svc);
 
     // No unreads → tip is correct.
     if (unread <= 0) {
@@ -1682,7 +2042,7 @@ class _TelegramConversationScreenState
 
     // Unreads exist but frontier not in RAM yet — NEVER jump to tip (that
     // left Осташко parked on newest posts with the 61 FAB). Keep hidden and
-    // retry as history pages in.
+    // retry as history pages in. Do not reveal / lift mark-read suppress.
     if (firstUnread == null || msgs.isEmpty) {
       _initialScrollDone = true;
       _scheduleReassertUnreadScroll();
@@ -1732,8 +2092,11 @@ class _TelegramConversationScreenState
       for (var i = 0; i < 10 && mounted && !ok; i++) {
         await Future<void>.delayed(Duration(milliseconds: 80 + i * 60));
         if (!mounted) return;
-        await _ensureUnreadHistoryLoaded(svc);
-        final again = _resolveFirstUnreadId(svc);
+        final ready = await _ensureUnreadHistoryLoaded(svc);
+        final again = _resolveFirstUnreadId(
+          svc,
+          allowBestEffort: ready && !_unreadFrontierSpanned(svc),
+        );
         // Open only: allow refining to an older first-unread as history fills.
         // Never move the visit sticky toward a newer id.
         if (again != null) {
@@ -1759,25 +2122,78 @@ class _TelegramConversationScreenState
         }
       }
     }
+    // History often floods tip→200 after the first tip-window jump. Re-resolve
+    // the real first-unread before accepting the pin (Осташко 22:25 stuck on
+    // tip-pack head 237790822400 while unread=81).
+    if (unread >= 2 && mounted) {
+      final spannedNow = _unreadFrontierSpanned(svc);
+      final trueFirst = _resolveFirstUnreadId(
+        svc,
+        allowBestEffort: historyReady && !spannedNow,
+      );
+      if (trueFirst != null && trueFirst != anchorId) {
+        TgJankLog.log(
+          'open-pos rebind tip=$anchorId → first=$trueFirst unread=$unread',
+        );
+        anchorId = trueFirst;
+        if (mounted) {
+          setState(() => _unreadAnchorMessageId = trueFirst);
+        }
+        ok = await _ensureVisibleMessage(
+          anchorId,
+          alignment: 0.0,
+          instant: true,
+          unreadHint: unread,
+        );
+        if (ok &&
+            !_isUnreadAnchorInViewport(requireSeparatorAtTop: needSep)) {
+          ok = false;
+        }
+      } else if (trueFirst == null && !spannedNow) {
+        ok = false;
+      }
+    }
+
     _initialScrollDone = true;
-    _msgsLenAtUnreadJump = svc.messagesFor(widget.chatId).length;
+    _msgsLenAtUnreadJump = _messagesForUi(svc).length;
     final pinned = _isUnreadAnchorInViewport(requireSeparatorAtTop: needSep);
     TgJankLog.log(
       'open-pos done ok=$ok pinned=$pinned anchor=$anchorId '
       'unread=$unread msgs=${_msgsLenAtUnreadJump} needSep=$needSep',
     );
     if (ok && pinned) {
-      _unreadFrontierReady = true;
       await WidgetsBinding.instance.endOfFrame;
       if (mounted) {
         setState(() => _listCacheExtent = 1200);
         _revealChatContent();
       }
-      // Let layout settle before progressive read.
-      await Future<void>.delayed(const Duration(milliseconds: 120));
-      if (mounted) _suppressMarkRead = false;
-      _scheduleViewportPrefetch();
-      _scheduleMarkVisibleRead();
+      // Only lift mark-read when the open floor is in RAM. Tip-only pin still
+      // advances last_read past unloaded unreads and wipes the pack.
+      if (unread < 2 || _unreadFrontierSpanned(svc)) {
+        _unreadFrontierReady = true;
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        if (mounted) {
+          // Progressive markVisible still waits for [_userReleasedUnreadGate].
+          // Keep force viewMessages blocked for multi-unread until the user
+          // scrolls — focus on tip posts used to wipe the pack (Осташко).
+          _suppressMarkRead = false;
+          if (unread < 2) {
+            ref
+                .read(telegramTdlibServiceProvider)
+                .setBlockUnreadForceView(false);
+          }
+        }
+        _scheduleViewportPrefetch();
+        // Frontier pinned → progressive mark of on-screen rows (multi-unread
+        // included). Do not wait for scroll-away gate — that left hub badges
+        // stuck when the pack fit on screen / user only scrolled to tip.
+        _scheduleMarkVisibleRead();
+      } else {
+        _scheduleViewportPrefetch();
+        if (!historyReady) {
+          _scheduleReassertUnreadScroll();
+        }
+      }
     } else {
       // Stay suppressed — tip viewport must not wipe unreads. Reassert when
       // more history arrives / user scrolls. Keep list hidden until then.
@@ -1790,6 +2206,12 @@ class _TelegramConversationScreenState
   }
 
   void _scheduleReassertUnreadScroll() {
+    if (_contentReady) {
+      _unreadReassertAfterReveal++;
+      // Two tries after paint is enough to catch the history flood.
+      // Further 280ms jumps rebuilt the whole 200-row list forever.
+      if (_unreadReassertAfterReveal > 2) return;
+    }
     _reassertUnreadScrollTimer?.cancel();
     _reassertUnreadScrollTimer =
         Timer(const Duration(milliseconds: 280), () {
@@ -1800,7 +2222,8 @@ class _TelegramConversationScreenState
 
   Future<void> _reassertUnreadScroll() async {
     if (!mounted || _unreadFrontierReady) return;
-    if (_openUnreadCount <= 0 || _unreadAnchorMessageId == null) {
+    // No open unreads → tip is fine.
+    if (_openUnreadCount <= 0) {
       _unreadFrontierReady = true;
       _suppressMarkRead = false;
       _revealChatContent();
@@ -1808,31 +2231,89 @@ class _TelegramConversationScreenState
     }
     if (_isUserActivelyScrolling && !_programmaticOpenScroll) return;
     final svc = ref.read(telegramTdlibServiceProvider);
-    final len = svc.messagesFor(widget.chatId).length;
     _programmaticOpenScroll = true;
     try {
-    // Always retry until frontier is visible — remote history fill often
-    // resets reverse ListView back to the tip after the first jump.
-    final ok = await _ensureVisibleMessage(
-      _unreadAnchorMessageId!,
-      alignment: 0.0,
-      instant: true,
-      unreadHint: _openUnreadCount,
-    );
-    if (!mounted) return;
-    _msgsLenAtUnreadJump = len;
-    if (ok &&
-        _isUnreadAnchorInViewport(requireSeparatorAtTop: true)) {
-      _unreadFrontierReady = true;
-      _suppressMarkRead = false;
-      if (mounted) setState(() => _listCacheExtent = 1200);
-      _revealChatContent();
-      _scheduleViewportPrefetch();
-      _scheduleMarkVisibleRead();
-      if (mounted) _updateScrollToBottomVisibility();
-      return;
-    }
-    _scheduleReassertUnreadScroll();
+      // Deep unread: keep loading until spanned (or history exhausted). Never
+      // reveal tip + lift mark-read while anchor is still null / tip-only.
+      final historyReady = await _ensureUnreadHistoryLoaded(svc);
+      if (!mounted || _unreadFrontierReady) return;
+      final spanned = _unreadFrontierSpanned(svc);
+      final resolved = _resolveFirstUnreadId(
+        svc,
+        allowBestEffort: historyReady && !spanned,
+      );
+      if (resolved != null) {
+        final cur = _unreadAnchorMessageId;
+        if (cur == null || resolved <= cur) {
+          if (mounted) {
+            setState(() => _unreadAnchorMessageId = resolved);
+          } else {
+            _unreadAnchorMessageId = resolved;
+          }
+        }
+      }
+
+      final anchor = _unreadAnchorMessageId;
+      if (anchor == null) {
+        // Still no frontier in RAM — keep suppress + hidden; retry.
+        // Open reveal timeout stays the soft escape for unread < 2 only.
+        if (_openUnreadCount >= 2) {
+          TgJankLog.log(
+            'open-reassert defer unread=$_openUnreadCount '
+            'spanned=$spanned historyReady=$historyReady',
+          );
+          if (!historyReady) {
+            _scheduleReassertUnreadScroll();
+          }
+          return;
+        }
+        _unreadFrontierReady = true;
+        _suppressMarkRead = false;
+        _revealChatContent();
+        return;
+      }
+
+      final len = _messagesForUi(svc).length;
+      // Always retry until frontier is visible — remote history fill often
+      // resets reverse ListView back to the tip after the first jump.
+      final ok = await _ensureVisibleMessage(
+        anchor,
+        alignment: 0.0,
+        instant: true,
+        unreadHint: _openUnreadCount,
+      );
+      if (!mounted) return;
+      _msgsLenAtUnreadJump = len;
+      if (ok &&
+          _isUnreadAnchorInViewport(requireSeparatorAtTop: true)) {
+        if (mounted) setState(() => _listCacheExtent = 1200);
+        _revealChatContent();
+        _scheduleViewportPrefetch();
+        if (mounted) _updateScrollToBottomVisibility();
+        // Mark-read only once the open floor is spanned — otherwise tip pin
+        // advances last_read and clears unloaded unreads.
+        if (_openUnreadCount < 2 || _unreadFrontierSpanned(svc)) {
+          _unreadFrontierReady = true;
+          _suppressMarkRead = false;
+          // Keep force-view blocked for multi-unread until user scroll gate.
+          if (_openUnreadCount < 2) {
+            svc.setBlockUnreadForceView(false);
+          }
+          _scheduleMarkVisibleRead();
+          return;
+        }
+        TgJankLog.log(
+          'open-reassert pinned-best-effort unread=$_openUnreadCount '
+          'anchor=$anchor historyReady=$historyReady (suppress mark-read)',
+        );
+        // History exhausted without spanning: keep suppress, stop hammering.
+        // Growth via sync / loadOlder re-arms via [_maybeReassertUnreadAfterHistoryGrowth].
+        if (!historyReady) {
+          _scheduleReassertUnreadScroll();
+        }
+        return;
+      }
+      _scheduleReassertUnreadScroll();
     } finally {
       _programmaticOpenScroll = false;
     }
@@ -1850,9 +2331,8 @@ class _TelegramConversationScreenState
     if (_loadingOlder || !mounted) return;
     _loadingOlder = true;
     try {
-      await ref
-          .read(telegramTdlibServiceProvider)
-          .loadOlderMessages(widget.chatId);
+      final svc = ref.read(telegramTdlibServiceProvider);
+      await _ensureOlderFromDb(svc);
       if (mounted && !_suppressViewportPrefetch) {
         _scheduleViewportPrefetch();
       }
@@ -1866,15 +2346,15 @@ class _TelegramConversationScreenState
   Future<void> _fillHistoryIfSparse() async {
     final svc = ref.read(telegramTdlibServiceProvider);
     if (svc.isUnreadHistoryWarm(widget.chatId) &&
-        svc.messagesFor(widget.chatId).length >= 40) {
+        _messagesForUi(svc).length >= 40) {
       return;
     }
     var emptyStreak = 0;
     for (var i = 0; i < 20; i++) {
       if (!mounted) return;
-      final count = svc.messagesFor(widget.chatId).length;
+      final count = _messagesForUi(svc).length;
       if (count >= 40) return;
-      final added = await svc.loadOlderMessages(widget.chatId, pageSize: 50);
+      final added = await _ensureOlderFromDb(svc);
       if (added <= 0) {
         emptyStreak++;
         if (emptyStreak >= 5) return;
@@ -1930,28 +2410,44 @@ class _TelegramConversationScreenState
       // Progressive play (official TG): open as soon as the stream proxy is
       // up; ExoPlayer Range requests drive TDLib downloadFile(offset/limit).
       unawaited(() async {
+        var playId = id;
+        final messageId = int.tryParse(play['message_id']?.toString() ?? '');
+        if (messageId != null && messageId > 0) {
+          final rebound = await svc.freshVideoFileId(
+            chatId: widget.chatId,
+            messageId: messageId,
+            staleFileId: playId,
+          );
+          if (!mounted || _pendingOpenVideoId != id) return;
+          if (rebound != null && rebound != playId) {
+            play['id'] = rebound;
+            play.remove('size_bytes');
+            playId = rebound;
+            if (mounted) setState(() => _pendingOpenVideoId = playId);
+          }
+        }
         await svc.preemptForUserTap(
-          fileId: id,
+          fileId: playId,
           chatId: widget.chatId,
-          reason: 'tap:video:$id',
+          reason: 'tap:video:$playId',
         );
-        if (!mounted || _pendingOpenVideoId != id) return;
+        if (!mounted || _pendingOpenVideoId != playId) return;
         final sizeBytes = () {
           final declared = play['size_bytes'];
           if (declared is int && declared > 0) return declared;
           if (declared is num && declared > 0) return declared.toInt();
-          return svc.fileExpectedSize(id);
+          return svc.fileExpectedSize(playId);
         }();
         final mime = play['content_type']?.toString().trim();
         final streamUrl = await svc.beginVideoStream(
-          fileId: id,
+          fileId: playId,
           chatId: widget.chatId,
           expectedSize: sizeBytes > 0 ? sizeBytes : null,
           mimeType: (mime != null && mime.startsWith('video/'))
               ? mime
               : 'video/mp4',
         );
-        if (!mounted || _pendingOpenVideoId != id) return;
+        if (!mounted || _pendingOpenVideoId != playId) return;
         if (streamUrl != null && streamUrl.isNotEmpty) {
           play['video_stream_url'] = streamUrl;
           if (sizeBytes > 0) play['size_bytes'] = sizeBytes;
@@ -1964,13 +2460,13 @@ class _TelegramConversationScreenState
         }
         // Already on disk, or stream unavailable → full-file path.
         final path = await svc.ensureFileLocal(
-          id,
+          playId,
           priority: TelegramTdlibService.prioFocused,
-          reason: 'tap:video:$id',
+          reason: 'tap:video:$playId',
           waitFor: const Duration(minutes: 10),
         );
         if (!mounted) return;
-        if (_pendingOpenVideoId != id) return;
+        if (_pendingOpenVideoId != playId) return;
         if (path == null || path.isEmpty) {
           setState(() => _pendingOpenVideoId = null);
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2139,29 +2635,110 @@ class _TelegramConversationScreenState
     );
   }
 
+  /// Hub snapshot unread when TDLib `_chats` is still empty (cold boot).
+  int _hubSnapshotUnreadHint(int chatId) {
+    final rows = HubFirstPaintSnapshot.warmed?.rows;
+    if (rows == null || rows.isEmpty) return 0;
+    for (final row in rows) {
+      final id = chatAsInt(row['id']);
+      if (id != chatId) continue;
+      return chatAsInt(row['unread_count']) ?? 0;
+    }
+    return 0;
+  }
+
   Future<void> _openAndWatch() async {
     final svc = ref.read(telegramTdlibServiceProvider);
     _suppressMarkRead = true;
+    _userReleasedUnreadGate = false;
     // Snapshot unread frontier before openChat / history mutate inbox state.
     _openLastReadInboxId = svc.lastReadInboxMessageId(widget.chatId);
     _openUnreadCount = svc.unreadCountFor(widget.chatId);
-    // Disk window before claim/reveal — cold start must not wait on remote.
-    await svc.seedTranscriptFromCache(widget.chatId);
+    // Cold boot: RAM chats empty → unreadCountFor=0 while hub still shows N.
+    // Without this we tip-reveal + markCaughtUp and wipe the pack (Осташко).
+    if (_openUnreadCount <= 0) {
+      final snap = _hubSnapshotUnreadHint(widget.chatId);
+      if (snap > _openUnreadCount) _openUnreadCount = snap;
+    }
+    // Multi-unread: block viewMessages from the first frame. Opening used to
+    // allow briefly, then tip focus marked the whole pack read (Осташко 81→0).
+    if (_openUnreadCount >= 2) {
+      svc.setBlockUnreadForceView(true);
+    } else {
+      svc.setBlockUnreadForceView(false);
+    }
+    // SQLite tip first — paint ≤20 immediately; migrate/ensureTip in background.
+    _windowLimit = TgHistoryStore.tipPaintCap;
+    var tip = await TgHistoryStore.instance.readTail(
+      widget.chatId,
+      limit: _windowLimit,
+    );
+    if (tip.isEmpty) {
+      // Cold: one-shot meta tip for first paint (full migrate is async).
+      final cached = await TdlibTranscriptCache.read(widget.chatId);
+      if (cached.isNotEmpty) {
+        tip = cached.length <= _windowLimit
+            ? cached
+            : cached.sublist(cached.length - _windowLimit);
+      }
+    }
     if (!mounted) return;
+    setState(() => _dbMessages = tip);
+    _bindDbWatch();
+    debugPrint(
+      '[tg-db] tip/watch chat=${widget.chatId} tip=${tip.length} '
+      'window=$_windowLimit',
+    );
+    unawaited(() async {
+      await TgHistoryStore.instance.migrateFromTranscriptCacheIfNeeded(
+        widget.chatId,
+      );
+      await svc.seedTranscriptFromCache(widget.chatId);
+      await TgHistoryStore.instance.ensureTip(
+        widget.chatId,
+        chatType: TgHistoryStore.chatTypeLabel(
+          isChannel: svc.isChannelChat(widget.chatId),
+          isPrivate: svc.isPrivateChat(widget.chatId),
+          isGroup: svc.isGroupChat(widget.chatId),
+        ),
+        title: svc.peerTitle(widget.chatId),
+        loadTip: () => svc.loadTipHistoryForDb(
+          widget.chatId,
+          maxCount: TgHistoryStore.tipPaintCap,
+        ),
+      );
+    }());
+    // Re-read after seed — cache may expose a deeper unread pack than tip RAM.
+    final seededUnread = svc.unreadCountFor(widget.chatId);
+    if (seededUnread > _openUnreadCount) {
+      _openUnreadCount = seededUnread;
+    }
     // Claim immediately so dispose during await still has a valid close token.
     _openChatToken = svc.claimOpenChat(widget.chatId);
-    final preUnread = svc.firstUnreadMessageId(widget.chatId);
-    if (preUnread != null) {
-      _unreadAnchorMessageId = preUnread;
-    }
     final deepLink =
         widget.initialMessageId != null && widget.initialMessageId! > 0;
     final unread = _openUnreadCount;
+    // Multi-unread: stay "not near tip" until jump pins the first unread —
+    // otherwise tip seed / last_message upsert auto-marks through the pack.
+    // Also block force viewMessages (tap/stream) until the user scrolls.
+    if (unread >= 2) {
+      svc.setOpenChatNearTip(false);
+      svc.setBlockUnreadForceView(true);
+    }
+    // Only seed sticky when first-unread is known (spanned) — tip-count used
+    // to plant the tip as the «Непрочитанные» anchor before history loaded.
+    final preUnread = svc.firstUnreadMessageId(widget.chatId);
+    if (preUnread != null &&
+        (unread < 2 || svc.isUnreadHistoryWarm(widget.chatId))) {
+      _unreadAnchorMessageId = preUnread;
+    }
     final warm = svc.isUnreadHistoryWarm(widget.chatId);
     // Hide+jump only when the tip is wrong: deep link, or unread ≥ 2.
     // unread 0/1 → reverse list already sits on the tip (the only unread).
     final needsPositionGate = deepLink || unread >= 2;
-    if (!needsPositionGate) {
+    // Thin SQLite tip — wait for openChat/ensureTip before early reveal.
+    final tipThin = _messagesForUi(svc).length < 16;
+    if (!needsPositionGate && !tipThin) {
       // Warm tip photos first so reveal doesn't flash empty→JPEG.
       await _precacheRecentMedia();
       if (!mounted) return;
@@ -2180,6 +2757,8 @@ class _TelegramConversationScreenState
           _scheduleMarkVisibleRead();
         });
       }
+    } else if (!needsPositionGate && tipThin) {
+      _armDelayedOpenLoader();
     } else {
       _armDelayedOpenLoader();
       _armOpenRevealTimeout();
@@ -2206,9 +2785,16 @@ class _TelegramConversationScreenState
       _scheduleViewportPrefetch();
       _armIdleMediaRescan();
       _tailSyncTimer?.cancel();
-      _tailSyncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      // Was 4s → syncChatTail(40) + rebuild storms forever (Шарий BUILD×2400,
+      // gap≈4s). Poll tip lightly and only when idle near tip.
+      _tailSyncTimer = Timer.periodic(const Duration(seconds: 20), (_) {
         if (!mounted) return;
-        unawaited(svc.syncChatTail(widget.chatId));
+        if (_isUserActivelyScrolling || _imeUiBusy) return;
+        if (!_scroll.hasClients) return;
+        if (_scroll.position.pixels > _scrollToBottomAwayPx) return;
+        unawaited(
+          svc.syncChatTail(widget.chatId, limit: 5, lightPoll: true),
+        );
       });
     }
 
@@ -2224,7 +2810,26 @@ class _TelegramConversationScreenState
     }
 
     await svc.openChat(widget.chatId);
-    if (needsPositionGate) {
+    if (!mounted) return;
+    // openChat may hydrate unread after a cold unread=0 snapshot — re-gate.
+    final liveUnread = svc.unreadCountFor(widget.chatId);
+    if (liveUnread > _openUnreadCount) {
+      _openUnreadCount = liveUnread;
+    }
+    final mustJumpUnread = !deepLink && _openUnreadCount >= 2;
+    if (needsPositionGate || mustJumpUnread) {
+      if (mustJumpUnread && !needsPositionGate) {
+        TgJankLog.log(
+          'open-unread late-gate live=$_openUnreadCount '
+          '(was tip-path unread=$unread)',
+        );
+        svc.setOpenChatNearTip(false);
+        svc.setBlockUnreadForceView(true);
+        _suppressMarkRead = true;
+        _contentReady = false;
+        // Tip-path may already have set this — allow [_positionInitialScroll].
+        _initialScrollDone = false;
+      }
       if (!warm) {
         await svc.syncChatTail(widget.chatId);
         await _fillHistoryIfSparse();
@@ -2234,9 +2839,26 @@ class _TelegramConversationScreenState
       unawaited(svc.refreshVideoChat(widget.chatId));
       await _positionInitialScroll(svc);
     } else {
+      if (!_contentReady) {
+        await _precacheRecentMedia();
+        if (!mounted) return;
+        _revealChatContent();
+        _initialScrollDone = true;
+        if (_openUnreadCount <= 0) {
+          _unreadFrontierReady = true;
+          _suppressMarkRead = false;
+        } else {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _unreadFrontierReady = true;
+            _suppressMarkRead = false;
+            _scheduleMarkVisibleRead();
+          });
+        }
+      }
       unawaited(svc.syncChatTail(widget.chatId));
       unawaited(svc.refreshVideoChat(widget.chatId));
-      if (unread <= 0) {
+      if (_openUnreadCount <= 0 && svc.unreadCountFor(widget.chatId) <= 0) {
         await _markCaughtUp();
       }
       _scheduleViewportPrefetch();
@@ -2268,17 +2890,26 @@ class _TelegramConversationScreenState
     WidgetsBinding.instance.removeObserver(this);
     WidgetsBinding.instance.removeTimingsCallback(_onFrameTimings);
     TgJankLog.clearFocus();
+    _dbWatchSub?.cancel();
+    _dbWatchSub = null;
+    _dbWatchApplyTimer?.cancel();
+    _dbWatchApplyTimer = null;
+    _dbWatchPending = null;
     _tailSyncTimer?.cancel();
     _scrollToBottomHintTimer?.cancel();
     _viewportPrefetchTimer?.cancel();
     _mediaIdleRescanTimer?.cancel();
     _markVisibleReadTimer?.cancel();
     _scrollBusyClearTimer?.cancel();
+    _imeBusyClearTimer?.cancel();
+    _imeUiBusy = false;
+    TelegramTdlibService.instance.setUiImeBusy(false);
     _reassertUnreadScrollTimer?.cancel();
     _openRevealTimeout?.cancel();
     _openLoaderTimer?.cancel();
     _stickyDayThrottle?.cancel();
     _scroll.removeListener(_onScroll);
+    _inputFocus.removeListener(_onInputFocusChanged);
     final rescan = _viewportMediaRescanListener;
     if (rescan != null) {
       TelegramTdlibService.instance.removeViewportMediaRescanListener(rescan);
@@ -2286,14 +2917,44 @@ class _TelegramConversationScreenState
     }
     final chatId = widget.chatId;
     final openToken = _openChatToken;
+    // Leave-chat flush: if the unread frontier was on screen but progressive
+    // mark never ran (gate / short visit), still advance inbox before close.
+    int leaveMarkId = _maxMarkedReadId;
+    if (_unreadFrontierReady &&
+        !_suppressMarkRead &&
+        _scroll.hasClients) {
+      try {
+        final svc = TelegramTdlibService.instance;
+        final msgs = _messagesForUi(svc);
+        final lastRead = svc.lastReadInboxMessageId(chatId);
+        final floor =
+            leaveMarkId > lastRead ? leaveMarkId : lastRead;
+        final visible =
+            _highestVisibleUnreadByLayout(msgs: msgs, floor: floor);
+        if (visible > leaveMarkId) leaveMarkId = visible;
+        // Near tip after reading the pack → mark tip (hub badge must clear).
+        if (msgs.isNotEmpty &&
+            _scroll.position.pixels <= _scrollToBottomAwayPx &&
+            msgs.last.id > leaveMarkId) {
+          leaveMarkId = msgs.last.id;
+        }
+      } catch (_) {}
+    }
+    final flushMarkId = leaveMarkId;
     // Defer: closeChat → notifyListeners must not run during unmount
     // (Riverpod forbids provider updates while the tree is building).
-    Future(() {
-      unawaited(
-        TelegramTdlibService.instance.closeChat(
-          chatId,
-          openToken: openToken,
-        ),
+    Future(() async {
+      if (flushMarkId > 0) {
+        try {
+          await TelegramTdlibService.instance.markMessagesRead(
+            chatId,
+            [flushMarkId],
+          );
+        } catch (_) {}
+      }
+      await TelegramTdlibService.instance.closeChat(
+        chatId,
+        openToken: openToken,
       );
     });
     LinkPreviewService.instance.deferNetworkFetches = false;
@@ -2302,6 +2963,7 @@ class _TelegramConversationScreenState
     _inputFocus.dispose();
     _scroll.dispose();
     _animatedMediaController.dispose();
+    _inlineVideoAutoplay.dispose();
     unawaited(_tts.stop());
     super.dispose();
   }
@@ -2667,6 +3329,76 @@ class _TelegramConversationScreenState
     }
   }
 
+  Future<bool> _ensureSmartSpeechConsent() async {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (await svc.hasSmartSpeechConsent()) return true;
+    if (!mounted) return false;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Расшифровка голосовых'),
+        content: const Text(
+          'Чтобы получить текст голосового сообщения, FamilyChat '
+          'подключит бота SaluteSpeech (@smartspeech_sber_bot) и перешлёт '
+          'ему это сообщение от вашего имени.\n\n'
+          'Ответ бота появится как текст у голосового. Чат с ботом скрыт '
+          'из списка — найти его можно через поиск по названию.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Согласен'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return false;
+    await svc.setSmartSpeechConsent(true);
+    return true;
+  }
+
+  Future<void> _requestVoiceTranscript(TdlibMessage m) async {
+    if (!m.isVoiceNote) return;
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.isVoiceTranscriptPending(widget.chatId, m.id)) return;
+    final existing = svc.voiceTranscriptText(widget.chatId, m.id);
+    if (existing != null && existing.isNotEmpty) {
+      await ref.read(voiceMessagePreferTextProvider.notifier).setPreferText(true);
+      return;
+    }
+    if (!await _ensureSmartSpeechConsent()) return;
+    if (!mounted) return;
+    try {
+      final text = await svc.requestVoiceTranscript(
+        chatId: widget.chatId,
+        messageId: m.id,
+      );
+      if (!mounted) return;
+      if (text != null && text.isNotEmpty) {
+        await ref
+            .read(voiceMessagePreferTextProvider.notifier)
+            .setPreferText(true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Не удалось получить текст. Попробуйте ещё раз.'),
+          ),
+        );
+      }
+    } on TdlibSmartSpeechNeedConsent {
+      // Consent cleared elsewhere — ignore.
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка расшифровки: $e')),
+      );
+    }
+  }
+
   Future<void> _openMessageMenu(TdlibMessage m) async {
     if (_selectionMode) {
       _toggleSelection(m.id);
@@ -2892,8 +3624,7 @@ class _TelegramConversationScreenState
 
   Future<void> _deleteSelected({required bool revoke}) async {
     final svc = ref.read(telegramTdlibServiceProvider);
-    final selected = svc
-        .messagesFor(widget.chatId)
+    final selected = _messagesForUi(svc)
         .where((m) => _selectedIds.contains(m.id))
         .toList();
     if (selected.isEmpty) return;
@@ -3027,8 +3758,16 @@ class _TelegramConversationScreenState
     }
 
     if (m.isVideo) {
-      final path = m.videoLocalPath ??
+      var path = m.videoLocalPath ??
           (m.videoFileId == null ? null : svc.cachedFilePath(m.videoFileId!));
+      if (path != null && path.isNotEmpty) {
+        final lower = path.toLowerCase();
+        final image = lower.endsWith('.jpg') ||
+            lower.endsWith('.jpeg') ||
+            lower.endsWith('.png') ||
+            lower.endsWith('.webp');
+        if (image) path = null;
+      }
       final thumbPath = m.videoThumbLocalPath ??
           (m.videoThumbFileId == null
               ? null
@@ -3072,6 +3811,7 @@ class _TelegramConversationScreenState
       return [
         {
           'id': fileId ?? m.id,
+          'message_id': m.id,
           'kind': 'video',
           'content_type': m.isAnimation ? 'image/gif' : 'video/mp4',
           'filename':
@@ -3205,10 +3945,19 @@ class _TelegramConversationScreenState
   Map<String, dynamic> _messageMetadata(TdlibMessage m) {
     if (m.isVoiceNote) {
       final durationMs = m.voiceDurationMs;
+      final svc = ref.read(telegramTdlibServiceProvider);
+      final transcript = svc.voiceTranscriptText(widget.chatId, m.id);
+      final pending = svc.isVoiceTranscriptPending(widget.chatId, m.id);
       return {
         'source': 'telegram',
         'voice': {
           if (durationMs != null && durationMs > 0) 'duration_ms': durationMs,
+          if (transcript != null && transcript.isNotEmpty)
+            'transcript': transcript,
+          if (pending)
+            'transcript_status': 'pending'
+          else if (transcript != null && transcript.isNotEmpty)
+            'transcript_status': 'ready',
         },
       };
     }
@@ -3285,7 +4034,7 @@ class _TelegramConversationScreenState
     final id = m.replyToMessageId;
     if (id == null) return null;
     final found = byId?[id] ??
-        svc.messagesFor(widget.chatId).where((x) => x.id == id).firstOrNull;
+        _messagesForUi(svc).where((x) => x.id == id).firstOrNull;
     final preview = m.replyPreviewText.isNotEmpty
         ? m.replyPreviewText
         : (found == null ? '' : _messagePreviewLabel(found));
@@ -3305,7 +4054,7 @@ class _TelegramConversationScreenState
   Widget build(BuildContext context) {
     final sw = Stopwatch()..start();
     final svc = ref.watch(telegramTdlibServiceProvider);
-    final messages = svc.messagesFor(widget.chatId);
+    final messages = _messagesForUi(svc);
     _maybeReassertUnreadAfterHistoryGrowth(messages.length);
     _maybeArmLiveUnreadFromBuild(svc);
     final wallpaperId = ref.watch(chatWallpaperIdProvider);
@@ -3320,12 +4069,15 @@ class _TelegramConversationScreenState
     final reversedRows = _reversedTimelineCached(messages);
     // Voice autoplay-next (same as FC): consecutive voices oldest→newest.
     // Attachment id must match ChatVoiceMessagePlayer (`fileId ?? message.id`).
-    ChatVoicePlaybackCoordinator.instance.syncFromVoiceAttachmentIds([
-      for (final row in chronologicalRows)
-        row.primary.isVoiceNote
-            ? (row.primary.voiceFileId ?? row.primary.id)
-            : null,
-    ]);
+    // Skip mid-fling — rebuilding the voice id list on every notify hitch.
+    if (!_isUserActivelyScrolling) {
+      ChatVoicePlaybackCoordinator.instance.syncFromVoiceAttachmentIds([
+        for (final row in chronologicalRows)
+          row.primary.isVoiceNote
+              ? (row.primary.voiceFileId ?? row.primary.id)
+              : null,
+      ]);
+    }
     final messagesById = <int, TdlibMessage>{
       for (final m in messages) m.id: m,
     };
@@ -3372,7 +4124,9 @@ class _TelegramConversationScreenState
         _exitToChatList();
       },
       child: Scaffold(
-        resizeToAvoidBottomInset: true,
+        // Pad compose with viewInsets instead — resizing the whole Scaffold
+        // rebuilt the tip list under IME (Valya + link-previews Davey ~10s).
+        resizeToAvoidBottomInset: false,
         backgroundColor: Colors.transparent,
         appBar: _selectionMode
             ? FamilyAppBar.build(
@@ -3626,13 +4380,17 @@ class _TelegramConversationScreenState
                               ignoring: !_contentReady,
                               child: ChatAnimatedMediaScope(
                                 controller: _animatedMediaController,
-                                child: NotificationListener<ScrollNotification>(
+                                child: ChatInlineVideoAutoplayScope(
+                                  controller: _inlineVideoAutoplay,
+                                  child: NotificationListener<ScrollNotification>(
                                   onNotification: (n) {
                                     if (n is ScrollUpdateNotification &&
                                         n.dragDetails != null) {
                                       _animatedMediaController.noteUserScroll();
+                                      _inlineVideoAutoplay.noteScroll();
                                     } else if (n is ScrollEndNotification) {
                                       _animatedMediaController.noteScrollEnd();
+                                      _inlineVideoAutoplay.noteScrollEnd();
                                     }
                                     return false;
                                   },
@@ -3724,6 +4482,7 @@ class _TelegramConversationScreenState
                           } else {
                             messageBody = ChatMessageBubble(
                             threadId: widget.chatId,
+                            messageId: m.id,
                             isMine: m.isOutgoing,
                             body: _bubbleBodyForRow(rowItem, messagesById),
                             textEntities:
@@ -3769,6 +4528,23 @@ class _TelegramConversationScreenState
                             ),
                             onOpenUrl: _handleOpenUrl,
                             showLinkPreview: _linkPreviewsEnabled,
+                            canToggleVoiceTranscript: m.isVoiceNote &&
+                                (svc.voiceTranscriptText(
+                                          widget.chatId,
+                                          m.id,
+                                        ) ??
+                                        '')
+                                    .isNotEmpty,
+                            voiceTranscriptBusy: m.isVoiceNote &&
+                                svc.isVoiceTranscriptPending(
+                                  widget.chatId,
+                                  m.id,
+                                ),
+                            onRequestVoiceTranscript: m.isVoiceNote
+                                ? () => unawaited(
+                                      _requestVoiceTranscript(m),
+                                    )
+                                : null,
                             onReplyTap: replyId == null
                                 ? null
                                 : () => _jumpToMessage(replyId),
@@ -3812,6 +4588,7 @@ class _TelegramConversationScreenState
                           );
                         },
                       ),
+                                  ),
                                 ),
                               ),
                             ),
@@ -3862,58 +4639,65 @@ class _TelegramConversationScreenState
                       ),
                     ),
                     if (showCompose)
-                      SafeArea(
-                        top: false,
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            if (_replyTo != null)
-                              ChatReplyComposeBar(
-                                senderName: _replyTo!.isOutgoing
-                                    ? 'Вы'
-                                    : svc.senderDisplayName(
-                                        _replyTo!.senderUserId,
-                                      ),
-                                body: _messagePreviewLabel(_replyTo!),
-                                onCancel: () =>
-                                    setState(() => _replyTo = null),
+                      AnimatedPadding(
+                        duration: const Duration(milliseconds: 120),
+                        curve: Curves.easeOut,
+                        padding: EdgeInsets.only(
+                          bottom: MediaQuery.viewInsetsOf(context).bottom,
+                        ),
+                        child: SafeArea(
+                          top: false,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              if (_replyTo != null)
+                                ChatReplyComposeBar(
+                                  senderName: _replyTo!.isOutgoing
+                                      ? 'Вы'
+                                      : svc.senderDisplayName(
+                                          _replyTo!.senderUserId,
+                                        ),
+                                  body: _messagePreviewLabel(_replyTo!),
+                                  onCancel: () =>
+                                      setState(() => _replyTo = null),
+                                ),
+                              if (_editing != null)
+                                ChatReplyComposeBar(
+                                  senderName: 'Редактирование',
+                                  body: _editing!.text,
+                                  onCancel: () {
+                                    setState(() {
+                                      _editing = null;
+                                      _textCtrl.clear();
+                                    });
+                                  },
+                                ),
+                              ChatComposeInput(
+                                controller: _textCtrl,
+                                focusNode: _inputFocus,
+                                onAttach: () => unawaited(_pickAttachment()),
+                                onSend: (options) =>
+                                    unawaited(_sendText(options)),
+                                onVoiceComplete:
+                                    (bytes, durationMs, {String? encoderName}) =>
+                                        _sendVoiceMessage(
+                                          bytes,
+                                          durationMs,
+                                          encoderName: encoderName,
+                                        ),
+                                onVideoCircleComplete: _sendVideoCircleMessage,
+                                forceSendButton: _sending ||
+                                    _editing != null ||
+                                    _textCtrl.text.trim().isNotEmpty,
+                                highlightTelegram: true,
+                                preferOpusVoice: true,
+                                hintText: _editing != null
+                                    ? 'Редактировать…'
+                                    : 'Сообщение...',
                               ),
-                            if (_editing != null)
-                              ChatReplyComposeBar(
-                                senderName: 'Редактирование',
-                                body: _editing!.text,
-                                onCancel: () {
-                                  setState(() {
-                                    _editing = null;
-                                    _textCtrl.clear();
-                                  });
-                                },
-                              ),
-                            ChatComposeInput(
-                              controller: _textCtrl,
-                              focusNode: _inputFocus,
-                              onAttach: () => unawaited(_pickAttachment()),
-                              onSend: (options) =>
-                                  unawaited(_sendText(options)),
-                              onVoiceComplete:
-                                  (bytes, durationMs, {String? encoderName}) =>
-                                      _sendVoiceMessage(
-                                        bytes,
-                                        durationMs,
-                                        encoderName: encoderName,
-                                      ),
-                              onVideoCircleComplete: _sendVideoCircleMessage,
-                              forceSendButton: _sending ||
-                                  _editing != null ||
-                                  _textCtrl.text.trim().isNotEmpty,
-                              highlightTelegram: true,
-                              preferOpusVoice: true,
-                              hintText: _editing != null
-                                  ? 'Редактировать…'
-                                  : 'Сообщение...',
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                   ],
