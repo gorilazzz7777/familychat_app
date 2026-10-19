@@ -750,6 +750,10 @@ class TelegramTdlibService extends ChangeNotifier {
   /// Progressive `stream:video:` range: no progress on current offset.
   static const _stallZeroBytesStreamRange = Duration(seconds: 8);
   static const _stallProgressIdleStreamRange = Duration(seconds: 8);
+  /// Moov-at-end Range under FakeTLS needs exclusive wire (cancel from-0 first).
+  /// 8s idle→full-fallback left ExoPlayer without moov while body filled ~20MB
+  /// (SessionLog 19 Oct Shariy file=14439). Align with video Ready 0B budget.
+  static const _stallProgressIdleStreamMoovTail = Duration(seconds: 28);
   /// Auto-download / background warm window (same as FamilyChat media policy).
   static const mediaAutoAge = ChatMediaDisplayPolicy.deferredFullMediaAge;
   /// Hub warm disabled in exclusive-focus mode.
@@ -16177,14 +16181,20 @@ class TelegramTdlibService extends ChangeNotifier {
       'stream-begin file=$fileId size=${_fmtBytes(size)} url=$url '
       'chat=$chatId',
     );
-    // Kick the first megabyte so ExoPlayer's opening Range is warm.
-    // Moov-at-end is driven by the player; we fetch that Range once (no
-    // downloadFile spam) and on failure switch to full-fallback prefix fill
-    // instead of leaving the slot wedged on a dead end-offset.
+    // Kick the first megabyte so ExoPlayer's opening Range is warm —
+    // except under FakeTLS: warm-from-0 races the moov-at-end Range on
+    // slot=1 and the tail never becomes readable (SessionLog 19 Oct
+    // file=14439: moov idle-cancel got=0 while prefix ~20MB). Let the
+    // player drive the first Ranges; prefix resumes after moov lands.
     final warm = size < 1024 * 1024 ? size : 1024 * 1024;
-    unawaited(
-      ensureVideoStreamRange(fileId: fileId, offset: 0, length: warm),
-    );
+    final deferWarm = _useMtprotoProxy && _enabledProxyId != null;
+    if (deferWarm) {
+      _mediaLog('stream-begin defer-warm file=$fileId (FakeTLS moov-first)');
+    } else {
+      unawaited(
+        ensureVideoStreamRange(fileId: fileId, offset: 0, length: warm),
+      );
+    }
     notifyListeners();
     return url;
   }
@@ -16261,12 +16271,18 @@ class TelegramTdlibService extends ChangeNotifier {
   }) async {
     final c = _client;
     if (c == null || _tearingDown) return null;
-    // Overall cap; per-range idle is [_stallProgressIdleStreamRange] (~8s).
-    final deadline = DateTime.now().add(const Duration(seconds: 45));
     // Lookahead so the next player Range often hits cache (official buffers).
     final expected = fileExpectedSize(fileId);
     final moovTail = _isStreamMoovAtEndOffset(offset, expected);
     final fullFallback = _streamFullFallbackIds.contains(fileId);
+    // Moov-at-end needs exclusive dial time (cancel+fetch+retry); 45s was
+    // shorter than idle×2 under FakeTLS.
+    final deadline = DateTime.now().add(
+      moovTail ? const Duration(seconds: 70) : const Duration(seconds: 45),
+    );
+    final idleBudget = moovTail
+        ? _stallProgressIdleStreamMoovTail
+        : _stallProgressIdleStreamRange;
     var downloadLimit = length;
     if (moovTail) {
       // Exact player window (+ small pad) — do not inflate to 512KB past EOF
@@ -16303,6 +16319,22 @@ class TelegramTdlibService extends ChangeNotifier {
       return null;
     }
 
+    // FakeTLS / TDLib: one active downloadFile per file. A live from-0
+    // transfer leaves getFileDownloadedPrefixSize(moov)=0 forever — cancel
+    // first so the end-Range owns the wire (SessionLog 19 Oct file=14439).
+    if (moovTail) {
+      final racing = _downloadTrace[fileId];
+      if (_downloadInFlight.contains(fileId) &&
+          (racing == null || racing.offset != offset)) {
+        _mediaLog(
+          'stream-range moov-exclusive cancel '
+          'file=$fileId fromOffset=${racing?.offset ?? "?"} → $offset',
+        );
+        if (racing != null) racing.downloadAcked = false;
+        await _cancelTdlibDownload(fileId);
+      }
+    }
+
     var lastAvail = -1;
     var lastAvailAt = DateTime.now();
     var idleCancels = 0;
@@ -16326,12 +16358,9 @@ class TelegramTdlibService extends ChangeNotifier {
         lastAvail = avail;
         lastAvailAt = DateTime.now();
         idleCancels = 0;
-      } else if (DateTime.now().difference(lastAvailAt) >=
-          _stallProgressIdleStreamRange) {
-        // No growth on this range — cancel TDLib offset, allow one retry.
-        // Moov-at-end under FakeTLS almost never lands (SessionLog 14:18:
-        // end-Range got=0 while prefix filled to 18MB). First idle → full
-        // fill immediately; a second end-Range only cancels the live prefix.
+      } else if (DateTime.now().difference(lastAvailAt) >= idleBudget) {
+        // No growth on this range — cancel + retry. Moov-at-end: one exclusive
+        // retry before full-fallback (was: first 8s idle → abandon stream).
         _mediaLog(
           'stream-range idle-cancel file=$fileId offset=$offset '
           'need=$length got=$avail n=$idleCancels'
@@ -16342,12 +16371,12 @@ class TelegramTdlibService extends ChangeNotifier {
         await _cancelTdlibDownload(fileId);
         idleCancels++;
         lastAvailAt = DateTime.now();
-        if (moovTail) {
+        if (moovTail && idleCancels >= 2) {
           _streamFullFallbackIds.add(fileId);
           unawaited(_continueVideoFullDownload(fileId, why: 'moov-idle'));
           break;
         }
-        if (idleCancels >= 2) break;
+        if (!moovTail && idleCancels >= 2) break;
         if (!_canStartNetworkDownload && !_tdlibReadyForMedia) {
           await Future<void>.delayed(const Duration(milliseconds: 400));
           continue;
@@ -16368,6 +16397,7 @@ class TelegramTdlibService extends ChangeNotifier {
         fileId: fileId,
         offset: offset,
         limit: downloadLimit <= 0 ? 0 : downloadLimit,
+        force: moovTail,
       );
       final waiter = Completer<void>();
       (_streamRangeWaiters[fileId] ??= <Completer<void>>[]).add(waiter);
@@ -16433,6 +16463,16 @@ class TelegramTdlibService extends ChangeNotifier {
         existing.downloadAcked &&
         _downloadInFlight.contains(fileId)) {
       return;
+    }
+    // Switching to a different offset while a transfer is live — cancel so
+    // FakeTLS/CDN actually starts the new Range (moov-at-end vs from-0).
+    if (force &&
+        offset > 0 &&
+        existing != null &&
+        existing.offset != offset &&
+        _downloadInFlight.contains(fileId)) {
+      existing.downloadAcked = false;
+      await _cancelTdlibDownload(fileId);
     }
     if (!_downloadInFlight.contains(fileId)) {
       _downloadInFlight.add(fileId);
