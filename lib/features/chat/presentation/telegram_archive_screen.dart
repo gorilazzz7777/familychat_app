@@ -36,6 +36,12 @@ class _TelegramArchiveScreenState extends ConsumerState<TelegramArchiveScreen> {
   final Set<int> _selected = {};
   bool _selectionMode = false;
   List<Map<String, dynamic>> _snapshotRows = const [];
+  final ScrollController _listScroll = ScrollController();
+  Timer? _avatarPrefetchTimer;
+  Timer? _scrollBusyClearTimer;
+  bool _didInitialAvatarPrefetch = false;
+  List<int> _lastAvatarPrefetchIds = const [];
+  int _lastAvatarPrefetchEpoch = -1;
 
   @override
   void initState() {
@@ -43,12 +49,81 @@ class _TelegramArchiveScreenState extends ConsumerState<TelegramArchiveScreen> {
     _snapshotRows = [
       for (final r in widget.snapshotRows) Map<String, dynamic>.from(r),
     ];
+    _listScroll.addListener(_onListScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_ensureSnapshot());
       unawaited(
-        ref.read(telegramTdlibServiceProvider).refreshArchiveChatList(),
+        ref.read(telegramTdlibServiceProvider).refreshArchiveChatList().then((_) {
+          if (!mounted) return;
+          _scheduleVisibleAvatarPrefetch();
+        }),
       );
     });
+  }
+
+  @override
+  void dispose() {
+    _avatarPrefetchTimer?.cancel();
+    _scrollBusyClearTimer?.cancel();
+    ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
+    _listScroll.removeListener(_onListScroll);
+    _listScroll.dispose();
+    super.dispose();
+  }
+
+  void _onListScroll() {
+    ref.read(telegramTdlibServiceProvider).setUiScrollBusy(true);
+    _scrollBusyClearTimer?.cancel();
+    _scrollBusyClearTimer = Timer(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      ref.read(telegramTdlibServiceProvider).setUiScrollBusy(false);
+    });
+    _avatarPrefetchTimer?.cancel();
+  }
+
+  /// Same hub-avatar wire as Main — Archive never called prefetch, so faces
+  /// stayed on soft minithumb forever (hh.ru blur 19 Oct).
+  void _scheduleVisibleAvatarPrefetch() {
+    final svc = ref.read(telegramTdlibServiceProvider);
+    if (svc.isUiScrollBusy) return;
+    if (!svc.readyForMedia) return;
+    final live = svc.hubArchiveChats;
+    if (live.isEmpty) return;
+
+    final needSharp = <int>[];
+    const rowExtent = 72.0;
+    var first = 0;
+    if (_listScroll.hasClients) {
+      first = (_listScroll.offset / rowExtent)
+          .floor()
+          .clamp(0, live.isEmpty ? 0 : live.length - 1);
+    }
+    for (final c in live.skip(first).take(24)) {
+      final path = c.photoLocalPath?.trim() ?? '';
+      if (path.isNotEmpty) continue;
+      final hasMini = c.photoMinithumbnailBytes != null &&
+          c.photoMinithumbnailBytes!.isNotEmpty;
+      final hasPhotoId = c.photoFileId != null && c.photoFileId! > 0;
+      if (!hasMini && !hasPhotoId) continue;
+      needSharp.add(c.chatId);
+      if (needSharp.length >= 12) break;
+    }
+    if (needSharp.isEmpty) return;
+    final epoch = svc.mediaReadyEpoch;
+    if (needSharp.length == _lastAvatarPrefetchIds.length &&
+        epoch == _lastAvatarPrefetchEpoch) {
+      var same = true;
+      for (var i = 0; i < needSharp.length; i++) {
+        if (needSharp[i] != _lastAvatarPrefetchIds[i]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
+    _lastAvatarPrefetchIds = List<int>.from(needSharp);
+    _lastAvatarPrefetchEpoch = epoch;
+    svc.prefetchVisibleHubAvatars(needSharp);
   }
 
   Future<void> _ensureSnapshot() async {
@@ -186,6 +261,15 @@ class _TelegramArchiveScreenState extends ConsumerState<TelegramArchiveScreen> {
     final svc = ref.watch(telegramTdlibServiceProvider);
     final chats = _rows(svc);
 
+    // First viewport sharp faces once live archive rows exist.
+    if (svc.hubArchiveChats.isNotEmpty && !_didInitialAvatarPrefetch) {
+      _didInitialAvatarPrefetch = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scheduleVisibleAvatarPrefetch();
+      });
+    }
+
     return Scaffold(
       appBar: FamilyAppBar.build(
         title: _selectionMode ? '${_selected.length}' : 'Архив чатов',
@@ -218,7 +302,25 @@ class _TelegramArchiveScreenState extends ConsumerState<TelegramArchiveScreen> {
                 ),
               ),
             )
-          : ListView.builder(
+          : NotificationListener<ScrollNotification>(
+              onNotification: (n) {
+                if (n is ScrollEndNotification) {
+                  ref
+                      .read(telegramTdlibServiceProvider)
+                      .setUiScrollBusy(false);
+                  _avatarPrefetchTimer?.cancel();
+                  _avatarPrefetchTimer = Timer(
+                    const Duration(milliseconds: 80),
+                    () {
+                      if (!mounted) return;
+                      _scheduleVisibleAvatarPrefetch();
+                    },
+                  );
+                }
+                return false;
+              },
+              child: ListView.builder(
+              controller: _listScroll,
               itemCount: chats.length,
               itemBuilder: (context, index) {
                 final c = chats[index];
@@ -351,6 +453,7 @@ class _TelegramArchiveScreenState extends ConsumerState<TelegramArchiveScreen> {
                   onLongPress: () => _toggle(c.chatId),
                 );
               },
+            ),
             ),
     );
   }
