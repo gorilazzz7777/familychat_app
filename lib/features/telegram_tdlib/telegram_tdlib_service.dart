@@ -4179,10 +4179,17 @@ class TelegramTdlibService extends ChangeNotifier {
           DateTime.now().difference(_lastNetMediaDoneAt!) <= _recentNetMediaOk;
       final originTried = recoverAttempted ||
           _downloadTriedBypassCdn.contains(fileId);
+      // iOS (19 Oct SessionLog): Ready + Pong soft-fail then every photo
+      // STALL-0B → R57 quiet → hold-cap give-up. R57 never tries origin, so
+      // the Android R51 zombie gate (originTried) never opens. Hop on fresh
+      // Pong-fail without origin for non-video only. Android unchanged.
+      final iosPongFailSkipOrigin = !kIsWeb &&
+          Platform.isIOS &&
+          !reason.contains('video:');
       final zombiePlane = _tdlibReadyForMedia &&
           pongFailAge != null &&
           pongFailAge <= _proxyPingFailFresh &&
-          originTried;
+          (originTried || iosPongFailSkipOrigin);
       final zombieCooldownOk = _lastStallZombieSoftRestartAt == null ||
           DateTime.now().difference(_lastStallZombieSoftRestartAt!) >=
               _stallZombieSoftRestartCooldown;
@@ -4194,6 +4201,7 @@ class TelegramTdlibService extends ChangeNotifier {
         _mediaLog(
           'stall-recover-zombie-hop file=$fileId reason=$reason '
           'pongFailAge=${_fmtDur(pongFailAge!)} originTried=$originTried '
+          'iosSkipOrigin=$iosPongFailSkipOrigin '
           'conn=$_connectionState → evenIfReady hop (no soft-restart)',
         );
         _slog('tg.media', 'stall_zombie_hop', {
@@ -4201,6 +4209,7 @@ class TelegramTdlibService extends ChangeNotifier {
           'reason': reason,
           'pongFailAgeMs': pongFailAge.inMilliseconds,
           'originTried': originTried,
+          'iosSkipOrigin': iosPongFailSkipOrigin,
         });
         _downloadInFlight.remove(fileId);
         _downloadBackgroundIds.remove(fileId);
@@ -4211,6 +4220,11 @@ class TelegramTdlibService extends ChangeNotifier {
         // soft-restart is worse while Ready+send still work (20:28).
         _lastProxyPingFailAt = null;
         _lastStallZombieSoftRestartAt = DateTime.now();
+        _dfStormHolds = 0;
+        _dfStormCdnRetried.clear();
+        _softRestartFileGapTimer?.cancel();
+        _softRestartFileGapTimer = null;
+        _softRestartFileGapUntil = null;
         notifyListeners();
         unawaited(() async {
           await _failoverProxy(
