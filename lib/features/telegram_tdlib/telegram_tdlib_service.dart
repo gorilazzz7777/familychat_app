@@ -1185,6 +1185,16 @@ class TelegramTdlibService extends ChangeNotifier {
   /// (R69); SessionLog 15:01 soft×1 on :8443 never Ready, hard-hop→:443 @237ms.
   /// Android keeps [_stuckConnectingSoftRestartCap] — do not tighten there.
   static const _iosStuckConnectingSoftRestartCap = 0;
+
+  /// Sticky preferred port ≠ R67 default for this radio (wifi→443, mobile→8443).
+  bool get _iosStuckWrongPortPreferred {
+    if (kIsWeb || !Platform.isIOS || !_useMtprotoProxy) return false;
+    final wantPort = _wantProxyPortForKind(_preferredProxyRadioKind);
+    final eps = _activeProxyEndpoints;
+    if (wantPort == null || eps.isEmpty) return false;
+    final curPort = eps[_proxyEndpointIndex.clamp(0, eps.length - 1)].port;
+    return curPort != wantPort;
+  }
   /// Soft-pause stage-5 already hard-hopped once this thrash cycle.
   /// Cleared on Ready. SessionLog 16 Oct 10:00–10:24: skip-hop +
   /// socket-reopen forever on sticky `:443` (hard-hop count=0) while
@@ -4203,7 +4213,7 @@ class TelegramTdlibService extends ChangeNotifier {
           'pongFailAge=${_fmtDur(pongFailAge!)} originTried=$originTried '
           'iosSkipOrigin=$iosPongFailSkipOrigin '
           'conn=$_connectionState → '
-          '${iosPongFailSkipOrigin ? 'hard-hop+soft-restart' : 'evenIfReady hop'}',
+          '${iosPongFailSkipOrigin ? 'soft-restart same hop' : 'evenIfReady hop'}',
         );
         _slog('tg.media', 'stall_zombie_hop', {
           'fileId': fileId,
@@ -4229,15 +4239,12 @@ class TelegramTdlibService extends ChangeNotifier {
         notifyListeners();
         unawaited(() async {
           if (iosPongFailSkipOrigin) {
-            // iOS SessionLog 19 Oct 15:01: evenIfReady _failoverProxy probed
-            // the other hop, ping timed out, then R51g kept the same Ready
-            // hop (`proxy-failover skip probe-miss Ready`) — media stayed 0B.
-            // Hard-hop + soft-restart (R69 clean dial) without ping; tearDown
-            // remaps file_ids so do not requeue the stale id here.
-            await _hardHopDeadPreferred(
-              why: 'stall-0b-zombie-pong-ios:$fileId',
-              softRestartAfter: true,
-              evenIfReady: true,
+            // Soft-restart same hop only — do NOT hard-hop+persist. Hard-hop
+            // 443→8443 while Ready poisoned v2_wifi preferred; next cold boot
+            // stuck Connecting ~40s+ on :8443 (user: «раньше было быстрее»).
+            // tearDown remaps file_ids — do not requeue the stale id here.
+            await _recoverDeadClient(
+              'stall-0b-zombie-pong-ios:$fileId',
             );
             return;
           }
@@ -5543,8 +5550,10 @@ class TelegramTdlibService extends ChangeNotifier {
     // R14/R15: while quiet, do not burn soft kicks (boot enableProxy also
     // arms quiet — SessionLog 16:01: soft-nudge enableProxy @35s aborted
     // FakeTLS; mtg `cannot read client hello` / i/o timeout).
+    // iOS exception: sticky wrong-port preferred (wifi+:8443) never Ready —
+    // quiet only delayed hard-hop ~35s (SessionLog 19 Oct «долго прокси»).
     if (_inFakeTlsQuiet && !_tdlibReadyForMedia) {
-      return;
+      if (!_iosStuckWrongPortPreferred) return;
     }
 
     int nextStage;
@@ -5592,6 +5601,14 @@ class TelegramTdlibService extends ChangeNotifier {
       // After long lock, escalate soft sooner (SessionLog 21:05 stuck).
       if (longBg) {
         minWait = Duration(seconds: mobile ? 22 : 18);
+      }
+      // iOS only: first kick was 35–40s on sticky wrong-port preferred
+      // (wifi+:8443 / SessionLog 19 Oct) while the other hop Ready@~0.2s.
+      // Shorter wait + port-mismatch → hard-hop on kick #1 (cap 0).
+      if (!kIsWeb && Platform.isIOS && _useMtprotoProxy && !longBg) {
+        minWait = _iosStuckWrongPortPreferred
+            ? const Duration(seconds: 10)
+            : Duration(seconds: mobile ? 18 : 12);
       }
       minGap = Duration.zero;
     } else if (_connectionKickCount == 1) {
@@ -7673,13 +7690,9 @@ class TelegramTdlibService extends ChangeNotifier {
   Future<void> _hardHopDeadPreferred({
     required String why,
     bool softRestartAfter = false,
-    /// iOS Ready+DF zombie: leave a hop that pongs fail / CDN 0B forever
-    /// without mid-session enableProxy (R51g). Soft-restart dials the next
-    /// preferred cleanly (R69). Default false keeps Android Connecting-only.
-    bool evenIfReady = false,
   }) async {
     if (!_useMtprotoProxy || _client == null || _tearingDown) return;
-    if (_tdlibReadyForMedia && !evenIfReady) {
+    if (_tdlibReadyForMedia) {
       _mediaLog('hard-hop skip (already Ready) why=$why');
       return;
     }
@@ -7693,8 +7706,7 @@ class TelegramTdlibService extends ChangeNotifier {
     _mediaLog(
       'hard-hop why=$why ${endpoints[cur].label} → ${endpoints[next].label} '
       '(dead preferred; skip ping; persist'
-      '${softRestartAfter ? '+soft-restart' : ''}'
-      '${evenIfReady && _tdlibReadyForMedia ? '; evenIfReady' : ''})',
+      '${softRestartAfter ? '+soft-restart' : ''})',
     );
     _proxyEndpointIndex = next;
     await _persistPreferredProxyEndpoint(next);
