@@ -65,7 +65,23 @@ class _AiAssistantConversationScreenState
       final kind = event['kind']?.toString();
       setState(() {
         _streamingMessageId = mid is int ? mid : int.tryParse('$mid');
-        if (kind == 'thinking') {
+        if (kind == 'reset') {
+          _streamThinking = '';
+          _streamText = '';
+          final id = _streamingMessageId;
+          if (id != null) {
+            final idx = _messages.indexWhere((m) => m['id'] == id);
+            if (idx >= 0) {
+              _messages[idx] = {
+                ..._messages[idx],
+                'text': '',
+                'thinking': '',
+                'citations': const [],
+                'status': 'streaming',
+              };
+            }
+          }
+        } else if (kind == 'thinking') {
           _streamThinking += event['text']?.toString() ?? '';
         } else if (kind == 'text') {
           _streamText += event['text']?.toString() ?? '';
