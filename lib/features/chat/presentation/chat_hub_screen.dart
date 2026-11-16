@@ -44,11 +44,13 @@ import '../../telegram_tdlib/telegram_tdlib_service.dart';
 import 'telegram_archive_screen.dart';
 import 'telegram_chats_pane.dart';
 import 'widgets/chat_message_read_status_icon.dart';
+import '../../ai_assistant/presentation/ai_assistant_session_list.dart';
 
 class ChatHubScreen extends ConsumerStatefulWidget {
   const ChatHubScreen({
     super.key,
     this.hasIndividualPremium = false,
+    this.hasAiAssistant = false,
     this.telegramConnected = false,
     this.telegramGrace = false,
     this.profileName = '',
@@ -60,6 +62,8 @@ class ChatHubScreen extends ConsumerStatefulWidget {
   /// Enables TG hub features (folder when disconnected, rows in «Все»).
   /// Always true from shell — TG is available to all users.
   final bool hasIndividualPremium;
+  /// Individual Premium gate for «AI Ассистент» folder.
+  final bool hasAiAssistant;
   /// TDLib authorization ready (logged in). When true, «Telegram» folder is hidden.
   final bool telegramConnected;
   /// Grace / read-only TG mode from backend status.
@@ -80,10 +84,13 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   static List<HubChip> _systemChipsFor({
     required bool hasIndividualPremium,
     required bool telegramConnected,
+    bool hasAiAssistant = false,
   }) {
     return [
       const HubChip.system(ChatHubSystemFilter.all),
       const HubChip.system(ChatHubSystemFilter.family),
+      if (hasAiAssistant)
+        const HubChip.system(ChatHubSystemFilter.aiAssistant),
       if (hasIndividualPremium && !telegramConnected)
         const HubChip.system(ChatHubSystemFilter.telegram),
     ];
@@ -420,6 +427,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     }));
     final baseChips = _systemChipsFor(
       hasIndividualPremium: widget.hasIndividualPremium,
+      hasAiAssistant: widget.hasAiAssistant,
       // Phase may already be ready from a previous session.
       telegramConnected: widget.telegramConnected ||
           ref.read(telegramTdlibServiceProvider).phase == TdlibAuthPhase.ready,
@@ -957,6 +965,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
   void didUpdateWidget(covariant ChatHubScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.hasIndividualPremium != widget.hasIndividualPremium ||
+        oldWidget.hasAiAssistant != widget.hasAiAssistant ||
         oldWidget.telegramConnected != widget.telegramConnected) {
       if (widget.hasIndividualPremium && !oldWidget.hasIndividualPremium) {
         _pendingFirstPaint = true;
@@ -1042,6 +1051,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     final system = _systemChipsFor(
       hasIndividualPremium: widget.hasIndividualPremium,
       telegramConnected: telegramConnected,
+      hasAiAssistant: widget.hasAiAssistant,
     );
     final mirroredTgIds = _fcToTgFolder.values.toSet();
     final liveFolders = _tdlibReady && widget.hasIndividualPremium
@@ -3332,6 +3342,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
                 kind == 'dm' ||
                 _isBirthdayCelebration(thread)) &&
             _familyFolderOk(thread),
+      ChatHubSystemFilter.aiAssistant => false,
       ChatHubSystemFilter.telegram => false,
     };
   }
@@ -3629,8 +3640,10 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
 
   /// Unread total for a folder chip: unmuted chats only (no search filter).
   int _notifiedUnreadForChip(HubChip chip) {
-    if (chip.system == ChatHubSystemFilter.telegram) {
+    if (chip.system == ChatHubSystemFilter.telegram ||
+        chip.system == ChatHubSystemFilter.aiAssistant) {
       // Folder is only visible while disconnected — no TG unread yet.
+      // AI assistant sessions are not part of hub unread.
       return 0;
     }
     var total = 0;
@@ -4016,6 +4029,7 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
     return switch (chip.system!) {
       ChatHubSystemFilter.all => 'Нет чатов',
       ChatHubSystemFilter.family => 'Нет семейных чатов',
+      ChatHubSystemFilter.aiAssistant => 'Нет чатов с ассистентом',
       ChatHubSystemFilter.telegram => 'Нет чатов Telegram',
     };
   }
@@ -4110,6 +4124,12 @@ class ChatHubScreenState extends ConsumerState<ChatHubScreen>
           globalLoading: _tgSearchLoading,
           onOpenGlobalHit: _openTgGlobalHit,
         ),
+      );
+    }
+    if (chip.system == ChatHubSystemFilter.aiAssistant) {
+      return const Padding(
+        padding: EdgeInsets.only(top: _ChatFilterTabBar.overlayExtent),
+        child: AiAssistantSessionList(),
       );
     }
     return _buildThreadList(chip);

@@ -530,6 +530,12 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
   /// TG hub features are available to everyone (no Individual Premium gate).
   bool get _telegramFeaturesEnabled => true;
 
+  /// AI Ассистент — только Individual Premium из status.entitlements.
+  bool get _aiAssistantEnabled {
+    final entitlements = _status['entitlements'];
+    return entitlements is Map && entitlements['individual_premium'] == true;
+  }
+
   ShellNavLayout _navLayout([FamilyChatAppSettings? settings]) {
     final FamilyChatAppSettings s =
         settings ?? ref.read(appSettingsProvider);
@@ -691,6 +697,7 @@ class _ShellScreenState extends ConsumerState<ShellScreen>
         return ChatHubScreen(
           key: _chatHubKey,
           hasIndividualPremium: _telegramFeaturesEnabled,
+          hasAiAssistant: _aiAssistantEnabled,
           telegramConnected: _telegramConnected,
           telegramGrace: _telegramGrace,
           profileName: _displayName,

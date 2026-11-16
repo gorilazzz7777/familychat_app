@@ -41,6 +41,7 @@ class HubChip {
     return switch (system!) {
       ChatHubSystemFilter.all => 'Все',
       ChatHubSystemFilter.family => 'Семья',
+      ChatHubSystemFilter.aiAssistant => 'AI Ассистент',
       ChatHubSystemFilter.telegram => 'Telegram',
     };
   }
@@ -52,7 +53,7 @@ class HubChip {
   int get hashCode => key.hashCode;
 }
 
-enum ChatHubSystemFilter { all, family, telegram }
+enum ChatHubSystemFilter { all, family, aiAssistant, telegram }
 
 /// Membership key for folder membership matching against hub rows.
 abstract final class ChatFolderMemberKey {
